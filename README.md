@@ -10,6 +10,7 @@
 
 
 ![Auth Screen](screenshots/AuthScreen.png)
+![Downloads](https://img.shields.io/github/downloads/caamer20/telegram-drive/total)
 
 ##  What is Telegram Drive?
 
