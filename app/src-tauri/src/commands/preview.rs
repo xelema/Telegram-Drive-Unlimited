@@ -170,6 +170,15 @@ pub async fn cmd_clean_cache(
     if cache_dir.exists() {
         let _ = std::fs::remove_dir_all(cache_dir);
     }
+
+    let thumb_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e: tauri::Error| e.to_string())?
+        .join("thumbnails");
+    if thumb_dir.exists() {
+        let _ = std::fs::remove_dir_all(thumb_dir);
+    }
     Ok(())
 }
 
@@ -271,4 +280,26 @@ pub async fn cmd_get_thumbnail(
     }
 
     Ok("".to_string())
+}
+
+#[tauri::command]
+pub async fn cmd_delete_image_thumbnail(
+    message_id: i32,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let cache_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e: tauri::Error| e.to_string())?
+        .join("thumbnails");
+        
+    if let Ok(entries) = std::fs::read_dir(&cache_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with(&format!("{}.", message_id)) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+    Ok(())
 }

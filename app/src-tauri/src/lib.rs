@@ -147,12 +147,12 @@ pub fn run() {
             std::thread::spawn(move || {
                 let sys = actix_rt::System::new();
                 sys.block_on(async move {
-                    match server::start_server(state, STREAM_PORT, token_for_server, None, 0).await {
-                        Ok((streaming_server, _)) => {
+                    match server::start_server(state, STREAM_PORT, token_for_server).await {
+                        Ok(server) => {
                             // Store the handle so RunEvent::Exit can stop it
-                            *handle_for_thread.lock().unwrap() = Some(streaming_server.handle());
+                            *handle_for_thread.lock().unwrap() = Some(server.handle());
                             // Now await the server — blocks until stopped
-                            streaming_server.await.ok();
+                            server.await.ok();
                         }
                         Err(e) => log::error!("Streaming server failed: {}", e),
                     }
@@ -193,6 +193,7 @@ pub fn run() {
             commands::cmd_get_api_settings,
             commands::cmd_update_api_settings,
             commands::cmd_regenerate_api_key,
+            commands::cmd_delete_image_thumbnail,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -223,6 +224,21 @@ pub fn run() {
             if let Some(handle) = api_handle {
                 log::info!("Stopping API server...");
                 drop(handle.stop(true));
+            }
+
+            // 4. Clear the thumbnail cache on quit
+            log::info!("Clearing thumbnail cache...");
+            if let Ok(data_dir) = app_handle.path().app_data_dir() {
+                let thumb_dir = data_dir.join("thumbnails");
+                if thumb_dir.exists() {
+                    let _ = std::fs::remove_dir_all(&thumb_dir);
+                }
+            }
+            if let Ok(cache_dir) = app_handle.path().app_cache_dir() {
+                let previews_dir = cache_dir.join("previews");
+                if previews_dir.exists() {
+                    let _ = std::fs::remove_dir_all(&previews_dir);
+                }
             }
         }
     });

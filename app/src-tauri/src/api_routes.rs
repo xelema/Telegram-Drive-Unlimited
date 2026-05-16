@@ -160,6 +160,11 @@ async fn api_list_files(
     })
 }
 
+#[derive(serde::Deserialize)]
+struct FolderQuery {
+    folder_id: Option<i64>,
+}
+
 #[get("/api/v1/files/{message_id}")]
 async fn api_get_file(
     req: HttpRequest,
@@ -209,11 +214,6 @@ async fn api_get_file(
         }
         Err(e) => json_error("FETCH_ERROR", &format!("Failed to fetch file: {}", e), 500),
     }
-}
-
-#[derive(serde::Deserialize)]
-struct FolderQuery {
-    folder_id: Option<i64>,
 }
 
 #[get("/api/v1/files/{message_id}/download")]

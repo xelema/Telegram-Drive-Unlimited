@@ -17,6 +17,7 @@ export function useFileOperations(
         if (!await confirm({ title: "Delete File", message: "Are you sure you want to delete this file?", confirmText: "Delete", variant: 'danger' })) return;
         try {
             await invoke('cmd_delete_file', { messageId: id, folderId: activeFolderId });
+            await invoke('cmd_delete_image_thumbnail', { messageId: id }).catch(() => {});
             queryClient.invalidateQueries({ queryKey: ['files', activeFolderId] });
             toast.success("File deleted");
         } catch (e) {
@@ -33,6 +34,7 @@ export function useFileOperations(
         for (const id of selectedIds) {
             try {
                 await invoke('cmd_delete_file', { messageId: id, folderId: activeFolderId });
+                await invoke('cmd_delete_image_thumbnail', { messageId: id }).catch(() => {});
                 success++;
             } catch {
                 fail++;
