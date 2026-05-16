@@ -2,15 +2,24 @@
 
 **Telegram Drive** is an open-source, cross-platform desktop application that turns your Telegram account into an unlimited, secure cloud storage drive. Built with **Tauri**, **Rust**, and **React**.
 
-![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
-![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20MacOS%20%7C%20Linux-blue)
+# Telegram Drive
+
+**Telegram Drive** is an open-source, cross-platform desktop application that turns
+your Telegram account into an unlimited, secure cloud storage drive. Built with
+**Tauri**, **Rust**, and **React**.
+
+<div align="center">
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20MacOS%20%7C%20Linux-blue)]()
+[![Downloads](https://img.shields.io/github/downloads/caamer20/telegram-drive/total)](https://github.com/caamer20/telegram-drive/releases)
 [![oosmetrics](https://api.oosmetrics.com/api/v1/badge/achievement/ae8e5a6b-e815-4799-a408-4a59980cf9c8.svg)](https://oosmetrics.com/repo/caamer20/Telegram-Drive)
 [![oosmetrics](https://api.oosmetrics.com/api/v1/badge/achievement/029fb97b-a54a-4566-a1eb-aa1a5039065d.svg)](https://oosmetrics.com/repo/caamer20/Telegram-Drive)
 [![oosmetrics](https://api.oosmetrics.com/api/v1/badge/achievement/2aa6f3f9-fd8a-4523-bd73-6625ee6a948a.svg)](https://oosmetrics.com/repo/caamer20/Telegram-Drive)
 
+</div>
 
 ![Auth Screen](screenshots/AuthScreen.png)
-![Downloads](https://img.shields.io/github/downloads/caamer20/telegram-drive/total)
 
 ##  What is Telegram Drive?
 
