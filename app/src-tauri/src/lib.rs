@@ -194,6 +194,8 @@ pub fn run() {
             commands::cmd_update_api_settings,
             commands::cmd_regenerate_api_key,
             commands::cmd_delete_image_thumbnail,
+            commands::cmd_zip_folder,
+            commands::cmd_delete_temp_zip,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

@@ -6,6 +6,7 @@ export interface Settings {
     autoUpdate: boolean;
     maxConcurrentUploads: number;
     maxConcurrentDownloads: number;
+    zipFolders: boolean;
 }
 
 const defaultSettings: Settings = {
@@ -13,6 +14,7 @@ const defaultSettings: Settings = {
     autoUpdate: true,
     maxConcurrentUploads: 6,
     maxConcurrentDownloads: 6,
+    zipFolders: true,
 };
 
 interface SettingsContextType {

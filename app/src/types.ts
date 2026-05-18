@@ -24,6 +24,7 @@ export interface QueueItem {
     uploadedBytes?: number;
     totalBytes?: number;
     speedBytesPerSec?: number;
+    tempZipPath?: string; // Set when the upload originated from a zipped folder
 }
 
 export interface BandwidthStats {

@@ -634,3 +634,85 @@ pub async fn cmd_scan_folders(
     log::info!("Scan complete. Found {} folders. Peer cache size: {}.", folders.len(), peer_cache.len());
     Ok(folders)
 }
+
+/// Zip a folder's contents into a temp file and return the path.
+/// The resulting zip preserves the relative directory structure.
+#[tauri::command]
+pub async fn cmd_zip_folder(
+    folder_path: String,
+) -> Result<String, String> {
+    let src = std::path::Path::new(&folder_path);
+    if !src.is_dir() {
+        return Err(format!("'{}' is not a directory", folder_path));
+    }
+
+    let folder_name = src
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "folder".to_string());
+
+    let zip_path = std::env::temp_dir().join(format!("{}.zip", folder_name));
+    let zip_path_str = zip_path.to_string_lossy().to_string();
+
+    // Run blocking I/O on a dedicated thread so we don't stall the async runtime
+    let src_owned = folder_path.clone();
+    let out_path = zip_path.clone();
+    tokio::task::spawn_blocking(move || {
+        let file = std::fs::File::create(&out_path)
+            .map_err(|e| format!("Failed to create zip file: {}", e))?;
+        let mut zip_writer = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+
+        let src_path = std::path::Path::new(&src_owned);
+        for entry in walkdir::WalkDir::new(src_path).into_iter().filter_map(|e| e.ok()) {
+            let path = entry.path();
+            let relative = path.strip_prefix(src_path).unwrap_or(path);
+
+            if path.is_file() {
+                let name = relative.to_string_lossy().to_string();
+                zip_writer.start_file(&name, options)
+                    .map_err(|e| format!("Failed to add '{}': {}", name, e))?;
+                let mut f = std::fs::File::open(path)
+                    .map_err(|e| format!("Failed to open '{}': {}", name, e))?;
+                std::io::copy(&mut f, &mut zip_writer)
+                    .map_err(|e| format!("Failed to write '{}': {}", name, e))?;
+            } else if path.is_dir() && path != src_path {
+                let dir_name = format!("{}/", relative.to_string_lossy());
+                zip_writer.add_directory(&dir_name, options)
+                    .map_err(|e| format!("Failed to add dir '{}': {}", dir_name, e))?;
+            }
+        }
+
+        zip_writer.finish().map_err(|e| format!("Failed to finalize zip: {}", e))?;
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| format!("Zip task panicked: {}", e))?
+    .map_err(|e: String| e)?;
+
+    let zip_size = std::fs::metadata(&zip_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    log::info!("Zipped '{}' -> '{}' ({} bytes)", folder_name, zip_path_str, zip_size);
+
+    Ok(zip_path_str)
+}
+
+/// Delete a temporary zip file created by cmd_zip_folder.
+#[tauri::command]
+pub async fn cmd_delete_temp_zip(
+    path: String,
+) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    // Safety: only delete files inside the system temp directory
+    let tmp = std::env::temp_dir();
+    if !p.starts_with(&tmp) {
+        return Err("Refusing to delete file outside temp directory".to_string());
+    }
+    if p.exists() {
+        std::fs::remove_file(p).map_err(|e| e.to_string())?;
+        log::info!("Cleaned up temp zip: {}", path);
+    }
+    Ok(())
+}

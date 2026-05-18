@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
-import { Plus, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
+import { Plus, ArrowUpDown, ArrowUp, ArrowDown, FolderUp } from 'lucide-react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { FileCard } from './FileCard';
 import { EmptyState } from './EmptyState';
@@ -22,6 +22,8 @@ interface FileExplorerProps {
     onDownload: (id: number, name: string) => void;
     onPreview: (file: TelegramFile, orderedFiles?: TelegramFile[]) => void;
     onManualUpload: () => void;
+    onFolderUpload: () => void;
+    showFolderUpload: boolean;
     onSelectionClear: () => void;
     onToggleSelection: (id: number) => void;
     onDrop?: (e: React.DragEvent, folderId: number) => void;
@@ -58,7 +60,7 @@ function useGridColumns(containerRef: React.RefObject<HTMLDivElement | null>) {
 
 export function FileExplorer({
     files, loading, error, viewMode, selectedIds, activeFolderId,
-    onFileClick, onDelete, onDownload, onPreview, onManualUpload, onSelectionClear, onToggleSelection, onDrop, onDragStart, onDragEnd
+    onFileClick, onDelete, onDownload, onPreview, onManualUpload, onFolderUpload, showFolderUpload, onSelectionClear, onToggleSelection, onDrop, onDragStart, onDragEnd
 }: FileExplorerProps) {
     const [sortField, setSortField] = useState<SortField>('name');
     const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
@@ -102,18 +104,22 @@ export function FileExplorer({
 
 
     const gridRows = useMemo(() => {
-        const rows: (TelegramFile | 'upload')[][] = [];
-        const itemsWithUpload: (TelegramFile | 'upload')[] = [...sortedFiles, 'upload'];
+        const rows: (TelegramFile | 'upload' | 'upload-folder')[][] = [];
+        const tail: ('upload' | 'upload-folder')[] = ['upload'];
+        if (showFolderUpload) tail.push('upload-folder');
+        const itemsWithUpload: (TelegramFile | 'upload' | 'upload-folder')[] = [...sortedFiles, ...tail];
         for (let i = 0; i < itemsWithUpload.length; i += columns) {
             rows.push(itemsWithUpload.slice(i, i + columns));
         }
         return rows;
-    }, [sortedFiles, columns]);
+    }, [sortedFiles, columns, showFolderUpload]);
 
 
     const listItems = useMemo(() => {
-        return activeFolderId === null ? [...sortedFiles, 'upload' as const] : sortedFiles;
-    }, [sortedFiles, activeFolderId]);
+        const tail: ('upload' | 'upload-folder')[] = ['upload'];
+        if (showFolderUpload) tail.push('upload-folder');
+        return [...sortedFiles, ...tail];
+    }, [sortedFiles, activeFolderId, showFolderUpload]);
 
 
     const gridVirtualizer = useVirtualizer({
@@ -238,6 +244,19 @@ export function FileExplorer({
                                                 </button>
                                             );
                                         }
+                                        if (item === 'upload-folder') {
+                                            return (
+                                                <button
+                                                    key="upload-folder"
+                                                    onClick={(e) => { e.stopPropagation(); onFolderUpload(); }}
+                                                    className="border-2 border-dashed border-telegram-border rounded-xl flex flex-col items-center justify-center text-telegram-subtext hover:border-telegram-primary hover:text-telegram-primary transition-all group"
+                                                    style={{ height: `${cardHeight}px` }}
+                                                >
+                                                    <FolderUp className="w-8 h-8 mb-2 group-hover:scale-110 transition-transform" />
+                                                    <span className="text-sm font-medium">Upload Folder</span>
+                                                </button>
+                                            );
+                                        }
                                         const file = item;
                                         return (
                                             <FileCard
@@ -299,6 +318,23 @@ export function FileExplorer({
                                         >
                                             <div className="w-5 h-5 flex items-center justify-center"><Plus className="w-4 h-4" /></div>
                                             <span className="text-sm font-medium">Upload File...</span>
+                                        </button>
+                                    </div>
+                                );
+                            }
+                            if (item === 'upload-folder') {
+                                return (
+                                    <div
+                                        key="upload-folder"
+                                        className="absolute top-0 left-0 w-full"
+                                        style={{ transform: `translateY(${virtualItem.start}px)` }}
+                                    >
+                                        <button
+                                            onClick={(e) => { e.stopPropagation(); onFolderUpload(); }}
+                                            className="flex items-center gap-4 px-4 py-3 rounded-lg cursor-pointer border border-dashed border-telegram-border text-telegram-subtext hover:text-telegram-text hover:bg-telegram-hover w-full"
+                                        >
+                                            <div className="w-5 h-5 flex items-center justify-center"><FolderUp className="w-4 h-4" /></div>
+                                            <span className="text-sm font-medium">Upload Folder...</span>
                                         </button>
                                     </div>
                                 );

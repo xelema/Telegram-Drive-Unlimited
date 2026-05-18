@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, RotateCcw, Download, Upload, Trash2, HardDrive, Globe, Key, Copy, Check, RefreshCw } from 'lucide-react';
+import { X, RotateCcw, Download, Upload, Trash2, HardDrive, Globe, Key, Copy, Check, RefreshCw, FolderArchive } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { useSettings } from '../../context/SettingsContext';
@@ -225,6 +225,23 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                             +
                                         </button>
                                     </div>
+                                </div>
+
+                                {/* Zip Folders */}
+                                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
+                                    <div className="flex items-center gap-2">
+                                        <FolderArchive className="w-4 h-4 text-telegram-subtext" />
+                                        <div>
+                                            <p className="text-sm text-telegram-text font-medium">Zip Folders Before Upload</p>
+                                            <p className="text-xs text-telegram-subtext">Compress folders into .zip before uploading</p>
+                                        </div>
+                                    </div>
+                                    <button
+                                        onClick={() => updateSetting('zipFolders', !settings.zipFolders)}
+                                        className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${settings.zipFolders ? 'bg-telegram-primary' : 'bg-telegram-border'}`}
+                                    >
+                                        <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.zipFolders ? 'translate-x-5' : 'translate-x-0'}`} />
+                                    </button>
                                 </div>
                             </section>
 

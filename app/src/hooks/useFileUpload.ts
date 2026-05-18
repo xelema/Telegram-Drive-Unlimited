@@ -6,6 +6,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { QueueItem } from '../types';
 import { useFileDrop } from './useFileDrop';
+import { useSettings } from '../context/SettingsContext';
 import type { Store } from '@tauri-apps/plugin-store';
 
 interface ProgressPayload {
@@ -18,6 +19,7 @@ interface ProgressPayload {
 
 export function useFileUpload(activeFolderId: number | null, store: Store | null) {
     const queryClient = useQueryClient();
+    const { settings } = useSettings();
     const [uploadQueue, setUploadQueue] = useState<QueueItem[]>([]);
     const [processing, setProcessing] = useState(false);
     const [initialized, setInitialized] = useState(false);
@@ -68,6 +70,17 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
         }
     }, [uploadQueue, processing]);
 
+    /** Clean up temp zip file if the item was created from a folder */
+    const cleanupTempZip = async (item: QueueItem) => {
+        if (item.tempZipPath) {
+            try {
+                await invoke('cmd_delete_temp_zip', { path: item.tempZipPath });
+            } catch {
+                // Best-effort cleanup
+            }
+        }
+    };
+
     const processItem = async (item: QueueItem) => {
         setProcessing(true);
         setUploadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'uploading', progress: 0 } : i));
@@ -80,11 +93,16 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
                 setUploadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'success', progress: 100 } : i));
                 queryClient.invalidateQueries({ queryKey: ['files', item.folderId] });
             }
+            // Clean up temp zip on success
+            await cleanupTempZip(item);
         } catch (e) {
             if (!cancelledRef.current.has(item.id)) {
                 const errMsg = String(e);
                 if (errMsg.includes('Transfer cancelled')) {
                     setUploadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'cancelled' } : i));
+                } else if (errMsg.includes('FILE_TOO_BIG') || errMsg.includes('too large') || errMsg.includes('2 GB')) {
+                    setUploadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'error', error: errMsg } : i));
+                    toast.error(`Upload failed: Telegram has a 2 GB file size limit. Try splitting large folders.`);
                 } else {
                     setUploadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'error', error: errMsg } : i));
                     toast.error(`Upload failed for ${item.path.split('/').pop()}: ${e}`);
@@ -92,6 +110,8 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
             } else {
                 cancelledRef.current.delete(item.id);
             }
+            // Clean up temp zip even on failure
+            await cleanupTempZip(item);
         } finally {
             setProcessing(false);
         }
@@ -113,6 +133,40 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
             }
         } catch {
             toast.error("Failed to open file dialog");
+        }
+    };
+
+    const handleFolderUpload = async () => {
+        try {
+            const selected = await open({ multiple: false, directory: true, title: 'Select Folder to Upload' });
+            if (!selected) return;
+
+            const folderPath = Array.isArray(selected) ? selected[0] : selected;
+            if (!folderPath) return;
+
+            const folderName = folderPath.split('/').pop() || folderPath.split('\\').pop() || 'folder';
+
+            if (settings.zipFolders) {
+                toast.info(`Zipping "${folderName}"...`);
+                try {
+                    const zipPath = await invoke<string>('cmd_zip_folder', { folderPath });
+                    const item: QueueItem = {
+                        id: Math.random().toString(36).substr(2, 9),
+                        path: zipPath,
+                        folderId: activeFolderId,
+                        status: 'pending',
+                        tempZipPath: zipPath,
+                    };
+                    setUploadQueue(prev => [...prev, item]);
+                    toast.success(`Queued "${folderName}.zip" for upload`);
+                } catch (e) {
+                    toast.error(`Failed to zip folder: ${e}`);
+                }
+            } else {
+                toast.info(`Folder upload without zipping is not supported. Enable "Zip folders before upload" in Settings.`);
+            }
+        } catch {
+            toast.error("Failed to open folder dialog");
         }
     };
 
@@ -160,6 +214,7 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
         uploadQueue,
         setUploadQueue,
         handleManualUpload,
+        handleFolderUpload,
         cancelAll,
         cancelItem,
         retryItem,
