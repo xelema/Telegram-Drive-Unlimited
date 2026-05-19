@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.5.0] - 2026-05-19
+
+### Feature
+
+- **VPN Optimizer & Proxy Configuration** — Added robust support for toggling VPN mode to optimize network connection timeouts, retry limits, backoff delays, adaptive polling, flood wait handling, and peer caches. Fully integrated proxy configuration (SOCKS5 and MTProto) to allow custom routing and bypass geo-blocks.
+
+---
+
+## [1.4.2] - 2026-05-18
+
+### Feature
+
+- **Folder Upload with Automatic Zipping** — Support uploading entire folders directly, automatically compressing them into highly-optimized zip archives before transfer.
+
+---
+
 ## [1.1.7] - 2026-05-01
 
 ### Feature

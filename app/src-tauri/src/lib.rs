@@ -2,6 +2,7 @@ pub mod models;
 
 pub mod commands;
 pub mod bandwidth;
+pub mod vpn_optimizer;
 
 use tauri::Manager;
 use tokio::sync::Mutex;
@@ -139,6 +140,8 @@ pub fn run() {
             app.manage(ActixServerHandle(server_handle_for_setup.clone()));
             app.manage(ApiServerHandle(Arc::new(std::sync::Mutex::new(None))));
             app.manage(ApiServerRunning(Arc::new(std::sync::atomic::AtomicBool::new(false))));
+            let net_config = Arc::new(vpn_optimizer::NetworkConfig::new());
+            app.manage(net_config.clone());
             
             // Start Streaming Server on dedicated thread (Actix needs its own runtime)
             let state = Arc::new(app.state::<TelegramState>().inner().clone());
@@ -161,6 +164,30 @@ pub fn run() {
 
             // Start API server if enabled in settings
             restart_api_server(app.handle());
+
+            // Start VPN keep-alive background task
+            {
+                let ka_config = net_config.clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        let interval = ka_config.keep_alive_interval_sec();
+                        if interval == 0 {
+                            // Disabled — check again in 10s
+                            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                            continue;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(interval as u64)).await;
+                        // TCP ping to Telegram DC2 (best-effort)
+                        let _ = tauri::async_runtime::spawn_blocking(|| {
+                            use std::net::TcpStream;
+                            let _ = TcpStream::connect_timeout(
+                                &"149.154.167.50:443".parse().unwrap(),
+                                std::time::Duration::from_secs(5),
+                            );
+                        }).await;
+                    }
+                });
+            }
             
             Ok(())
         })
@@ -196,6 +223,11 @@ pub fn run() {
             commands::cmd_delete_image_thumbnail,
             commands::cmd_zip_folder,
             commands::cmd_delete_temp_zip,
+            commands::cmd_apply_proxy_settings,
+            commands::cmd_apply_vpn_settings,
+            commands::cmd_get_network_config,
+            commands::cmd_check_latency,
+            commands::cmd_detect_vpn,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

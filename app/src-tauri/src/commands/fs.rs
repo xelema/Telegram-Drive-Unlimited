@@ -6,6 +6,7 @@ use crate::TelegramState;
 use crate::models::{FolderMetadata, FileMetadata};
 use crate::bandwidth::BandwidthManager;
 use crate::commands::utils::{resolve_peer, map_error};
+use crate::vpn_optimizer::{NetworkConfig, backoff_ms};
 
 #[tauri::command]
 pub async fn cmd_create_folder(
@@ -193,6 +194,7 @@ pub async fn cmd_upload_file(
     app_handle: tauri::AppHandle,
     state: State<'_, TelegramState>,
     bw_state: State<'_, BandwidthManager>,
+    net_config: State<'_, NetworkConfig>,
 ) -> Result<String, String> {
     let size = std::fs::metadata(&path).map_err(|e| e.to_string())?.len();
     bw_state.can_transfer(size)?;
@@ -280,18 +282,50 @@ pub async fn cmd_upload_file(
 
     let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
 
-    client.send_message(&peer, message).await.map_err(map_error)?;
+    // VPN-aware retry logic for send_message
+    let max_retries = net_config.retry_attempts();
+    let base_ms = net_config.retry_base_backoff_ms();
+    let max_ms = net_config.retry_max_backoff_ms();
+    let respect_flood = net_config.should_respect_flood_wait();
+    let mut last_err = String::new();
 
-    bw_state.add_up(size);
+    for attempt in 0..=max_retries {
+        match client.send_message(&peer, message.clone()).await {
+            Ok(_) => {
+                bw_state.add_up(size);
+                if !tid.is_empty() {
+                    let _ = app_handle.emit("upload-progress", ProgressPayload {
+                        id: tid, percent: 100, uploaded_bytes: size, total_bytes: size, speed_bytes_per_sec: 0,
+                    });
+                }
+                return Ok("File uploaded successfully".to_string());
+            }
+            Err(e) => {
+                let err = map_error(e);
+                log::warn!("send_message attempt {}/{}: {}", attempt + 1, max_retries + 1, err);
 
-    // Emit completion
-    if !tid.is_empty() {
-        let _ = app_handle.emit("upload-progress", ProgressPayload {
-            id: tid, percent: 100, uploaded_bytes: size, total_bytes: size, speed_bytes_per_sec: 0,
-        });
+                // Handle FLOOD_WAIT: sleep the requested time if configured
+                if respect_flood && err.starts_with("FLOOD_WAIT_") {
+                    if let Ok(secs) = err.trim_start_matches("FLOOD_WAIT_").parse::<u64>() {
+                        let wait = secs.min(300); // cap at 5 min
+                        log::info!("Respecting FLOOD_WAIT: sleeping {}s", wait);
+                        tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                        last_err = err;
+                        continue;
+                    }
+                }
+
+                last_err = err;
+                if attempt < max_retries {
+                    let delay = backoff_ms(attempt, base_ms, max_ms);
+                    log::info!("Retrying in {}ms...", delay);
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                }
+            }
+        }
     }
 
-    Ok("File uploaded successfully".to_string())
+    Err(format!("Upload failed after {} attempts: {}", max_retries + 1, last_err))
 }
 
 #[tauri::command]
@@ -321,6 +355,7 @@ pub async fn cmd_download_file(
     app_handle: tauri::AppHandle,
     state: State<'_, TelegramState>,
     bw_state: State<'_, BandwidthManager>,
+    net_config: State<'_, NetworkConfig>,
 ) -> Result<String, String> {
     let tid = transfer_id.unwrap_or_default();
 
@@ -366,6 +401,7 @@ pub async fn cmd_download_file(
     let mut downloaded: u64 = 0;
     let mut last_emit_time = std::time::Instant::now();
     let mut last_emit_bytes: u64 = 0;
+    let mut chunk_retry_budget = net_config.retry_attempts();
 
     while let Some(chunk) = download_iter.next().await.transpose() {
         // Check cancellation
@@ -376,7 +412,23 @@ pub async fn cmd_download_file(
             return Err("Transfer cancelled".to_string());
         }
 
-        let bytes = chunk.map_err(|e| format!("Download chunk error: {}", e))?;
+        let bytes = match chunk {
+            Ok(b) => {
+                chunk_retry_budget = net_config.retry_attempts(); // reset on success
+                b
+            },
+            Err(e) => {
+                let err = map_error(&e);
+                if chunk_retry_budget > 0 {
+                    chunk_retry_budget -= 1;
+                    log::warn!("Download chunk error (retries left: {}): {}", chunk_retry_budget, err);
+                    let delay = backoff_ms(0, net_config.retry_base_backoff_ms(), net_config.retry_max_backoff_ms());
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                    continue;
+                }
+                return Err(format!("Download chunk error: {}", err));
+            }
+        };
         std::io::Write::write_all(&mut file, &bytes).map_err(|e| e.to_string())?;
         downloaded += bytes.len() as u64;
         
@@ -392,6 +444,19 @@ pub async fn cmd_download_file(
                 });
                 last_emit_time = now;
                 last_emit_bytes = downloaded;
+            }
+        }
+
+        // Bandwidth throttle: if download limit is set, sleep to maintain rate
+        let dl_limit = net_config.download_limit_bytes_per_sec();
+        if dl_limit > 0 {
+            let elapsed = last_emit_time.elapsed().as_secs_f64().max(0.001);
+            let current_rate = (downloaded - last_emit_bytes) as f64 / elapsed;
+            if current_rate > dl_limit as f64 {
+                let sleep_ms = ((current_rate / dl_limit as f64 - 1.0) * elapsed * 1000.0) as u64;
+                if sleep_ms > 0 && sleep_ms < 5000 {
+                    tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
+                }
             }
         }
     }

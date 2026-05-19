@@ -1,21 +1,121 @@
 use std::net::TcpStream;
 use std::time::Duration;
+use tauri::State;
+use crate::vpn_optimizer::NetworkConfig;
 
-/// Ultra-lightweight network check
-/// 
-/// Simply tries to connect to Telegram's servers without using grammers.
-/// This avoids the stack overflow bug from grammers reconnection logic.
+/// Telegram DC addresses for connectivity checks and fallback
+const DC_ADDRESSES: &[&str] = &[
+    "149.154.167.50:443",  // DC2
+    "149.154.175.53:443",  // DC1
+    "149.154.167.51:443",  // DC3
+    "149.154.167.91:443",  // DC4
+    "91.108.56.130:443",   // DC5
+];
+
+/// Network availability check that respects VPN optimizer settings.
+///
+/// - Uses the configured timeout multiplier when VPN mode is on
+/// - When proxy is active, checks proxy reachability instead
+/// - Tries multiple DCs when VPN fallback is enabled
 #[tauri::command]
-pub async fn cmd_is_network_available() -> Result<bool, String> {
-    // Try to connect to Telegram's production DC
-    // Using a very short timeout to keep it lightweight
+pub async fn cmd_is_network_available(
+    net_config: State<'_, NetworkConfig>,
+) -> Result<bool, String> {
+    let timeout_secs = net_config.connect_timeout_secs();
+    let is_proxy = net_config.is_proxy_active();
+    let proxy_addr = net_config.proxy_addr();
+    let dc_attempts = {
+        let vpn = net_config.vpn.read().map_err(|e| e.to_string())?;
+        if vpn.enabled { vpn.dc_fallback_attempts as usize } else { 1 }
+    };
+
+    tokio::task::spawn_blocking(move || {
+        let timeout = Duration::from_secs(timeout_secs);
+
+        // If proxy is active, check proxy reachability
+        if is_proxy {
+            if let Some(addr) = &proxy_addr {
+                if let Ok(sock_addr) = addr.parse() {
+                    return match TcpStream::connect_timeout(&sock_addr, timeout) {
+                        Ok(_) => Ok(true),
+                        Err(_) => Ok(false),
+                    };
+                }
+            }
+            return Ok(false);
+        }
+
+        // Try DCs (up to dc_attempts when VPN mode is on)
+        let attempts = dc_attempts.min(DC_ADDRESSES.len());
+        for dc in &DC_ADDRESSES[..attempts] {
+            if let Ok(addr) = dc.parse() {
+                if TcpStream::connect_timeout(&addr, timeout).is_ok() {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Measure TCP connect latency to the best Telegram DC.
+/// Returns latency in milliseconds, or -1 if unreachable.
+#[tauri::command]
+pub async fn cmd_check_latency(
+    net_config: State<'_, NetworkConfig>,
+) -> Result<i64, String> {
+    let timeout_secs = net_config.connect_timeout_secs();
+    let is_proxy = net_config.is_proxy_active();
+    let proxy_addr = net_config.proxy_addr();
+
+    tokio::task::spawn_blocking(move || {
+        let timeout = Duration::from_secs(timeout_secs);
+
+        // Target: proxy if active, else DC2
+        let target: String = if is_proxy {
+            proxy_addr.unwrap_or_else(|| DC_ADDRESSES[0].to_string())
+        } else {
+            DC_ADDRESSES[0].to_string()
+        };
+
+        let addr = match target.parse() {
+            Ok(a) => a,
+            Err(_) => return Ok(-1i64),
+        };
+
+        let start = std::time::Instant::now();
+        match TcpStream::connect_timeout(&addr, timeout) {
+            Ok(_) => {
+                let ms = start.elapsed().as_millis() as i64;
+                Ok(ms)
+            }
+            Err(_) => Ok(-1i64),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Detect VPN network interfaces on the system.
+/// Returns true if common VPN interfaces (tun, utun, wg, ppp, tap) are found.
+#[tauri::command]
+pub async fn cmd_detect_vpn() -> Result<bool, String> {
     tokio::task::spawn_blocking(|| {
-        // Try connecting to Telegram DC2 (149.154.167.50:443)
-        match TcpStream::connect_timeout(
-            &"149.154.167.50:443".parse().unwrap(),
-            Duration::from_secs(2),
-        ) {
-            Ok(_) => Ok(true),
+        // macOS: check for utun/tun/wg/ppp/tap interfaces via ifconfig
+        match std::process::Command::new("ifconfig")
+            .arg("-l")
+            .output()
+        {
+            Ok(output) => {
+                let ifaces = String::from_utf8_lossy(&output.stdout);
+                let vpn_prefixes = ["utun", "tun", "wg", "ppp", "tap", "ipsec"];
+                let found = ifaces.split_whitespace().any(|iface| {
+                    vpn_prefixes.iter().any(|prefix| iface.starts_with(prefix))
+                });
+                Ok(found)
+            }
             Err(_) => Ok(false),
         }
     })
