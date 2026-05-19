@@ -16,8 +16,32 @@ struct StreamQuery {
     token: Option<String>,
 }
 
+pub fn parse_range_header(header_val: &str, total_size: u64) -> Option<(u64, u64)> {
+    if !header_val.starts_with("bytes=") {
+        return None;
+    }
+    let s = &header_val["bytes=".len()..];
+    let parts: Vec<&str> = s.split('-').collect();
+    if parts.is_empty() {
+        return None;
+    }
+    let start = parts[0].trim().parse::<u64>().ok()?;
+    let end = if parts.len() > 1 && !parts[1].trim().is_empty() {
+        let parsed_end = parts[1].trim().parse::<u64>().ok()?;
+        std::cmp::min(parsed_end, total_size - 1)
+    } else {
+        total_size - 1
+    };
+    if start <= end {
+        Some((start, end))
+    } else {
+        None
+    }
+}
+
 #[get("/stream/{folder_id}/{message_id}")]
 async fn stream_media(
+    req: actix_web::HttpRequest,
     path: web::Path<(String, i32)>,
     query: web::Query<StreamQuery>,
     data: web::Data<Arc<TelegramState>>,
@@ -69,26 +93,99 @@ async fn stream_media(
                             if let Some(media) = msg.media() {
                                 log::debug!("Stream request: Message and media found for msg {}", message_id);
                                 let size = match &media {
-                                    Media::Document(d) => d.size(),
+                                    Media::Document(d) => d.size() as u64,
                                     Media::Photo(_) => 0, 
                                     _ => 0,
                                 };
                                 
                                 let mime = mime_type_from_media(&media);
-                                log::debug!("Stream request: Starting download for msg {} (mime: {}, size: {})", message_id, mime, size);
+                                
+                                // Parse Range header
+                                let mut start_byte = 0;
+                                let mut end_byte = if size > 0 { size - 1 } else { 0 };
+                                let mut is_range = false;
+
+                                if size > 0 {
+                                    if let Some(range_header) = req.headers().get(actix_web::http::header::RANGE) {
+                                        if let Ok(range_str) = range_header.to_str() {
+                                            if let Some((start, end)) = parse_range_header(range_str, size) {
+                                                start_byte = start;
+                                                end_byte = end;
+                                                is_range = true;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                let content_length = if is_range {
+                                    end_byte - start_byte + 1
+                                } else {
+                                    size
+                                };
+
+                                log::debug!(
+                                    "Stream request: Starting download for msg {} (mime: {}, size: {}, range: {}-{}, content_length: {})", 
+                                    message_id, mime, size, start_byte, end_byte, content_length
+                                );
                                 
                                 // Create chunk-streaming response
                                 let mut download_iter = client.iter_download(&media);
+                                let mut bytes_to_skip = 0;
+
+                                if start_byte > 0 {
+                                    const MIN_CHUNK_SIZE: i32 = 4096;
+                                    const MAX_CHUNK_SIZE: i32 = 512 * 1024;
+                                    let chunk_index = (start_byte / MIN_CHUNK_SIZE as u64) as i32;
+                                    download_iter = download_iter
+                                        .chunk_size(MIN_CHUNK_SIZE)
+                                        .skip_chunks(chunk_index)
+                                        .chunk_size(MAX_CHUNK_SIZE);
+                                    bytes_to_skip = (start_byte - (chunk_index as u64 * MIN_CHUNK_SIZE as u64)) as usize;
+                                }
+
                                 let stream = async_stream::stream! {
                                     let mut chunk_count = 0;
+                                    let mut skipped = 0;
+                                    let mut total_yielded = 0;
+
                                     while let Some(chunk) = download_iter.next().await.transpose() {
                                         match chunk {
-                                            Ok(bytes) => {
+                                            Ok(data) => {
                                                 chunk_count += 1;
                                                 if chunk_count % 100 == 0 {
                                                     log::debug!("Stream request: Streamed {} chunks for msg {}", chunk_count, message_id);
                                                 }
-                                                yield Ok::<_, actix_web::Error>(web::Bytes::from(bytes))
+
+                                                let mut data_slice = data;
+                                                
+                                                // Handle skipping of bytes for unaligned start
+                                                if skipped < bytes_to_skip {
+                                                    let to_skip = bytes_to_skip - skipped;
+                                                    if data_slice.len() <= to_skip {
+                                                        skipped += data_slice.len();
+                                                        continue;
+                                                    } else {
+                                                        data_slice = data_slice[to_skip..].to_vec();
+                                                        skipped = bytes_to_skip;
+                                                    }
+                                                }
+
+                                                // Handle limit (content_length)
+                                                if total_yielded + data_slice.len() as u64 > content_length {
+                                                    let allowed = (content_length - total_yielded) as usize;
+                                                    if allowed > 0 {
+                                                        yield Ok::<_, actix_web::Error>(web::Bytes::from(data_slice[..allowed].to_vec()));
+                                                        total_yielded += allowed as u64;
+                                                    }
+                                                    break;
+                                                } else {
+                                                    let len = data_slice.len() as u64;
+                                                    yield Ok::<_, actix_web::Error>(web::Bytes::from(data_slice));
+                                                    total_yielded += len;
+                                                    if total_yielded >= content_length {
+                                                        break;
+                                                    }
+                                                }
                                             },
                                             Err(e) => {
                                                 log::error!("Stream error on msg {}: {}", message_id, e);
@@ -96,15 +193,25 @@ async fn stream_media(
                                             }
                                         }
                                     }
-                                    log::debug!("Stream request: Stream completed for msg {} (total chunks: {})", message_id, chunk_count);
+                                    log::debug!("Stream request: Stream completed for msg {} (total chunks: {}, yielded: {})", message_id, chunk_count, total_yielded);
                                 };
                                 
-                                return HttpResponse::Ok()
-                                    .insert_header(("Content-Type", mime)) 
-                                    .insert_header(("Content-Length", size.to_string()))
-                                    .insert_header(("Accept-Ranges", "bytes"))
-                                    .insert_header(("Cache-Control", "private, max-age=120"))
-                                    .streaming(stream);
+                                if is_range {
+                                    return HttpResponse::PartialContent()
+                                        .insert_header(("Content-Type", mime))
+                                        .insert_header(("Content-Range", format!("bytes {}-{}/{}", start_byte, end_byte, size)))
+                                        .insert_header(("Content-Length", content_length.to_string()))
+                                        .insert_header(("Accept-Ranges", "bytes"))
+                                        .insert_header(("Cache-Control", "private, max-age=120"))
+                                        .streaming(stream);
+                                } else {
+                                    return HttpResponse::Ok()
+                                        .insert_header(("Content-Type", mime)) 
+                                        .insert_header(("Content-Length", size.to_string()))
+                                        .insert_header(("Accept-Ranges", "bytes"))
+                                        .insert_header(("Cache-Control", "private, max-age=120"))
+                                        .streaming(stream);
+                                }
                             } else {
                                 log::error!("Stream request failed: Media not found in message {}", message_id);
                             }

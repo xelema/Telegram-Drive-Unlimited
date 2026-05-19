@@ -194,7 +194,7 @@ pub async fn cmd_upload_file(
     app_handle: tauri::AppHandle,
     state: State<'_, TelegramState>,
     bw_state: State<'_, BandwidthManager>,
-    net_config: State<'_, NetworkConfig>,
+    net_config: State<'_, std::sync::Arc<NetworkConfig>>,
 ) -> Result<String, String> {
     let size = std::fs::metadata(&path).map_err(|e| e.to_string())?.len();
     bw_state.can_transfer(size)?;
@@ -264,18 +264,37 @@ pub async fn cmd_upload_file(
     }
 
     let client_clone = client.clone();
-    let upload_result = tokio::spawn(async move {
+    let mut upload_task = tokio::spawn(async move {
         client_clone.upload_stream(&mut reader, file_size as usize, file_name).await
-    }).await.map_err(|e| format!("Task join error: {}", e))?;
+    });
+
+    let upload_result = {
+        let cancelled_clone = state.cancelled_transfers.clone();
+        let tid_clone = tid.clone();
+        
+        tokio::select! {
+            res = &mut upload_task => {
+                res.map_err(|e| format!("Task join error: {}", e))?
+            }
+            _ = async {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    if cancelled_clone.read().await.contains(&tid_clone) {
+                        break;
+                    }
+                }
+            } => {
+                log::info!("Aborting upload task for transfer ID: {}", tid);
+                upload_task.abort();
+                state.cancelled_transfers.write().await.remove(&tid);
+                if let Some(t) = progress_task { t.abort(); }
+                return Err("Transfer cancelled".to_string());
+            }
+        }
+    };
 
     // Stop progress reporter
     if let Some(t) = progress_task { t.abort(); }
-
-    // Check cancellation after upload
-    if state.cancelled_transfers.read().await.contains(&tid) {
-        state.cancelled_transfers.write().await.remove(&tid);
-        return Err("Transfer cancelled".to_string());
-    }
 
     let uploaded_file = upload_result.map_err(map_error)?;
     let message = InputMessage::new().text("").file(uploaded_file);
@@ -355,7 +374,7 @@ pub async fn cmd_download_file(
     app_handle: tauri::AppHandle,
     state: State<'_, TelegramState>,
     bw_state: State<'_, BandwidthManager>,
-    net_config: State<'_, NetworkConfig>,
+    net_config: State<'_, std::sync::Arc<NetworkConfig>>,
 ) -> Result<String, String> {
     let tid = transfer_id.unwrap_or_default();
 
@@ -643,15 +662,15 @@ pub async fn cmd_scan_folders(
     
     log::info!("Starting Folder Scan...");
 
-    // Acquire write lock once for the entire scan to populate the peer cache
-    let mut peer_cache = state.peer_cache.write().await;
-
     while let Some(dialog) = dialogs.next().await.map_err(|e| e.to_string())? {
         // Populate peer cache for every dialog we encounter (free priming)
         match &dialog.peer {
             Peer::Channel(c) => {
                 let id = c.raw.id;
-                peer_cache.insert(id, dialog.peer.clone());
+                {
+                    let mut cache = state.peer_cache.write().await;
+                    cache.insert(id, dialog.peer.clone());
+                }
 
                 let name = c.raw.title.clone();
                 let access_hash = c.raw.access_hash.unwrap_or(0);
@@ -687,7 +706,10 @@ pub async fn cmd_scan_folders(
                 }
             },
             Peer::User(u) => {
-                peer_cache.insert(u.raw.id(), dialog.peer.clone());
+                {
+                    let mut cache = state.peer_cache.write().await;
+                    cache.insert(u.raw.id(), dialog.peer.clone());
+                }
                 log::debug!("[SCAN] Cached User Peer: {}", u.raw.id());
             },
             peer => {
@@ -696,7 +718,8 @@ pub async fn cmd_scan_folders(
         }
     }
     
-    log::info!("Scan complete. Found {} folders. Peer cache size: {}.", folders.len(), peer_cache.len());
+    let cache_len = state.peer_cache.read().await.len();
+    log::info!("Scan complete. Found {} folders. Peer cache size: {}.", folders.len(), cache_len);
     Ok(folders)
 }
 

@@ -140,7 +140,8 @@ pub fn run() {
             app.manage(ActixServerHandle(server_handle_for_setup.clone()));
             app.manage(ApiServerHandle(Arc::new(std::sync::Mutex::new(None))));
             app.manage(ApiServerRunning(Arc::new(std::sync::atomic::AtomicBool::new(false))));
-            let net_config = Arc::new(vpn_optimizer::NetworkConfig::new());
+            let loaded_config = vpn_optimizer::load_network_config(app.handle());
+            let net_config = Arc::new(vpn_optimizer::NetworkConfig::new_with_config(loaded_config));
             app.manage(net_config.clone());
             
             // Start Streaming Server on dedicated thread (Actix needs its own runtime)
@@ -258,21 +259,6 @@ pub fn run() {
             if let Some(handle) = api_handle {
                 log::info!("Stopping API server...");
                 drop(handle.stop(true));
-            }
-
-            // 4. Clear the thumbnail cache on quit
-            log::info!("Clearing thumbnail cache...");
-            if let Ok(data_dir) = app_handle.path().app_data_dir() {
-                let thumb_dir = data_dir.join("thumbnails");
-                if thumb_dir.exists() {
-                    let _ = std::fs::remove_dir_all(&thumb_dir);
-                }
-            }
-            if let Ok(cache_dir) = app_handle.path().app_cache_dir() {
-                let previews_dir = cache_dir.join("previews");
-                if previews_dir.exists() {
-                    let _ = std::fs::remove_dir_all(&previews_dir);
-                }
             }
         }
     });

@@ -202,24 +202,20 @@ pub async fn cmd_get_thumbnail(
         let _ = std::fs::create_dir_all(&cache_dir);
     }
 
-    // Check for any cached thumbnail for this message
-    // Look for existing cached file
-    if let Ok(entries) = std::fs::read_dir(&cache_dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with(&format!("{}.", message_id)) {
-                // Found cached thumbnail, return as base64
-                if let Ok(bytes) = std::fs::read(entry.path()) {
-                    let ext = name.rsplit('.').next().unwrap_or("jpg");
-                    let mime = match ext {
-                        "png" => "image/png",
-                        "gif" => "image/gif",
-                        "webp" => "image/webp",
-                        _ => "image/jpeg",
-                    };
-                    let b64 = general_purpose::STANDARD.encode(&bytes);
-                    return Ok(format!("data:{};base64,{}", mime, b64));
-                }
+    // Check for any cached thumbnail for this message by checking predicted paths
+    let supported_exts = ["jpg", "png", "gif", "webp"];
+    for ext in &supported_exts {
+        let path = cache_dir.join(format!("{}.{}", message_id, ext));
+        if path.exists() {
+            if let Ok(bytes) = std::fs::read(&path) {
+                let mime = match *ext {
+                    "png" => "image/png",
+                    "gif" => "image/gif",
+                    "webp" => "image/webp",
+                    _ => "image/jpeg",
+                };
+                let b64 = general_purpose::STANDARD.encode(&bytes);
+                return Ok(format!("data:{};base64,{}", mime, b64));
             }
         }
     }
@@ -293,12 +289,11 @@ pub async fn cmd_delete_image_thumbnail(
         .map_err(|e: tauri::Error| e.to_string())?
         .join("thumbnails");
         
-    if let Ok(entries) = std::fs::read_dir(&cache_dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with(&format!("{}.", message_id)) {
-                let _ = std::fs::remove_file(entry.path());
-            }
+    let supported_exts = ["jpg", "png", "gif", "webp"];
+    for ext in &supported_exts {
+        let path = cache_dir.join(format!("{}.{}", message_id, ext));
+        if path.exists() {
+            let _ = std::fs::remove_file(path);
         }
     }
     Ok(())

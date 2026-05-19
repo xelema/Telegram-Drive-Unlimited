@@ -73,6 +73,7 @@ struct FilesQuery {
     page: Option<u32>,
     limit: Option<u32>,
     search: Option<String>,
+    offset_id: Option<i32>,
 }
 
 #[derive(Serialize)]
@@ -115,9 +116,29 @@ async fn api_list_files(
         Err(e) => return json_error("PEER_ERROR", &e, 400),
     };
 
-    let mut all_files: Vec<ApiFile> = Vec::new();
-    let mut msgs = client.iter_messages(&peer);
+    let page = query.page.unwrap_or(1).max(1);
+    let limit = query.limit.unwrap_or(50).min(200).max(1);
 
+    let mut msgs = client.iter_messages(&peer);
+    if let Some(offset_id) = query.offset_id {
+        msgs = msgs.offset_id(offset_id);
+    }
+
+    // Apply API-level limit to prevent fetching the entire history.
+    if query.search.is_none() {
+        if query.offset_id.is_some() {
+            // With offset_id, we only need to fetch enough messages to get `limit` files.
+            msgs = msgs.limit(limit as usize * 2);
+        } else {
+            // Traditional page-based offset.
+            msgs = msgs.limit(page as usize * limit as usize * 2);
+        }
+    } else {
+        // If there's a search, we cap it at a reasonable maximum to avoid infinite loops.
+        msgs = msgs.limit(2000);
+    }
+
+    let mut all_files: Vec<ApiFile> = Vec::new();
     while let Some(msg) = msgs.next().await.ok().flatten() {
         if let Some(doc) = msg.media() {
             let (name, size, mime) = match doc {
@@ -147,10 +168,12 @@ async fn api_list_files(
     }
 
     let total = all_files.len();
-    let page = query.page.unwrap_or(1).max(1);
-    let limit = query.limit.unwrap_or(50).min(200).max(1);
-    let start = ((page - 1) * limit) as usize;
-    let paginated: Vec<ApiFile> = all_files.into_iter().skip(start).take(limit as usize).collect();
+    let paginated: Vec<ApiFile> = if query.offset_id.is_some() {
+        all_files.into_iter().take(limit as usize).collect()
+    } else {
+        let start = ((page - 1) * limit) as usize;
+        all_files.into_iter().skip(start).take(limit as usize).collect()
+    };
 
     HttpResponse::Ok().json(FilesResponse {
         files: paginated,
@@ -245,7 +268,7 @@ async fn api_download_file(
             if let Some(Some(msg)) = messages.first() {
                 if let Some(media) = msg.media() {
                     let size = match &media {
-                        Media::Document(d) => d.size(),
+                        Media::Document(d) => d.size() as u64,
                         _ => 0,
                     };
                     let mime = match &media {
@@ -258,25 +281,106 @@ async fn api_download_file(
                         _ => "download".to_string(),
                     };
 
+                    // Parse Range header
+                    let mut start_byte = 0;
+                    let mut end_byte = if size > 0 { size - 1 } else { 0 };
+                    let mut is_range = false;
+
+                    if size > 0 {
+                        if let Some(range_header) = req.headers().get(actix_web::http::header::RANGE) {
+                            if let Ok(range_str) = range_header.to_str() {
+                                if let Some((start, end)) = crate::server::parse_range_header(range_str, size) {
+                                    start_byte = start;
+                                    end_byte = end;
+                                    is_range = true;
+                                }
+                            }
+                        }
+                    }
+
+                    let content_length = if is_range {
+                        end_byte - start_byte + 1
+                    } else {
+                        size
+                    };
+
                     let mut download_iter = client.iter_download(&media);
+                    let mut bytes_to_skip = 0;
+
+                    if start_byte > 0 {
+                        const MIN_CHUNK_SIZE: i32 = 4096;
+                        const MAX_CHUNK_SIZE: i32 = 512 * 1024;
+                        let chunk_index = (start_byte / MIN_CHUNK_SIZE as u64) as i32;
+                        download_iter = download_iter
+                            .chunk_size(MIN_CHUNK_SIZE)
+                            .skip_chunks(chunk_index)
+                            .chunk_size(MAX_CHUNK_SIZE);
+                        bytes_to_skip = (start_byte - (chunk_index as u64 * MIN_CHUNK_SIZE as u64)) as usize;
+                    }
+
                     let stream = async_stream::stream! {
+                        let mut skipped = 0;
+                        let mut total_yielded = 0;
+
                         while let Some(chunk) = download_iter.next().await.transpose() {
                             match chunk {
-                                Ok(bytes) => yield Ok::<_, actix_web::Error>(web::Bytes::from(bytes)),
+                                Ok(data) => {
+                                    let mut data_slice = data;
+                                    
+                                    // Handle skipping of bytes for unaligned start
+                                    if skipped < bytes_to_skip {
+                                        let to_skip = bytes_to_skip - skipped;
+                                        if data_slice.len() <= to_skip {
+                                            skipped += data_slice.len();
+                                            continue;
+                                        } else {
+                                            data_slice = data_slice[to_skip..].to_vec();
+                                            skipped = bytes_to_skip;
+                                        }
+                                    }
+
+                                    // Handle limit (content_length)
+                                    if total_yielded + data_slice.len() as u64 > content_length {
+                                        let allowed = (content_length - total_yielded) as usize;
+                                        if allowed > 0 {
+                                            yield Ok::<_, actix_web::Error>(web::Bytes::from(data_slice[..allowed].to_vec()));
+                                            total_yielded += allowed as u64;
+                                        }
+                                        break;
+                                    } else {
+                                        let len = data_slice.len() as u64;
+                                        yield Ok::<_, actix_web::Error>(web::Bytes::from(data_slice));
+                                        total_yielded += len;
+                                        if total_yielded >= content_length {
+                                            break;
+                                        }
+                                    }
+                                }
                                 Err(e) => {
                                     log::error!("API download stream error: {}", e);
                                     break;
                                 }
                             }
                         }
+                        log::debug!("API download request: Stream completed for msg {} (yielded: {})", message_id, total_yielded);
                     };
 
-                    return HttpResponse::Ok()
-                        .insert_header(("Content-Type", mime))
-                        .insert_header(("Content-Length", size.to_string()))
-                        .insert_header(("Content-Disposition", format!("attachment; filename=\"{}\"", filename)))
-                        .insert_header(("Accept-Ranges", "bytes"))
-                        .streaming(stream);
+                    if is_range {
+                        return HttpResponse::PartialContent()
+                            .insert_header(("Content-Type", mime))
+                            .insert_header(("Content-Range", format!("bytes {}-{}/{}", start_byte, end_byte, size)))
+                            .insert_header(("Content-Length", content_length.to_string()))
+                            .insert_header(("Content-Disposition", format!("attachment; filename=\"{}\"", filename)))
+                            .insert_header(("Accept-Ranges", "bytes"))
+                            .streaming(stream);
+                    } else {
+                        return HttpResponse::Ok()
+                            .insert_header(("Content-Type", mime))
+                            .insert_header(("Content-Length", size.to_string()))
+                            .insert_header(("Content-Disposition", format!("attachment; filename=\"{}\"", filename)))
+                            .insert_header(("Accept-Ranges", "bytes"))
+                            .streaming(stream);
+                    }
                 }
             }
             json_error("NOT_FOUND", "File not found", 404)

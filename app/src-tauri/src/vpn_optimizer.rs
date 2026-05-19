@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::sync::RwLock;
+use tauri::Manager;
 
 /// Proxy configuration received from the frontend
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,6 +98,13 @@ impl NetworkConfig {
         Self {
             proxy: RwLock::new(ProxyConfig::default()),
             vpn: RwLock::new(VpnConfig::default()),
+        }
+    }
+
+    pub fn new_with_config(config: NetworkConfigSnapshot) -> Self {
+        Self {
+            proxy: RwLock::new(config.proxy),
+            vpn: RwLock::new(config.vpn),
         }
     }
 
@@ -220,4 +228,36 @@ pub fn backoff_ms(attempt: u32, base_ms: u64, max_ms: u64) -> u64 {
     // Add ~25% jitter
     let jitter = (capped as f64 * 0.25 * rand::random::<f64>()) as u64;
     capped + jitter
+}
+
+fn settings_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("network_settings.json"))
+}
+
+pub fn load_network_config(app: &tauri::AppHandle) -> NetworkConfigSnapshot {
+    let path = match settings_path(app) {
+        Ok(p) => p,
+        Err(_) => return NetworkConfigSnapshot {
+            proxy: ProxyConfig::default(),
+            vpn: VpnConfig::default(),
+        },
+    };
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => serde_json::from_str(&contents).unwrap_or_else(|_| NetworkConfigSnapshot {
+            proxy: ProxyConfig::default(),
+            vpn: VpnConfig::default(),
+        }),
+        Err(_) => NetworkConfigSnapshot {
+            proxy: ProxyConfig::default(),
+            vpn: VpnConfig::default(),
+        },
+    }
+}
+
+pub fn save_network_config(app: &tauri::AppHandle, config: &NetworkConfigSnapshot) -> Result<(), String> {
+    let path = settings_path(app)?;
+    let json = serde_json::to_string_pretty(config).map_err(|e| e.to_string())?;
+    std::fs::write(path, json).map_err(|e| e.to_string())
 }

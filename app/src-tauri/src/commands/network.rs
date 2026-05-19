@@ -19,7 +19,7 @@ const DC_ADDRESSES: &[&str] = &[
 /// - Tries multiple DCs when VPN fallback is enabled
 #[tauri::command]
 pub async fn cmd_is_network_available(
-    net_config: State<'_, NetworkConfig>,
+    net_config: State<'_, std::sync::Arc<NetworkConfig>>,
 ) -> Result<bool, String> {
     let timeout_secs = net_config.connect_timeout_secs();
     let is_proxy = net_config.is_proxy_active();
@@ -64,7 +64,7 @@ pub async fn cmd_is_network_available(
 /// Returns latency in milliseconds, or -1 if unreachable.
 #[tauri::command]
 pub async fn cmd_check_latency(
-    net_config: State<'_, NetworkConfig>,
+    net_config: State<'_, std::sync::Arc<NetworkConfig>>,
 ) -> Result<i64, String> {
     let timeout_secs = net_config.connect_timeout_secs();
     let is_proxy = net_config.is_proxy_active();
@@ -103,20 +103,68 @@ pub async fn cmd_check_latency(
 #[tauri::command]
 pub async fn cmd_detect_vpn() -> Result<bool, String> {
     tokio::task::spawn_blocking(|| {
-        // macOS: check for utun/tun/wg/ppp/tap interfaces via ifconfig
-        match std::process::Command::new("ifconfig")
-            .arg("-l")
-            .output()
+        #[cfg(target_os = "macos")]
         {
-            Ok(output) => {
-                let ifaces = String::from_utf8_lossy(&output.stdout);
-                let vpn_prefixes = ["utun", "tun", "wg", "ppp", "tap", "ipsec"];
-                let found = ifaces.split_whitespace().any(|iface| {
-                    vpn_prefixes.iter().any(|prefix| iface.starts_with(prefix))
-                });
-                Ok(found)
+            // macOS: check for utun/tun/wg/ppp/tap/ipsec interfaces via ifconfig
+            match std::process::Command::new("ifconfig")
+                .arg("-l")
+                .output()
+            {
+                Ok(output) => {
+                    let ifaces = String::from_utf8_lossy(&output.stdout);
+                    let vpn_prefixes = ["utun", "tun", "wg", "ppp", "tap", "ipsec"];
+                    let found = ifaces.split_whitespace().any(|iface| {
+                        vpn_prefixes.iter().any(|prefix| iface.starts_with(prefix))
+                    });
+                    Ok(found)
+                }
+                Err(_) => Ok(false),
             }
-            Err(_) => Ok(false),
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            // Linux: inspect /sys/class/net to find interface names without executing shell commands
+            if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
+                let vpn_prefixes = ["tun", "tap", "wg", "ppp", "utun", "ipsec"];
+                let mut found = false;
+                for entry in entries.flatten() {
+                    if let Some(name) = entry.file_name().to_str() {
+                        if vpn_prefixes.iter().any(|prefix| name.starts_with(prefix)) {
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+                Ok(found)
+            } else {
+                Ok(false)
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            // Windows: run ipconfig and check output for common VPN adapter keywords
+            match std::process::Command::new("ipconfig")
+                .output()
+            {
+                Ok(output) => {
+                    let stdout = String::from_utf8_lossy(&output.stdout).to_lowercase();
+                    let vpn_keywords = [
+                        "tap-windows", "tunnel", "wireguard", "openvpn",
+                        "fortinet", "cisco", "tailscale", "zerotier", "ipsec"
+                    ];
+                    let found = vpn_keywords.iter().any(|kw| stdout.contains(kw));
+                    Ok(found)
+                }
+                Err(_) => Ok(false),
+            }
+        }
+
+        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+        {
+            // Fallback for other systems
+            Ok(false)
         }
     })
     .await

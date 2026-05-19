@@ -15,7 +15,8 @@ pub async fn cmd_apply_proxy_settings(
     username: String,
     password: String,
     secret: String,
-    net_config: State<'_, NetworkConfig>,
+    net_config: State<'_, std::sync::Arc<NetworkConfig>>,
+    app: tauri::AppHandle,
 ) -> Result<String, String> {
     let config = ProxyConfig {
         enabled,
@@ -33,6 +34,11 @@ pub async fn cmd_apply_proxy_settings(
     );
 
     *net_config.proxy.write().map_err(|e| e.to_string())? = config;
+
+    let snapshot = net_config.snapshot();
+    if let Err(e) = crate::vpn_optimizer::save_network_config(&app, &snapshot) {
+        log::error!("Failed to save proxy settings to disk: {}", e);
+    }
 
     Ok("Proxy settings applied".into())
 }
@@ -58,7 +64,8 @@ pub async fn cmd_apply_vpn_settings(
     chunk_size_kb: u32,
     keep_alive_interval_sec: u32,
     auto_detect_vpn: bool,
-    net_config: State<'_, NetworkConfig>,
+    net_config: State<'_, std::sync::Arc<NetworkConfig>>,
+    app: tauri::AppHandle,
 ) -> Result<String, String> {
     let config = VpnConfig {
         enabled,
@@ -87,13 +94,18 @@ pub async fn cmd_apply_vpn_settings(
 
     *net_config.vpn.write().map_err(|e| e.to_string())? = config;
 
+    let snapshot = net_config.snapshot();
+    if let Err(e) = crate::vpn_optimizer::save_network_config(&app, &snapshot) {
+        log::error!("Failed to save VPN settings to disk: {}", e);
+    }
+
     Ok("VPN settings applied".into())
 }
 
 /// Get current network configuration snapshot (called on startup / settings load).
 #[tauri::command]
 pub async fn cmd_get_network_config(
-    net_config: State<'_, NetworkConfig>,
+    net_config: State<'_, std::sync::Arc<NetworkConfig>>,
 ) -> Result<NetworkConfigSnapshot, String> {
     Ok(net_config.snapshot())
 }
