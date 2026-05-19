@@ -36,6 +36,8 @@ Telegram Drive leverages the Telegram API to allow you to upload, organize, and 
 *   **Thumbnail Previews**: Inline thumbnails for images and media files.
 *   **Folder Management**: Create "Folders" (private Telegram Channels) to organize content.
 *   **REST API for AI Integration**: Secure local API (off by default) with configurable port and API key auth. OpenAPI spec for seamless LLM and tool integration.
+*   **Proxy Support**: Native integration for SOCKS5 and MTProto proxies to bypass regional restrictions and secure your traffic.
+*   **VPN Optimizer**: Aggressive network tuning including bandwidth throttling, adjustable transfer chunk sizing, and adaptive keep-alives to ensure maximum stability on high-latency connections.
 *   **Privacy Focused**: API keys and data stay local. No third-party servers.
 *   **Cross-Platform**: Native apps for macOS (Intel/ARM), Windows, and Linux.
 
