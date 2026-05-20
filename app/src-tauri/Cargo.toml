@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "1.5.4"
+version = "1.5.5"
 description = "Turn your Telegram account into an unlimited, secure cloud storage drive. an Open-source desktop app built with Tauri, Rust, and React."
 authors = ["Cameron Amer"]
 edition = "2021"
@@ -20,9 +20,9 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-grammers-client = { git = "https://github.com/Lonami/grammers", rev = "d07f96f" }
+grammers-client = { git = "https://github.com/Lonami/grammers", rev = "d07f96f", features = ["proxy"] }
 grammers-session = { git = "https://github.com/Lonami/grammers", rev = "d07f96f" }
-grammers-mtsender = { git = "https://github.com/Lonami/grammers", rev = "d07f96f" }
+grammers-mtsender = { git = "https://github.com/Lonami/grammers", rev = "d07f96f", features = ["proxy"] }
 grammers-tl-types = { git = "https://github.com/Lonami/grammers", rev = "d07f96f" }
 tokio = { version = "1", features = ["full"] }
 
