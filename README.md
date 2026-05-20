@@ -1,7 +1,3 @@
-# Telegram Drive 
-
-**Telegram Drive** is an open-source, cross-platform desktop application that turns your Telegram account into an unlimited, secure cloud storage drive. Built with **Tauri**, **Rust**, and **React**.
-
 # Telegram Drive
 
 **Telegram Drive** is an open-source, cross-platform desktop application that turns
