@@ -9,33 +9,35 @@ use crate::commands::utils::resolve_peer;
 const PREVIEW_CACHE_MAX_FILES: usize = 30;
 const PREVIEW_CACHE_MAX_TOTAL_BYTES: u64 = 80 * 1024 * 1024;
 
-fn prune_preview_cache(cache_dir: &std::path::Path) {
-    let read_dir = match std::fs::read_dir(cache_dir) {
-        Ok(entries) => entries,
-        Err(_) => return,
-    };
-    let mut files: Vec<(std::path::PathBuf, std::time::SystemTime, u64)> = Vec::new();
-    for entry in read_dir.flatten() {
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
+async fn prune_preview_cache(cache_dir: std::path::PathBuf) {
+    let _ = tokio::task::spawn_blocking(move || {
+        let read_dir = match std::fs::read_dir(&cache_dir) {
+            Ok(entries) => entries,
+            Err(_) => return,
+        };
+        let mut files: Vec<(std::path::PathBuf, std::time::SystemTime, u64)> = Vec::new();
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            if let Ok(meta) = entry.metadata() {
+                let modified = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                files.push((path, modified, meta.len()));
+            }
         }
-        if let Ok(meta) = entry.metadata() {
-            let modified = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-            files.push((path, modified, meta.len()));
+        files.sort_by_key(|(_, modified, _)| *modified);
+        let mut total_bytes: u64 = files.iter().map(|(_, _, len)| *len).sum();
+        while files.len() > PREVIEW_CACHE_MAX_FILES || total_bytes > PREVIEW_CACHE_MAX_TOTAL_BYTES {
+            if let Some((path, _, len)) = files.first().cloned() {
+                let _ = std::fs::remove_file(&path);
+                total_bytes = total_bytes.saturating_sub(len);
+                files.remove(0);
+            } else {
+                break;
+            }
         }
-    }
-    files.sort_by_key(|(_, modified, _)| *modified);
-    let mut total_bytes: u64 = files.iter().map(|(_, _, len)| *len).sum();
-    while files.len() > PREVIEW_CACHE_MAX_FILES || total_bytes > PREVIEW_CACHE_MAX_TOTAL_BYTES {
-        if let Some((path, _, len)) = files.first().cloned() {
-            let _ = std::fs::remove_file(&path);
-            total_bytes = total_bytes.saturating_sub(len);
-            files.remove(0);
-        } else {
-            break;
-        }
-    }
+    }).await;
 }
 
 #[tauri::command]
@@ -51,10 +53,10 @@ pub async fn cmd_get_preview(
         .app_cache_dir()
         .map_err(|e: tauri::Error| e.to_string())?
         .join("previews");
-    if !cache_dir.exists() {
-        let _ = std::fs::create_dir_all(&cache_dir);
+    if tokio::fs::metadata(&cache_dir).await.is_err() {
+        let _ = tokio::fs::create_dir_all(&cache_dir).await;
     }
-    prune_preview_cache(&cache_dir);
+    prune_preview_cache(cache_dir.clone()).await;
     log::info!("Using preview cache dir: {:?}", cache_dir);
     log::info!("Preview Request: msg_id={}", message_id);
     let client_opt = { state.client.lock().await.clone() };
@@ -99,7 +101,7 @@ pub async fn cmd_get_preview(
             let save_path = cache_dir.join(format!("{}_{}.{}", folder_key, message_id, ext));
             let save_path_str = save_path.to_string_lossy().to_string();
 
-            let file_ready = if save_path.exists() {
+            let file_ready = if tokio::fs::metadata(&save_path).await.is_ok() {
                 log::info!("File ({}) exists in cache.", message_id);
                 true
             } else {
@@ -117,7 +119,7 @@ pub async fn cmd_get_preview(
                         Ok(_) => {
                             log::info!("Preview download complete.");
                             bw_state.add_down(size);
-                            prune_preview_cache(&cache_dir);
+                            prune_preview_cache(cache_dir.clone()).await;
                             true
                         },
                         Err(e) => {
@@ -131,7 +133,7 @@ pub async fn cmd_get_preview(
                 let lower_ext = ext.to_lowercase();
                 if ["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"].contains(&lower_ext.as_str()) {
                     log::info!("Converting image to Base64...");
-                    match std::fs::read(&save_path) {
+                    match tokio::fs::read(&save_path).await {
                         Ok(bytes) => {
                             let b64 = general_purpose::STANDARD.encode(&bytes);
                             let mime = match lower_ext.as_str() {
@@ -167,18 +169,20 @@ pub async fn cmd_clean_cache(
         .app_cache_dir()
         .map_err(|e: tauri::Error| e.to_string())?
         .join("previews");
-    if cache_dir.exists() {
-        let _ = std::fs::remove_dir_all(cache_dir);
-    }
-
     let thumb_dir = app_handle
         .path()
         .app_data_dir()
         .map_err(|e: tauri::Error| e.to_string())?
         .join("thumbnails");
-    if thumb_dir.exists() {
-        let _ = std::fs::remove_dir_all(thumb_dir);
-    }
+
+    let _ = tokio::task::spawn_blocking(move || {
+        if cache_dir.exists() {
+            let _ = std::fs::remove_dir_all(cache_dir);
+        }
+        if thumb_dir.exists() {
+            let _ = std::fs::remove_dir_all(thumb_dir);
+        }
+    }).await;
     Ok(())
 }
 
@@ -198,16 +202,16 @@ pub async fn cmd_get_thumbnail(
         .app_data_dir()
         .map_err(|e: tauri::Error| e.to_string())?
         .join("thumbnails");
-    if !cache_dir.exists() {
-        let _ = std::fs::create_dir_all(&cache_dir);
+    if tokio::fs::metadata(&cache_dir).await.is_err() {
+        let _ = tokio::fs::create_dir_all(&cache_dir).await;
     }
 
     // Check for any cached thumbnail for this message by checking predicted paths
     let supported_exts = ["jpg", "png", "gif", "webp"];
     for ext in &supported_exts {
         let path = cache_dir.join(format!("{}.{}", message_id, ext));
-        if path.exists() {
-            if let Ok(bytes) = std::fs::read(&path) {
+        if tokio::fs::metadata(&path).await.is_ok() {
+            if let Ok(bytes) = tokio::fs::read(&path).await {
                 let mime = match *ext {
                     "png" => "image/png",
                     "gif" => "image/gif",
@@ -258,9 +262,20 @@ pub async fn cmd_get_thumbnail(
                 let save_path = cache_dir.join(format!("{}.{}", message_id, ext));
                 let save_path_str = save_path.to_string_lossy().to_string();
 
-                // Download the thumbnail/photo
-                if client.download_media(&media, &save_path_str).await.is_ok() {
-                    if let Ok(bytes) = std::fs::read(&save_path) {
+                let thumbs = match &media {
+                    Media::Photo(p) => p.thumbs(),
+                    Media::Document(d) => d.thumbs(),
+                    _ => vec![],
+                };
+
+                let download_success = if let Some(thumb) = thumbs.iter().filter(|t| t.size() > 0).min_by_key(|t| t.size()) {
+                    client.download_media(thumb, &save_path_str).await.is_ok()
+                } else {
+                    client.download_media(&media, &save_path_str).await.is_ok()
+                };
+
+                if download_success {
+                    if let Ok(bytes) = tokio::fs::read(&save_path).await {
                         let mime = match ext.as_str() {
                             "png" => "image/png",
                             "gif" => "image/gif",
@@ -289,12 +304,14 @@ pub async fn cmd_delete_image_thumbnail(
         .map_err(|e: tauri::Error| e.to_string())?
         .join("thumbnails");
         
-    let supported_exts = ["jpg", "png", "gif", "webp"];
-    for ext in &supported_exts {
-        let path = cache_dir.join(format!("{}.{}", message_id, ext));
-        if path.exists() {
-            let _ = std::fs::remove_file(path);
+    let _ = tokio::task::spawn_blocking(move || {
+        let supported_exts = ["jpg", "png", "gif", "webp"];
+        for ext in &supported_exts {
+            let path = cache_dir.join(format!("{}.{}", message_id, ext));
+            if path.exists() {
+                let _ = std::fs::remove_file(path);
+            }
         }
-    }
+    }).await;
     Ok(())
 }

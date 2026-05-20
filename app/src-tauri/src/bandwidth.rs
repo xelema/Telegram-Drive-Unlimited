@@ -60,10 +60,8 @@ impl BandwidthManager {
             stats.date = today;
             stats.up_bytes = 0;
             stats.down_bytes = 0;
-            // Save immediately
-            drop(stats); // Release lock before calling save if save uses lock (it doesn't, but self.save_locked needs the data)
-            // Actually save_locked takes &stats, so we keep lock.
-            if let Ok(json) = serde_json::to_string(&self.stats.lock().unwrap().clone()) { let _ = fs::write(&self.file_path, json); }
+            // Save immediately using the existing locked stats reference
+            self.save_locked(&stats);
         }
     }
 
@@ -93,7 +91,10 @@ impl BandwidthManager {
 
     fn save_locked(&self, stats: &BandwidthStats) {
         if let Ok(json) = serde_json::to_string(stats) {
-            let _ = fs::write(&self.file_path, json);
+            let file_path = self.file_path.clone();
+            tokio::task::spawn_blocking(move || {
+                let _ = fs::write(file_path, json);
+            });
         }
     }
     

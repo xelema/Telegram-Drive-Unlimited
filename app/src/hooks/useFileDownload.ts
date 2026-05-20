@@ -73,7 +73,7 @@ export function useFileDownload(store: Store | null) {
         setDownloadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'downloading', progress: 0 } : i));
 
         try {
-            const savePath = await save({ defaultPath: item.filename });
+            const savePath = item.savePath || await save({ defaultPath: item.filename });
             if (!savePath) {
                 setDownloadQueue(q => q.filter(i => i.id !== item.id));
                 setProcessing(false);
@@ -129,16 +129,17 @@ export function useFileDownload(store: Store | null) {
         });
         if (!dirPath) return;
 
-        for (const file of files) {
-            const newItem: DownloadItem = {
-                id: Math.random().toString(36).substr(2, 9),
-                messageId: file.id,
-                filename: file.name,
-                folderId,
-                status: 'pending'
-            };
-            setDownloadQueue(prev => [...prev, newItem]);
-        }
+        const separator = dirPath.includes('\\') ? '\\' : '/';
+        const newItems: DownloadItem[] = files.map(file => ({
+            id: Math.random().toString(36).substr(2, 9),
+            messageId: file.id,
+            filename: file.name,
+            folderId,
+            status: 'pending' as const,
+            savePath: dirPath.endsWith(separator) ? `${dirPath}${file.name}` : `${dirPath}${separator}${file.name}`
+        }));
+
+        setDownloadQueue(prev => [...prev, ...newItems]);
 
         toast.info(`Queued ${files.length} files for download`);
     };

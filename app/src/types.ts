@@ -43,5 +43,6 @@ export interface DownloadItem {
     uploadedBytes?: number;
     totalBytes?: number;
     speedBytesPerSec?: number;
+    savePath?: string;
 }
 

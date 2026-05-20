@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Eye, HardDrive, Trash2, FolderOpen, Pencil, Play, FileText } from 'lucide-react';
 import { TelegramFile } from '../../types';
 import { isMediaFile, isPdfFile } from '../../utils';
@@ -18,7 +18,7 @@ export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPrevi
     const menuRef = useRef<HTMLDivElement>(null);
 
     // Adjust position to stay in bounds
-    useEffect(() => {
+    useLayoutEffect(() => {
         if (menuRef.current) {
             const rect = menuRef.current.getBoundingClientRect();
             let newX = x;

@@ -7,6 +7,16 @@ use crate::models::{FolderMetadata, FileMetadata};
 use crate::bandwidth::BandwidthManager;
 use crate::commands::utils::{resolve_peer, map_error};
 use crate::vpn_optimizer::{NetworkConfig, backoff_ms};
+use std::collections::HashMap;
+use std::sync::OnceLock;
+use std::sync::Mutex;
+use tokio::sync::oneshot;
+
+static UPLOAD_CANCELLATIONS: OnceLock<Mutex<HashMap<String, oneshot::Sender<()>>>> = OnceLock::new();
+
+fn get_upload_cancellations() -> &'static Mutex<HashMap<String, oneshot::Sender<()>>> {
+    UPLOAD_CANCELLATIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 #[tauri::command]
 pub async fn cmd_create_folder(
@@ -182,7 +192,10 @@ pub async fn cmd_cancel_transfer(
     state: State<'_, TelegramState>,
 ) -> Result<bool, String> {
     log::info!("Cancelling transfer: {}", transfer_id);
-    state.cancelled_transfers.write().await.insert(transfer_id);
+    state.cancelled_transfers.write().await.insert(transfer_id.clone());
+    if let Some(tx) = get_upload_cancellations().lock().unwrap().remove(&transfer_id) {
+        let _ = tx.send(());
+    }
     Ok(true)
 }
 
@@ -196,7 +209,7 @@ pub async fn cmd_upload_file(
     bw_state: State<'_, BandwidthManager>,
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
 ) -> Result<String, String> {
-    let size = std::fs::metadata(&path).map_err(|e| e.to_string())?.len();
+    let size = tokio::fs::metadata(&path).await.map_err(|e| e.to_string())?.len();
     bw_state.can_transfer(size)?;
 
     let tid = transfer_id.unwrap_or_default();
@@ -263,27 +276,25 @@ pub async fn cmd_upload_file(
         return Err("Transfer cancelled".to_string());
     }
 
+    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+    if !tid.is_empty() {
+        get_upload_cancellations().lock().unwrap().insert(tid.clone(), cancel_tx);
+    }
+
     let client_clone = client.clone();
     let mut upload_task = tokio::spawn(async move {
         client_clone.upload_stream(&mut reader, file_size as usize, file_name).await
     });
 
     let upload_result = {
-        let cancelled_clone = state.cancelled_transfers.clone();
-        let tid_clone = tid.clone();
-        
         tokio::select! {
             res = &mut upload_task => {
+                if !tid.is_empty() {
+                    get_upload_cancellations().lock().unwrap().remove(&tid);
+                }
                 res.map_err(|e| format!("Task join error: {}", e))?
             }
-            _ = async {
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                    if cancelled_clone.read().await.contains(&tid_clone) {
-                        break;
-                    }
-                }
-            } => {
+            _ = cancel_rx => {
                 log::info!("Aborting upload task for transfer ID: {}", tid);
                 upload_task.abort();
                 state.cancelled_transfers.write().await.remove(&tid);
@@ -381,7 +392,7 @@ pub async fn cmd_download_file(
     let client_opt = { state.client.lock().await.clone() };
     if client_opt.is_none() { 
         log::info!("[MOCK] Downloaded message {} from {:?} to {}", message_id, folder_id, save_path);
-        if let Err(e) = std::fs::write(&save_path, b"Mock Content") { return Err(e.to_string()); }
+        if let Err(e) = tokio::fs::write(&save_path, b"Mock Content").await { return Err(e.to_string()); }
         return Ok("Download successful".to_string());
     }
     let client = client_opt.unwrap();
@@ -416,7 +427,7 @@ pub async fn cmd_download_file(
 
     // Stream download with per-chunk progress
     let mut download_iter = client.iter_download(&media);
-    let mut file = std::fs::File::create(&save_path).map_err(|e| e.to_string())?;
+    let mut file = tokio::fs::File::create(&save_path).await.map_err(|e| e.to_string())?;
     let mut downloaded: u64 = 0;
     let mut last_emit_time = std::time::Instant::now();
     let mut last_emit_bytes: u64 = 0;
@@ -448,7 +459,7 @@ pub async fn cmd_download_file(
                 return Err(format!("Download chunk error: {}", err));
             }
         };
-        std::io::Write::write_all(&mut file, &bytes).map_err(|e| e.to_string())?;
+        tokio::io::AsyncWriteExt::write_all(&mut file, &bytes).await.map_err(|e| e.to_string())?;
         downloaded += bytes.len() as u64;
         
         // Time-based progress emission (every 250ms)
@@ -659,6 +670,7 @@ pub async fn cmd_scan_folders(
     
     let mut folders = Vec::new();
     let mut dialogs = client.iter_dialogs();
+    let mut discovered = HashMap::new();
     
     log::info!("Starting Folder Scan...");
 
@@ -667,10 +679,7 @@ pub async fn cmd_scan_folders(
         match &dialog.peer {
             Peer::Channel(c) => {
                 let id = c.raw.id;
-                {
-                    let mut cache = state.peer_cache.write().await;
-                    cache.insert(id, dialog.peer.clone());
-                }
+                discovered.insert(id, dialog.peer.clone());
 
                 let name = c.raw.title.clone();
                 let access_hash = c.raw.access_hash.unwrap_or(0);
@@ -685,37 +694,41 @@ pub async fn cmd_scan_folders(
                     continue; 
                 }
 
-                // Strategy 2: About
-                let input_chan = tl::enums::InputChannel::Channel(tl::types::InputChannel {
-                    channel_id: c.raw.id,
-                    access_hash,
-                });
-                
-                match client.invoke(&tl::functions::channels::GetFullChannel {
-                    channel: input_chan,
-                }).await {
-                    Ok(tl::enums::messages::ChatFull::Full(f)) => {
-                        if let tl::enums::ChatFull::Full(cf) = f.full_chat {
-                             if cf.about.contains("[telegram-drive-folder]") {
-                                 log::info!(" -> MATCH via About: {}", name);
-                                 folders.push(FolderMetadata { id, name: name.clone(), parent_id: None });
-                             }
-                        }
-                    },
-                    Err(e) => log::warn!(" -> Failed to get full info: {}", e),
+                // Strategy 2: About (Only if we are the creator to avoid rate limits on third-party channels)
+                if c.raw.creator {
+                    let input_chan = tl::enums::InputChannel::Channel(tl::types::InputChannel {
+                        channel_id: c.raw.id,
+                        access_hash,
+                    });
+                    
+                    match client.invoke(&tl::functions::channels::GetFullChannel {
+                        channel: input_chan,
+                    }).await {
+                        Ok(tl::enums::messages::ChatFull::Full(f)) => {
+                            if let tl::enums::ChatFull::Full(cf) = f.full_chat {
+                                 if cf.about.contains("[telegram-drive-folder]") {
+                                     log::info!(" -> MATCH via About: {}", name);
+                                     folders.push(FolderMetadata { id, name: name.clone(), parent_id: None });
+                                 }
+                            }
+                        },
+                        Err(e) => log::warn!(" -> Failed to get full info: {}", e),
+                    }
                 }
             },
             Peer::User(u) => {
-                {
-                    let mut cache = state.peer_cache.write().await;
-                    cache.insert(u.raw.id(), dialog.peer.clone());
-                }
+                discovered.insert(u.raw.id(), dialog.peer.clone());
                 log::debug!("[SCAN] Cached User Peer: {}", u.raw.id());
             },
             peer => {
                 log::debug!("[SCAN] Skipped Peer: {:?}", peer);
             }
         }
+    }
+    
+    {
+        let mut cache = state.peer_cache.write().await;
+        cache.extend(discovered);
     }
     
     let cache_len = state.peer_cache.read().await.len();
@@ -729,7 +742,9 @@ pub async fn cmd_scan_folders(
 pub async fn cmd_zip_folder(
     folder_path: String,
 ) -> Result<String, String> {
-    let src = std::path::Path::new(&folder_path);
+    let src = std::path::Path::new(&folder_path)
+        .canonicalize()
+        .map_err(|e| format!("Invalid folder path: {}", e))?;
     if !src.is_dir() {
         return Err(format!("'{}' is not a directory", folder_path));
     }
@@ -740,22 +755,20 @@ pub async fn cmd_zip_folder(
         .unwrap_or_else(|| "folder".to_string());
 
     let zip_path = std::env::temp_dir().join(format!("{}.zip", folder_name));
-    let zip_path_str = zip_path.to_string_lossy().to_string();
+    let src_owned = src.clone();
+    let out_path = zip_path.clone();
 
     // Run blocking I/O on a dedicated thread so we don't stall the async runtime
-    let src_owned = folder_path.clone();
-    let out_path = zip_path.clone();
-    tokio::task::spawn_blocking(move || {
+    let (zip_path_str, zip_size) = tokio::task::spawn_blocking(move || {
         let file = std::fs::File::create(&out_path)
             .map_err(|e| format!("Failed to create zip file: {}", e))?;
         let mut zip_writer = zip::ZipWriter::new(file);
         let options = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated);
 
-        let src_path = std::path::Path::new(&src_owned);
-        for entry in walkdir::WalkDir::new(src_path).into_iter().filter_map(|e| e.ok()) {
+        for entry in walkdir::WalkDir::new(&src_owned).into_iter().filter_map(|e| e.ok()) {
             let path = entry.path();
-            let relative = path.strip_prefix(src_path).unwrap_or(path);
+            let relative = path.strip_prefix(&src_owned).unwrap_or(path);
 
             if path.is_file() {
                 let name = relative.to_string_lossy().to_string();
@@ -765,7 +778,7 @@ pub async fn cmd_zip_folder(
                     .map_err(|e| format!("Failed to open '{}': {}", name, e))?;
                 std::io::copy(&mut f, &mut zip_writer)
                     .map_err(|e| format!("Failed to write '{}': {}", name, e))?;
-            } else if path.is_dir() && path != src_path {
+            } else if path.is_dir() && path != src_owned {
                 let dir_name = format!("{}/", relative.to_string_lossy());
                 zip_writer.add_directory(&dir_name, options)
                     .map_err(|e| format!("Failed to add dir '{}': {}", dir_name, e))?;
@@ -773,15 +786,13 @@ pub async fn cmd_zip_folder(
         }
 
         zip_writer.finish().map_err(|e| format!("Failed to finalize zip: {}", e))?;
-        Ok::<(), String>(())
+        let size = std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
+        Ok::<(String, u64), String>((out_path.to_string_lossy().to_string(), size))
     })
     .await
     .map_err(|e| format!("Zip task panicked: {}", e))?
     .map_err(|e: String| e)?;
 
-    let zip_size = std::fs::metadata(&zip_path)
-        .map(|m| m.len())
-        .unwrap_or(0);
     log::info!("Zipped '{}' -> '{}' ({} bytes)", folder_name, zip_path_str, zip_size);
 
     Ok(zip_path_str)
@@ -792,15 +803,21 @@ pub async fn cmd_zip_folder(
 pub async fn cmd_delete_temp_zip(
     path: String,
 ) -> Result<(), String> {
-    let p = std::path::Path::new(&path);
-    // Safety: only delete files inside the system temp directory
-    let tmp = std::env::temp_dir();
-    if !p.starts_with(&tmp) {
-        return Err("Refusing to delete file outside temp directory".to_string());
-    }
-    if p.exists() {
-        std::fs::remove_file(p).map_err(|e| e.to_string())?;
-        log::info!("Cleaned up temp zip: {}", path);
-    }
-    Ok(())
+    let path_clone = path.clone();
+    tokio::task::spawn_blocking(move || {
+        let p = std::path::Path::new(&path_clone);
+        if !p.exists() {
+            return Ok(());
+        }
+        let canonical_p = p.canonicalize().map_err(|e| format!("Invalid path: {}", e))?;
+        let tmp = std::env::temp_dir().canonicalize().map_err(|e| format!("Could not resolve temp directory: {}", e))?;
+        if !canonical_p.starts_with(&tmp) {
+            return Err("Refusing to delete file outside temp directory".to_string());
+        }
+        std::fs::remove_file(&canonical_p).map_err(|e| e.to_string())?;
+        log::info!("Cleaned up temp zip: {}", path_clone);
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task panicked: {}", e))?
 }

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use grammers_mtsender::SenderPool;
 use grammers_session::storages::SqliteSession;
+use grammers_session::Session;
 use tokio::sync::oneshot;
 use tokio::time::Duration;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -62,22 +63,74 @@ pub async fn ensure_client_initialized(
     let session_path_str = session_path.to_string_lossy().to_string();
     log::info!("Opening session at: {}", session_path_str);
     
-    // Grammers initialization with corruption recovery
-    let session = match SqliteSession::open(&session_path_str).map_err(|e| e.to_string()) {
+    let mut session_open_result = SqliteSession::open(&session_path_str);
+    
+    // Retry opening the session database up to 5 times (every 100ms)
+    // in case the database is temporarily locked by the old shutting down runner.
+    if session_open_result.is_err() {
+        for attempt in 1..=5 {
+            log::warn!("Failed to open session on attempt {} (database may be locked). Retrying in 100ms...", attempt);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            session_open_result = SqliteSession::open(&session_path_str);
+            if session_open_result.is_ok() {
+                break;
+            }
+        }
+    }
+
+    let session = match session_open_result.map_err(|e| e.to_string()) {
         Ok(s) => s,
-        Err(_) => {
-            log::warn!("Session file corrupted or invalid. Recreating...");
+        Err(e) => {
+            log::warn!("Session file could not be opened after retries ({}). Recreating...", e);
             let _ = std::fs::remove_file(&session_path);
             let _ = std::fs::remove_file(format!("{}-wal", session_path_str));
             let _ = std::fs::remove_file(format!("{}-shm", session_path_str));
             
             SqliteSession::open(&session_path_str)
-                .map_err(|e| format!("Failed to open session after recreation: {}", e))?
+                .map_err(|err| format!("Failed to open session after recreation: {}", err))?
         }
     };
         
+    let net_config = app_handle.state::<Arc<crate::vpn_optimizer::NetworkConfig>>();
+    let preferred_dc = {
+        let vpn = net_config.vpn.read().unwrap();
+        if vpn.enabled {
+            vpn.preferred_dc.clone()
+        } else {
+            "auto".to_string()
+        }
+    };
+    if preferred_dc.starts_with("dc") && preferred_dc.len() > 2 {
+        if let Ok(dc_id) = preferred_dc[2..].parse::<i32>() {
+            log::info!("Setting preferred home DC ID: {}", dc_id);
+            session.set_home_dc_id(dc_id);
+        }
+    }
+
+    let mut connection_params = grammers_mtsender::ConnectionParams::default();
+    let proxy = net_config.proxy.read().unwrap();
+    if proxy.enabled && !proxy.host.is_empty() {
+        if proxy.proxy_type == "socks5" {
+            let url = if !proxy.username.is_empty() {
+                format!(
+                    "socks5://{}:{}@{}:{}",
+                    proxy.username, proxy.password, proxy.host, proxy.port
+                )
+            } else {
+                format!("socks5://{}:{}", proxy.host, proxy.port)
+            };
+            log::info!("Using SOCKS5 proxy: socks5://{}:{}", proxy.host, proxy.port);
+            connection_params.proxy_url = Some(url);
+        } else {
+            log::warn!(
+                "Unsupported proxy type: {}. grammers only supports SOCKS5 proxy.",
+                proxy.proxy_type
+            );
+        }
+    }
+
     let session = Arc::new(session);
-    let pool = SenderPool::new(session, api_id);
+    let pool = SenderPool::with_configuration(session, api_id, connection_params);
     let client = Client::new(&pool);
     
     // Create shutdown channel for this runner

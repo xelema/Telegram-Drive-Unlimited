@@ -263,9 +263,7 @@ function PdfPage({ pageNumber, pdf, scale }: { pageNumber: number; pdf: pdfjsLib
 
         const observer = new IntersectionObserver(
             (entries) => {
-                if (entries[0].isIntersecting) {
-                    setIsVisible(true);
-                }
+                setIsVisible(entries[0].isIntersecting);
             },
             { rootMargin: '1000px 0px' }
         );
@@ -273,6 +271,18 @@ function PdfPage({ pageNumber, pdf, scale }: { pageNumber: number; pdf: pdfjsLib
         observer.observe(el);
         return () => observer.disconnect();
     }, []);
+
+    // Clear/unload canvas and page structure when not visible to release memory
+    useEffect(() => {
+        if (!isVisible) {
+            setPage(null);
+            if (canvasRef.current) {
+                const canvas = canvasRef.current;
+                canvas.width = 0;
+                canvas.height = 0;
+            }
+        }
+    }, [isVisible]);
 
     // Fetch the PDF page object when visible
     useEffect(() => {

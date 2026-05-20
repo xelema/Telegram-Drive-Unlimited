@@ -29,7 +29,7 @@ pub async fn resolve_peer(
         log::debug!("Peer cache miss for folder_id={}, scanning dialogs...", fid);
         let mut found: Option<Peer> = None;
         let mut dialogs = client.iter_dialogs();
-        let mut cache = peer_cache.write().await;
+        let mut discovered = HashMap::new();
         while let Some(dialog) = dialogs.next().await.map_err(|e| e.to_string())? {
             let peer_id = match &dialog.peer {
                 Peer::Channel(c) => Some(c.raw.id),
@@ -37,12 +37,17 @@ pub async fn resolve_peer(
                 _ => None,
             };
             if let Some(id) = peer_id {
-                cache.insert(id, dialog.peer.clone());
+                discovered.insert(id, dialog.peer.clone());
                 if id == fid {
                     found = Some(dialog.peer.clone());
                     // Don't break — keep scanning to warm the cache
                 }
             }
+        }
+
+        {
+            let mut cache = peer_cache.write().await;
+            cache.extend(discovered);
         }
 
         found.ok_or_else(|| format!("Folder/Chat {} not found", fid))
