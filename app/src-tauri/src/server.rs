@@ -244,9 +244,15 @@ fn mime_type_from_media(media: &Media) -> String {
     }
 }
 
-pub async fn start_server(state: Arc<TelegramState>, port: u16, token: String) -> std::io::Result<actix_web::dev::Server> {
+pub async fn start_server(
+    state: Arc<TelegramState>,
+    port: u16,
+    token: String,
+    db_pool: crate::db::DbConnection,
+) -> std::io::Result<actix_web::dev::Server> {
     let state_data = web::Data::new(state);
     let token_data = web::Data::new(StreamTokenData { token });
+    let db_data = web::Data::new(db_pool);
     
     log::info!("Starting Streaming Server on port {}", port);
     
@@ -262,12 +268,14 @@ pub async fn start_server(state: Arc<TelegramState>, port: u16, token: String) -
             .wrap(cors)
             .app_data(state_data.clone())
             .app_data(token_data.clone())
+            .app_data(db_data.clone())
             .service(stream_media)
+            .configure(crate::share_routes::configure_share_routes)
     })
-    .bind(("127.0.0.1", port))?
+    .bind(("0.0.0.0", port))?
     .run();
 
-    log::info!("Streaming Server started successfully on http://127.0.0.1:{}", port);
+    log::info!("Streaming Server started successfully on http://0.0.0.0:{}", port);
 
     Ok(server)
 }

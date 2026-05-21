@@ -3,7 +3,7 @@ import { Plus, ArrowUpDown, ArrowUp, ArrowDown, FolderUp } from 'lucide-react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { FileCard } from './FileCard';
 import { EmptyState } from './EmptyState';
-import { TelegramFile } from '../../types';
+import { TelegramFile, TelegramFolder } from '../../types';
 import { ContextMenu } from './ContextMenu';
 import { FileListItem } from './FileListItem';
 
@@ -29,6 +29,8 @@ interface FileExplorerProps {
     onDrop?: (e: React.DragEvent, folderId: number) => void;
     onDragStart?: (fileId: number) => void;
     onDragEnd?: () => void;
+    onShare?: (file: TelegramFile) => void;
+    folders?: TelegramFolder[];
 }
 
 
@@ -60,7 +62,8 @@ function useGridColumns(containerRef: React.RefObject<HTMLDivElement | null>) {
 
 export function FileExplorer({
     files, loading, error, viewMode, selectedIds, activeFolderId,
-    onFileClick, onDelete, onDownload, onPreview, onManualUpload, onFolderUpload, showFolderUpload, onSelectionClear, onToggleSelection, onDrop, onDragStart, onDragEnd
+    onFileClick, onDelete, onDownload, onPreview, onManualUpload, onFolderUpload, showFolderUpload, onSelectionClear, onToggleSelection, onDrop, onDragStart, onDragEnd, onShare,
+    folders
 }: FileExplorerProps) {
     const [sortField, setSortField] = useState<SortField>('name');
     const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
@@ -387,6 +390,12 @@ export function FileExplorer({
                         }
                         setContextMenu(null);
                     }}
+                    onShare={onShare ? () => {
+                        onShare(contextMenu.file);
+                        setContextMenu(null);
+                    } : undefined}
+                    folders={folders}
+                    activeFolderId={activeFolderId}
                 />
             )}
         </div>

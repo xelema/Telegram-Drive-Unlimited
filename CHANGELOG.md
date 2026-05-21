@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.6.0] - 2026-05-21
+
+### Features & Fixes
+
+- **"Copy Telegram Link" Feature** — Added a right-click context menu option to copy raw `t.me` message links for files in public channels (`https://t.me/{username}/{message_id}`). If the channel is private, the item displays in a disabled state with a descriptive tooltip.
+- **Tauri 2 Tokio Runtime Panic Fix** — Fixed the `there is no reactor running` panic caused by `tokio::task::spawn_blocking` executing outside of a Tokio runtime context within the Bandwidth Manager. Replaced the asynchronous task with a lightweight, synchronous write, resolving the panic completely.
+
+---
+
 ## [1.5.0] - 2026-05-19
 
 ### Feature

@@ -91,10 +91,7 @@ impl BandwidthManager {
 
     fn save_locked(&self, stats: &BandwidthStats) {
         if let Ok(json) = serde_json::to_string(stats) {
-            let file_path = self.file_path.clone();
-            tokio::task::spawn_blocking(move || {
-                let _ = fs::write(file_path, json);
-            });
+            let _ = fs::write(&self.file_path, json);
         }
     }
     

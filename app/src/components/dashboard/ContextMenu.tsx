@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Eye, HardDrive, Trash2, FolderOpen, Pencil, Play, FileText } from 'lucide-react';
-import { TelegramFile } from '../../types';
+import { Eye, HardDrive, Trash2, FolderOpen, Pencil, Play, FileText, Link, Copy } from 'lucide-react';
+import { TelegramFile, TelegramFolder } from '../../types';
 import { isMediaFile, isPdfFile } from '../../utils';
+import { toast } from 'sonner';
 
 interface ContextMenuProps {
     x: number;
@@ -11,9 +12,12 @@ interface ContextMenuProps {
     onDownload: () => void;
     onDelete: () => void;
     onPreview: () => void;
+    onShare?: () => void;
+    folders?: TelegramFolder[];
+    activeFolderId?: number | null;
 }
 
-export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPreview }: ContextMenuProps) {
+export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPreview, onShare, folders, activeFolderId }: ContextMenuProps) {
     const [adjustedPos, setAdjustedPos] = useState({ x, y });
     const menuRef = useRef<HTMLDivElement>(null);
 
@@ -38,15 +42,16 @@ export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPrevi
     useEffect(() => {
         const handleClick = () => onClose();
         const handleResize = () => onClose();
+        const handleContextMenu = () => onClose();
 
         window.addEventListener('click', handleClick);
         window.addEventListener('resize', handleResize);
-        window.addEventListener('contextmenu', handleClick); // Close if right click elsewhere
+        window.addEventListener('contextmenu', handleContextMenu); // Close if right click elsewhere
 
         return () => {
             window.removeEventListener('click', handleClick);
             window.removeEventListener('resize', handleResize);
-            window.removeEventListener('contextmenu', handleClick);
+            window.removeEventListener('contextmenu', handleContextMenu);
         };
     }, [onClose]);
 
@@ -94,6 +99,50 @@ export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPrevi
                 <HardDrive className="w-4 h-4 text-green-500" />
                 Download
             </button>
+
+            {file.type !== 'folder' && onShare && (
+                <button onClick={onShare} className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-text hover:bg-telegram-hover rounded transition-colors text-left w-full">
+                    <Link className="w-4 h-4 text-telegram-primary" />
+                    Share Link
+                </button>
+            )}
+
+            {file.type !== 'folder' && (
+                (() => {
+                    const folder = folders?.find(f => f.id === file.folder_id) || folders?.find(f => f.id === activeFolderId);
+                    const username = folder?.username || (folder as any)?.chat?.username || (folder as any)?.channel?.username;
+                    
+                    if (username) {
+                        const handleCopyLink = async () => {
+                            const url = `https://t.me/${username}/${file.id}`;
+                            try {
+                                await navigator.clipboard.writeText(url);
+                                toast.success("Telegram link copied");
+                            } catch (e) {
+                                toast.error("Failed to copy link");
+                            }
+                            onClose();
+                        };
+                        return (
+                            <button onClick={handleCopyLink} className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-text hover:bg-telegram-hover rounded transition-colors text-left w-full">
+                                <Copy className="w-4 h-4 text-telegram-primary" />
+                                Copy Telegram Link
+                            </button>
+                        );
+                    } else {
+                        return (
+                            <button 
+                                disabled 
+                                title="Only available for public channels" 
+                                className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-subtext hover:bg-telegram-hover rounded transition-colors text-left w-full cursor-not-allowed opacity-50"
+                            >
+                                <Copy className="w-4 h-4" />
+                                Copy Telegram Link
+                            </button>
+                        );
+                    }
+                })()
+            )}
 
             <button disabled className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-subtext hover:bg-telegram-hover rounded transition-colors text-left w-full cursor-not-allowed opacity-50">
                 <Pencil className="w-4 h-4" />

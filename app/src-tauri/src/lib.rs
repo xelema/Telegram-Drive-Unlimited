@@ -14,6 +14,9 @@ use rand::Rng;
 
 pub mod server;
 pub mod api_routes;
+pub mod db;
+pub mod share_routes;
+
 
 /// Single source of truth for the Actix streaming server port.
 /// Referenced in lib.rs (server startup) and exposed to the frontend
@@ -144,14 +147,22 @@ pub fn run() {
             let net_config = Arc::new(vpn_optimizer::NetworkConfig::new_with_config(loaded_config));
             app.manage(net_config.clone());
             
+            // Initialize SQLite Database
+            let db_pool = db::init_db(app.handle()).map_err(|e| {
+                log::error!("Failed to initialize SQLite database: {}", e);
+                e
+            })?;
+            app.manage(db_pool.clone());
+            
             // Start Streaming Server on dedicated thread (Actix needs its own runtime)
             let state = Arc::new(app.state::<TelegramState>().inner().clone());
             let token_for_server = stream_token.clone();
             let handle_for_thread = server_handle_for_setup.clone();
+            let db_pool_for_server = db_pool.clone();
             std::thread::spawn(move || {
                 let sys = actix_rt::System::new();
                 sys.block_on(async move {
-                    match server::start_server(state, STREAM_PORT, token_for_server).await {
+                    match server::start_server(state, STREAM_PORT, token_for_server, db_pool_for_server).await {
                         Ok(server) => {
                             // Store the handle so RunEvent::Exit can stop it
                             *handle_for_thread.lock().unwrap() = Some(server.handle());
@@ -229,6 +240,9 @@ pub fn run() {
             commands::cmd_get_network_config,
             commands::cmd_check_latency,
             commands::cmd_detect_vpn,
+            commands::cmd_create_share,
+            commands::cmd_list_shares,
+            commands::cmd_revoke_share,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
