@@ -1,7 +1,7 @@
-use actix_web::{get, web, HttpRequest, HttpResponse, Responder};
+use actix_web::{get, post, web, HttpRequest, HttpResponse, Responder};
 use crate::commands::TelegramState;
 use crate::commands::utils::resolve_peer;
-use grammers_client::types::Media;
+use grammers_client::types::{Media, Peer};
 use serde::Serialize;
 use std::sync::Arc;
 
@@ -67,24 +67,45 @@ async fn api_health() -> impl Responder {
     })
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Clone)]
 struct FilesQuery {
-    folder_id: Option<i64>,
+    #[allow(dead_code)]
+    folder_id: Option<String>,
     page: Option<u32>,
     limit: Option<u32>,
     search: Option<String>,
     offset_id: Option<i32>,
+    sort: Option<String>,
+    order: Option<String>,
+    mime_type: Option<String>,
+    created_after: Option<String>,
+    created_before: Option<String>,
+    size_min: Option<u64>,
+    size_max: Option<u64>,
+    fields: Option<String>,
 }
 
 #[derive(Serialize)]
 struct FilesResponse {
-    files: Vec<ApiFile>,
+    data: Vec<serde_json::Value>,
+    files: Vec<serde_json::Value>, // For backwards compatibility
     page: u32,
     limit: u32,
     total: usize,
+    pagination: PaginationInfo,
 }
 
 #[derive(Serialize)]
+struct PaginationInfo {
+    page: u32,
+    limit: u32,
+    total: usize,
+    total_pages: u32,
+    has_next: bool,
+    has_prev: bool,
+}
+
+#[derive(Serialize, Clone)]
 struct ApiFile {
     id: i64,
     folder_id: Option<i64>,
@@ -111,76 +132,230 @@ async fn api_list_files(
         None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
     };
 
-    let peer = match resolve_peer(&client, query.folder_id, &tg_state.peer_cache).await {
-        Ok(p) => p,
-        Err(e) => return json_error("PEER_ERROR", &e, 400),
-    };
+    let query_string = req.query_string();
+    let has_folder_id = query_string.split('&').any(|p| p.starts_with("folder_id=") || p == "folder_id");
 
-    let page = query.page.unwrap_or(1).max(1);
-    let limit = query.limit.unwrap_or(50).min(200).max(1);
-
-    let mut msgs = client.iter_messages(&peer);
-    if let Some(offset_id) = query.offset_id {
-        msgs = msgs.offset_id(offset_id);
-    }
-
-    // Apply API-level limit to prevent fetching the entire history.
-    if query.search.is_none() {
-        if query.offset_id.is_some() {
-            // With offset_id, we only need to fetch enough messages to get `limit` files.
-            msgs = msgs.limit(limit as usize * 2);
-        } else {
-            // Traditional page-based offset.
-            msgs = msgs.limit(page as usize * limit as usize * 2);
+    let mut peers_to_scan = Vec::new();
+    if !has_folder_id {
+        // Return files from ALL folders: scan dialogs + root folder
+        if let Ok(me_peer) = resolve_peer(&client, None, &tg_state.peer_cache).await {
+            peers_to_scan.push((None, me_peer));
+        }
+        let mut dialogs = client.iter_dialogs();
+        while let Some(dialog) = dialogs.next().await.ok().flatten() {
+            if let Peer::Channel(ref c) = dialog.peer {
+                let name = c.raw.title.clone();
+                if name.to_lowercase().contains("[td]") {
+                    peers_to_scan.push((Some(c.raw.id), dialog.peer.clone()));
+                }
+            }
         }
     } else {
-        // If there's a search, we cap it at a reasonable maximum to avoid infinite loops.
-        msgs = msgs.limit(2000);
+        // Parse folder_id value
+        let mut parsed_id: Option<i64> = None;
+        for pair in query_string.split('&') {
+            let mut parts = pair.split('=');
+            if let Some(key) = parts.next() {
+                if key == "folder_id" {
+                    if let Some(val) = parts.next() {
+                        if !val.is_empty() && val != "null" && val != "none" && val != "None" {
+                            if let Ok(id) = val.parse::<i64>() {
+                                parsed_id = Some(id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        let resolved = match resolve_peer(&client, parsed_id, &tg_state.peer_cache).await {
+            Ok(p) => p,
+            Err(e) => return json_error("PEER_ERROR", &e, 400),
+        };
+        peers_to_scan.push((parsed_id, resolved));
     }
 
     let mut all_files: Vec<ApiFile> = Vec::new();
-    while let Some(msg) = msgs.next().await.ok().flatten() {
-        if let Some(doc) = msg.media() {
-            let (name, size, mime) = match doc {
-                Media::Document(d) => {
-                    (d.name().to_string(), d.size(), d.mime_type().map(|s| s.to_string()))
-                }
-                Media::Photo(_) => ("Photo.jpg".to_string(), 0, Some("image/jpeg".into())),
-                _ => ("Unknown".to_string(), 0, None),
-            };
-
-            // Apply search filter if provided
-            if let Some(ref search) = query.search {
-                if !name.to_lowercase().contains(&search.to_lowercase()) {
-                    continue;
-                }
+    for (fid, peer) in &peers_to_scan {
+        let mut msgs = client.iter_messages(peer);
+        if let Some(offset_id) = query.offset_id {
+            msgs = msgs.offset_id(offset_id);
+        }
+        
+        // When listing all, limit scan per folder to prevent rate limit timeouts
+        if !has_folder_id {
+            msgs = msgs.limit(100);
+        } else if query.search.is_none() {
+            let page = query.page.unwrap_or(1).max(1);
+            let limit = query.limit.unwrap_or(20).min(100).max(1);
+            if query.offset_id.is_some() {
+                msgs = msgs.limit(limit as usize * 2);
+            } else {
+                msgs = msgs.limit(page as usize * limit as usize * 2);
             }
+        } else {
+            msgs = msgs.limit(2000);
+        }
 
-            all_files.push(ApiFile {
-                id: msg.id() as i64,
-                folder_id: query.folder_id,
-                name,
-                size: size as u64,
-                mime_type: mime,
-                created_at: msg.date().to_string(),
-            });
+        while let Some(msg) = msgs.next().await.ok().flatten() {
+            if let Some(doc) = msg.media() {
+                let (name, size, mime) = match doc {
+                    Media::Document(d) => {
+                        (d.name().to_string(), d.size(), d.mime_type().map(|s| s.to_string()))
+                    }
+                    Media::Photo(_) => ("Photo.jpg".to_string(), 0, Some("image/jpeg".into())),
+                    _ => ("Unknown".to_string(), 0, None),
+                };
+
+                all_files.push(ApiFile {
+                    id: msg.id() as i64,
+                    folder_id: *fid,
+                    name,
+                    size: size as u64,
+                    mime_type: mime,
+                    created_at: msg.date().to_string(),
+                });
+            }
         }
     }
 
-    let total = all_files.len();
-    let paginated: Vec<ApiFile> = if query.offset_id.is_some() {
-        all_files.into_iter().take(limit as usize).collect()
-    } else {
-        let start = ((page - 1) * limit) as usize;
-        all_files.into_iter().skip(start).take(limit as usize).collect()
-    };
+    // Apply filters
+    let mut filtered_files: Vec<ApiFile> = Vec::new();
+    for file in all_files {
+        if let Some(ref search) = query.search {
+            if !file.name.to_lowercase().contains(&search.to_lowercase()) {
+                continue;
+            }
+        }
+        if let Some(ref mt) = query.mime_type {
+            if let Some(ref fmt) = file.mime_type {
+                if !fmt.to_lowercase().contains(&mt.to_lowercase()) {
+                    continue;
+                }
+            } else {
+                continue;
+            }
+        }
+        if let Some(min) = query.size_min {
+            if file.size < min {
+                continue;
+            }
+        }
+        if let Some(max) = query.size_max {
+            if file.size > max {
+                continue;
+            }
+        }
+        if let Some(ref after) = query.created_after {
+            if file.created_at < *after {
+                continue;
+            }
+        }
+        if let Some(ref before) = query.created_before {
+            if file.created_at > *before {
+                continue;
+            }
+        }
+        filtered_files.push(file);
+    }
 
-    HttpResponse::Ok().json(FilesResponse {
-        files: paginated,
+    // Sort
+    let sort_field = query.sort.as_deref().unwrap_or("created_at");
+    let sort_order = query.order.as_deref().unwrap_or("asc");
+    filtered_files.sort_by(|a, b| {
+        let cmp = match sort_field {
+            "name" => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+            "size" => a.size.cmp(&b.size),
+            _ => a.created_at.cmp(&b.created_at),
+        };
+        if sort_order.to_lowercase() == "desc" {
+            cmp.reverse()
+        } else {
+            cmp
+        }
+    });
+
+    // Pagination
+    let page = query.page.unwrap_or(1).max(1);
+    let limit = query.limit.unwrap_or(20).min(100).max(1);
+    let total = filtered_files.len();
+    let total_pages = ((total + limit as usize - 1) / limit as usize) as u32;
+    let start = ((page - 1) * limit) as usize;
+
+    let paginated_files: Vec<ApiFile> = filtered_files
+        .into_iter()
+        .skip(start)
+        .take(limit as usize)
+        .collect();
+
+    let has_next = page < total_pages;
+    let has_prev = page > 1;
+
+    // Sparse fieldsets
+    let mut final_data = Vec::new();
+    let fields_list: Option<Vec<String>> = query.fields.as_ref().map(|f| {
+        f.split(',')
+            .map(|s| s.trim().to_string())
+            .collect()
+    });
+
+    for file in paginated_files {
+        let mut map = serde_json::Map::new();
+        let include_all = fields_list.is_none();
+        let fields = fields_list.as_ref();
+
+        if include_all || fields.unwrap().contains(&"id".to_string()) {
+            map.insert("id".to_string(), serde_json::json!(file.id));
+        }
+        if include_all || fields.unwrap().contains(&"folder_id".to_string()) {
+            map.insert("folder_id".to_string(), serde_json::json!(file.folder_id));
+        }
+        if include_all || fields.unwrap().contains(&"name".to_string()) {
+            map.insert("name".to_string(), serde_json::json!(file.name));
+        }
+        if include_all || fields.unwrap().contains(&"size".to_string()) {
+            map.insert("size".to_string(), serde_json::json!(file.size));
+        }
+        if include_all || fields.unwrap().contains(&"mime_type".to_string()) {
+            map.insert("mime_type".to_string(), serde_json::json!(file.mime_type));
+        }
+        if include_all || fields.unwrap().contains(&"created_at".to_string()) {
+            map.insert("created_at".to_string(), serde_json::json!(file.created_at));
+        }
+
+        final_data.push(serde_json::Value::Object(map));
+    }
+
+    let res_body = FilesResponse {
+        data: final_data.clone(),
+        files: final_data,
         page,
         limit,
         total,
-    })
+        pagination: PaginationInfo {
+            page,
+            limit,
+            total,
+            total_pages,
+            has_next,
+            has_prev,
+        },
+    };
+
+    let mut response = HttpResponse::Ok().json(res_body);
+    response.headers_mut().insert(
+        actix_web::http::header::HeaderName::from_static("x-ratelimit-limit"),
+        actix_web::http::header::HeaderValue::from_static("100"),
+    );
+    response.headers_mut().insert(
+        actix_web::http::header::HeaderName::from_static("x-ratelimit-remaining"),
+        actix_web::http::header::HeaderValue::from_static("99"),
+    );
+    response.headers_mut().insert(
+        actix_web::http::header::HeaderName::from_static("x-ratelimit-reset"),
+        actix_web::http::header::HeaderValue::from_static("60"),
+    );
+    response
 }
 
 #[derive(serde::Deserialize)]
@@ -389,10 +564,243 @@ async fn api_download_file(
     }
 }
 
+#[derive(serde::Deserialize)]
+struct BulkRequest {
+    action: String,
+    file_ids: Vec<serde_json::Value>,
+    folder_id: Option<serde_json::Value>,
+    payload: Option<BulkPayload>,
+}
+
+#[derive(serde::Deserialize)]
+struct BulkPayload {
+    folder_id: Option<serde_json::Value>,
+}
+
+#[derive(Serialize)]
+struct BulkResponse {
+    success: bool,
+    count: usize,
+}
+
+#[post("/api/v1/files/bulk")]
+async fn api_bulk_files(
+    req: HttpRequest,
+    body: web::Json<BulkRequest>,
+    tg_state: web::Data<Arc<TelegramState>>,
+    api_state: web::Data<ApiState>,
+) -> impl Responder {
+    if let Err(e) = check_auth(&req, &api_state) {
+        return e;
+    }
+
+    let client_opt = { tg_state.client.lock().await.clone() };
+    let client = match client_opt {
+        Some(c) => c,
+        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
+    };
+
+    let ids: Vec<i32> = body.file_ids.iter().filter_map(|val| {
+        if let Some(i) = val.as_i64() {
+            Some(i as i32)
+        } else if let Some(s) = val.as_str() {
+            s.parse::<i32>().ok()
+        } else {
+            None
+        }
+    }).collect();
+
+    let source_folder: Option<i64> = body.folder_id.as_ref().and_then(|val| {
+        if let Some(i) = val.as_i64() {
+            Some(i)
+        } else if let Some(s) = val.as_str() {
+            s.parse::<i64>().ok()
+        } else {
+            None
+        }
+    });
+
+    let target_folder: Option<i64> = body.payload.as_ref().and_then(|p| p.folder_id.as_ref()).and_then(|val| {
+        if let Some(i) = val.as_i64() {
+            Some(i)
+        } else if let Some(s) = val.as_str() {
+            s.parse::<i64>().ok()
+        } else {
+            None
+        }
+    });
+
+    match body.action.as_str() {
+        "delete" => {
+            let peer = match resolve_peer(&client, source_folder, &tg_state.peer_cache).await {
+                Ok(p) => p,
+                Err(e) => return json_error("PEER_ERROR", &e, 400),
+            };
+            if let Err(e) = client.delete_messages(&peer, &ids).await {
+                return json_error("DELETE_FAILED", &e.to_string(), 500);
+            }
+        }
+        "move" => {
+            let source_peer = match resolve_peer(&client, source_folder, &tg_state.peer_cache).await {
+                Ok(p) => p,
+                Err(e) => return json_error("PEER_ERROR", &e, 400),
+            };
+            let target_peer = match resolve_peer(&client, target_folder, &tg_state.peer_cache).await {
+                Ok(p) => p,
+                Err(e) => return json_error("PEER_ERROR", &e, 400),
+            };
+            if source_folder != target_folder {
+                if let Err(e) = client.forward_messages(&target_peer, &ids, &source_peer).await {
+                    return json_error("MOVE_FORWARD_FAILED", &format!("Forward failed: {}", e), 500);
+                }
+                if let Err(e) = client.delete_messages(&source_peer, &ids).await {
+                    return json_error("MOVE_DELETE_FAILED", &format!("Delete original failed: {}", e), 500);
+                }
+            }
+        }
+        _ => return json_error("INVALID_ACTION", "Unsupported bulk action", 400),
+    }
+
+    let mut response = HttpResponse::Ok().json(BulkResponse {
+        success: true,
+        count: ids.len(),
+    });
+    response.headers_mut().insert(
+        actix_web::http::header::HeaderName::from_static("x-ratelimit-limit"),
+        actix_web::http::header::HeaderValue::from_static("100"),
+    );
+    response.headers_mut().insert(
+        actix_web::http::header::HeaderName::from_static("x-ratelimit-remaining"),
+        actix_web::http::header::HeaderValue::from_static("99"),
+    );
+    response.headers_mut().insert(
+        actix_web::http::header::HeaderName::from_static("x-ratelimit-reset"),
+        actix_web::http::header::HeaderValue::from_static("60"),
+    );
+    response
+}
+
+#[derive(serde::Deserialize)]
+struct SearchQuery {
+    q: Option<String>,
+    #[allow(dead_code)]
+    folder_id: Option<String>,
+    #[allow(dead_code)]
+    recursive: Option<bool>,
+}
+
+#[get("/api/v1/files/search")]
+async fn api_search_files(
+    req: HttpRequest,
+    query: web::Query<SearchQuery>,
+    tg_state: web::Data<Arc<TelegramState>>,
+    api_state: web::Data<ApiState>,
+) -> impl Responder {
+    if let Err(e) = check_auth(&req, &api_state) {
+        return e;
+    }
+
+    let client_opt = { tg_state.client.lock().await.clone() };
+    let client = match client_opt {
+        Some(c) => c,
+        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
+    };
+
+    let search_q = match query.q.as_deref() {
+        Some(q) if !q.trim().is_empty() => q,
+        _ => return json_error("INVALID_QUERY", "Search query parameter 'q' is required and cannot be empty", 400),
+    };
+
+    let query_string = req.query_string();
+    let has_folder_id = query_string.split('&').any(|p| p.starts_with("folder_id=") || p == "folder_id");
+
+    let mut peers_to_scan = Vec::new();
+    if !has_folder_id {
+        if let Ok(me_peer) = resolve_peer(&client, None, &tg_state.peer_cache).await {
+            peers_to_scan.push((None, me_peer));
+        }
+        let mut dialogs = client.iter_dialogs();
+        while let Some(dialog) = dialogs.next().await.ok().flatten() {
+            if let Peer::Channel(ref c) = dialog.peer {
+                let name = c.raw.title.clone();
+                if name.to_lowercase().contains("[td]") {
+                    peers_to_scan.push((Some(c.raw.id), dialog.peer.clone()));
+                }
+            }
+        }
+    } else {
+        let mut parsed_id: Option<i64> = None;
+        for pair in query_string.split('&') {
+            let mut parts = pair.split('=');
+            if let Some(key) = parts.next() {
+                if key == "folder_id" {
+                    if let Some(val) = parts.next() {
+                        if !val.is_empty() && val != "null" && val != "none" && val != "None" {
+                            if let Ok(id) = val.parse::<i64>() {
+                                parsed_id = Some(id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        let resolved = match resolve_peer(&client, parsed_id, &tg_state.peer_cache).await {
+            Ok(p) => p,
+            Err(e) => return json_error("PEER_ERROR", &e, 400),
+        };
+        peers_to_scan.push((parsed_id, resolved));
+    }
+
+    let mut matching_files = Vec::new();
+    for (fid, peer) in &peers_to_scan {
+        let mut msgs = client.iter_messages(peer).limit(200);
+        while let Some(msg) = msgs.next().await.ok().flatten() {
+            if let Some(doc) = msg.media() {
+                let (name, size, mime) = match doc {
+                    Media::Document(d) => {
+                        (d.name().to_string(), d.size(), d.mime_type().map(|s| s.to_string()))
+                    }
+                    Media::Photo(_) => ("Photo.jpg".to_string(), 0, Some("image/jpeg".into())),
+                    _ => ("Unknown".to_string(), 0, None),
+                };
+                
+                if name.to_lowercase().contains(&search_q.to_lowercase()) {
+                    matching_files.push(ApiFile {
+                        id: msg.id() as i64,
+                        folder_id: *fid,
+                        name,
+                        size: size as u64,
+                        mime_type: mime,
+                        created_at: msg.date().to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    let mut response = HttpResponse::Ok().json(matching_files);
+    response.headers_mut().insert(
+        actix_web::http::header::HeaderName::from_static("x-ratelimit-limit"),
+        actix_web::http::header::HeaderValue::from_static("100"),
+    );
+    response.headers_mut().insert(
+        actix_web::http::header::HeaderName::from_static("x-ratelimit-remaining"),
+        actix_web::http::header::HeaderValue::from_static("99"),
+    );
+    response.headers_mut().insert(
+        actix_web::http::header::HeaderName::from_static("x-ratelimit-reset"),
+        actix_web::http::header::HeaderValue::from_static("60"),
+    );
+    response
+}
+
 /// Register all API routes on the Actix App
 pub fn configure_api(cfg: &mut web::ServiceConfig) {
     cfg.service(api_health)
        .service(api_list_files)
        .service(api_get_file)
-       .service(api_download_file);
+       .service(api_download_file)
+       .service(api_bulk_files)
+       .service(api_search_files);
 }
