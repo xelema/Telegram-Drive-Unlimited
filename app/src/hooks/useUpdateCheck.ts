@@ -87,7 +87,7 @@ export function useUpdateCheck() {
 
     useEffect(() => {
         const timer = setTimeout(() => {
-            checkForUpdates();
+            checkForUpdates().catch(console.error);
         }, 5000);
         return () => clearTimeout(timer);
     }, [checkForUpdates]);

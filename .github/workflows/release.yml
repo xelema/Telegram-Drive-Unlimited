@@ -19,6 +19,16 @@ jobs:
         id: get_version
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
       
+      - name: Extract changelog for this version
+        id: changelog
+        run: |
+          # Extract the first version block from CHANGELOG.md (between first and second ## headings)
+          BODY=$(awk '/^## \[/{if(found) exit; found=1; next} found' CHANGELOG.md)
+          # Escape for GitHub Actions output
+          echo "BODY<<EOF" >> $GITHUB_OUTPUT
+          echo "$BODY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
       - name: Create Release
         id: create-release
         uses: actions/github-script@v7
@@ -29,7 +39,7 @@ jobs:
               repo: context.repo.repo,
               tag_name: `v${{ steps.get_version.outputs.VERSION }}`,
               name: `Telegram Drive v${{ steps.get_version.outputs.VERSION }}`,
-              body: `Feature: Added a donation button and popup modal to the main login screen to support the project via PayPal, Litecoin, and Bitcoin.\n\nSee the assets below to download and install.`,
+              body: `${{ steps.changelog.outputs.BODY }}`,
               draft: true,
               prerelease: false
             });

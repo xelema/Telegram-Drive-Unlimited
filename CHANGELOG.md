@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.6.6] - 2026-05-22
+
+### Features & Fixes
+
+- **Tauri Updater Integration & Dedicated UI** — Fully integrated and resolved production updater configurations.
+  - **Updater Build Artifacts**: Set `createUpdaterArtifacts` to `true` in `tauri.conf.json` to generate signing signatures (`.sig`) and the `latest.json` manifest dynamically during production builds.
+  - **In-App Update Interface**: Added a native "Check for Updates" control panel within the General Settings tab, complete with a visual download progress bar, status toasts, and automatic "Update & Restart" integration.
+  - **Promise Safety**: Handled fire-and-forget background update-check Promises by appending explicit `.catch` error logging to prevent unhandled rejection behaviors.
+  - **Automated Workflow Releases**: Enhanced the GitHub Release CI workflow to automatically parse and extract only the latest release notes from `CHANGELOG.md` dynamically using `awk`.
+
+---
+
 ## [1.6.5] - 2026-05-21
 
 ### Features & Enhancements

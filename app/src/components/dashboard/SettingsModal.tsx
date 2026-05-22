@@ -1,8 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, RotateCcw, Download, Upload, Trash2, HardDrive, Globe, Key, Copy, Check, RefreshCw, FolderArchive, Shield, Zap, Activity, Gauge, Wifi, ChevronDown, Link } from 'lucide-react';
+import { X, RotateCcw, Download, Upload, Trash2, HardDrive, Globe, Key, Copy, Check, RefreshCw, FolderArchive, Shield, Zap, Activity, Gauge, Wifi, ChevronDown, Link, Sparkles } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
+import { check, Update } from '@tauri-apps/plugin-updater';
+import { relaunch } from '@tauri-apps/plugin-process';
 import { useSettings } from '../../context/SettingsContext';
 import { useConfirm } from '../../context/ConfirmContext';
 import { ShareInfo } from '../../types';
@@ -28,6 +30,65 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const [activeTab, setActiveTab] = useState<SettingsTab>('general');
     const [latencyMs, setLatencyMs] = useState<number | null>(null);
     const [vpnDetected, setVpnDetected] = useState<boolean | null>(null);
+
+    // Update check state
+    const [updateChecking, setUpdateChecking] = useState(false);
+    const [updateAvailable, setUpdateAvailable] = useState<Update | null>(null);
+    const [updateVersion, setUpdateVersion] = useState<string | null>(null);
+    const [updateDownloading, setUpdateDownloading] = useState(false);
+    const [updateProgress, setUpdateProgress] = useState(0);
+
+    const handleCheckForUpdates = useCallback(async () => {
+        setUpdateChecking(true);
+        try {
+            const updateInfo = await check();
+            if (updateInfo) {
+                setUpdateAvailable(updateInfo);
+                setUpdateVersion(updateInfo.version);
+                toast.success(`Update v${updateInfo.version} available!`);
+            } else {
+                setUpdateAvailable(null);
+                setUpdateVersion(null);
+                toast.success("You're on the latest version");
+            }
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            if (msg.includes('dev') || msg.includes('no current version')) {
+                toast.info('Update check is only available in production builds');
+            } else {
+                toast.error(`Update check failed: ${msg}`);
+            }
+        } finally {
+            setUpdateChecking(false);
+        }
+    }, []);
+
+    const handleInstallUpdate = useCallback(async () => {
+        if (!updateAvailable) return;
+        setUpdateDownloading(true);
+        setUpdateProgress(0);
+        let downloaded = 0;
+        let contentLength = 0;
+        try {
+            await updateAvailable.downloadAndInstall((event) => {
+                if (event.event === 'Started') {
+                    const data = event.data as { contentLength?: number };
+                    contentLength = data.contentLength || 0;
+                } else if (event.event === 'Progress') {
+                    const data = event.data as { chunkLength?: number };
+                    downloaded += data.chunkLength || 0;
+                    if (contentLength > 0) {
+                        setUpdateProgress(Math.min(Math.round((downloaded / contentLength) * 100), 100));
+                    }
+                }
+            });
+            await relaunch();
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            toast.error(`Update failed: ${msg}`);
+            setUpdateDownloading(false);
+        }
+    }, [updateAvailable]);
 
     // Sharing settings state
     const [shares, setShares] = useState<ShareInfo[]>([]);
@@ -554,6 +615,59 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     >
                                         {clearing ? 'Clearing...' : 'Clear'}
                                     </button>
+                                </div>
+                            </section>
+
+                            {/* Updates Section */}
+                            <section className="space-y-3">
+                                <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
+                                    <Sparkles className="w-3.5 h-3.5" />
+                                    Updates
+                                </h3>
+
+                                <div className="p-3 rounded-lg bg-telegram-hover/50 space-y-3">
+                                    <div className="flex items-center justify-between">
+                                        <div className="flex items-center gap-2">
+                                            <Download className="w-4 h-4 text-telegram-subtext" />
+                                            <div>
+                                                <p className="text-sm text-telegram-text font-medium">Check for Updates</p>
+                                                <p className="text-xs text-telegram-subtext">
+                                                    {updateVersion ? `v${updateVersion} available` : 'Check if a newer version exists'}
+                                                </p>
+                                            </div>
+                                        </div>
+                                        {updateAvailable && !updateDownloading ? (
+                                            <button
+                                                onClick={handleInstallUpdate}
+                                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-telegram-primary text-white hover:bg-telegram-primary/90 transition"
+                                            >
+                                                <Download className="w-3 h-3" />
+                                                Update & Restart
+                                            </button>
+                                        ) : updateDownloading ? (
+                                            <div className="flex items-center gap-2">
+                                                <RefreshCw className="w-3.5 h-3.5 text-telegram-primary animate-spin" />
+                                                <span className="text-xs text-telegram-primary font-mono">{updateProgress}%</span>
+                                            </div>
+                                        ) : (
+                                            <button
+                                                onClick={handleCheckForUpdates}
+                                                disabled={updateChecking}
+                                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-telegram-primary/10 text-telegram-primary hover:bg-telegram-primary/20 transition disabled:opacity-50"
+                                            >
+                                                <RefreshCw className={`w-3 h-3 ${updateChecking ? 'animate-spin' : ''}`} />
+                                                {updateChecking ? 'Checking...' : 'Check Now'}
+                                            </button>
+                                        )}
+                                    </div>
+                                    {updateDownloading && (
+                                        <div className="w-full h-1.5 bg-telegram-border rounded-full overflow-hidden">
+                                            <div
+                                                className="h-full bg-telegram-primary rounded-full transition-all duration-300"
+                                                style={{ width: `${updateProgress}%` }}
+                                            />
+                                        </div>
+                                    )}
                                 </div>
                             </section>
 
