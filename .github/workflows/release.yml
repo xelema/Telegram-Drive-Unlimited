@@ -32,14 +32,17 @@ jobs:
       - name: Create Release
         id: create-release
         uses: actions/github-script@v7
+        env:
+          RELEASE_BODY: ${{ steps.changelog.outputs.BODY }}
+          RELEASE_VERSION: ${{ steps.get_version.outputs.VERSION }}
         with:
           script: |
             const { data } = await github.rest.repos.createRelease({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              tag_name: `v${{ steps.get_version.outputs.VERSION }}`,
-              name: `Telegram Drive v${{ steps.get_version.outputs.VERSION }}`,
-              body: `${{ steps.changelog.outputs.BODY }}`,
+              tag_name: `v${process.env.RELEASE_VERSION}`,
+              name: `Telegram Drive v${process.env.RELEASE_VERSION}`,
+              body: process.env.RELEASE_BODY,
               draft: true,
               prerelease: false
             });
