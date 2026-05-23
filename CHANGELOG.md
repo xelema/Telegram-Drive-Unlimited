@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.6.7] - 2026-05-23
+
+### Features & Fixes
+
+- **Windows Build & Git Checkout Fix** — Untracked and ignored `app/.npm-cache` files from Git to fix "Filename too long" checkouts and build errors on Windows platforms.
+- **Tauri signing key security** — Replaced updater signing key with a password-protected keypair and restored the secret password integration in the CI pipeline.
+
+---
+
 ## [1.6.6] - 2026-05-22
 
 ### Features & Fixes
