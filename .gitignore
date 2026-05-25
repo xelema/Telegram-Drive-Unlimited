@@ -24,5 +24,6 @@ Error.html
 /android/
 /app/src-tauri/gen/android/
 *.apk
+*.aab
 .gradle/
 local.properties

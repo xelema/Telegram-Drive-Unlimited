@@ -25,7 +25,9 @@ dist-ssr
 .npm-cache
 
 # Android local builds
+/src-tauri/gen/
 /src-tauri/gen/android/
 *.apk
+*.aab
 .gradle/
 local.properties
