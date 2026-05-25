@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.6.8] - 2026-05-25
+
+### Features & Fixes
+
+- **In-App Update Permission Fix** — Granted the `"process:allow-restart"` capability permission in `src-tauri/capabilities/default.json` to allow the frontend updater to safely relaunch the app after installing an update.
+
+---
+
 ## [1.6.7] - 2026-05-23
 
 ### Features & Fixes
