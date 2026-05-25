@@ -4,8 +4,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 
-import { TelegramFile, BandwidthStats } from '../types';
-import { formatBytes, isMediaFile, isPdfFile } from '../utils';
+import { TelegramFile, BandwidthStats } from '../../types';
+import { formatBytes, isMediaFile, isPdfFile } from '../../utils';
 
 // Components
 import { Sidebar } from './dashboard/Sidebar';
@@ -23,12 +23,12 @@ import { SettingsModal } from './dashboard/SettingsModal';
 import { ShareDialog } from './dashboard/ShareDialog';
 
 // Hooks
-import { useTelegramConnection } from '../hooks/useTelegramConnection';
-import { useFileOperations } from '../hooks/useFileOperations';
-import { useFileUpload } from '../hooks/useFileUpload';
-import { useFileDownload } from '../hooks/useFileDownload';
-import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
-import { useSettings } from '../context/SettingsContext';
+import { useTelegramConnection } from '../../hooks/useTelegramConnection';
+import { useFileOperations } from '../../hooks/useFileOperations';
+import { useFileUpload } from '../../hooks/useFileUpload';
+import { useFileDownload } from '../../hooks/useFileDownload';
+import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts';
+import { useSettings } from '../../context/SettingsContext';
 
 export function Dashboard({ onLogout }: { onLogout: () => void }) {
     const queryClient = useQueryClient();

@@ -5,9 +5,9 @@ import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { check, Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
-import { useSettings } from '../../context/SettingsContext';
-import { useConfirm } from '../../context/ConfirmContext';
-import { ShareInfo } from '../../types';
+import { useSettings } from '../../../context/SettingsContext';
+import { useConfirm } from '../../../context/ConfirmContext';
+import { ShareInfo } from '../../../types';
 
 interface SettingsModalProps {
     isOpen: boolean;

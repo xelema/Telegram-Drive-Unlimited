@@ -16,6 +16,8 @@ pub mod server;
 pub mod api_routes;
 pub mod db;
 pub mod share_routes;
+pub mod upload_service;
+pub mod ad_service;
 
 
 /// Single source of truth for the Actix streaming server port.
@@ -42,6 +44,7 @@ pub struct ApiServerHandle(pub Arc<std::sync::Mutex<Option<actix_web::dev::Serve
 
 /// Restart (or stop) the API server based on current settings.
 /// Called from Tauri commands when the user changes API settings.
+#[cfg(not(target_os = "android"))]
 pub fn restart_api_server(app: &tauri::AppHandle) {
     // Stop existing API server if running
     let api_handle_arc = app.state::<ApiServerHandle>().0.clone();
@@ -107,6 +110,13 @@ pub fn restart_api_server(app: &tauri::AppHandle) {
     });
 }
 
+/// Restart (or stop) the API server based on current settings.
+/// Called from Tauri commands when the user changes API settings.
+#[cfg(target_os = "android")]
+pub fn restart_api_server(_app: &tauri::AppHandle) {
+    log::info!("REST API disabled on mobile.");
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::init();
@@ -118,8 +128,9 @@ pub fn run() {
         Arc::new(std::sync::Mutex::new(None));
     let server_handle_for_setup = server_handle.clone();
 
-    let mut builder = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
@@ -128,9 +139,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init());
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    {
-        builder = builder.plugin(tauri_plugin_window_state::Builder::default().build());
-    }
+    let builder = builder.plugin(tauri_plugin_window_state::Builder::default().build());
 
     let app = builder
         .setup(move |app| {
@@ -215,6 +224,8 @@ pub fn run() {
             commands::cmd_auth_check_password,
             commands::cmd_get_files,
             commands::cmd_upload_file,
+            commands::initiate_upload,
+            ad_service::show_ad,
             commands::cmd_connect,
             commands::cmd_log,
             commands::cmd_delete_file,
@@ -283,3 +294,4 @@ pub fn run() {
         }
     });
 }
+

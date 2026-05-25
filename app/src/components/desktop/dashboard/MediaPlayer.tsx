@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { X, ChevronLeft, ChevronRight } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
-import { TelegramFile } from '../../types';
-import { isVideoFile, isAudioFile } from '../../utils';
+import { TelegramFile } from '../../../types';
+import { isVideoFile, isAudioFile } from '../../../utils';
 
 interface StreamInfo {
     token: string;

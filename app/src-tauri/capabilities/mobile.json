@@ -1,0 +1,16 @@
+{
+  "identifier": "mobile-only",
+  "description": "Permissions required only on Android",
+  "platforms": [
+    "android"
+  ],
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "fs:allow-read",
+    "fs:allow-write",
+    "dialog:default",
+    "opener:default"
+  ]
+}

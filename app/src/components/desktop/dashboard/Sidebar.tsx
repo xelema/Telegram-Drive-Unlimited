@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { HardDrive, Folder, Plus, RefreshCw, LogOut } from 'lucide-react';
 import { SidebarItem } from './SidebarItem';
 import { BandwidthWidget } from './BandwidthWidget';
-import { TelegramFolder, BandwidthStats } from '../../types';
+import { TelegramFolder, BandwidthStats } from '../../../types';
 
 interface SidebarProps {
     folders: TelegramFolder[];

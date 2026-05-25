@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Eye, HardDrive, Trash2, FolderOpen, Pencil, Play, FileText, Link, Copy } from 'lucide-react';
-import { TelegramFile, TelegramFolder } from '../../types';
-import { isMediaFile, isPdfFile } from '../../utils';
+import { TelegramFile, TelegramFolder } from '../../../types';
+import { isMediaFile, isPdfFile } from '../../../utils';
 import { toast } from 'sonner';
 
 interface ContextMenuProps {

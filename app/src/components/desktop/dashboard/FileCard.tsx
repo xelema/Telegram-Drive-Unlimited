@@ -2,8 +2,8 @@ import { motion } from 'framer-motion';
 import { useState, useEffect } from 'react';
 import { Folder, Eye, Trash2 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
-import { TelegramFile } from '../../types';
-import { FileTypeIcon } from '../FileTypeIcon';
+import { TelegramFile } from '../../../types';
+import { FileTypeIcon } from '../../shared/FileTypeIcon';
 
 interface FileCardProps {
     file: TelegramFile;

@@ -359,6 +359,28 @@ pub async fn cmd_upload_file(
 }
 
 #[tauri::command]
+pub async fn initiate_upload(
+    path: String,
+    folder_id: Option<i64>,
+    transfer_id: Option<String>,
+    app_handle: tauri::AppHandle,
+    state: State<'_, TelegramState>,
+    bw_state: State<'_, BandwidthManager>,
+    net_config: State<'_, std::sync::Arc<NetworkConfig>>,
+) -> Result<String, String> {
+    crate::upload_service::start_foreground_service();
+    cmd_upload_file(
+        path,
+        folder_id,
+        transfer_id,
+        app_handle,
+        state,
+        bw_state,
+        net_config,
+    ).await
+}
+
+#[tauri::command]
 pub async fn cmd_delete_file(
     message_id: i32,
     folder_id: Option<i64>,

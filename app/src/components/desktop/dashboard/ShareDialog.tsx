@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Plus, Link, Copy, Check, Shield, Clock, AlertCircle } from 'lucide-react';
-import { TelegramFile, ShareInfo } from '../../types';
+import { TelegramFile, ShareInfo } from '../../../types';
 import { invoke } from '@tauri-apps/api/core';
 import { motion, AnimatePresence } from 'framer-motion';
 

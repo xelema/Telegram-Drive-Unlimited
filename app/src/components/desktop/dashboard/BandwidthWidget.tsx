@@ -1,5 +1,5 @@
-import { BandwidthStats } from '../../types';
-import { formatBytes } from '../../utils';
+import { BandwidthStats } from '../../../types';
+import { formatBytes } from '../../../utils';
 
 interface BandwidthWidgetProps {
     bandwidth: BandwidthStats | null;

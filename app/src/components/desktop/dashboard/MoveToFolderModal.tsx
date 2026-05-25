@@ -1,5 +1,5 @@
 import { Plus, HardDrive, Folder } from 'lucide-react';
-import { TelegramFolder } from '../../types';
+import { TelegramFolder } from '../../../types';
 
 interface MoveToFolderModalProps {
     folders: TelegramFolder[];

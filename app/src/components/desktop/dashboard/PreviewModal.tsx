@@ -2,8 +2,8 @@ import { useState, useEffect, useRef } from 'react';
 import { X, File, ChevronLeft, ChevronRight } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { convertFileSrc } from '@tauri-apps/api/core';
-import { TelegramFile } from '../../types';
-import { isImageFile } from '../../utils';
+import { TelegramFile } from '../../../types';
+import { isImageFile } from '../../../utils';
 
 const PREVIEW_CACHE_TTL_MS = 5 * 60 * 1000;
 const PREVIEW_CACHE_MAX_ITEMS = 8;

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Folder, Eye, HardDrive, Plus } from 'lucide-react';
-import { TelegramFile } from '../../types';
-import { FileTypeIcon } from '../FileTypeIcon';
+import { TelegramFile } from '../../../types';
+import { FileTypeIcon } from '../../shared/FileTypeIcon';
 
 interface FileListItemProps {
     file: TelegramFile;
