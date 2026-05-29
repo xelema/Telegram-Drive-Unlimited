@@ -47,17 +47,24 @@ A pre-built **unsigned APK** is available for Android sideloading via the [v1.0.
 
 ### How to Sideload
 
-1. Download `Telegram-Drive-v2.0.0-beta.apk` from the [v1.0.0-android release](https://github.com/caamer20/Telegram-Drive/releases/tag/v1.0.0-android).
+1. Download `Telegram-Drive-v2.1.0-beta.apk` from the [v1.0.0-android release](https://github.com/caamer20/Telegram-Drive/releases/tag/v1.0.0-android).
 2. On your Android device, go to **Settings → Apps → Special App Access → Install unknown apps** and allow your browser or file manager.
 3. Open the downloaded APK and tap **Install**.
 4. Enter your Telegram API credentials on first launch (same as the desktop app).
 
 > [!NOTE]
-> The Android build is a **community/beta release** compiled locally. The desktop app (Windows/macOS/Linux) remains the primary supported platform, built and signed automatically by GitHub CI.
+> - **Compatibility**: Requires **Android 7.0 (API level 24)** or higher.
+> - **Android 15+ Installation**: If you encounter blocks or security restrictions when installing on Android 15+ emulator/device, bypass it using ADB:
+>   ```bash
+>   adb install --bypass-low-target-sdk-block Telegram-Drive-v2.1.0-beta.apk
+>   ```
+> - The Android build is a **community/beta release** compiled locally. The desktop app (Windows/macOS/Linux) remains the primary supported platform, built and signed automatically by GitHub CI.
 
 ---
 
 ##  Screenshots
+
+### Desktop App
 
 | Dashboard | File Preview |
 |-----------|--------------|
@@ -78,6 +85,16 @@ A pre-built **unsigned APK** is available for Android sideloading via the [v1.0.
 | Folder Creation | Folder List View |
 |-----------------|------------------|
 | ![Folder Creation](screenshots/FolderCreation.png) | ![Folder List View](screenshots/FolderListView.png) |
+
+### Android App
+
+| Home Screen | Splash Screen | Dark Mode Folder View |
+|-------------|---------------|-----------------------|
+| ![Home Screen](screenshots/AndroidHomeScreenWithIcon.png) | ![Splash Screen](screenshots/AndroidTelegram-DriveSplash.png) | ![Dark Mode Folder View](screenshots/AndroidDarkModeFolderView.png) |
+
+| Folder List | Transfer Queue | Settings Page |
+|-------------|----------------|---------------|
+| ![Folder List](screenshots/AndroidFolderList.png) | ![Transfer Queue](screenshots/AndroidTransferQue.png) | ![Settings Page](screenshots/AndroidSettingsPage.png) |
 
 ##  Tech Stack
 

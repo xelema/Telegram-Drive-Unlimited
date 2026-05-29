@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.7.0] - 2026-05-29
+
+### Features & Documentation
+
+- **Pre-built Android APK Update** — Updated the sidelined APK build release reference to `v2.1.0-beta` in the documentation.
+- **Android App Gallery** — Added an extensive screenshots section highlighting the beautiful mobile interface layout, theme views, and active queue transfers.
+- **Desktop Bump to v1.7.0** — Bumped desktop versions to v1.7.0 for the synchronized release.
+
+---
+
 ## [1.6.9] - 2026-05-29
 
 ### Features & Enhancements
