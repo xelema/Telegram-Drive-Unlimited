@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.6.9] - 2026-05-29
+
+### Features & Enhancements
+
+- **Android Compilation Fixes** — Cleaned build configuration files to prevent deepLinkProtocols syntax conflicts.
+- **Mobile Shell & macOS Entitlements** — Configured custom shell integration capabilities and set up macOS entitlements plists.
+
+---
+
 ## [1.6.8] - 2026-05-25
 
 ### Features & Fixes

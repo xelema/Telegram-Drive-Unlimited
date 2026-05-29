@@ -109,11 +109,22 @@ jobs:
         working-directory: app
         run: npm install
 
+      - name: Prepare Tauri signing key
+        shell: node {0}
+        env:
+          KEY_B64: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          const fs = require('fs');
+          const path = require('path');
+          const keyPath = path.resolve('app/src-tauri/tauri-signing-key.key');
+          fs.writeFileSync(keyPath, Buffer.from(process.env.KEY_B64, 'base64'));
+          fs.appendFileSync(process.env.GITHUB_ENV, `TAURI_SIGNING_KEY_PATH=${keyPath}\n`);
+
       - name: Build the app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ env.TAURI_SIGNING_KEY_PATH }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}

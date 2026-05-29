@@ -1,6 +1,9 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "plugins": {
+    "shell": {
+      "open": true
+    },
     "updater": {
       "endpoints": [
         "https://github.com/caamer20/Telegram-Drive/releases/latest/download/latest.json"
@@ -9,7 +12,7 @@
     }
   },
   "productName": "Telegram Drive",
-  "version": "1.6.8",
+  "version": "1.6.9",
   "identifier": "com.cameronamer.telegramdrive",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -29,7 +32,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' http://localhost:* http://127.0.0.1:*; media-src 'self' http://localhost:* http://127.0.0.1:*; img-src 'self' data: blob: asset: https://asset.localhost; style-src 'self' 'unsafe-inline'; script-src 'self'; worker-src 'self' blob:;",
+      "csp": "default-src 'self'; connect-src 'self' http://localhost:* http://127.0.0.1:* https://asset.localhost http://asset.localhost https://www.highperformanceformat.com; media-src 'self' http://localhost:* http://127.0.0.1:*; img-src 'self' data: blob: asset: https://asset.localhost; style-src 'self' 'unsafe-inline'; script-src 'self' blob: https://www.highperformanceformat.com; frame-src 'self' blob: https://www.highperformanceformat.com; worker-src 'self' blob:;",
       "capabilities": [
         "default",
         "mobile-only"
@@ -46,6 +49,12 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "macOS": {
+      "entitlements": "entitlements.plist"
+    },
+    "android": {
+      "minSdkVersion": 24
+    }
   }
 }
