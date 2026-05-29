@@ -49,7 +49,7 @@ rand = "0.8"
 sha2 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 walkdir = "2"
-sqlite = "0.37.0"
+sqlite = { version = "0.37.0", features = ["bundled"] }
 url = "2.5.8"
 
 [target.'cfg(target_os = "android")'.dependencies]
