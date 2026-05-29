@@ -112,18 +112,22 @@ jobs:
       - name: Prepare Tauri signing key
         shell: node {0}
         env:
-          KEY_B64: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
           const fs = require('fs');
-          const path = require('path');
-          const keyPath = path.resolve('app/src-tauri/tauri-signing-key.key');
-          fs.writeFileSync(keyPath, Buffer.from(process.env.KEY_B64.trim(), 'base64'));
-          fs.appendFileSync(process.env.GITHUB_ENV, `TAURI_SIGNING_PRIVATE_KEY_PATH=${keyPath}\n`);
+          const key = process.env.KEY.trim();
+          // Tauri expects TAURI_SIGNING_PRIVATE_KEY to be base64-encoded.
+          // If the secret is raw key text, base64-encode it; otherwise pass through.
+          const b64 = key.startsWith('untrusted comment:')
+            ? Buffer.from(key).toString('base64')
+            : key;
+          fs.appendFileSync(process.env.GITHUB_ENV, `TAURI_SIGNING_PRIVATE_KEY=${b64}\n`);
 
       - name: Build the app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ env.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
