@@ -258,7 +258,7 @@ pub async fn cmd_logout(
     state.cancelled_transfers.write().await.clear();
 
     // 4. Remove Session File
-    let app_data_dir = app_handle.path().app_data_dir().unwrap();
+    let app_data_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
     let session_path = app_data_dir.join("telegram.session");
     let _ = std::fs::remove_file(session_path);
     let _ = std::fs::remove_file(app_data_dir.join("telegram.session-wal"));

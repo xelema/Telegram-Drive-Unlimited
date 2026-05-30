@@ -33,6 +33,10 @@ pub struct FolderMetadata {
     pub id: i64,
     pub parent_id: Option<i64>,
     pub name: String,
+    /// Telegram public username (e.g. "mychannel"). None if private.
+    pub username: Option<String>,
+    /// Whether the channel is public (has a username set).
+    pub is_public: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

@@ -7,6 +7,7 @@ use crate::models::{FolderMetadata, FileMetadata};
 use crate::bandwidth::BandwidthManager;
 use crate::commands::utils::{resolve_peer, map_error};
 use crate::vpn_optimizer::{NetworkConfig, backoff_ms};
+use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::sync::Mutex;
@@ -326,7 +327,7 @@ pub fn copy_to_android_cache(raw_path: &str) -> Result<String, String> {
     }
 
     // 9. Create cache file destination
-    let cache_file_name = format!("upload_{}_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(), file_name);
+    let cache_file_name = format!("upload_{}_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis(), file_name);
     let dest_path = std::path::Path::new(&cache_path).join(cache_file_name);
     let dest_path_str = dest_path.to_string_lossy().to_string();
 
@@ -454,16 +455,18 @@ pub async fn cmd_create_folder(
     
     // --- MOCK ---
     if client_opt.is_none() {
-        let mock_id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        let mock_id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
         log::info!("[MOCK] Created folder '{}' with ID {}", name, mock_id);
         return Ok(FolderMetadata {
             id: mock_id,
             name,
             parent_id: None,
+            username: None,
+            is_public: false,
         });
     }
     // -----------
-    let client = client_opt.unwrap();
+    let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
     log::info!("Creating Telegram Channel: {}", name);
     
     let result = client.invoke(&tl::functions::channels::CreateChannel {
@@ -478,11 +481,17 @@ pub async fn cmd_create_folder(
         ttl_period: None, // Initial creation TTL
     }).await.map_err(map_error)?;
     
-    let (chat_id, access_hash) = match result {
+    let (chat_id, access_hash) = match &result {
         tl::enums::Updates::Updates(u) => {
              let chat = u.chats.first().ok_or("No chat in updates")?;
              match chat {
-                 tl::enums::Chat::Channel(c) => (c.id, c.access_hash.unwrap_or(0)),
+                 tl::enums::Chat::Channel(c) => {
+                     // Cache the newly created peer immediately so that invite link generation
+                     // and other commands don't experience a peer cache miss on warm start.
+                     let channel_obj = grammers_client::types::Channel { raw: c.clone() };
+                     state.peer_cache.write().await.insert(c.id, grammers_client::types::Peer::Channel(channel_obj));
+                     (c.id, c.access_hash.unwrap_or(0))
+                 }
                  _ => return Err("Created chat is not a channel".to_string()),
              }
         },
@@ -504,6 +513,8 @@ pub async fn cmd_create_folder(
         id: chat_id,
         name,
         parent_id: None,
+        username: None,
+        is_public: false,
     })
 }
 
@@ -520,7 +531,7 @@ pub async fn cmd_delete_folder(
         log::info!("[MOCK] Deleted folder ID {}", folder_id);
         return Ok(true);
     }
-    let client = client_opt.unwrap();
+    let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
     log::info!("Deleting folder/channel: {}", folder_id);
 
     let peer = resolve_peer(&client, Some(folder_id), &state.peer_cache).await?;
@@ -557,7 +568,7 @@ pub async fn cmd_rename_folder(
         log::info!("[MOCK] Renamed folder ID {} to {}", folder_id, new_name);
         return Ok(true);
     }
-    let client = client_opt.unwrap();
+    let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
     log::info!("Renaming folder/channel: {} to {}", folder_id, new_name);
 
     let peer = resolve_peer(&client, Some(folder_id), &state.peer_cache).await?;
@@ -731,7 +742,7 @@ async fn cmd_upload_file_inner(
         bw_state.add_up(size);
         return Ok("Mock upload successful".to_string());
     }
-    let client = client_opt.unwrap();
+    let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
 
     // Emit start progress
     if !tid.is_empty() {
@@ -902,7 +913,7 @@ pub async fn cmd_delete_file(
          log::info!("[MOCK] Deleted message {} from folder {:?}", message_id, folder_id);
         return Ok(true); 
     }
-    let client = client_opt.unwrap();
+    let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
 
     let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
     client.delete_messages(&peer, &[message_id]).await.map_err(|e| e.to_string())?;
@@ -968,7 +979,7 @@ pub async fn cmd_download_file(
         if let Err(e) = tokio::fs::write(&actual_save_path, b"Mock Content").await { return Err(e.to_string()); }
         return Ok("Download successful".to_string());
     }
-    let client = client_opt.unwrap();
+    let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
     
     let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
 
@@ -1214,7 +1225,7 @@ pub async fn cmd_move_files(
         log::info!("[MOCK] Moved msgs {:?} from {:?} to {:?}", message_ids, source_folder_id, target_folder_id);
         return Ok(true); 
     }
-    let client = client_opt.unwrap();
+    let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
 
     let source_peer = resolve_peer(&client, source_folder_id, &state.peer_cache).await?;
     let target_peer = resolve_peer(&client, target_folder_id, &state.peer_cache).await?;
@@ -1242,7 +1253,7 @@ pub async fn cmd_get_files(
         log::info!("[MOCK] Returning mock files for folder {:?}", folder_id);
         return Ok(Vec::new()); // No mock files for now
     }
-    let client = client_opt.unwrap();
+    let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
     let mut files = Vec::new();
     
     let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
@@ -1279,7 +1290,7 @@ pub async fn cmd_search_global(
     if client_opt.is_none() { 
         return Ok(Vec::new());
     }
-    let client = client_opt.unwrap();
+    let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
     let mut files = Vec::new();
     
     log::info!("Searching global for: {}", query);
@@ -1303,7 +1314,7 @@ pub async fn cmd_search_global(
         for msg in msgs.messages {
             if let tl::enums::Message::Message(m) = msg {
                 if let Some(tl::enums::MessageMedia::Document(d)) = m.media {
-                    if let tl::enums::Document::Document(doc) = d.document.unwrap() {
+                    if let Some(tl::enums::Document::Document(doc)) = d.document {
                         let name = doc.attributes.iter().find_map(|a| match a {
                             tl::enums::DocumentAttribute::Filename(f) => Some(f.file_name.clone()),
                             _ => None
@@ -1329,7 +1340,7 @@ pub async fn cmd_search_global(
         for msg in msgs.messages {
             if let tl::enums::Message::Message(m) = msg {
                 if let Some(tl::enums::MessageMedia::Document(d)) = m.media {
-                    if let tl::enums::Document::Document(doc) = d.document.unwrap() {
+                    if let Some(tl::enums::Document::Document(doc)) = d.document {
                         let name = doc.attributes.iter().find_map(|a| match a {
                             tl::enums::DocumentAttribute::Filename(f) => Some(f.file_name.clone()),
                             _ => None
@@ -1364,7 +1375,7 @@ pub async fn cmd_scan_folders(
     if client_opt.is_none() { 
         return Ok(Vec::new());
     }
-    let client = client_opt.unwrap();
+    let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
     
     let mut folders = Vec::new();
     let mut dialogs = client.iter_dialogs();
@@ -1388,7 +1399,9 @@ pub async fn cmd_scan_folders(
                 if name.to_lowercase().contains("[td]") {
                     log::info!(" -> MATCH via Title: {}", name);
                     let display_name = name.replace(" [TD]", "").replace(" [td]", "").replace("[TD]", "").replace("[td]", "").trim().to_string();
-                    folders.push(FolderMetadata { id, name: display_name, parent_id: None });
+                    let username = c.raw.username.clone();
+                    let is_public = username.is_some();
+                    folders.push(FolderMetadata { id, name: display_name, parent_id: None, username, is_public });
                     continue; 
                 }
 
@@ -1406,7 +1419,9 @@ pub async fn cmd_scan_folders(
                             if let tl::enums::ChatFull::Full(cf) = f.full_chat {
                                  if cf.about.contains("[telegram-drive-folder]") {
                                      log::info!(" -> MATCH via About: {}", name);
-                                     folders.push(FolderMetadata { id, name: name.clone(), parent_id: None });
+                                     let username = c.raw.username.clone();
+                                     let is_public = username.is_some();
+                                     folders.push(FolderMetadata { id, name: name.clone(), parent_id: None, username, is_public });
                                  }
                             }
                         },
@@ -1524,4 +1539,244 @@ pub async fn cmd_delete_temp_zip(
     })
     .await
     .map_err(|e| format!("Task panicked: {}", e))?
+}
+
+/// Toggle a folder (channel) between private and public.
+/// When making public, a username is generated from the channel title.
+/// When making private, the username is removed.
+#[tauri::command]
+pub async fn cmd_toggle_folder_visibility(
+    folder_id: i64,
+    make_public: bool,
+    desired_username: Option<String>,
+    state: State<'_, TelegramState>,
+) -> Result<FolderMetadata, String> {
+    let client_opt = {
+        state.client.lock().await.clone()
+    };
+
+    if client_opt.is_none() {
+        log::info!("[MOCK] Toggle visibility for folder {}. Public: {}", folder_id, make_public);
+        return Ok(FolderMetadata {
+            id: folder_id,
+            name: "Mock Folder".to_string(),
+            parent_id: None,
+            username: if make_public { desired_username } else { None },
+            is_public: make_public,
+        });
+    }
+    let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
+
+    let peer = resolve_peer(&client, Some(folder_id), &state.peer_cache).await?;
+    let (channel_id, access_hash) = match &peer {
+        Peer::Channel(c) => (c.raw.id, c.raw.access_hash.ok_or("No access hash for channel")?),
+        _ => return Err("Only channels (folders) can be toggled.".to_string()),
+    };
+
+    let input_channel = tl::enums::InputChannel::Channel(tl::types::InputChannel {
+        channel_id,
+        access_hash,
+    });
+
+    // Extract channel name from the resolved peer for the return value
+    let channel_name = match &peer {
+        Peer::Channel(c) => {
+            c.raw.title
+                .replace(" [TD]", "")
+                .replace(" [td]", "")
+                .trim()
+                .to_string()
+        }
+        _ => "Folder".to_string(),
+    };
+
+    if make_public {
+        // Generate a username from the desired_username or channel title.
+        // If desired_username is provided AND non-empty, use it directly;
+        // otherwise auto-generate from the channel title.
+        let username = if let Some(ref u) = desired_username {
+            if !u.is_empty() {
+                Some(u.clone())
+            } else {
+                None // empty string → fall through to auto-generation below
+            }
+        } else {
+            None
+        };
+
+        let username = match username {
+            Some(given) => {
+                // User-provided username: check availability first
+                let available = client
+                    .invoke(&tl::functions::channels::CheckUsername {
+                        channel: tl::enums::InputChannel::Channel(tl::types::InputChannel {
+                            channel_id,
+                            access_hash,
+                        }),
+                        username: given.clone(),
+                    })
+                    .await
+                    .map_err(|e| format!("Failed to check username availability: {}", map_error(e)))?;
+                if !available {
+                    return Err(format!("Username '{}' is not available. Try a different one.", given));
+                }
+                given
+            }
+            None => {
+                // Auto-generate username from channel title
+                // channel_name already has [TD] stripped above
+                let mut base = channel_name.clone()
+                    .to_lowercase()
+                    .chars()
+                    .filter(|c| c.is_alphanumeric() || *c == '_')
+                    .take(30)
+                    .collect::<String>();
+                if base.len() < 5 {
+                    let suffix: String = (0..6)
+                        .map(|_| char::from(b'a' + (rand::random::<u8>() % 26)))
+                        .collect();
+                    base = format!("{}_{}", base, suffix);
+                }
+                // Try to find an available username
+                let mut candidate = base.clone();
+                for attempt in 1..=10 {
+                    match client
+                        .invoke(&tl::functions::channels::CheckUsername {
+                            channel: tl::enums::InputChannel::Channel(tl::types::InputChannel {
+                                channel_id,
+                                access_hash,
+                            }),
+                            username: candidate.clone(),
+                        })
+                        .await
+                    {
+                        Ok(true) => break,
+                        _ => {
+                            candidate = format!("{}{}", base, attempt);
+                            if attempt == 10 {
+                                return Err("Could not find an available username after 10 attempts".to_string());
+                            }
+                        }
+                    }
+                }
+                candidate
+            }
+        };
+
+        log::info!("Setting channel {} username to '{}'", channel_id, username);
+        client
+            .invoke(&tl::functions::channels::UpdateUsername {
+                channel: input_channel,
+                username: username.clone(),
+            })
+            .await
+            .map_err(|e| format!("Failed to set username: {}", map_error(e)))?;
+
+        Ok(FolderMetadata {
+            id: channel_id,
+            name: channel_name,
+            parent_id: None,
+            username: Some(username),
+            is_public: true,
+        })
+    } else {
+        // Make private: remove username
+        log::info!("Removing username from channel {}", channel_id);
+        client
+            .invoke(&tl::functions::channels::UpdateUsername {
+                channel: input_channel,
+                username: String::new(),
+            })
+            .await
+            .map_err(|e| format!("Failed to remove username: {}", map_error(e)))?;
+
+        Ok(FolderMetadata {
+            id: channel_id,
+            name: channel_name,
+            parent_id: None,
+            username: None,
+            is_public: false,
+        })
+    }
+}
+
+/// Export a Telegram invite link for a folder (channel).
+/// For public channels, returns the t.me/username link directly.
+/// For private channels, exports a hash-based invite link via the API.
+#[derive(Debug, Serialize)]
+pub struct FolderInviteInfo {
+    pub link: String,
+    pub is_public: bool,
+    pub username: Option<String>,
+}
+
+#[tauri::command]
+pub async fn cmd_export_folder_invite(
+    folder_id: i64,
+    state: State<'_, TelegramState>,
+) -> Result<FolderInviteInfo, String> {
+    let client_opt = {
+        state.client.lock().await.clone()
+    };
+
+    if client_opt.is_none() {
+        log::info!("[MOCK] Export invite for folder {}", folder_id);
+        return Ok(FolderInviteInfo {
+            link: "https://t.me/joinchat/mock-invite-hash".to_string(),
+            is_public: false,
+            username: None,
+        });
+    }
+    let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
+
+    let peer = resolve_peer(&client, Some(folder_id), &state.peer_cache).await?;
+    let (channel_id, access_hash) = match &peer {
+        Peer::Channel(c) => (c.raw.id, c.raw.access_hash.ok_or("No access hash for channel")?),
+        _ => return Err("Only channels (folders) can have invite links.".to_string()),
+    };
+
+    // Check if channel already has a public username (use the resolved peer directly)
+    let username: Option<String> = match &peer {
+        Peer::Channel(c) => c.raw.username.clone(),
+        _ => None,
+    };
+
+    if let Some(ref uname) = username {
+        // Public channel: return the t.me/username link
+        Ok(FolderInviteInfo {
+            link: format!("https://t.me/{}", uname),
+            is_public: true,
+            username: Some(uname.clone()),
+        })
+    } else {
+        // Private channel: export an invite link
+        let result = client
+            .invoke(&tl::functions::messages::ExportChatInvite {
+                peer: tl::enums::InputPeer::Channel(tl::types::InputPeerChannel {
+                    channel_id,
+                    access_hash,
+                }),
+                legacy_revoke_permanent: false,
+                request_needed: false,
+                expire_date: None,
+                usage_limit: None,
+                title: None,
+                subscription_pricing: None,
+            })
+            .await
+            .map_err(|e| format!("Failed to export invite: {}", map_error(e)))?;
+
+        let link = match result {
+            tl::enums::ExportedChatInvite::ChatInviteExported(c) => c.link,
+            tl::enums::ExportedChatInvite::ChatInvitePublicJoinRequests => {
+                return Err("Public join request channels do not have a custom private invite link. Share the public username directly instead.".to_string());
+            }
+        };
+
+        Ok(FolderInviteInfo {
+            link,
+            is_public: false,
+            username: None,
+        })
+    }
 }

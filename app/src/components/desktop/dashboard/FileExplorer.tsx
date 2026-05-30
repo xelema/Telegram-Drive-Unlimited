@@ -277,6 +277,7 @@ export function FileExplorer({
                                                 activeFolderId={activeFolderId}
                                                 height={cardHeight}
                                                 onToggleSelection={() => onToggleSelection(file.id)}
+                                                onShare={onShare ? () => onShare(file) : undefined}
                                             />
                                         );
                                     })}
@@ -360,6 +361,7 @@ export function FileExplorer({
                                         onPreview={handlePreviewRequest}
                                         onDownload={onDownload}
                                         onDelete={onDelete}
+                                        onShare={onShare}
                                     />
                                 </div>
                             );

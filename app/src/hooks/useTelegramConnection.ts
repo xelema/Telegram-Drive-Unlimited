@@ -4,7 +4,7 @@ import { Store } from '@tauri-apps/plugin-store';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { useConfirm } from '../context/ConfirmContext';
-import { TelegramFolder } from '../types';
+import { TelegramFolder, FolderInviteInfo } from '../types';
 import { useNetworkStatus } from './useNetworkStatus';
 
 export function useTelegramConnection(onLogoutParent: () => void) {
@@ -227,21 +227,72 @@ export function useTelegramConnection(onLogoutParent: () => void) {
     };
 
 
-    const handleFolderRename = async (folderId: number, oldName: string) => {
-        const newName = prompt(`Enter new name for "${oldName}":`);
-        if (!newName || !newName.trim() || newName.trim() === oldName) return;
+    const handleFolderRename = async (folderId: number, oldName: string, newNameOverride?: string) => {
+        let newName: string | null;
+        if (newNameOverride !== undefined) {
+            newName = newNameOverride.trim();
+            if (!newName || newName === oldName) return;
+        } else {
+            newName = prompt(`Enter new name for "${oldName}":`);
+            if (!newName || !newName.trim() || newName.trim() === oldName) return;
+            newName = newName.trim();
+        }
 
         try {
-            await invoke('cmd_rename_folder', { folderId, newName: newName.trim() });
-            const updated = folders.map(f => f.id === folderId ? { ...f, name: newName.trim() } : f);
+            await invoke('cmd_rename_folder', { folderId, newName });
+            const updated = folders.map(f => f.id === folderId ? { ...f, name: newName } : f);
             setFolders(updated);
             if (store) {
                 await store.set('folders', updated);
                 await store.save();
             }
-            toast.success(`Folder renamed to "${newName.trim()}".`);
+            toast.success(`Folder renamed to "${newName}".`);
         } catch (e) {
             toast.error("Failed to rename folder: " + e);
+        }
+    };
+
+    const handleFolderToggleVisibility = async (folderId: number, makePublic: boolean, desiredUsername?: string) => {
+        if (!makePublic) {
+            const confirmed = await confirm({
+                title: "Make Private",
+                message: "Making this channel private will remove its public username. Any shared t.me links will stop working immediately.",
+                confirmText: "Make Private",
+                variant: 'danger'
+            });
+            if (!confirmed) return;
+        }
+        try {
+            const updated = await invoke<TelegramFolder>('cmd_toggle_folder_visibility', {
+                folderId,
+                makePublic,
+                desiredUsername: desiredUsername || null,
+            });
+            const newFolders = folders.map(f =>
+                f.id === folderId ? { ...f, username: updated.username, is_public: updated.is_public } : f
+            );
+            setFolders(newFolders);
+            if (store) {
+                await store.set('folders', newFolders);
+                await store.save();
+            }
+            toast.success(makePublic ? 'Channel is now public' : 'Channel is now private');
+            return updated;
+        } catch (e) {
+            toast.error(`Failed to toggle visibility: ${e}`);
+            throw e;
+        }
+    };
+
+    const handleExportFolderInvite = async (folderId: number): Promise<FolderInviteInfo> => {
+        try {
+            const info = await invoke<FolderInviteInfo>('cmd_export_folder_invite', {
+                folderId,
+            });
+            return info;
+        } catch (e) {
+            toast.error(`Failed to get invite link: ${e}`);
+            throw e;
         }
     };
 
@@ -265,6 +316,8 @@ export function useTelegramConnection(onLogoutParent: () => void) {
         handleCreateFolder,
         handleFolderDelete,
         handleFolderRename,
+        handleFolderToggleVisibility,
+        handleExportFolderInvite,
         isNetworkError,
         forceLogout
     };

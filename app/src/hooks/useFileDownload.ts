@@ -98,10 +98,12 @@ export function useFileDownload(store: Store | null) {
             }
 
             await invoke('cmd_download_file', {
-                messageId: item.messageId,
-                savePath,
-                folderId: item.folderId,
-                transferId: item.id
+                req: {
+                    message_id: item.messageId,
+                    save_path: savePath,
+                    folder_id: item.folderId,
+                    transfer_id: item.id
+                }
             });
 
             if (cancelledRef.current.has(item.id)) {

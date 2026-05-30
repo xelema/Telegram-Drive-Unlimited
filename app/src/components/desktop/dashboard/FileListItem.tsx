@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Folder, Eye, HardDrive, Plus } from 'lucide-react';
+import { Folder, Eye, HardDrive, Plus, Link } from 'lucide-react';
 import { TelegramFile } from '../../../types';
 import { FileTypeIcon } from '../../shared/FileTypeIcon';
 
@@ -14,12 +14,13 @@ interface FileListItemProps {
     onPreview: (file: TelegramFile) => void;
     onDownload: (id: number, name: string) => void;
     onDelete: (id: number) => void;
+    onShare?: (file: TelegramFile) => void;
 }
 
 export function FileListItem({
     file, selectedIds, onFileClick, handleContextMenu,
     onDragStart, onDragEnd, onDrop,
-    onPreview, onDownload, onDelete
+    onPreview, onDownload, onDelete, onShare
 }: FileListItemProps) {
     const [isDragOver, setIsDragOver] = useState(false);
     const isFolder = file.type === 'folder';
@@ -73,6 +74,7 @@ export function FileListItem({
                 <div className="absolute right-0 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 flex items-center bg-telegram-surface border border-telegram-border shadow-lg rounded px-1">
                     <button onClick={(e) => { e.stopPropagation(); onPreview(file) }} className="p-1 hover:text-telegram-text text-telegram-subtext" title="Preview"><Eye className="w-4 h-4" /></button>
                     <button onClick={(e) => { e.stopPropagation(); onDownload(file.id, file.name) }} className="p-1 hover:text-telegram-text text-telegram-subtext" title="Download"><HardDrive className="w-4 h-4" /></button>
+                    {!isFolder && onShare && <button onClick={(e) => { e.stopPropagation(); onShare(file) }} className="p-1 hover:text-telegram-primary text-telegram-subtext" title="Share"><Link className="w-4 h-4" /></button>}
                     <button onClick={(e) => { e.stopPropagation(); onDelete(file.id) }} className="p-1 hover:text-red-400 text-telegram-subtext" title="Delete"><Plus className="w-4 h-4 rotate-45" /></button>
                 </div>
             </div>

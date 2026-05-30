@@ -222,6 +222,122 @@ fn cmd_open_file_externally(path: String, app_handle: tauri::AppHandle) -> Resul
     }
 }
 
+/// Called by the frontend on mount (Android only) to check whether files were
+/// shared into the app via Android's share sheet before the webview was ready
+/// (cold start). Returns the count of pending shared files and resets the counter.
+#[cfg(target_os = "android")]
+#[tauri::command]
+fn cmd_get_pending_share_count() -> Result<i32, String> {
+    let ctx = ndk_context::android_context();
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
+        .map_err(|e| format!("Failed to resolve JVM: {}", e))?;
+    let mut env = vm.attach_current_thread()
+        .map_err(|e| format!("Failed to attach thread: {}", e))?;
+
+    if let Some(cached_ref) = crate::jni_cache::get_main_activity_class() {
+        let main_class: jni::objects::JClass = unsafe { std::mem::transmute_copy(cached_ref.as_obj()) };
+        let count = env.call_static_method(
+            &main_class,
+            "getAndClearShareCount",
+            "()I",
+            &[],
+        ).map_err(|e| format!("Failed to call getAndClearShareCount: {}", e))?;
+        let count_int = count.i().map_err(|e| format!("Failed to parse share count: {}", e))?;
+        Ok(count_int)
+    } else {
+        Err("MainActivity reference not cached".to_string())
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+#[tauri::command]
+fn cmd_get_pending_share_count() -> Result<i32, String> {
+    Ok(0) // Share intents are Android-only
+}
+
+/// Returns a list of files that were shared into the app via Android's share sheet
+/// and are currently cached in uriCacheMap, ready for upload.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CachedFileEntry {
+    uri: String,
+    cached_path: String,
+    file_name: String,
+    file_size: u64,
+}
+
+#[cfg(target_os = "android")]
+#[tauri::command]
+fn cmd_list_cached_files() -> Result<Vec<CachedFileEntry>, String> {
+    let ctx = ndk_context::android_context();
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
+        .map_err(|e| format!("Failed to resolve JVM: {}", e))?;
+    let mut env = vm.attach_current_thread()
+        .map_err(|e| format!("Failed to attach thread: {}", e))?;
+
+    if let Some(cached_ref) = crate::jni_cache::get_main_activity_class() {
+        let main_class: jni::objects::JClass = unsafe { std::mem::transmute_copy(cached_ref.as_obj()) };
+        let json_val = env.call_static_method(
+            &main_class,
+            "listCachedFiles",
+            "()Ljava/lang/String;",
+            &[],
+        ).map_err(|e| format!("Failed to call listCachedFiles: {}", e))?;
+
+        let json_jstr: jni::objects::JString = json_val.l()
+            .map_err(|e| format!("listCachedFiles result is not a string: {}", e))?
+            .into();
+        let json_str: String = env.get_string(&json_jstr)
+            .map_err(|e| format!("Failed to read listCachedFiles result: {}", e))?
+            .into();
+
+        let entries: Vec<CachedFileEntry> = serde_json::from_str(&json_str)
+            .map_err(|e| format!("Failed to parse cached files JSON: {}", e))?;
+        Ok(entries)
+    } else {
+        Err("MainActivity reference not cached".to_string())
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+#[tauri::command]
+fn cmd_list_cached_files() -> Result<Vec<CachedFileEntry>, String> {
+    Ok(Vec::new()) // Share cache is Android-only
+}
+
+/// Removes a single cached file entry from the Kotlin uriCacheMap.
+/// Called by the frontend when the user clears shared files.
+#[cfg(target_os = "android")]
+#[tauri::command]
+fn cmd_remove_cached_path(uri: String) -> Result<(), String> {
+    let ctx = ndk_context::android_context();
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
+        .map_err(|e| format!("Failed to resolve JVM: {}", e))?;
+    let mut env = vm.attach_current_thread()
+        .map_err(|e| format!("Failed to attach thread: {}", e))?;
+
+    if let Some(cached_ref) = crate::jni_cache::get_main_activity_class() {
+        let main_class: jni::objects::JClass = unsafe { std::mem::transmute_copy(cached_ref.as_obj()) };
+        let j_uri = env.new_string(&uri)
+            .map_err(|e| format!("Failed to create URI string: {}", e))?;
+        env.call_static_method(
+            &main_class,
+            "removeCachedPath",
+            "(Ljava/lang/String;)V",
+            &[jni::objects::JValue::from(&j_uri)],
+        ).map_err(|e| format!("Failed to call removeCachedPath: {}", e))?;
+        let _ = env.exception_clear();
+        Ok(())
+    } else {
+        Err("MainActivity reference not cached".to_string())
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+#[tauri::command]
+fn cmd_remove_cached_path(_uri: String) -> Result<(), String> {
+    Ok(()) // No-op on desktop
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::init();
@@ -241,7 +357,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_deep_link::init());
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_clipboard_manager::init());
 
     // The updater plugin is not supported on Android and can cause crashes
     // (APKs are managed by the Play Store; the plugin attempts restricted FS ops).
@@ -255,70 +372,78 @@ pub fn run() {
         .setup(move |app| {
             #[cfg(target_os = "android")]
             {
-                // In Tauri v2, Tauri does not use or initialize the legacy `ndk-context` crate.
-                // However, external crates like `reqwest` still require `ndk-context` to access
-                // JNI handles (e.g. system proxy settings) on Android background threads.
-                // We retrieve the active JNI environment and Android context from our main Webview window
-                // and initialize `ndk-context` ourselves so that reqwest and background tasks don't panic.
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.with_webview(|webview| {
-                        webview.jni_handle().exec(|env, context, _webview| {
-                            if let Ok(vm) = env.get_java_vm() {
-                                unsafe {
-                                    let _ = ndk_context::initialize_android_context(
-                                        vm.get_java_vm_pointer().cast(),
-                                        context.as_raw().cast(),
-                                    );
-                                }
-                                log::info!("JNI: Successfully initialized ndk-context globally.");
-                            }
-                        });
-                    });
-                }
-
-                let ctx_obj = ndk_context::android_context();
-                if let Ok(vm) = unsafe { jni::JavaVM::from_raw(ctx_obj.vm().cast()) } {
-                    if let Ok(mut env) = vm.attach_current_thread() {
-                        let ctx = unsafe { jni::objects::JObject::from_raw(ctx_obj.context().cast()) };
-                        if let Ok(class_loader_val) = env.call_method(
-                            &ctx,
-                            "getClassLoader",
-                            "()Ljava/lang/ClassLoader;",
-                            &[],
-                        ) {
-                            if let Ok(class_loader_obj) = class_loader_val.l() {
-                                if let Ok(class_loader_global) = env.new_global_ref(&class_loader_obj) {
-                                    let _ = crate::jni_cache::set_class_loader(class_loader_global);
-                                }
-                                
-                                let class_name_jstr = match env.new_string("com.cameronamer.telegramdrive.MainActivity") {
-                                    Ok(s) => Some(s),
-                                    Err(e) => {
-                                        log::error!("JNI: Failed to create MainActivity class name string: {}", e);
-                                        // Don't return early — MainActivity caching is best-effort.
-                                        // Returning would skip all state initialization (TelegramState,
-                                        // BandwidthManager, db, etc.) and crash the app on every access.
-                                        None
+                // SAFETY NET: Wrap all Android JNI initialization in catch_unwind to prevent
+                // any Rust panic from crossing the JNI/FFI boundary and SIGABRTing the process.
+                let jni_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    // In Tauri v2, Tauri does not use or initialize the legacy `ndk-context` crate.
+                    // However, external crates like `reqwest` still require `ndk-context` to access
+                    // JNI handles (e.g. system proxy settings) on Android background threads.
+                    //
+                    // CRITICAL: `with_webview` dispatches its callback asynchronously onto the
+                    // WebView thread. We perform ALL JNI work (ndk-context init, ClassLoader
+                    // caching, MainActivity caching) inside this single callback so there is no
+                    // race between the init and subsequent usage.
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.with_webview(|webview| {
+                            webview.jni_handle().exec(|env, context, _webview| {
+                                // 1. Initialize ndk-context with the JVM and Activity pointers
+                                if let Ok(vm) = env.get_java_vm() {
+                                    unsafe {
+                                        let _ = ndk_context::initialize_android_context(
+                                            vm.get_java_vm_pointer().cast(),
+                                            context.as_raw().cast(),
+                                        );
                                     }
-                                };
-                                if let Some(class_name_jstr) = class_name_jstr {
-                                    if let Ok(main_class_obj_val) = env.call_method(
-                                        &class_loader_obj,
-                                        "loadClass",
-                                        "(Ljava/lang/String;)Ljava/lang/Class;",
-                                        &[jni::objects::JValue::from(&class_name_jstr)],
-                                    ) {
-                                        if let Ok(main_class_obj) = main_class_obj_val.l() {
-                                            if let Ok(main_class_global) = env.new_global_ref(main_class_obj) {
-                                                let _ = crate::jni_cache::set_main_activity_class(main_class_global);
-                                                log::info!("JNI: Successfully cached MainActivity class reference globally.");
+                                    log::info!("JNI: Successfully initialized ndk-context globally.");
+                                } else {
+                                    log::error!("JNI: Failed to get JavaVM from JNIEnv");
+                                    return;
+                                }
+
+                                // 2. Cache ClassLoader and MainActivity class references
+                                //    Using the same JNI env avoids the race condition where
+                                //    ndk_context::android_context() was called before init completed.
+                                if let Ok(class_loader_val) = env.call_method(
+                                    &context,
+                                    "getClassLoader",
+                                    "()Ljava/lang/ClassLoader;",
+                                    &[],
+                                ) {
+                                    if let Ok(class_loader_obj) = class_loader_val.l() {
+                                        if let Ok(class_loader_global) = env.new_global_ref(&class_loader_obj) {
+                                            let _ = crate::jni_cache::set_class_loader(class_loader_global);
+                                        }
+
+                                        let class_name_jstr = match env.new_string("com.cameronamer.telegramdrive.MainActivity") {
+                                            Ok(s) => Some(s),
+                                            Err(e) => {
+                                                log::error!("JNI: Failed to create MainActivity class name string: {}", e);
+                                                None
+                                            }
+                                        };
+                                        if let Some(class_name_jstr) = class_name_jstr {
+                                            if let Ok(main_class_obj_val) = env.call_method(
+                                                &class_loader_obj,
+                                                "loadClass",
+                                                "(Ljava/lang/String;)Ljava/lang/Class;",
+                                                &[jni::objects::JValue::from(&class_name_jstr)],
+                                            ) {
+                                                if let Ok(main_class_obj) = main_class_obj_val.l() {
+                                                    if let Ok(main_class_global) = env.new_global_ref(main_class_obj) {
+                                                        let _ = crate::jni_cache::set_main_activity_class(main_class_global);
+                                                        log::info!("JNI: Successfully cached MainActivity class reference globally.");
+                                                    }
+                                                }
                                             }
                                         }
                                     }
                                 }
-                            }
-                        }
+                            });
+                        });
                     }
+                }));
+                if let Err(e) = jni_result {
+                    log::error!("JNI: Android initialization panicked (caught): {:?}", e);
                 }
             }
 
@@ -364,8 +489,9 @@ pub fn run() {
                     sys.block_on(async move {
                         match server::start_server(state, STREAM_PORT, token_for_server, db_pool_for_server).await {
                             Ok(server) => {
-                                // Store the handle so RunEvent::Exit can stop it
-                                *handle_for_thread.lock().unwrap() = Some(server.handle());
+                                if let Ok(mut handle) = handle_for_thread.lock() {
+                                    *handle = Some(server.handle());
+                                }
                                 // Now await the server — blocks until stopped
                                 server.await.ok();
                             }
@@ -465,6 +591,11 @@ pub fn run() {
             commands::cmd_create_share,
             commands::cmd_list_shares,
             commands::cmd_revoke_share,
+            commands::cmd_toggle_folder_visibility,
+            commands::cmd_export_folder_invite,
+            cmd_get_pending_share_count,
+            cmd_list_cached_files,
+            cmd_remove_cached_path,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

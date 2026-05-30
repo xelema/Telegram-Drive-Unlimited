@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import { Plus, Link, Copy, Check, Shield, Clock, AlertCircle } from 'lucide-react';
+import { Plus, Link, Copy, Check, Shield, Clock, AlertCircle, Share2 } from 'lucide-react';
 import { TelegramFile, ShareInfo } from '../../../types';
 import { invoke } from '@tauri-apps/api/core';
 import { motion, AnimatePresence } from 'framer-motion';
+import { nativeShareOrCopy } from '../../../utils';
 
 interface ShareDialogProps {
     file: TelegramFile;
@@ -77,6 +78,16 @@ export function ShareDialog({ file, onClose }: ShareDialogProps) {
             setCopied(true);
             setTimeout(() => setCopied(false), 2000);
         }
+    };
+
+    // Native Android/iOS share sheet via Web Share API
+    const handleNativeShare = () => {
+        if (!shareInfo) return;
+        nativeShareOrCopy(file.name, file.sizeStr, getDisplayLink(), () => {
+            navigator.clipboard.writeText(getDisplayLink());
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+        });
     };
 
     return (
@@ -250,6 +261,17 @@ export function ShareDialog({ file, onClose }: ShareDialogProps) {
                                     </button>
                                 </div>
                             </div>
+
+                            {/* Native Share Button (Android/iOS) */}
+                            {typeof navigator !== 'undefined' && typeof navigator.share === 'function' && (
+                                <button
+                                    onClick={handleNativeShare}
+                                    className="w-full bg-telegram-primary/20 hover:bg-telegram-primary/30 text-telegram-primary text-sm font-medium py-2.5 rounded-lg border border-telegram-primary/30 transition-all flex items-center justify-center gap-2"
+                                >
+                                    <Share2 className="w-4 h-4" />
+                                    Share via...
+                                </button>
+                            )}
 
                             {/* Tailscale / Network Share Customizer */}
                             <div className="bg-telegram-hover/30 border border-telegram-border/50 rounded-lg p-3 space-y-2">

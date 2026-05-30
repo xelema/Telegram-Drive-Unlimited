@@ -10,6 +10,9 @@ interface SidebarProps {
     setActiveFolderId: (id: number | null) => void;
     onDrop: (e: React.DragEvent, folderId: number | null) => void;
     onDelete: (id: number, name: string) => void;
+    onRename: (id: number, name: string) => void;
+    onToggleVisibility: (id: number, name: string, isPublic: boolean) => void;
+    onExportInvite: (id: number, name: string) => void;
     onCreate: (name: string) => Promise<void>;
     isSyncing: boolean;
     isConnected: boolean;
@@ -19,7 +22,7 @@ interface SidebarProps {
 }
 
 export function Sidebar({
-    folders, activeFolderId, setActiveFolderId, onDrop, onDelete, onCreate,
+    folders, activeFolderId, setActiveFolderId, onDrop, onDelete, onRename, onToggleVisibility, onExportInvite, onCreate,
     isSyncing, isConnected, onSync, onLogout, bandwidth
 }: SidebarProps) {
     const [showNewFolderInput, setShowNewFolderInput] = useState(false);
@@ -62,7 +65,11 @@ export function Sidebar({
                         onClick={() => setActiveFolderId(folder.id)}
                         onDrop={(e: React.DragEvent) => onDrop(e, folder.id)}
                         onDelete={() => onDelete(folder.id, folder.name)}
+                        onRename={() => onRename(folder.id, folder.name)}
+                        onToggleVisibility={() => onToggleVisibility(folder.id, folder.name, !!(folder.is_public || folder.username))}
+                        onExportInvite={() => onExportInvite(folder.id, folder.name)}
                         folderId={folder.id}
+                        isPublic={!!(folder.is_public || folder.username)}
                     />
                 ))}
             </nav>

@@ -14,6 +14,14 @@ export interface TelegramFolder {
     name: string;
     parent_id?: number;
     username?: string;
+    /** Whether the channel has a public username set */
+    is_public?: boolean;
+}
+
+export interface FolderInviteInfo {
+    link: string;
+    is_public: boolean;
+    username?: string;
 }
 
 export interface QueueItem {

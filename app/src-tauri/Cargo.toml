@@ -45,6 +45,7 @@ actix-rt = "2"
 tauri-plugin-process = "2.3.1"
 bitflags = "=2.10.0"
 tauri-plugin-deep-link = "2"
+tauri-plugin-clipboard-manager = "2"
 rand = "0.8"
 sha2 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }

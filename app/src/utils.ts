@@ -1,4 +1,5 @@
 import { type as osType } from '@tauri-apps/plugin-os';
+import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { toast } from 'sonner';
 
 // ── Platform detection ────────────────────────────────────────────────
@@ -105,6 +106,53 @@ export async function pickWithFallback<T>(
 
             toast.error(errorTitle, toastOptions as Parameters<typeof toast.error>[1]);
         });
+    }
+}
+
+// ── Clipboard utility ────────────────────────────────────────────────
+// Uses Tauri's clipboard plugin on desktop (bypasses the user-gesture
+// requirement that breaks navigator.clipboard.writeText after an await).
+// On platforms where the plugin isn't available, falls back to the
+// Web Clipboard API.
+export async function copyToClipboard(text: string): Promise<void> {
+    try {
+        await writeText(text);
+    } catch {
+        // Fallback to Web API (works on mobile or if plugin not initialized)
+        await navigator.clipboard.writeText(text);
+    }
+}
+
+// ── Native Share API helper ────────────────────────────────────────────
+// Attempts navigator.share (Android/iOS share sheet). Falls back to
+// clipboard copy if not available or if sharing fails.
+export async function nativeShareOrCopy(
+    name: string,
+    sizeStr: string,
+    link: string,
+    onCopy?: (link: string) => void
+): Promise<void> {
+    const canShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
+    if (canShare) {
+        try {
+            await navigator.share({
+                title: `Shared file: ${name}`,
+                text: `Download "${name}" (${sizeStr}) via Telegram Drive`,
+                url: link,
+            });
+            return;
+        } catch (e: any) {
+            if (e?.name !== 'AbortError') {
+                toast.error('Share failed, but link has been copied');
+            }
+        }
+    }
+    // Fallback: copy to clipboard
+    if (onCopy) {
+        onCopy(link);
+    } else {
+        navigator.clipboard.writeText(link);
+        toast.success('Link copied to clipboard');
     }
 }
 

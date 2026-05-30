@@ -65,7 +65,7 @@ export function useFileOperations(
             );
             if (!savePath) return;
             toast.info(`Download started: ${name}`);
-            await invoke('cmd_download_file', { messageId: id, savePath, folderId: activeFolderId });
+            await invoke('cmd_download_file', { req: { message_id: id, save_path: savePath, folder_id: activeFolderId } });
             toast.success(`Download complete: ${name}`);
         } catch (e) {
             toast.error(`Download failed: ${e}`);
@@ -86,7 +86,7 @@ export function useFileOperations(
             for (const file of targetFiles) {
                 const filePath = dirPath.endsWith(sep) ? `${dirPath}${file.name}` : `${dirPath}${sep}${file.name}`;
                 try {
-                    await invoke('cmd_download_file', { messageId: file.id, savePath: filePath, folderId: activeFolderId });
+                    await invoke('cmd_download_file', { req: { message_id: file.id, save_path: filePath, folder_id: activeFolderId } });
                     successCount++;
                 } catch (e) { }
             }
@@ -150,7 +150,7 @@ export function useFileOperations(
             for (const file of currentFiles) {
                 const filePath = dirPath.endsWith(sep) ? `${dirPath}${file.name}` : `${dirPath}${sep}${file.name}`;
                 try {
-                    await invoke('cmd_download_file', { messageId: file.id, savePath: filePath, folderId: activeFolderId });
+                    await invoke('cmd_download_file', { req: { message_id: file.id, save_path: filePath, folder_id: activeFolderId } });
                     successCount++;
                 } catch (e) { }
             }

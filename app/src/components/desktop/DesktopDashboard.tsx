@@ -4,8 +4,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 
-import { TelegramFile, BandwidthStats } from '../../types';
-import { formatBytes, isMediaFile, isPdfFile } from '../../utils';
+import { TelegramFile, BandwidthStats, ShareInfo } from '../../types';
+import { formatBytes, isMediaFile, isPdfFile, nativeShareOrCopy, copyToClipboard } from '../../utils';
 
 // Components
 import { Sidebar } from './dashboard/Sidebar';
@@ -20,6 +20,8 @@ import { ExternalDropBlocker } from './dashboard/ExternalDropBlocker';
 import { PdfViewer } from './dashboard/PdfViewer';
 import { SettingsModal } from './dashboard/SettingsModal';
 import { ShareDialog } from './dashboard/ShareDialog';
+import { RenameFolderModal } from './dashboard/RenameFolderModal';
+import { Link, Copy, Check, X, Loader2, Share2 } from 'lucide-react';
 
 // Hooks
 import { useTelegramConnection } from '../../hooks/useTelegramConnection';
@@ -35,7 +37,8 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
 
     const {
         store, folders, activeFolderId, setActiveFolderId, isSyncing, isConnected,
-        handleLogout, handleSyncFolders, handleCreateFolder, handleFolderDelete
+        handleLogout, handleSyncFolders, handleCreateFolder, handleFolderDelete,
+        handleFolderRename, handleFolderToggleVisibility, handleExportFolderInvite
     } = useTelegramConnection(onLogout);
 
 
@@ -60,8 +63,12 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     const [playingFile, setPlayingFile] = useState<TelegramFile | null>(null);
     const [pdfFile, setPdfFile] = useState<TelegramFile | null>(null);
     const [shareFile, setShareFile] = useState<TelegramFile | null>(null);
+    const [bulkShareLinks, setBulkShareLinks] = useState<Array<{ file: TelegramFile; link: string }> | null>(null);
+    const [bulkShareLoading, setBulkShareLoading] = useState(false);
+    const [bulkShareCopied, setBulkShareCopied] = useState<Set<string>>(new Set());
     const [previewContextFiles, setPreviewContextFiles] = useState<TelegramFile[]>([]);
     const [previewContextIndex, setPreviewContextIndex] = useState(-1);
+    const [renameFolder, setRenameFolder] = useState<{ id: number; name: string } | null>(null);
 
     const { data: allFiles = [], isLoading, error } = useQuery({
         queryKey: ['files', activeFolderId],
@@ -90,6 +97,58 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
         handleBulkMove, handleDownloadFolder, handleGlobalSearch
 
     } = useFileOperations(activeFolderId, selectedIds, setSelectedIds, displayedFiles);
+
+    // Bulk share: generate links for all selected non-folder files
+    const handleBulkShare = useCallback(async () => {
+        const shareFiles = displayedFiles.filter(f => selectedIds.includes(f.id) && f.type !== 'folder');
+        if (shareFiles.length === 0) {
+            toast.info('No shareable files selected (folders cannot be shared)');
+            return;
+        }
+        setBulkShareLinks([]);
+        setBulkShareLoading(true);
+        setBulkShareCopied(new Set());
+        try {
+            const results = await Promise.all(
+                shareFiles.map(async (file) => {
+                    try {
+                        const info = await invoke<ShareInfo>('cmd_create_share', {
+                            folderId: null,
+                            messageId: file.id,
+                            fileName: file.name,
+                            fileSize: file.size,
+                            password: null,
+                            expiryHours: 24,
+                        });
+                        return { file, link: info.link };
+                    } catch (e) {
+                        toast.error(`Failed to share ${file.name}: ${e}`);
+                        return null;
+                    }
+                })
+            );
+            const valid = results.filter((r): r is { file: TelegramFile; link: string } => r !== null);
+            if (valid.length > 0) {
+                setBulkShareLinks(valid);
+                setSelectedIds([]);
+            } else {
+                setBulkShareLinks(null);
+                toast.error('Failed to generate any share links');
+            }
+        } finally {
+            setBulkShareLoading(false);
+        }
+    }, [displayedFiles, selectedIds]);
+
+    const handleCopyBulkLink = useCallback((link: string) => {
+        navigator.clipboard.writeText(link);
+        setBulkShareCopied(prev => new Set(prev).add(link));
+        setTimeout(() => setBulkShareCopied(prev => {
+            const next = new Set(prev);
+            next.delete(link);
+            return next;
+        }), 2000);
+    }, []);
 
     const { uploadQueue, setUploadQueue, handleManualUpload, handleFolderUpload, handleDropUpload, cancelAll: cancelUploads, cancelItem: cancelUploadItem, retryItem: retryUploadItem } = useFileUpload(activeFolderId, store);
     const { downloadQueue, queueDownload, clearFinished: clearDownloads, cancelAll: cancelDownloads, cancelItem: cancelDownloadItem, retryItem: retryDownloadItem } = useFileDownload(store);
@@ -387,6 +446,24 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                 setActiveFolderId={setActiveFolderId}
                 onDrop={handleDropOnFolder}
                 onDelete={handleFolderDelete}
+                onRename={(id, name) => setRenameFolder({ id, name })}
+                onToggleVisibility={async (id, _name, isPublic) => {
+                    try {
+                        await handleFolderToggleVisibility(id, !isPublic);
+                        queryClient.invalidateQueries({ queryKey: ['folders'] });
+                    } catch { /* toast handled in hook */ }
+                }}
+                onExportInvite={async (id, _name) => {
+                    try {
+                        const info = await handleExportFolderInvite(id);
+                        try {
+                            await copyToClipboard(info.link);
+                            toast.success(`Invite link copied: ${info.link}`);
+                        } catch (e) {
+                            toast.error(`Failed to copy to clipboard: ${e}`);
+                        }
+                    } catch { /* backend error already toasted in hook */ }
+                }}
                 onCreate={handleCreateFolder}
                 isSyncing={isSyncing}
                 isConnected={isConnected}
@@ -402,6 +479,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                     onShowMoveModal={() => setShowMoveModal(true)}
                     onBulkDownload={handleBulkDownload}
                     onBulkDelete={handleBulkDelete}
+                    onBulkShare={handleBulkShare}
                     onDownloadFolder={handleDownloadFolder}
                     viewMode={viewMode}
                     setViewMode={setViewMode}
@@ -480,6 +558,92 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                     file={shareFile}
                     onClose={() => setShareFile(null)}
                 />
+            )}
+
+            {renameFolder && (
+                <RenameFolderModal
+                    folderId={renameFolder.id}
+                    currentName={renameFolder.name}
+                    onRename={handleFolderRename}
+                    onClose={() => setRenameFolder(null)}
+                />
+            )}
+
+            {/* Bulk Share Results Modal */}
+            {bulkShareLinks && (
+                <div
+                    className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm"
+                    onClick={() => setBulkShareLinks(null)}
+                >
+                    <div
+                        className="bg-telegram-surface border border-telegram-border rounded-xl w-[500px] max-h-[70vh] shadow-2xl overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-150"
+                        onClick={e => e.stopPropagation()}
+                    >
+                        <div className="p-4 border-b border-telegram-border flex items-center justify-between">
+                            <h3 className="text-telegram-text font-medium flex items-center gap-2">
+                                <Link className="w-5 h-5 text-telegram-primary" />
+                                {bulkShareLinks.length} Share Link{bulkShareLinks.length !== 1 ? 's' : ''}
+                            </h3>
+                            <button onClick={() => setBulkShareLinks(null)} className="text-telegram-subtext hover:text-telegram-text">
+                                <X className="w-5 h-5" />
+                            </button>
+                        </div>
+
+                        {bulkShareLoading ? (
+                            <div className="flex flex-col items-center justify-center py-16 space-y-3">
+                                <Loader2 className="w-8 h-8 text-telegram-primary animate-spin" />
+                                <p className="text-sm text-telegram-subtext">Generating share links...</p>
+                            </div>
+                        ) : (
+                            <div className="flex-1 overflow-y-auto p-4 space-y-2 min-h-0">
+                                {bulkShareLinks.map(({ file, link }) => {
+                                    const isCopied = bulkShareCopied.has(link);
+                                    return (
+                                        <div
+                                            key={file.id}
+                                            className="p-3 rounded-lg bg-telegram-hover/30 border border-telegram-border/30 space-y-2"
+                                        >
+                                            <p className="text-xs font-semibold text-telegram-text truncate">{file.name}</p>
+                                            <div className="flex gap-2">
+                                                <input
+                                                    type="text"
+                                                    readOnly
+                                                    value={link}
+                                                    className="flex-1 bg-telegram-bg border border-telegram-border rounded-lg px-2.5 py-1.5 text-xs text-telegram-text focus:outline-none select-all truncate"
+                                                />
+                                                <button
+                                                    onClick={() => handleCopyBulkLink(link)}
+                                                    className={`px-2.5 py-1.5 rounded-lg border flex items-center justify-center transition-all flex-shrink-0 ${
+                                                        isCopied
+                                                            ? 'bg-emerald-500 border-emerald-500 text-white'
+                                                            : 'bg-telegram-hover border-telegram-border text-telegram-text hover:bg-white/10'
+                                                    }`}
+                                                >
+                                                    {isCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                                                </button>
+                                                {typeof navigator !== 'undefined' && typeof navigator.share === 'function' && (
+                                                    <button
+                                                        onClick={() => nativeShareOrCopy(file.name, file.sizeStr, link, () => handleCopyBulkLink(link))}
+                                                        className="px-2.5 py-1.5 rounded-lg bg-telegram-primary/20 hover:bg-telegram-primary/30 text-telegram-primary border border-telegram-primary/30 transition-all flex items-center justify-center flex-shrink-0"
+                                                    >
+                                                        <Share2 className="w-3.5 h-3.5" />
+                                                    </button>
+                                                )}
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+
+                        <button
+                            onClick={() => setBulkShareLinks(null)}
+                            className="w-full px-4 py-2.5 border-t border-telegram-border bg-telegram-hover/20 hover:bg-telegram-hover/40 text-telegram-text text-sm font-medium transition-colors"
+                        >
+                            Done
+                        </button>
+                    </div>
+                </div>
             )}
         </div>
     );
