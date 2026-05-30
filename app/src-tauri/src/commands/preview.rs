@@ -304,7 +304,7 @@ pub async fn cmd_get_thumbnail(
             };
 
             if is_image {
-                // Get photo thumbnail (smallest size for speed)
+                // Get photo thumbnail (largest available for best quality)
                 let save_path = cache_dir.join(format!("{}.{}", message_id, ext));
                 let save_path_str = save_path.to_string_lossy().to_string();
 
@@ -314,7 +314,7 @@ pub async fn cmd_get_thumbnail(
                     _ => vec![],
                 };
 
-                let download_success = if let Some(thumb) = thumbs.iter().filter(|t| t.size() > 0).min_by_key(|t| t.size()) {
+                let download_success = if let Some(thumb) = thumbs.iter().filter(|t| t.size() > 0).max_by_key(|t| t.size()) {
                     client.download_media(thumb, &save_path_str).await.is_ok()
                 } else {
                     client.download_media(&media, &save_path_str).await.is_ok()
