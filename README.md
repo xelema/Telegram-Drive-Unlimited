@@ -40,14 +40,14 @@ Telegram Drive leverages the Telegram API to allow you to upload, organize, and 
 
 ## 📱 Android (Pre‑built, Unsigned APK)
 
-A pre-built **unsigned APK** is available for Android sideloading via the [v1.0.0-android release](https://github.com/caamer20/Telegram-Drive/releases/tag/v1.0.0-android).
+A pre-built **unsigned APK** is available for Android sideloading via the [v2.1.0-android release](https://github.com/caamer20/Telegram-Drive/releases/tag/Androidv2.1.0beta).
 
 > [!WARNING]
 > This APK is **not signed** and is **not available on the Google Play Store**. You must enable "Install from Unknown Sources" on your device to install it. This build contains **Google AdMob banner ads** to support development.
 
 ### How to Sideload
 
-1. Download `Telegram-Drive-v2.1.0-beta.apk` from the [v1.0.0-android release](https://github.com/caamer20/Telegram-Drive/releases/tag/v1.0.0-android).
+1. Download `Telegram-Drive-v2.1.0-beta.apk` from the [v2.1.0-android release](https://github.com/caamer20/Telegram-Drive/releases/tag/Androidv2.1.0beta).
 2. On your Android device, go to **Settings → Apps → Special App Access → Install unknown apps** and allow your browser or file manager.
 3. Open the downloaded APK and tap **Install**.
 4. Enter your Telegram API credentials on first launch (same as the desktop app).
