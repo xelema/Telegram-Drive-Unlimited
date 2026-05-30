@@ -240,9 +240,13 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_deep_link::init());
+
+    // The updater plugin is not supported on Android and can cause crashes
+    // (APKs are managed by the Play Store; the plugin attempts restricted FS ops).
+    #[cfg(not(target_os = "android"))]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let builder = builder.plugin(tauri_plugin_window_state::Builder::default().build());
@@ -251,6 +255,27 @@ pub fn run() {
         .setup(move |app| {
             #[cfg(target_os = "android")]
             {
+                // In Tauri v2, Tauri does not use or initialize the legacy `ndk-context` crate.
+                // However, external crates like `reqwest` still require `ndk-context` to access
+                // JNI handles (e.g. system proxy settings) on Android background threads.
+                // We retrieve the active JNI environment and Android context from our main Webview window
+                // and initialize `ndk-context` ourselves so that reqwest and background tasks don't panic.
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.with_webview(|webview| {
+                        webview.jni_handle().exec(|env, context, _webview| {
+                            if let Ok(vm) = env.get_java_vm() {
+                                unsafe {
+                                    let _ = ndk_context::initialize_android_context(
+                                        vm.get_java_vm_pointer().cast(),
+                                        context.as_raw().cast(),
+                                    );
+                                }
+                                log::info!("JNI: Successfully initialized ndk-context globally.");
+                            }
+                        });
+                    });
+                }
+
                 let ctx_obj = ndk_context::android_context();
                 if let Ok(vm) = unsafe { jni::JavaVM::from_raw(ctx_obj.vm().cast()) } {
                     if let Ok(mut env) = vm.attach_current_thread() {
@@ -266,17 +291,28 @@ pub fn run() {
                                     let _ = crate::jni_cache::set_class_loader(class_loader_global);
                                 }
                                 
-                                let class_name_jstr = env.new_string("com.cameronamer.telegramdrive.MainActivity").unwrap();
-                                if let Ok(main_class_obj_val) = env.call_method(
-                                    &class_loader_obj,
-                                    "loadClass",
-                                    "(Ljava/lang/String;)Ljava/lang/Class;",
-                                    &[jni::objects::JValue::from(&class_name_jstr)],
-                                ) {
-                                    if let Ok(main_class_obj) = main_class_obj_val.l() {
-                                        if let Ok(main_class_global) = env.new_global_ref(main_class_obj) {
-                                            let _ = crate::jni_cache::set_main_activity_class(main_class_global);
-                                            log::info!("JNI: Successfully cached MainActivity class reference globally.");
+                                let class_name_jstr = match env.new_string("com.cameronamer.telegramdrive.MainActivity") {
+                                    Ok(s) => Some(s),
+                                    Err(e) => {
+                                        log::error!("JNI: Failed to create MainActivity class name string: {}", e);
+                                        // Don't return early — MainActivity caching is best-effort.
+                                        // Returning would skip all state initialization (TelegramState,
+                                        // BandwidthManager, db, etc.) and crash the app on every access.
+                                        None
+                                    }
+                                };
+                                if let Some(class_name_jstr) = class_name_jstr {
+                                    if let Ok(main_class_obj_val) = env.call_method(
+                                        &class_loader_obj,
+                                        "loadClass",
+                                        "(Ljava/lang/String;)Ljava/lang/Class;",
+                                        &[jni::objects::JValue::from(&class_name_jstr)],
+                                    ) {
+                                        if let Ok(main_class_obj) = main_class_obj_val.l() {
+                                            if let Ok(main_class_global) = env.new_global_ref(main_class_obj) {
+                                                let _ = crate::jni_cache::set_main_activity_class(main_class_global);
+                                                log::info!("JNI: Successfully cached MainActivity class reference globally.");
+                                            }
                                         }
                                     }
                                 }
@@ -313,31 +349,43 @@ pub fn run() {
             app.manage(db_pool.clone());
             
             // Start Streaming Server on dedicated thread (Actix needs its own runtime)
-            let state = Arc::new(app.state::<TelegramState>().inner().clone());
-            let token_for_server = stream_token.clone();
-            let handle_for_thread = server_handle_for_setup.clone();
-            let db_pool_for_server = db_pool.clone();
-            std::thread::spawn(move || {
-                #[cfg(target_os = "windows")]
-                init_com_on_worker_thread();
-                let sys = actix_rt::System::new();
-                sys.block_on(async move {
-                    match server::start_server(state, STREAM_PORT, token_for_server, db_pool_for_server).await {
-                        Ok(server) => {
-                            // Store the handle so RunEvent::Exit can stop it
-                            *handle_for_thread.lock().unwrap() = Some(server.handle());
-                            // Now await the server — blocks until stopped
-                            server.await.ok();
+            // Disabled on Android: actix_rt::System creates a second Tokio runtime that
+            // conflicts with Tauri's runtime and crashes the process on launch.
+            #[cfg(not(target_os = "android"))]
+            {
+                let state = Arc::new(app.state::<TelegramState>().inner().clone());
+                let token_for_server = stream_token.clone();
+                let handle_for_thread = server_handle_for_setup.clone();
+                let db_pool_for_server = db_pool.clone();
+                std::thread::spawn(move || {
+                    #[cfg(target_os = "windows")]
+                    init_com_on_worker_thread();
+                    let sys = actix_rt::System::new();
+                    sys.block_on(async move {
+                        match server::start_server(state, STREAM_PORT, token_for_server, db_pool_for_server).await {
+                            Ok(server) => {
+                                // Store the handle so RunEvent::Exit can stop it
+                                *handle_for_thread.lock().unwrap() = Some(server.handle());
+                                // Now await the server — blocks until stopped
+                                server.await.ok();
+                            }
+                            Err(e) => log::error!("Streaming server failed: {}", e),
                         }
-                        Err(e) => log::error!("Streaming server failed: {}", e),
-                    }
+                    });
                 });
-            });
+            }
+            #[cfg(target_os = "android")]
+            {
+                log::info!("Streaming server disabled on Android (Actix runtime conflict avoidance).");
+            }
 
             // Start API server if enabled in settings
             restart_api_server(app.handle());
 
             // Start VPN keep-alive background task
+            // Disabled on Android: unnecessary on mobile and spawn_blocking may
+            // conflict with the platform's background execution limits.
+            #[cfg(not(target_os = "android"))]
             {
                 let ka_config = net_config.clone();
                 tauri::async_runtime::spawn(async move {
@@ -352,8 +400,15 @@ pub fn run() {
                         // TCP ping to Telegram DC2 (best-effort)
                         let _ = tauri::async_runtime::spawn_blocking(|| {
                             use std::net::TcpStream;
-                            let _ = TcpStream::connect_timeout(
-                                &"149.154.167.50:443".parse().unwrap(),
+                            let addr: std::net::SocketAddr = match "149.154.167.50:443".parse() {
+                            Ok(a) => a,
+                            Err(e) => {
+                                log::error!("VPN keep-alive: failed to parse DC2 address: {}", e);
+                                return;
+                            }
+                        };
+                        let _ = TcpStream::connect_timeout(
+                                &addr,
                                 std::time::Duration::from_secs(5),
                             );
                         }).await;
