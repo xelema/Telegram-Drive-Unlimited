@@ -12,6 +12,8 @@ export function useNetworkStatus() {
     const [isOnline, setIsOnline] = useState(true);
 
     useEffect(() => {
+        let interval: ReturnType<typeof setInterval> | null = null;
+
         // Import Tauri invoke
         import('@tauri-apps/api/core').then(({ invoke }) => {
             // Check network status
@@ -30,10 +32,12 @@ export function useNetworkStatus() {
             checkNetwork();
 
             // Poll every 10 seconds (very lightweight, ~2ms per check)
-            const interval = setInterval(checkNetwork, 10000);
-
-            return () => clearInterval(interval);
+            interval = setInterval(checkNetwork, 10000);
         });
+
+        return () => {
+            if (interval) clearInterval(interval);
+        };
     }, []);
 
     return isOnline;

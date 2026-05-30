@@ -5,7 +5,7 @@ import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { QueueItem } from '../types';
-import { useFileDrop } from './useFileDrop';
+import { isAndroidPlatform, showFileDialogFallback, pickWithFallback } from '../utils';
 import { useSettings } from '../context/SettingsContext';
 import type { Store } from '@tauri-apps/plugin-store';
 
@@ -70,6 +70,18 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
         }
     }, [uploadQueue, processing]);
 
+    // Manage Android Foreground Service for persistent uploads
+    useEffect(() => {
+        if (!isAndroidPlatform) return;
+
+        const hasActiveUploads = uploadQueue.some(i => i.status === 'uploading' || i.status === 'pending');
+        if (hasActiveUploads) {
+            invoke('cmd_start_foreground_service').catch(() => {});
+        } else if (initialized) {
+            invoke('cmd_stop_foreground_service').catch(() => {});
+        }
+    }, [uploadQueue, initialized]);
+
     /** Clean up temp zip file if the item was created from a folder */
     const cleanupTempZip = async (item: QueueItem) => {
         if (item.tempZipPath) {
@@ -117,56 +129,101 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
         }
     };
 
+    /** Queues a set of file paths for upload */
+    const queueFiles = (paths: string[]) => {
+        if (!paths || paths.length === 0) return;
+        const newItems: QueueItem[] = paths.map((path: string) => ({
+            id: Math.random().toString(36).substr(2, 9),
+            path,
+            folderId: activeFolderId,
+            status: 'pending' as const,
+        }));
+        setUploadQueue(prev => [...prev, ...newItems]);
+        toast.info(`Queued ${paths.length} file${paths.length !== 1 ? 's' : ''} for upload`);
+    };
+
     const handleManualUpload = async () => {
-        try {
-            const selected = await open({ multiple: true, directory: false });
-            if (selected) {
-                const paths = Array.isArray(selected) ? selected : [selected];
-                const newItems: QueueItem[] = paths.map((path: string) => ({
-                    id: Math.random().toString(36).substr(2, 9),
-                    path,
-                    folderId: activeFolderId,
-                    status: 'pending'
-                }));
-                setUploadQueue(prev => [...prev, ...newItems]);
-                toast.info(`Queued ${paths.length} files for upload`);
-            }
-        } catch {
-            toast.error("Failed to open file dialog");
+        const paths = await pickWithFallback(
+            async () => {
+                console.log('[Upload] Opening file dialog...');
+                const selected = await open({ multiple: true, directory: false });
+                console.log('[Upload] File dialog result:', selected);
+                if (!selected) return null;
+                return Array.isArray(selected) ? selected : [selected];
+            },
+            () => handleManualUpload(),
+            {
+                errorTitle: 'File picker failed',
+                onBrowserPicker: async () => {
+                    console.log('[Upload] Falling back to HTML file input...');
+                    const fallbackPaths = await showFileDialogFallback({ directory: false, multiple: true });
+                    console.log('[Upload] HTML fallback result:', fallbackPaths);
+                    return fallbackPaths.length > 0 ? fallbackPaths : null;
+                },
+            },
+        );
+        if (paths && paths.length > 0) {
+            queueFiles(paths);
         }
     };
 
+    /** Queue files dropped from the OS file manager (drag-and-drop upload) */
+    const handleDropUpload = (paths: string[]) => {
+        if (!paths || paths.length === 0) return;
+        console.log('[Upload] Drop upload paths:', paths);
+        queueFiles(paths);
+    };
+
     const handleFolderUpload = async () => {
-        try {
-            const selected = await open({ multiple: false, directory: true, title: 'Select Folder to Upload' });
-            if (!selected) return;
+        const folderPath = await pickWithFallback(
+            async () => {
+                console.log('[Upload] Opening folder dialog...');
+                const selected = await open({ multiple: false, directory: true, title: 'Select Folder to Upload' });
+                console.log('[Upload] Folder dialog result:', selected);
+                if (!selected) return null;
+                const fp = Array.isArray(selected) ? selected[0] : selected;
+                return fp || null;
+            },
+            () => handleFolderUpload(),
+            {
+                errorTitle: 'Folder picker failed',
+                onBrowserPicker: async () => {
+                    console.log('[Upload] Falling back to HTML folder input...');
+                    const fallbackPaths = await showFileDialogFallback({ directory: true, multiple: true });
+                    console.log('[Upload] HTML fallback result:', fallbackPaths);
+                    if (fallbackPaths.length > 0) {
+                        // HTML folder picker returns individual file paths, not a folder path.
+                        // We can't zip without a folder path, so files upload individually.
+                        toast.info('Folder zipping unavailable with browser picker — uploading files individually.');
+                        queueFiles(fallbackPaths);
+                    }
+                    return null; // Already handled via queueFiles — signal that the main flow should stop
+                },
+            },
+        );
+        if (!folderPath) return;
 
-            const folderPath = Array.isArray(selected) ? selected[0] : selected;
-            if (!folderPath) return;
+        const folderName = folderPath.split('/').pop() || folderPath.split('\\').pop() || 'folder';
 
-            const folderName = folderPath.split('/').pop() || folderPath.split('\\').pop() || 'folder';
-
-            if (settings.zipFolders) {
-                toast.info(`Zipping "${folderName}"...`);
-                try {
-                    const zipPath = await invoke<string>('cmd_zip_folder', { folderPath });
-                    const item: QueueItem = {
-                        id: Math.random().toString(36).substr(2, 9),
-                        path: zipPath,
-                        folderId: activeFolderId,
-                        status: 'pending',
-                        tempZipPath: zipPath,
-                    };
-                    setUploadQueue(prev => [...prev, item]);
-                    toast.success(`Queued "${folderName}.zip" for upload`);
-                } catch (e) {
-                    toast.error(`Failed to zip folder: ${e}`);
-                }
-            } else {
-                toast.info(`Folder upload without zipping is not supported. Enable "Zip folders before upload" in Settings.`);
+        if (settings.zipFolders) {
+            toast.info(`Zipping "${folderName}"...`);
+            try {
+                const zipPath = await invoke<string>('cmd_zip_folder', { folderPath });
+                const item: QueueItem = {
+                    id: Math.random().toString(36).substr(2, 9),
+                    path: zipPath,
+                    folderId: activeFolderId,
+                    status: 'pending',
+                    tempZipPath: zipPath,
+                };
+                setUploadQueue(prev => [...prev, item]);
+                toast.success(`Queued "${folderName}.zip" for upload`);
+            } catch (e) {
+                console.error('[Upload] Zip error:', e);
+                toast.error(`Failed to zip folder: ${e}`);
             }
-        } catch {
-            toast.error("Failed to open folder dialog");
+        } else {
+            toast.info(`Folder upload without zipping is not supported. Enable "Zip folders before upload" in Settings.`);
         }
     };
 
@@ -208,16 +265,14 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
         ));
     };
 
-    const { isDragging } = useFileDrop();
-
     return {
         uploadQueue,
         setUploadQueue,
         handleManualUpload,
         handleFolderUpload,
+        handleDropUpload,
         cancelAll,
         cancelItem,
         retryItem,
-        isDragging
     };
 }

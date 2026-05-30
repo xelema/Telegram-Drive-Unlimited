@@ -1,10 +1,50 @@
 pub mod models;
 
+/// Initialize COM in Multi-Threaded Apartment mode on Windows worker threads.
+/// Tauri's main thread uses STA (required for WebView2/DragDrop), so any spawned
+/// background threads that touch COM APIs (e.g., Actix, Tokio, networking)
+/// must explicitly init COM as MTA to avoid OLE_E_WRONGCOMPOBJ / RPC_E_CHANGED_MODE
+/// errors during startup and teardown.
+#[cfg(target_os = "windows")]
+fn init_com_on_worker_thread() {
+    extern "system" {
+        fn CoInitializeEx(reserved: *const std::ffi::c_void, coinit: u32) -> i32;
+    }
+    const COINIT_MULTITHREADED: u32 = 0x0;
+    // HRESULT codes
+    const S_OK: i32 = 0;
+    const S_FALSE: i32 = 1;
+    const RPC_E_CHANGED_MODE: i32 = -2147417850; // 0x80010106
+
+    let hr = unsafe { CoInitializeEx(std::ptr::null(), COINIT_MULTITHREADED) };
+    match hr {
+        S_OK | S_FALSE => {
+            log::info!("COM MTA initialized on worker thread (hr=0x{:x})", hr as u32);
+        }
+        RPC_E_CHANGED_MODE => {
+            // Thread was already initialized with a different apartment model.
+            // This is non-fatal; the existing mode will be used.
+            log::warn!(
+                "COM already initialized in a different mode on this worker thread (hr=0x{:x})",
+                hr as u32
+            );
+        }
+        _ => {
+            log::error!(
+                "Failed to initialize COM on worker thread (hr=0x{:x})",
+                hr as u32
+            );
+        }
+    }
+}
+
 pub mod commands;
 pub mod bandwidth;
 pub mod vpn_optimizer;
 
 use tauri::Manager;
+
+
 use tokio::sync::Mutex;
 use std::sync::Arc;
 use std::collections::{HashMap, HashSet};
@@ -17,7 +57,7 @@ pub mod api_routes;
 pub mod db;
 pub mod share_routes;
 pub mod upload_service;
-pub mod ad_service;
+pub mod jni_cache;
 
 
 /// Single source of truth for the Actix streaming server port.
@@ -72,6 +112,8 @@ pub fn restart_api_server(app: &tauri::AppHandle) {
     let handle_for_thread = api_handle_arc.clone();
 
     std::thread::spawn(move || {
+        #[cfg(target_os = "windows")]
+        init_com_on_worker_thread();
         let sys = actix_rt::System::new();
         sys.block_on(async move {
             let api_state_data = actix_web::web::Data::new(tg_state);
@@ -117,6 +159,69 @@ pub fn restart_api_server(_app: &tauri::AppHandle) {
     log::info!("REST API disabled on mobile.");
 }
 
+#[tauri::command]
+fn cmd_open_file_externally(path: String, app_handle: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        let ctx = ndk_context::android_context();
+        let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
+            .map_err(|e| format!("Failed to resolve JVM: {}", e))?;
+        let mut env = vm.attach_current_thread()
+            .map_err(|e| format!("Failed to attach thread: {}", e))?;
+        
+        if let Some(cached_ref) = crate::jni_cache::get_main_activity_class() {
+            let main_class: jni::objects::JClass = unsafe { std::mem::transmute_copy(cached_ref.as_obj()) };
+            
+            let path_jstr = env.new_string(&path)
+                .map_err(|e| format!("Failed to create path JString: {}", e))?;
+            
+            let lower_ext = std::path::Path::new(&path)
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+                
+            let mime_type = match lower_ext.as_str() {
+                "jpg" | "jpeg" => "image/jpeg",
+                "png" => "image/png",
+                "pdf" => "application/pdf",
+                "mp4" => "video/mp4",
+                "mp3" => "audio/mpeg",
+                "txt" => "text/plain",
+                "zip" => "application/zip",
+                _ => "application/octet-stream",
+            };
+            
+            let mime_jstr = env.new_string(mime_type)
+                .map_err(|e| format!("Failed to create mime JString: {}", e))?;
+
+            let success = env.call_static_method(
+                &main_class,
+                "openFileExternally",
+                "(Ljava/lang/String;Ljava/lang/String;)Z",
+                &[
+                    jni::objects::JValue::from(&path_jstr),
+                    jni::objects::JValue::from(&mime_jstr),
+                ],
+            ).map_err(|e| format!("Failed to call static JNI method openFileExternally: {}", e))?;
+
+            let success_bool = success.z().map_err(|e| format!("Failed to parse boolean result: {}", e))?;
+            if !success_bool {
+                return Err("Failed to launch intent from Kotlin".to_string());
+            }
+            Ok(())
+        } else {
+            Err("MainActivity reference is not cached in JNI cache".to_string())
+        }
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        use tauri_plugin_opener::OpenerExt;
+        app_handle.opener().open_path(&path, None::<&str>)
+            .map_err(|e| e.to_string())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::init();
@@ -136,13 +241,51 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_process::init());
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_deep_link::init());
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let builder = builder.plugin(tauri_plugin_window_state::Builder::default().build());
 
     let app = builder
         .setup(move |app| {
+            #[cfg(target_os = "android")]
+            {
+                let ctx_obj = ndk_context::android_context();
+                if let Ok(vm) = unsafe { jni::JavaVM::from_raw(ctx_obj.vm().cast()) } {
+                    if let Ok(mut env) = vm.attach_current_thread() {
+                        let ctx = unsafe { jni::objects::JObject::from_raw(ctx_obj.context().cast()) };
+                        if let Ok(class_loader_val) = env.call_method(
+                            &ctx,
+                            "getClassLoader",
+                            "()Ljava/lang/ClassLoader;",
+                            &[],
+                        ) {
+                            if let Ok(class_loader_obj) = class_loader_val.l() {
+                                if let Ok(class_loader_global) = env.new_global_ref(&class_loader_obj) {
+                                    let _ = crate::jni_cache::set_class_loader(class_loader_global);
+                                }
+                                
+                                let class_name_jstr = env.new_string("com.cameronamer.telegramdrive.MainActivity").unwrap();
+                                if let Ok(main_class_obj_val) = env.call_method(
+                                    &class_loader_obj,
+                                    "loadClass",
+                                    "(Ljava/lang/String;)Ljava/lang/Class;",
+                                    &[jni::objects::JValue::from(&class_name_jstr)],
+                                ) {
+                                    if let Ok(main_class_obj) = main_class_obj_val.l() {
+                                        if let Ok(main_class_global) = env.new_global_ref(main_class_obj) {
+                                            let _ = crate::jni_cache::set_main_activity_class(main_class_global);
+                                            log::info!("JNI: Successfully cached MainActivity class reference globally.");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             app.manage(TelegramState {
                 client: Arc::new(Mutex::new(None)),
                 login_token: Arc::new(Mutex::new(None)),
@@ -175,6 +318,8 @@ pub fn run() {
             let handle_for_thread = server_handle_for_setup.clone();
             let db_pool_for_server = db_pool.clone();
             std::thread::spawn(move || {
+                #[cfg(target_os = "windows")]
+                init_com_on_worker_thread();
                 let sys = actix_rt::System::new();
                 sys.block_on(async move {
                     match server::start_server(state, STREAM_PORT, token_for_server, db_pool_for_server).await {
@@ -215,7 +360,8 @@ pub fn run() {
                     }
                 });
             }
-            
+
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -225,7 +371,9 @@ pub fn run() {
             commands::cmd_get_files,
             commands::cmd_upload_file,
             commands::initiate_upload,
-            ad_service::show_ad,
+            cmd_open_file_externally,
+            upload_service::cmd_start_foreground_service,
+            upload_service::cmd_stop_foreground_service,
             commands::cmd_connect,
             commands::cmd_log,
             commands::cmd_delete_file,
@@ -233,8 +381,10 @@ pub fn run() {
             commands::cmd_move_files,
             commands::cmd_create_folder,
             commands::cmd_delete_folder,
+            commands::cmd_rename_folder,
             commands::cmd_get_bandwidth,
             commands::cmd_get_preview,
+            commands::cmd_clean_preview_cache,
             commands::cmd_logout,
             commands::cmd_scan_folders,
             commands::cmd_search_global,

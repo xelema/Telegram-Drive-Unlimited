@@ -16,7 +16,6 @@ import { DownloadQueue } from './dashboard/DownloadQueue';
 import { MoveToFolderModal } from './dashboard/MoveToFolderModal';
 import { PreviewModal } from './dashboard/PreviewModal';
 import { MediaPlayer } from './dashboard/MediaPlayer';
-import { DragDropOverlay } from './dashboard/DragDropOverlay';
 import { ExternalDropBlocker } from './dashboard/ExternalDropBlocker';
 import { PdfViewer } from './dashboard/PdfViewer';
 import { SettingsModal } from './dashboard/SettingsModal';
@@ -51,12 +50,12 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     const [searchTerm, setSearchTerm] = useState("");
     const [searchResults, setSearchResults] = useState<TelegramFile[]>([]);
     const [isSearching, setIsSearching] = useState(false);
-    const [internalDragFileId, _setInternalDragFileId] = useState<number | null>(null);
+    const [_internalDragFileId, setInternalDragFileIdState] = useState<number | null>(null);
     const internalDragRef = useRef<number | null>(null);
 
     const setInternalDragFileId = (id: number | null) => {
         internalDragRef.current = id;
-        _setInternalDragFileId(id);
+        setInternalDragFileIdState(id);
     };
     const [playingFile, setPlayingFile] = useState<TelegramFile | null>(null);
     const [pdfFile, setPdfFile] = useState<TelegramFile | null>(null);
@@ -92,7 +91,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
 
     } = useFileOperations(activeFolderId, selectedIds, setSelectedIds, displayedFiles);
 
-    const { uploadQueue, setUploadQueue, handleManualUpload, handleFolderUpload, cancelAll: cancelUploads, cancelItem: cancelUploadItem, retryItem: retryUploadItem, isDragging } = useFileUpload(activeFolderId, store);
+    const { uploadQueue, setUploadQueue, handleManualUpload, handleFolderUpload, handleDropUpload, cancelAll: cancelUploads, cancelItem: cancelUploadItem, retryItem: retryUploadItem } = useFileUpload(activeFolderId, store);
     const { downloadQueue, queueDownload, clearFinished: clearDownloads, cancelAll: cancelDownloads, cancelItem: cancelDownloadItem, retryItem: retryDownloadItem } = useFileDownload(store);
 
 
@@ -344,7 +343,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
             onDragEnter={handleRootDragEnter}
         >
 
-            <ExternalDropBlocker onUploadClick={handleManualUpload} />
+            <ExternalDropBlocker onFilesDropped={handleDropUpload} onUploadClick={handleManualUpload} />
 
             <AnimatePresence>
                 {showMoveModal && (
@@ -380,7 +379,6 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                         key="pdf-viewer"
                     />
                 )}
-                {isDragging && internalDragFileId === null && <DragDropOverlay key="drag-drop-overlay" />}
             </AnimatePresence>
 
             <Sidebar

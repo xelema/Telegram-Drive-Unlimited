@@ -1,10 +1,11 @@
 import { useEffect, useState, useRef } from 'react';
 import { X, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, Maximize } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 // Use the legacy build — the modern build uses Map.getOrInsertComputed()
 // which isn't available in Tauri's WebKit WebView
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { TelegramFile } from '../../../types';
+import { isAndroidPlatform } from '../../../utils';
 
 // Use Vite's ?url suffix to get a properly bundled asset URL for the worker
 import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.mjs?url';
@@ -32,11 +33,34 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
     const [scale, setScale] = useState<number>(1.2);
     const [loading, setLoading] = useState<boolean>(true);
     const [error, setError] = useState<string | null>(null);
+    const [openingExternal, setOpeningExternal] = useState<boolean>(false);
     const containerRef = useRef<HTMLDivElement>(null);
     const pdfRef = useRef<pdfjsLib.PDFDocumentProxy | null>(null);
 
+    const handleOpenExternally = async (e: React.MouseEvent) => {
+        e.stopPropagation();
+        setOpeningExternal(true);
+        try {
+            const path = await invoke<string>('cmd_get_preview', {
+                messageId: file.id,
+                folderId: activeFolderId
+            });
+            if (path) {
+                await invoke('cmd_open_file_externally', { path });
+            } else {
+                alert("Failed to locate file path.");
+            }
+        } catch (err) {
+            console.error("Failed to open externally:", err);
+            alert("Error: " + String(err));
+        } finally {
+            setOpeningExternal(false);
+        }
+    };
+
     // Fetch stream info once
     useEffect(() => {
+        if (isAndroidPlatform) return; // skip on Android
         invoke<StreamInfo>('cmd_get_stream_info').then(setStreamInfo).catch((err) => {
             console.error("Failed to get stream info:", err);
             setError("Failed to initialize stream");
@@ -45,13 +69,82 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
 
     // Load PDF document when stream URL is ready or file changes
     useEffect(() => {
-        if (!streamInfo) return;
-
         let cancelled = false;
         setLoading(true);
         setError(null);
         setPdf(null);
         setNumPages(0);
+
+        if (isAndroidPlatform) {
+            let activeLoadingTask: any = null;
+            // Android: load via converted cache file URL
+            invoke<string>('cmd_get_preview', {
+                messageId: file.id,
+                folderId: activeFolderId
+            }).then((filePath) => {
+                if (cancelled) return;
+                if (filePath) {
+                    const url = convertFileSrc(filePath);
+                    const loadingTask = pdfjsLib.getDocument({
+                        url: url,
+                        disableRange: true,
+                        disableStream: true,
+                        disableAutoFetch: true,
+                    });
+                    activeLoadingTask = loadingTask;
+                    loadingTask.promise.then(
+                        (pdfDoc) => {
+                            if (cancelled) {
+                                pdfDoc.destroy();
+                                return;
+                            }
+                            if (pdfRef.current) {
+                                pdfRef.current.destroy();
+                            }
+                            pdfRef.current = pdfDoc;
+                            setPdf(pdfDoc);
+                            setNumPages(pdfDoc.numPages);
+                            setLoading(false);
+                        },
+                        (err) => {
+                            if (cancelled) return;
+                            console.error("Error loading PDF via cache URL, falling back to external opener:", err);
+                            invoke('cmd_open_file_externally', { path: filePath })
+                                .then(() => {
+                                    if (!cancelled) onClose();
+                                })
+                                .catch((exErr) => {
+                                    if (!cancelled) {
+                                        setError("Failed to render PDF in WebView or open natively: " + String(exErr));
+                                        setLoading(false);
+                                    }
+                                });
+                        }
+                    );
+                } else {
+                    setError("Failed to fetch PDF preview path.");
+                    setLoading(false);
+                }
+            }).catch((err) => {
+                if (cancelled) return;
+                console.error("Error invoking PDF preview command:", err);
+                setError("Failed to load PDF.");
+                setLoading(false);
+            });
+
+            return () => {
+                cancelled = true;
+                if (activeLoadingTask) {
+                    activeLoadingTask.destroy();
+                }
+                if (pdfRef.current) {
+                    pdfRef.current.destroy();
+                }
+            };
+        }
+
+        // Desktop: stream via Actix local server
+        if (!streamInfo) return;
 
         const folderIdParam = activeFolderId !== null ? activeFolderId.toString() : 'home';
         const streamUrl = `${streamInfo.base_url}/stream/${folderIdParam}/${file.id}?token=${streamInfo.token}`;
@@ -59,26 +152,26 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
         const loadingTask = pdfjsLib.getDocument(streamUrl);
 
         loadingTask.promise.then(
-            (pdfDoc) => {
-                if (cancelled) {
-                    pdfDoc.destroy();
-                    return;
-                }
-                // Destroy previous document if any
-                if (pdfRef.current) {
-                    pdfRef.current.destroy();
-                }
-                pdfRef.current = pdfDoc;
-                setPdf(pdfDoc);
-                setNumPages(pdfDoc.numPages);
-                setLoading(false);
-            },
-            (err) => {
-                if (cancelled) return;
-                console.error("Error loading PDF:", err);
-                setError("Failed to load PDF document.");
-                setLoading(false);
-            }
+             (pdfDoc) => {
+                 if (cancelled) {
+                     pdfDoc.destroy();
+                     return;
+                 }
+                 // Destroy previous document if any
+                 if (pdfRef.current) {
+                     pdfRef.current.destroy();
+                 }
+                 pdfRef.current = pdfDoc;
+                 setPdf(pdfDoc);
+                 setNumPages(pdfDoc.numPages);
+                 setLoading(false);
+             },
+             (err) => {
+                 if (cancelled) return;
+                 console.error("Error loading PDF:", err);
+                 setError("Failed to load PDF document.");
+                 setLoading(false);
+             }
         );
 
         return () => {
@@ -158,22 +251,40 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
     return (
         <div className="fixed inset-0 z-[200] bg-black/90 flex flex-col p-4 backdrop-blur-md animate-in fade-in duration-200" onClick={onClose}>
             {/* Header / Controls */}
-            <div className="absolute top-4 left-0 right-0 flex justify-between items-center px-8 z-10 pointer-events-none">
-                <div className="text-white bg-black/40 backdrop-blur-md px-4 py-2 rounded-full pointer-events-auto border border-white/10">
-                    <h3 className="text-sm font-medium px-2 max-w-sm truncate">{file.name}</h3>
+            <div className="absolute top-0 left-0 right-0 flex justify-between items-center px-4 md:px-8 z-50 pointer-events-none pt-[calc(1rem+env(safe-area-inset-top))]">
+                <div className="text-white bg-black/40 backdrop-blur-md px-4 py-2 rounded-full pointer-events-auto border border-white/10 flex items-center gap-3">
+                    <h3 className="text-sm font-medium px-2 max-w-[120px] sm:max-w-xs truncate">{file.name}</h3>
+                    <button
+                        onClick={handleOpenExternally}
+                        disabled={openingExternal}
+                        className="text-[9px] uppercase font-extrabold tracking-wider bg-telegram-primary text-black px-2 py-1 rounded-lg hover:bg-telegram-primary/90 transition-all active:scale-95 disabled:opacity-50"
+                        title="Open document in a native external app"
+                    >
+                        {openingExternal ? 'Opening...' : 'Open Natively'}
+                    </button>
                 </div>
 
-                <div className="flex items-center gap-2 pointer-events-auto bg-black/40 backdrop-blur-md p-1.5 rounded-full border border-white/10">
-                    <button onClick={handleZoomOut} className="p-2 text-white/70 hover:text-white hover:bg-white/10 rounded-full transition-colors" title="Zoom Out (-)">
-                        <ZoomOut className="w-4 h-4" />
-                    </button>
-                    <span className="text-xs text-white/90 font-medium min-w-[3rem] text-center">{Math.round(scale * 100)}%</span>
-                    <button onClick={handleZoomIn} className="p-2 text-white/70 hover:text-white hover:bg-white/10 rounded-full transition-colors" title="Zoom In (+)">
-                        <ZoomIn className="w-4 h-4" />
-                    </button>
-                    <div className="w-px h-4 bg-white/20 mx-1"></div>
-                    <button onClick={handleFitWidth} className="p-2 text-white/70 hover:text-white hover:bg-white/10 rounded-full transition-colors" title="Fit Width">
-                        <Maximize className="w-4 h-4" />
+                <div className="flex items-center gap-2 pointer-events-auto">
+                    <div className="flex items-center gap-2 bg-black/40 backdrop-blur-md p-1.5 rounded-full border border-white/10">
+                        <button onClick={handleZoomOut} className="p-2 text-white/70 hover:text-white hover:bg-white/10 rounded-full transition-colors" title="Zoom Out (-)">
+                            <ZoomOut className="w-4 h-4" />
+                        </button>
+                        <span className="text-xs text-white/90 font-medium min-w-[3rem] text-center">{Math.round(scale * 100)}%</span>
+                        <button onClick={handleZoomIn} className="p-2 text-white/70 hover:text-white hover:bg-white/10 rounded-full transition-colors" title="Zoom In (+)">
+                            <ZoomIn className="w-4 h-4" />
+                        </button>
+                        <div className="w-px h-4 bg-white/20 mx-1"></div>
+                        <button onClick={handleFitWidth} className="p-2 text-white/70 hover:text-white hover:bg-white/10 rounded-full transition-colors" title="Fit Width">
+                            <Maximize className="w-4 h-4" />
+                        </button>
+                    </div>
+
+                    <button
+                        onClick={onClose}
+                        className="p-3 text-white/50 hover:text-white bg-black/40 backdrop-blur-md hover:bg-black/60 rounded-full transition-all border border-white/10"
+                        title="Close PDF Viewer"
+                    >
+                        <X className="w-5 h-5" />
                     </button>
                 </div>
             </div>
@@ -195,17 +306,10 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
                 <ChevronRight className="w-6 h-6" />
             </button>
 
-            <button
-                onClick={onClose}
-                className="absolute top-4 right-4 p-3 text-white/50 hover:text-white bg-black/40 backdrop-blur-md hover:bg-black/60 rounded-full transition-all z-10 border border-white/10"
-            >
-                <X className="w-6 h-6" />
-            </button>
-
             {/* Scrollable Document Container */}
             <div
                 ref={containerRef}
-                className="flex-1 w-full overflow-auto custom-scrollbar flex flex-col items-center pt-20 pb-8 relative"
+                className="flex-1 w-full overflow-auto custom-scrollbar flex flex-col items-center pt-[calc(5rem+env(safe-area-inset-top))] pb-24 relative"
                 onClick={(e) => e.stopPropagation()}
             >
                 {loading && (
@@ -217,9 +321,16 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
                 )}
 
                 {error && (
-                    <div className="flex flex-col items-center justify-center text-white bg-red-500/20 p-6 rounded-xl border border-red-500/50 mt-20">
+                    <div className="flex flex-col items-center justify-center text-white bg-red-500/20 p-6 rounded-xl border border-red-500/50 mt-20 max-w-md text-center">
                         <p className="font-bold mb-2">Error</p>
-                        <p className="text-sm">{error}</p>
+                        <p className="text-sm mb-6">{error}</p>
+                        <button
+                            onClick={handleOpenExternally}
+                            disabled={openingExternal}
+                            className="px-5 py-2.5 bg-telegram-primary text-black font-semibold rounded-xl active:scale-95 transition-all duration-200 shadow-lg text-sm disabled:opacity-50 pointer-events-auto"
+                        >
+                            {openingExternal ? 'Opening...' : 'Open with External App'}
+                        </button>
                     </div>
                 )}
 

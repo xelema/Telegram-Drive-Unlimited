@@ -7,9 +7,9 @@ use crate::bandwidth::BandwidthManager;
 use crate::commands::utils::resolve_peer;
 
 const PREVIEW_CACHE_MAX_FILES: usize = 30;
-const PREVIEW_CACHE_MAX_TOTAL_BYTES: u64 = 80 * 1024 * 1024;
+const PREVIEW_CACHE_MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 
-async fn prune_preview_cache(cache_dir: std::path::PathBuf) {
+async fn prune_preview_cache(cache_dir: std::path::PathBuf, preserve_path: Option<std::path::PathBuf>) {
     let _ = tokio::task::spawn_blocking(move || {
         let read_dir = match std::fs::read_dir(&cache_dir) {
             Ok(entries) => entries,
@@ -19,6 +19,9 @@ async fn prune_preview_cache(cache_dir: std::path::PathBuf) {
         for entry in read_dir.flatten() {
             let path = entry.path();
             if !path.is_file() {
+                continue;
+            }
+            if preserve_path.as_ref().is_some_and(|preserve| preserve == &path) {
                 continue;
             }
             if let Ok(meta) = entry.metadata() {
@@ -56,7 +59,6 @@ pub async fn cmd_get_preview(
     if tokio::fs::metadata(&cache_dir).await.is_err() {
         let _ = tokio::fs::create_dir_all(&cache_dir).await;
     }
-    prune_preview_cache(cache_dir.clone()).await;
     log::info!("Using preview cache dir: {:?}", cache_dir);
     log::info!("Preview Request: msg_id={}", message_id);
     let client_opt = { state.client.lock().await.clone() };
@@ -83,6 +85,7 @@ pub async fn cmd_get_preview(
                             e = match mime {
                                 "image/jpeg" => "jpg".to_string(),
                                 "image/png" => "png".to_string(),
+                                "application/pdf" => "pdf".to_string(),
                                 "video/mp4" => "mp4".to_string(),
                                 _ => "bin".to_string(),
                             };
@@ -100,11 +103,19 @@ pub async fn cmd_get_preview(
                 .unwrap_or_else(|| "home".to_string());
             let save_path = cache_dir.join(format!("{}_{}.{}", folder_key, message_id, ext));
             let save_path_str = save_path.to_string_lossy().to_string();
+            
+            // Prune the cache here, explicitly preserving the active file being previewed
+            prune_preview_cache(cache_dir.clone(), Some(save_path.clone())).await;
 
-            let file_ready = if tokio::fs::metadata(&save_path).await.is_ok() {
+            let cached_meta = tokio::fs::metadata(&save_path).await.ok();
+            let file_ready = if cached_meta.as_ref().is_some_and(|meta| meta.len() > 0) {
                 log::info!("File ({}) exists in cache.", message_id);
                 true
             } else {
+                if cached_meta.is_some() {
+                    log::warn!("Preview cache file was empty; redownloading: {}", save_path_str);
+                    let _ = tokio::fs::remove_file(&save_path).await;
+                }
                 let size = match &media {
                     Media::Document(d) => d.size() as u64,
                     Media::Photo(_) => 1024 * 1024,
@@ -117,10 +128,20 @@ pub async fn cmd_get_preview(
                 } else {
                     match client.download_media(&media, &save_path_str).await {
                         Ok(_) => {
-                            log::info!("Preview download complete.");
-                            bw_state.add_down(size);
-                            prune_preview_cache(cache_dir.clone()).await;
-                            true
+                            let written = tokio::fs::metadata(&save_path)
+                                .await
+                                .map(|meta| meta.len())
+                                .unwrap_or(0);
+                            if written == 0 {
+                                log::error!("Preview download wrote an empty file: {}", save_path_str);
+                                let _ = tokio::fs::remove_file(&save_path).await;
+                                false
+                            } else {
+                                log::info!("Preview download complete: {} bytes.", written);
+                                bw_state.add_down(size);
+                                prune_preview_cache(cache_dir.clone(), Some(save_path.clone())).await;
+                                true
+                            }
                         },
                         Err(e) => {
                             log::error!("Preview Download Error: {}", e);
@@ -132,7 +153,7 @@ pub async fn cmd_get_preview(
             if file_ready {
                 let lower_ext = ext.to_lowercase();
                 if ["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"].contains(&lower_ext.as_str()) {
-                    log::info!("Converting image to Base64...");
+                    log::info!("Converting file to Base64...");
                     match tokio::fs::read(&save_path).await {
                         Ok(bytes) => {
                             let b64 = general_purpose::STANDARD.encode(&bytes);
@@ -158,6 +179,31 @@ pub async fn cmd_get_preview(
         }
     }
     Err("File not found or failed to download".to_string())
+}
+
+#[tauri::command]
+pub async fn cmd_clean_preview_cache(
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let cache_dir = app_handle
+        .path()
+        .app_cache_dir()
+        .map_err(|e: tauri::Error| e.to_string())?
+        .join("previews");
+
+    let _ = tokio::task::spawn_blocking(move || {
+        if cache_dir.exists() {
+            if let Ok(entries) = std::fs::read_dir(cache_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() && path.extension().map_or(false, |ext| ext == "pdf") {
+                        let _ = std::fs::remove_file(path);
+                    }
+                }
+            }
+        }
+    }).await;
+    Ok(())
 }
 
 #[tauri::command]

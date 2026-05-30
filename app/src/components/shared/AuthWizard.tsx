@@ -14,7 +14,7 @@ function AuthThemeToggle() {
     return (
         <button
             onClick={toggleTheme}
-            className="absolute top-4 right-4 p-3 rounded-full bg-white/10 hover:bg-white/20 transition-colors z-10"
+            className="absolute top-[calc(1rem+env(safe-area-inset-top,24px))] right-4 p-3 rounded-full bg-white/10 hover:bg-white/20 transition-colors z-10"
             title={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
         >
             {theme === 'dark' ? (
@@ -26,6 +26,7 @@ function AuthThemeToggle() {
     );
 }
 export function AuthWizard({ onLogin }: { onLogin: () => void }) {
+    console.warn("RENDER_TRAP: AuthWizard");
     const isBrowser = typeof window !== 'undefined' && !('__TAURI_INTERNALS__' in window);
 
     if (isBrowser) {
@@ -60,6 +61,13 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
     const [showHelp, setShowHelp] = useState(false);
     const [showDonate, setShowDonate] = useState(false);
     const [loginMethod, setLoginMethod] = useState<'phone' | 'qr'>('phone');
+    const isMobile = typeof navigator !== 'undefined' && /android|iphone|ipad|ipod/i.test(navigator.userAgent.toLowerCase());
+
+    useEffect(() => {
+        if (isMobile && loginMethod !== 'phone') {
+            setLoginMethod('phone');
+        }
+    }, [isMobile, loginMethod]);
     const [qrUrl, setQrUrl] = useState<string | null>(null);
     const [qrPolling, setQrPolling] = useState(false);
     const qrPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -257,7 +265,7 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
     };
 
     return (
-        <div className="h-full w-full auth-gradient flex items-center justify-center p-6 relative">
+        <div className="h-full w-full auth-gradient flex items-center justify-center p-6 pt-[calc(1.5rem+env(safe-area-inset-top,24px))] relative">
             <AuthThemeToggle />
 
             <motion.div
@@ -378,30 +386,32 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
                                     className="space-y-6"
                                 >
                                     {/* Phone / QR Toggle */}
-                                    <div className="flex rounded-xl overflow-hidden border border-white/10">
-                                        <button
-                                            type="button"
-                                            onClick={() => { setLoginMethod('phone'); setQrUrl(null); setQrPolling(false); setError(null); }}
-                                            className={`flex-1 py-2.5 text-sm font-medium flex items-center justify-center gap-2 transition-all ${
-                                                loginMethod === 'phone'
-                                                    ? 'bg-white/15 text-white'
-                                                    : 'text-white/50 hover:text-white/70'
-                                            }`}
-                                        >
-                                            <Phone className="w-4 h-4" /> Phone Number
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => { setLoginMethod('qr'); setError(null); handleQrLogin(); }}
-                                            className={`flex-1 py-2.5 text-sm font-medium flex items-center justify-center gap-2 transition-all ${
-                                                loginMethod === 'qr'
-                                                    ? 'bg-white/15 text-white'
-                                                    : 'text-white/50 hover:text-white/70'
-                                            }`}
-                                        >
-                                            <QrCode className="w-4 h-4" /> QR Code
-                                        </button>
-                                    </div>
+                                    {!isMobile && (
+                                        <div className="flex rounded-xl overflow-hidden border border-white/10">
+                                            <button
+                                                type="button"
+                                                onClick={() => { setLoginMethod('phone'); setQrUrl(null); setQrPolling(false); setError(null); }}
+                                                className={`flex-1 py-2.5 text-sm font-medium flex items-center justify-center gap-2 transition-all ${
+                                                    loginMethod === 'phone'
+                                                        ? 'bg-white/15 text-white'
+                                                        : 'text-white/50 hover:text-white/70'
+                                                }`}
+                                            >
+                                                <Phone className="w-4 h-4" /> Phone Number
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => { setLoginMethod('qr'); setError(null); handleQrLogin(); }}
+                                                className={`flex-1 py-2.5 text-sm font-medium flex items-center justify-center gap-2 transition-all ${
+                                                    loginMethod === 'qr'
+                                                        ? 'bg-white/15 text-white'
+                                                        : 'text-white/50 hover:text-white/70'
+                                                }`}
+                                            >
+                                                <QrCode className="w-4 h-4" /> QR Code
+                                            </button>
+                                        </div>
+                                    )}
 
                                     {loginMethod === 'phone' ? (
                                         <form onSubmit={handlePhoneSubmit} className="space-y-6">

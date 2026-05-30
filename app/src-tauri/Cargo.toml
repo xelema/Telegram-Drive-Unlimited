@@ -50,11 +50,13 @@ sha2 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 walkdir = "2"
 sqlite = { version = "0.37.0", features = ["bundled"] }
-url = "2.5.8"
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"
 ndk-context = "0.1.1"
 
-
+[package.metadata.tauri.bundle.windows]
+# Embed the WebView2 bootstrapper so the app works on Windows systems
+# where the WebView2 runtime is not pre-installed (fresh installs, servers, etc.)
+webview-install-mode = "embeddir"
 

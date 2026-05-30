@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Store } from '@tauri-apps/plugin-store';
 import { useQueryClient } from '@tanstack/react-query';
@@ -20,6 +20,9 @@ export function useTelegramConnection(onLogoutParent: () => void) {
 
     const networkIsOnline = useNetworkStatus();
 
+    // Ref to always point to the latest handleSyncFolders without triggering effect re-runs.
+    // Initialized as null then assigned after handleSyncFolders is declared below.
+    const handleSyncFoldersRef = useRef<((silentParam?: boolean | unknown) => Promise<void>) | null>(null);
 
     // Load persisted store and restore saved folders.
     // NOTE: The Telegram connection is already established by App.tsx before
@@ -50,6 +53,36 @@ export function useTelegramConnection(onLogoutParent: () => void) {
         };
         initStore();
     }, [queryClient]);
+
+    // Consolidated mount-sync + visibility-change listener in a single effect.
+    // Previously two effects with identical [store, isConnected] deps both called
+    // handleSyncFolders + queryClient.invalidateQueries, causing doubled startup work.
+    useEffect(() => {
+        if (!store || !isConnected) return;
+
+        const syncAndRefresh = async () => {
+            if (!handleSyncFoldersRef.current) return;
+            console.log("[AutoSync] Triggering sync...");
+            await handleSyncFoldersRef.current(true);
+            queryClient.invalidateQueries({ queryKey: ['files'] });
+        };
+
+        // Initial sync on mount / when store becomes available
+        syncAndRefresh();
+
+        // Sync again when the app returns to foreground
+        const handleVisibilityChange = () => {
+            if (document.visibilityState === 'visible') {
+                console.log("[AutoSync] App resumed/foregrounded. Triggering sync...");
+                syncAndRefresh();
+            }
+        };
+
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+        return () => {
+            document.removeEventListener('visibilitychange', handleVisibilityChange);
+        };
+    }, [store, isConnected, queryClient]);
 
 
     useEffect(() => {
@@ -99,7 +132,8 @@ export function useTelegramConnection(onLogoutParent: () => void) {
         }
     };
 
-    const handleSyncFolders = async () => {
+    const handleSyncFolders = async (silentParam?: boolean | unknown) => {
+        const silent = silentParam === true;
         if (!store) return;
         setIsSyncing(true);
         try {
@@ -116,16 +150,25 @@ export function useTelegramConnection(onLogoutParent: () => void) {
                 setFolders(merged);
                 await store.set('folders', merged);
                 await store.save();
-                toast.success(`Scan complete. Found ${added} new folders.`);
+                if (!silent) {
+                    toast.success(`Scan complete. Found ${added} new folders.`);
+                }
             } else {
-                toast.info("Scan complete. No new folders found.");
+                if (!silent) {
+                    toast.info("Scan complete. No new folders found.");
+                }
             }
         } catch {
-            toast.error("Sync failed");
+            if (!silent) {
+                toast.error("Sync failed");
+            }
         } finally {
             setIsSyncing(false);
         }
     };
+
+    // Keep the ref in sync with the latest function on every render
+    handleSyncFoldersRef.current = handleSyncFolders;
 
     const handleCreateFolder = async (name: string) => {
         if (!store) return;
@@ -184,6 +227,24 @@ export function useTelegramConnection(onLogoutParent: () => void) {
     };
 
 
+    const handleFolderRename = async (folderId: number, oldName: string) => {
+        const newName = prompt(`Enter new name for "${oldName}":`);
+        if (!newName || !newName.trim() || newName.trim() === oldName) return;
+
+        try {
+            await invoke('cmd_rename_folder', { folderId, newName: newName.trim() });
+            const updated = folders.map(f => f.id === folderId ? { ...f, name: newName.trim() } : f);
+            setFolders(updated);
+            if (store) {
+                await store.set('folders', updated);
+                await store.save();
+            }
+            toast.success(`Folder renamed to "${newName.trim()}".`);
+        } catch (e) {
+            toast.error("Failed to rename folder: " + e);
+        }
+    };
+
     const handleSetActiveFolderId = async (id: number | null) => {
         setActiveFolderId(id);
         if (store) {
@@ -203,6 +264,7 @@ export function useTelegramConnection(onLogoutParent: () => void) {
         handleSyncFolders,
         handleCreateFolder,
         handleFolderDelete,
+        handleFolderRename,
         isNetworkError,
         forceLogout
     };

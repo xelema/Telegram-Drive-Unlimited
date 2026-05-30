@@ -4,6 +4,7 @@ import { save, open } from '@tauri-apps/plugin-dialog';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
 import { DownloadItem, TelegramFile } from '../types';
+import { isAndroidPlatform, showFileDialogFallback, pickWithFallback } from '../utils';
 import type { Store } from '@tauri-apps/plugin-store';
 
 interface ProgressPayload {
@@ -73,11 +74,27 @@ export function useFileDownload(store: Store | null) {
         setDownloadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'downloading', progress: 0 } : i));
 
         try {
-            const savePath = item.savePath || await save({ defaultPath: item.filename });
+            // On Android, skip the save dialog entirely — the Rust backend handles saving
+            // to public Downloads via MediaStore. Passing the original filename ensures the
+            // correct file extension is preserved instead of getting a numeric document ID.
+            let savePath: string | null = item.savePath || null;
             if (!savePath) {
-                setDownloadQueue(q => q.filter(i => i.id !== item.id));
-                setProcessing(false);
-                return;
+                if (isAndroidPlatform) {
+                    savePath = item.filename;
+                } else {
+                    savePath = await pickWithFallback(
+                        () => save({ defaultPath: item.filename }),
+                        () => {
+                            setDownloadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'pending' as const, error: undefined } : i));
+                        },
+                        { errorTitle: 'Save dialog failed' },
+                    );
+                    if (!savePath) {
+                        setDownloadQueue(q => q.filter(i => i.id !== item.id));
+                        setProcessing(false);
+                        return;
+                    }
+                }
             }
 
             await invoke('cmd_download_file', {
@@ -122,26 +139,52 @@ export function useFileDownload(store: Store | null) {
     };
 
     const queueBulkDownload = async (files: TelegramFile[], folderId: number | null) => {
-        const dirPath = await open({
-            directory: true,
-            multiple: false,
-            title: "Select Download Destination"
-        });
+        // On Android, skip the directory picker — the Rust backend handles saving
+        // to public Downloads via MediaStore. Don't set savePath so processItem
+        // falls through to item.filename.
+        if (isAndroidPlatform) {
+            const newItems: DownloadItem[] = files.map(file => ({
+                id: Math.random().toString(36).substr(2, 9),
+                messageId: file.id,
+                filename: file.name,
+                folderId,
+                status: 'pending' as const,
+            }));
+            setDownloadQueue(prev => [...prev, ...newItems]);
+            toast.info(`Downloading ${files.length} file${files.length !== 1 ? 's' : ''} to Downloads`);
+            return;
+        }
+
+        const enqueueFiles = (dir: string) => {
+            const separator = dir.includes('\\') ? '\\' : '/';
+            const newItems: DownloadItem[] = files.map(file => ({
+                id: Math.random().toString(36).substr(2, 9),
+                messageId: file.id,
+                filename: file.name,
+                folderId,
+                status: 'pending' as const,
+                savePath: dir.endsWith(separator) ? `${dir}${file.name}` : `${dir}${separator}${file.name}`
+            }));
+            setDownloadQueue(prev => [...prev, ...newItems]);
+            toast.info(`Queued ${files.length} files for download`);
+        };
+
+        const dirPath = await pickWithFallback(
+            () => open({ directory: true, multiple: false, title: "Select Download Destination" }),
+            () => queueBulkDownload(files, folderId),
+            {
+                errorTitle: 'Folder picker failed',
+                onBrowserPicker: async () => {
+                    const paths = await showFileDialogFallback({ directory: true, multiple: false });
+                    if (paths.length === 0) return null;
+                    const sep = paths[0].includes('\\') ? '\\' : '/';
+                    return paths[0].substring(0, paths[0].lastIndexOf(sep));
+                },
+            },
+        );
         if (!dirPath) return;
 
-        const separator = dirPath.includes('\\') ? '\\' : '/';
-        const newItems: DownloadItem[] = files.map(file => ({
-            id: Math.random().toString(36).substr(2, 9),
-            messageId: file.id,
-            filename: file.name,
-            folderId,
-            status: 'pending' as const,
-            savePath: dirPath.endsWith(separator) ? `${dirPath}${file.name}` : `${dirPath}${separator}${file.name}`
-        }));
-
-        setDownloadQueue(prev => [...prev, ...newItems]);
-
-        toast.info(`Queued ${files.length} files for download`);
+        enqueueFiles(dirPath);
     };
 
     const clearFinished = () => {

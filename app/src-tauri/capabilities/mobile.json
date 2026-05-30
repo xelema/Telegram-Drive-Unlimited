@@ -8,9 +8,22 @@
     "main"
   ],
   "permissions": [
-    "fs:allow-read",
-    "fs:allow-write",
+    {
+      "identifier": "fs:allow-read",
+      "allow": [
+        { "path": "$APPCACHE/**" },
+        { "path": "$APPDATA/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-write",
+      "allow": [
+        { "path": "$APPCACHE/**" },
+        { "path": "$APPDATA/**" }
+      ]
+    },
     "dialog:default",
-    "opener:default"
+    "opener:default",
+    "shell:allow-open"
   ]
 }

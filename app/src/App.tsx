@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { load } from "@tauri-apps/plugin-store";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AuthWizard } from "./components/shared/AuthWizard";
+import { AdGateway } from "./components/shared/AdGateway";
 import { ErrorBoundary } from "./components/shared/ErrorBoundary";
 import { UpdateBanner } from "./components/shared/UpdateBanner";
 import { useUpdateCheck } from "./hooks/useUpdateCheck";
@@ -12,7 +13,7 @@ import "./App.css";
 const DesktopDashboard = React.lazy(() => import("./components/desktop/DesktopDashboard").then(m => ({ default: m.Dashboard })));
 const MobileDashboard = React.lazy(() => import("./components/mobile/MobileDashboard"));
 
-import { Toaster } from "sonner";
+import { Toaster, toast } from "sonner";
 import { ConfirmProvider } from "./context/ConfirmContext";
 import { ThemeProvider, useTheme } from "./context/ThemeContext";
 import { SettingsProvider } from "./context/SettingsContext";
@@ -20,7 +21,7 @@ import { DropZoneProvider } from "./contexts/DropZoneContext";
 
 const queryClient = new QueryClient();
 
-type AuthStatus = "loading" | "authenticated" | "unauthenticated";
+type AuthStatus = "loading" | "authenticated" | "unauthenticated" | "ad-gateway";
 
 function AppContent() {
   const [authStatus, setAuthStatus] = useState<AuthStatus>("loading");
@@ -54,7 +55,13 @@ function AppContent() {
         // Verify the session is still valid with Telegram servers
         const ok = await invoke<boolean>("cmd_check_connection");
         if (ok) {
-          setAuthStatus("authenticated");
+          // Check if user already passed the ad gateway — skip it if so
+          const gatewayPassed = await store.get<boolean>("ad_gateway_passed");
+          if (gatewayPassed) {
+            setAuthStatus("authenticated");
+          } else {
+            setAuthStatus("ad-gateway");
+          }
         } else {
           setAuthStatus("unauthenticated");
         }
@@ -75,18 +82,54 @@ function AppContent() {
     checkSession();
   }, []);
 
+  // Show thank-you toast when user enters the app after clicking the ad
+  useEffect(() => {
+    if (authStatus !== "authenticated") return;
+
+    const showThanks = async () => {
+      try {
+        const store = await load("config.json");
+        const shouldThank = await store.get<boolean>("ad_click_thanks");
+        if (shouldThank) {
+          await store.delete("ad_click_thanks");
+          await store.save();
+          toast.success("Thanks for your support! ", {
+            duration: 3000,
+            style: {
+              background: "rgba(255,255,255,0.08)",
+              border: "1px solid rgba(255,255,255,0.1)",
+            },
+          });
+        }
+      } catch {
+        // Non-critical
+      }
+    };
+
+    // Small delay to let the dashboard finish mounting
+    const timer = setTimeout(showThanks, 600);
+    return () => clearTimeout(timer);
+  }, [authStatus]);
+
+  // Clean up PDF preview cache files on close/beforeunload
+  useEffect(() => {
+    const handleClose = () => {
+      invoke("cmd_clean_preview_cache").catch(() => {});
+    };
+
+    window.addEventListener("beforeunload", handleClose);
+    return () => {
+      window.removeEventListener("beforeunload", handleClose);
+      handleClose();
+    };
+  }, []);
+
   // Styled splash screen while verifying the session
   if (authStatus === "loading") {
     return (
       <main className="h-screen w-screen flex items-center justify-center bg-telegram-bg">
-        <div className="flex flex-col items-center gap-4 animate-pulse">
-          <div className="w-14 h-14 rounded-2xl bg-white/10 flex items-center justify-center">
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-white/60">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-              <polyline points="17 8 12 3 7 8" />
-              <line x1="12" y1="3" x2="12" y2="15" />
-            </svg>
-          </div>
+        <div className="flex flex-col items-center gap-4">
+          <img src="/logo.svg" className="w-16 h-16 drop-shadow-lg animate-pulse" alt="Telegram Drive" />
           <p className="text-sm text-telegram-subtext tracking-wide">Restoring session...</p>
         </div>
       </main>
@@ -94,7 +137,7 @@ function AppContent() {
   }
 
   return (
-    <main className="h-screen w-screen text-telegram-text overflow-hidden selection:bg-telegram-primary/30 relative">
+    <main className="absolute inset-0 text-telegram-text overflow-hidden selection:bg-telegram-primary/30">
       <UpdateBanner
         available={available}
         version={version}
@@ -104,7 +147,10 @@ function AppContent() {
         onDismiss={dismissUpdate}
       />
       <Toaster theme={theme} position="bottom-center" />
-      {authStatus === "authenticated" ? (
+      {authStatus === "ad-gateway" && (
+        <AdGateway onContinue={() => setAuthStatus("authenticated")} />
+      )}
+      {authStatus === "authenticated" && (
         <Suspense fallback={
           <div className="h-screen w-screen flex flex-col items-center justify-center bg-telegram-bg">
             <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-telegram-primary"></div>
@@ -116,8 +162,9 @@ function AppContent() {
             <DesktopDashboard onLogout={() => setAuthStatus("unauthenticated")} />
           )}
         </Suspense>
-      ) : (
-        <AuthWizard onLogin={() => setAuthStatus("authenticated")} />
+      )}
+      {authStatus === "unauthenticated" && (
+        <AuthWizard onLogin={() => setAuthStatus("ad-gateway")} />
       )}
     </main>
   );

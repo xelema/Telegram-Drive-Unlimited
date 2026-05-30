@@ -4,10 +4,8 @@
 use tauri::State;
 use crate::vpn_optimizer::{NetworkConfig, ProxyConfig, VpnConfig, NetworkConfigSnapshot};
 
-/// Apply proxy settings from the frontend.
-/// Stores the config in global state so network operations can read it.
-#[tauri::command]
-pub async fn cmd_apply_proxy_settings(
+#[derive(Debug, serde::Deserialize)]
+pub struct ProxySettingsRequest {
     enabled: bool,
     proxy_type: String,
     host: String,
@@ -15,17 +13,24 @@ pub async fn cmd_apply_proxy_settings(
     username: String,
     password: String,
     secret: String,
+}
+
+/// Apply proxy settings from the frontend.
+/// Stores the config in global state so network operations can read it.
+#[tauri::command]
+pub async fn cmd_apply_proxy_settings(
+    req: ProxySettingsRequest,
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
     let config = ProxyConfig {
-        enabled,
-        proxy_type,
-        host,
-        port,
-        username,
-        password,
-        secret,
+        enabled: req.enabled,
+        proxy_type: req.proxy_type,
+        host: req.host,
+        port: req.port,
+        username: req.username,
+        password: req.password,
+        secret: req.secret,
     };
 
     log::info!(
@@ -43,10 +48,8 @@ pub async fn cmd_apply_proxy_settings(
     Ok("Proxy settings applied".into())
 }
 
-/// Apply VPN optimizer settings from the frontend.
-/// Stores the config in global state so network operations can read it.
-#[tauri::command]
-pub async fn cmd_apply_vpn_settings(
+#[derive(Debug, serde::Deserialize)]
+pub struct VpnSettingsRequest {
     enabled: bool,
     timeout_multiplier: u32,
     retry_attempts: u32,
@@ -64,27 +67,34 @@ pub async fn cmd_apply_vpn_settings(
     chunk_size_kb: u32,
     keep_alive_interval_sec: u32,
     auto_detect_vpn: bool,
+}
+
+/// Apply VPN optimizer settings from the frontend.
+/// Stores the config in global state so network operations can read it.
+#[tauri::command]
+pub async fn cmd_apply_vpn_settings(
+    req: VpnSettingsRequest,
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
     let config = VpnConfig {
-        enabled,
-        timeout_multiplier: timeout_multiplier.clamp(1, 5),
-        retry_attempts: retry_attempts.clamp(0, 5),
-        retry_base_backoff_ms: retry_base_backoff_ms.clamp(500, 5000),
-        retry_max_backoff_ms: retry_max_backoff_ms.clamp(8000, 60000),
-        adaptive_polling,
-        polling_min_sec: polling_min_sec.clamp(10, 30),
-        polling_max_sec: polling_max_sec.clamp(45, 120),
-        preferred_dc,
-        dc_fallback_attempts: dc_fallback_attempts.clamp(1, 4),
-        flood_wait_respect,
-        peer_cache_size: peer_cache_size.clamp(100, 2000),
-        bandwidth_limit_up_kbs,
-        bandwidth_limit_down_kbs,
-        chunk_size_kb: chunk_size_kb.clamp(64, 512),
-        keep_alive_interval_sec: if keep_alive_interval_sec == 0 { 0 } else { keep_alive_interval_sec.clamp(30, 120) },
-        auto_detect_vpn,
+        enabled: req.enabled,
+        timeout_multiplier: req.timeout_multiplier.clamp(1, 5),
+        retry_attempts: req.retry_attempts.clamp(0, 5),
+        retry_base_backoff_ms: req.retry_base_backoff_ms.clamp(500, 5000),
+        retry_max_backoff_ms: req.retry_max_backoff_ms.clamp(8000, 60000),
+        adaptive_polling: req.adaptive_polling,
+        polling_min_sec: req.polling_min_sec.clamp(10, 30),
+        polling_max_sec: req.polling_max_sec.clamp(45, 120),
+        preferred_dc: req.preferred_dc,
+        dc_fallback_attempts: req.dc_fallback_attempts.clamp(1, 4),
+        flood_wait_respect: req.flood_wait_respect,
+        peer_cache_size: req.peer_cache_size.clamp(100, 2000),
+        bandwidth_limit_up_kbs: req.bandwidth_limit_up_kbs,
+        bandwidth_limit_down_kbs: req.bandwidth_limit_down_kbs,
+        chunk_size_kb: req.chunk_size_kb.clamp(64, 512),
+        keep_alive_interval_sec: if req.keep_alive_interval_sec == 0 { 0 } else { req.keep_alive_interval_sec.clamp(30, 120) },
+        auto_detect_vpn: req.auto_detect_vpn,
     };
 
     log::info!(

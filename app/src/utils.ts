@@ -1,3 +1,14 @@
+import { type as osType } from '@tauri-apps/plugin-os';
+import { toast } from 'sonner';
+
+// ── Platform detection ────────────────────────────────────────────────
+// Singleton — evaluated once at module load. Uses the Tauri OS plugin
+// on native builds, falls back to navigator.userAgent in browser contexts.
+export const isAndroidPlatform = ((): boolean => {
+  try { return osType() === 'android'; }
+  catch { return typeof navigator !== 'undefined' && /android/i.test(navigator.userAgent); }
+})();
+
 export function formatBytes(bytes: number, decimals = 2) {
     if (!+bytes) return '0 Bytes';
     const k = 1024;
@@ -24,3 +35,137 @@ export const isVideoFile   = (name: string) => endsWithAny(name, VIDEO_EXTENSION
 export const isAudioFile   = (name: string) => endsWithAny(name, AUDIO_EXTENSIONS);
 export const isImageFile   = (name: string) => endsWithAny(name, IMAGE_EXTENSIONS);
 export const isPdfFile     = (name: string) => name.toLowerCase().endsWith('.pdf');
+
+// ── HTML file input fallback for when Tauri dialog open() fails ──────────
+// Creates a hidden <input type="file"> element, triggers it, and returns
+// a Promise of file paths extracted from the Tauri webview File.path property.
+
+export interface FileDialogFallbackOptions {
+  directory?: boolean;
+  multiple?: boolean;
+}
+
+// ── Retry + HTML fallback wrapper for Tauri dialogs ────────────────────
+// Wraps any Tauri dialog call (open/save) with automatic retry + Browser
+// Picker fallback on error. Returns the dialog result, or null if cancelled
+// or the error was handled (toast shown, retry invoked, etc.).
+
+export async function pickWithFallback<T>(
+    dialogFn: () => Promise<T | null>,
+    onRetry: () => void,
+    options: {
+        errorTitle?: string;
+        /** If provided, a "Browser Picker" button is shown that calls this function. */
+        onBrowserPicker?: () => Promise<T | null>;
+    } = {}
+): Promise<T | null> {
+    try {
+        return await dialogFn();
+    } catch (err) {
+        console.error('Tauri dialog failed:', err);
+        const errorTitle = options.errorTitle ?? 'Dialog failed';
+
+        return await new Promise<T | null>((resolve) => {
+            let resolved = false;
+            let browserPickerClicked = false;
+            const done = (val: T | null) => {
+                if (resolved) return;
+                resolved = true;
+                resolve(val);
+            };
+
+            const toastOptions: Record<string, unknown> = {
+                description: String(err),
+                duration: 8000,
+                action: {
+                    label: 'Retry',
+                    onClick: () => {
+                        done(null);
+                        onRetry();
+                    },
+                },
+                onDismiss: () => {
+                    if (!browserPickerClicked) done(null);
+                },
+                onAutoClose: () => {
+                    if (!browserPickerClicked) done(null);
+                },
+            };
+
+            if (options.onBrowserPicker) {
+                toastOptions.cancel = {
+                    label: 'Browser Picker',
+                    onClick: async () => {
+                        browserPickerClicked = true;
+                        const result = await options.onBrowserPicker!();
+                        done(result);
+                    },
+                };
+            }
+
+            toast.error(errorTitle, toastOptions as Parameters<typeof toast.error>[1]);
+        });
+    }
+}
+
+export function showFileDialogFallback(options: FileDialogFallbackOptions = {}): Promise<string[]> {
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.multiple = options.multiple ?? true;
+
+    if (options.directory) {
+      input.setAttribute('webkitdirectory', '');
+      input.setAttribute('directory', '');
+    }
+
+    let focusTimeout: ReturnType<typeof setTimeout> | undefined;
+    let resolved = false;
+
+    // Clean up all listeners, timeouts, and DOM elements
+    const cleanup = () => {
+      window.removeEventListener('focus', onFocus);
+      if (focusTimeout) clearTimeout(focusTimeout);
+      input.remove();
+    };
+
+    // Resolve once and clean up (prevents double-resolve from onchange + focus paths)
+    const finish = (paths: string[]) => {
+      if (resolved) return;
+      resolved = true;
+      cleanup();
+      resolve(paths);
+    };
+
+    input.onchange = () => {
+      const paths: string[] = [];
+      if (input.files) {
+        for (let i = 0; i < input.files.length; i++) {
+          const path = (input.files[i] as any).path as string | undefined;
+          if (path && typeof path === 'string' && path.length > 0) {
+            paths.push(path);
+          }
+        }
+      }
+      finish(paths);
+    };
+
+    // Detect cancellation by watching for window focus return.
+    // When a native file dialog closes (select or cancel), the window regains focus.
+    const onFocus = () => {
+      window.removeEventListener('focus', onFocus);
+      focusTimeout = setTimeout(() => {
+        // If input is still in the DOM, onchange never fired → user cancelled
+        if (input.parentNode) {
+          finish([]);
+        }
+      }, 300);
+    };
+    window.addEventListener('focus', onFocus);
+
+    // Append to body (hidden) and click to trigger the native dialog
+    input.style.display = 'none';
+    document.body.appendChild(input);
+    input.click();
+  });
+}

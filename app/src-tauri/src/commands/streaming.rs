@@ -18,8 +18,13 @@ pub struct StreamInfo {
 /// never hardcoding the port.
 #[tauri::command]
 pub fn cmd_get_stream_info(config: State<'_, StreamConfig>) -> StreamInfo {
+    #[cfg(target_os = "android")]
+    let host = "127.0.0.1";
+    #[cfg(not(target_os = "android"))]
+    let host = "localhost";
+
     StreamInfo {
         token: config.token.clone(),
-        base_url: format!("http://localhost:{}", config.port),
+        base_url: format!("http://{}:{}", host, config.port),
     }
 }

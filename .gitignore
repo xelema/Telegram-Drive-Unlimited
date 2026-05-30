@@ -27,3 +27,7 @@ Error.html
 *.aab
 .gradle/
 local.properties
+*.keystore
+*.idsig
+*.DMP
+

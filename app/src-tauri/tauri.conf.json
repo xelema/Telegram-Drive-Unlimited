@@ -21,7 +21,16 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [],
+    "windows": [
+      {
+        "title": "Telegram Drive",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 1000,
+        "minHeight": 700,
+        "dragDropEnabled": false
+      }
+    ],
     "security": {
       "csp": "default-src 'self'; connect-src 'self' http://localhost:* http://127.0.0.1:* https://asset.localhost http://asset.localhost https://www.highperformanceformat.com; media-src 'self' http://localhost:* http://127.0.0.1:*; img-src 'self' data: blob: asset: https://asset.localhost; style-src 'self' 'unsafe-inline'; script-src 'self' blob: https://www.highperformanceformat.com; frame-src 'self' blob: https://www.highperformanceformat.com; worker-src 'self' blob:;",
       "capabilities": [

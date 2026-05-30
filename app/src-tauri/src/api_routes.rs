@@ -186,8 +186,8 @@ async fn api_list_files(
         if !has_folder_id {
             msgs = msgs.limit(100);
         } else if query.search.is_none() {
-            let page = query.page.unwrap_or(1).max(1);
-            let limit = query.limit.unwrap_or(20).min(100).max(1);
+            let page = query.page.unwrap_or(1).clamp(1, u32::MAX);
+            let limit = query.limit.unwrap_or(20).clamp(1, 100);
             if query.offset_id.is_some() {
                 msgs = msgs.limit(limit as usize * 2);
             } else {
@@ -277,9 +277,9 @@ async fn api_list_files(
 
     // Pagination
     let page = query.page.unwrap_or(1).max(1);
-    let limit = query.limit.unwrap_or(20).min(100).max(1);
+    let limit = query.limit.unwrap_or(20).clamp(1, 100);
     let total = filtered_files.len();
-    let total_pages = ((total + limit as usize - 1) / limit as usize) as u32;
+    let total_pages = (total.div_ceil(limit as usize)) as u32;
     let start = ((page - 1) * limit) as usize;
 
     let paginated_files: Vec<ApiFile> = filtered_files
