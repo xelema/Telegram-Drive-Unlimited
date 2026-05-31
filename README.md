@@ -36,7 +36,7 @@ Telegram Drive leverages the Telegram API to allow you to upload, organize, and 
 *   **Proxy Support**: Native integration for SOCKS5 and MTProto proxies to bypass regional restrictions and secure your traffic.
 *   **VPN Optimizer**: Aggressive network tuning including bandwidth throttling, adjustable transfer chunk sizing, and adaptive keep-alives to ensure maximum stability on high-latency connections.
 *   **Privacy Focused**: API keys and data stay local. No third-party servers.
-*   **Cross-Platform**: Native apps for macOS (Intel/ARM), Windows, and Linux.
+*   **Cross-Platform**: Native apps for macOS (Intel/ARM), Windows, Linux and Android.
 
 ## 📱 Android (Pre‑built, Unsigned APK)
 
