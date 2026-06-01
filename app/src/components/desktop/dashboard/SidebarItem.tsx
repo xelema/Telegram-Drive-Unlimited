@@ -40,8 +40,9 @@ export function SidebarItem({ icon: Icon, label, active = false, onClick, onDrop
 
     // Open context menu at mouse position (right-click)
     const openContextMenu = useCallback((e: React.MouseEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
         if (hasFolderActions) {
-            e.preventDefault();
             setContextMenu({ x: e.clientX, y: e.clientY });
         }
     }, [hasFolderActions]);
@@ -50,11 +51,11 @@ export function SidebarItem({ icon: Icon, label, active = false, onClick, onDrop
     useEffect(() => {
         if (!contextMenu) return;
         const handler = () => setContextMenu(null);
-        window.addEventListener('click', handler);
-        window.addEventListener('contextmenu', handler);
+        window.addEventListener('click', handler, true);
+        window.addEventListener('contextmenu', handler, true);
         return () => {
-            window.removeEventListener('click', handler);
-            window.removeEventListener('contextmenu', handler);
+            window.removeEventListener('click', handler, true);
+            window.removeEventListener('contextmenu', handler, true);
         };
     }, [contextMenu]);
 
@@ -72,7 +73,7 @@ export function SidebarItem({ icon: Icon, label, active = false, onClick, onDrop
     }, [contextMenu]);
 
     return (
-        <button
+        <div
             onClick={onClick}
             onDragEnter={(e) => {
                 e.preventDefault();
@@ -101,7 +102,7 @@ export function SidebarItem({ icon: Icon, label, active = false, onClick, onDrop
                 if (onDrop) onDrop(e);
             }}
             onContextMenu={openContextMenu}
-            className={`group w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150 ${active
+            className={`group w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150 cursor-pointer select-none ${active
                 ? 'bg-telegram-primary/10 text-telegram-primary'
                 : isOver
                     ? 'bg-telegram-primary/30 text-telegram-text ring-2 ring-telegram-primary scale-[1.02] shadow-lg'
@@ -187,6 +188,6 @@ export function SidebarItem({ icon: Icon, label, active = false, onClick, onDrop
                     </button>
                 </div>
             )}
-        </button>
+        </div>
     )
 }

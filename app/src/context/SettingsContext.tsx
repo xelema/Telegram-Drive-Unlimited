@@ -10,12 +10,12 @@ export interface Settings {
 
     // ── Proxy ──────────────────────────────────────────────
     proxyEnabled: boolean;
-    proxyType: 'socks5' | 'mtproto';
+    proxyType: 'socks5';  // Only SOCKS5 is supported by grammers
     proxyHost: string;
     proxyPort: number;
     proxyUsername: string;
     proxyPassword: string;   // SOCKS5
-    proxySecret: string;     // MTProto
+    proxySecret: string;     // Deprecated — kept for backward compat; no longer surfaced in UI
 
     // ── VPN Optimizer (master toggle) ─────────────────────
     vpnMode: boolean;
@@ -37,6 +37,13 @@ export interface Settings {
     chunkSizeKb: number;             // 128, 256, 512
     keepAliveIntervalSec: number;    // 0 = disabled, 30–120
     autoDetectVpn: boolean;
+
+    // ── Performance ────────────────────────────────────────
+    performanceMode: boolean;        // Disable blur, shadows, and heavy animations
+    linuxRenderingFix: boolean;      // WEBKIT_DISABLE_DMABUF_RENDERER=1 (Linux only, restart required)
+
+    // ── Transcode cache ─────────────────────────────────────
+    transcodeCacheMaxGb: number;     // 1–50 GB, default 5
 }
 
 const defaultSettings: Settings = {
@@ -73,6 +80,11 @@ const defaultSettings: Settings = {
     chunkSizeKb: 512,
     keepAliveIntervalSec: 0,
     autoDetectVpn: false,
+
+    performanceMode: false,
+    linuxRenderingFix: true,
+
+    transcodeCacheMaxGb: 5,
 };
 
 interface SettingsContextType {
@@ -96,7 +108,12 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
                 const saved = await store.get<Settings>('settings');
                 if (saved) {
                     // Merge with defaults so new keys are always present
-                    setSettings({ ...defaultSettings, ...saved });
+                    const merged = { ...defaultSettings, ...saved };
+                    // Backward compat: map old 'mtproto' proxyType to 'socks5'
+                    if ((merged.proxyType as string) === 'mtproto') {
+                        merged.proxyType = 'socks5';
+                    }
+                    setSettings(merged);
                 }
             } catch {
                 // Store not available or first run — use defaults

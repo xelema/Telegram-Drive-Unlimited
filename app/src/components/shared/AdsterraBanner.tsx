@@ -8,7 +8,7 @@ interface AdsterraBannerProps {
   visible: boolean;
 }
 
-const SMARTLINK_URL = 'https://omg10.com/4/11050140';
+const SMARTLINK_URL = 'https://www.effectivecpmnetwork.com/nk8qy01t0g?key=a6c132f628973ad13b326e57e4a92f40';
 const DISMISSED_KEY = 'adBannerDismissed';
 
 /** SmartLink clickable banner for Android. Tapping opens the offerwall in an external browser. */

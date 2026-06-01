@@ -1,7 +1,10 @@
 import { useState } from 'react';
-import { Folder, Eye, HardDrive, Plus, Link } from 'lucide-react';
+import { Folder, MoreVertical, Check } from 'lucide-react';
 import { TelegramFile } from '../../../types';
 import { FileTypeIcon } from '../../shared/FileTypeIcon';
+import { useVideoMetadata } from '../../../hooks/useVideoMetadata';
+import { useCachedVariants } from '../../../hooks/useCachedVariants';
+import { VideoMetaBadge } from '../../shared/VideoMetaBadge';
 
 interface FileListItemProps {
     file: TelegramFile;
@@ -11,19 +14,29 @@ interface FileListItemProps {
     onDragStart?: (fileId: number) => void;
     onDragEnd?: () => void;
     onDrop?: (e: React.DragEvent, folderId: number) => void;
-    onPreview: (file: TelegramFile) => void;
-    onDownload: (id: number, name: string) => void;
-    onDelete: (id: number) => void;
-    onShare?: (file: TelegramFile) => void;
 }
 
 export function FileListItem({
     file, selectedIds, onFileClick, handleContextMenu,
-    onDragStart, onDragEnd, onDrop,
-    onPreview, onDownload, onDelete, onShare
+    onDragStart, onDragEnd, onDrop
 }: FileListItemProps) {
     const [isDragOver, setIsDragOver] = useState(false);
     const isFolder = file.type === 'folder';
+
+    // Lazy video metadata badge (.mp4 only)
+    const { data: videoMeta, isLoading: videoMetaLoading } = useVideoMetadata(
+        file.id,
+        file.folder_id ?? null,
+        file.name,
+    );
+
+    // Cached HLS variants
+    const { data: cachedVariants } = useCachedVariants(
+        file.id,
+        file.folder_id ?? null,
+        file.name,
+    );
+    const cachedQualities = (cachedVariants || []).filter(v => v.available).map(v => v.quality);
 
     return (
         <div
@@ -60,7 +73,7 @@ export function FileListItem({
                     onDrop(e, file.id);
                 }
             }}
-            className={`group grid grid-cols-[2rem_2fr_6rem_8rem] gap-4 items-center px-4 py-3 rounded-lg cursor-pointer border border-transparent transition-all hover:bg-telegram-hover 
+            className={`group grid grid-cols-[2rem_2fr_6rem_8rem] gap-4 items-center px-4 py-3 rounded-lg cursor-pointer border border-transparent transition-all hover:bg-telegram-hover relative
                 ${selectedIds.includes(file.id) ? 'bg-telegram-primary/10 border-telegram-primary/20' : ''}
                 ${isDragOver ? 'ring-2 ring-telegram-primary bg-telegram-primary/20' : ''}
             `}
@@ -68,18 +81,34 @@ export function FileListItem({
             <div className="flex justify-center">
                 {isFolder ? <Folder className="w-5 h-5 text-telegram-primary" /> : <FileTypeIcon filename={file.name} className="w-5 h-5" />}
             </div>
-            <div className="truncate text-sm text-telegram-text font-medium relative pr-8">
-                {file.name}
-                {/* List Actions */}
-                <div className="absolute right-0 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 flex items-center bg-telegram-surface border border-telegram-border shadow-lg rounded px-1">
-                    <button onClick={(e) => { e.stopPropagation(); onPreview(file) }} className="p-1 hover:text-telegram-text text-telegram-subtext" title="Preview"><Eye className="w-4 h-4" /></button>
-                    <button onClick={(e) => { e.stopPropagation(); onDownload(file.id, file.name) }} className="p-1 hover:text-telegram-text text-telegram-subtext" title="Download"><HardDrive className="w-4 h-4" /></button>
-                    {!isFolder && onShare && <button onClick={(e) => { e.stopPropagation(); onShare(file) }} className="p-1 hover:text-telegram-primary text-telegram-subtext" title="Share"><Link className="w-4 h-4" /></button>}
-                    <button onClick={(e) => { e.stopPropagation(); onDelete(file.id) }} className="p-1 hover:text-red-400 text-telegram-subtext" title="Delete"><Plus className="w-4 h-4 rotate-45" /></button>
-                </div>
+            <div className="truncate text-sm text-telegram-text font-medium">
+                <span>{file.name}</span>
+                <VideoMetaBadge metadata={videoMeta} isLoading={videoMetaLoading} />
+                {cachedQualities.length > 0 && (
+                    <span className="inline-flex items-center gap-0.5 ml-1.5">
+                        {cachedQualities.map(q => (
+                            <span key={q} className="inline-flex items-center gap-0.5 text-[9px] font-medium text-emerald-400 bg-emerald-500/10 px-1 py-0.5 rounded">
+                                <Check className="w-2.5 h-2.5" />
+                                {q}
+                            </span>
+                        ))}
+                    </span>
+                )}
             </div>
             <div className="text-right text-xs text-telegram-subtext truncate">{file.sizeStr}</div>
-            <div className="text-right text-xs text-telegram-subtext font-mono opacity-50 truncate">{file.created_at || '-'}</div>
+            <div className="text-right text-xs text-telegram-subtext font-mono opacity-50 truncate pr-8">{file.created_at || '-'}</div>
+
+            {/* 3-dot Menu Button */}
+            <button
+                onClick={(e) => {
+                    e.stopPropagation();
+                    handleContextMenu(e, file);
+                }}
+                className="absolute right-4 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 p-1 bg-telegram-surface hover:bg-telegram-hover border border-telegram-border shadow-md rounded text-telegram-subtext hover:text-telegram-text transition-all z-10"
+                title="Actions"
+            >
+                <MoreVertical className="w-4 h-4" />
+            </button>
         </div>
     );
 }

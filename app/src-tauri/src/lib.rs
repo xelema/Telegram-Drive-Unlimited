@@ -58,6 +58,7 @@ pub mod db;
 pub mod share_routes;
 pub mod upload_service;
 pub mod jni_cache;
+pub mod transcode;
 
 
 /// Single source of truth for the Actix streaming server port.
@@ -338,6 +339,62 @@ fn cmd_remove_cached_path(_uri: String) -> Result<(), String> {
     Ok(()) // No-op on desktop
 }
 
+/// Gather system diagnostics and environment info for debugging.
+/// Returns a formatted string suitable for copying to clipboard.
+#[tauri::command]
+fn cmd_get_system_diagnostics(
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    let mut lines: Vec<String> = Vec::new();
+
+    lines.push("=== Telegram Drive Diagnostics ===".into());
+    lines.push(format!("Package: {}", env!("CARGO_PKG_NAME")));
+    lines.push(format!("Version: {}", env!("CARGO_PKG_VERSION")));
+
+    // OS info
+    lines.push(format!("OS: {} {}", std::env::consts::OS, std::env::consts::ARCH));
+
+    #[cfg(target_os = "linux")]
+    {
+        lines.push(format!("XDG_SESSION_TYPE: {}",
+            std::env::var("XDG_SESSION_TYPE").unwrap_or_else(|_| "unknown".into())));
+        lines.push(format!("XDG_CURRENT_DESKTOP: {}",
+            std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_else(|_| "unknown".into())));
+        lines.push(format!("WEBKIT_DISABLE_DMABUF_RENDERER: {}",
+            std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").unwrap_or_else(|_| "unset".into())));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        lines.push("Package Type: macOS bundle".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        lines.push("Package Type: Windows installer".to_string());
+    }
+
+    // App data dir
+    if let Ok(dir) = app.path().app_data_dir() {
+        lines.push(format!("App Data: {}", dir.display()));
+    }
+
+    // Check for FFmpeg
+    #[cfg(unix)]
+    {
+        let which = std::process::Command::new("which")
+            .arg("ffmpeg")
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+        lines.push(format!("FFmpeg: {}", which.unwrap_or_else(|| "not found".into())));
+    }
+
+    lines.push("==================================".into());
+
+    Ok(lines.join("\n"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::init();
@@ -462,6 +519,24 @@ pub fn run() {
             app.manage(ActixServerHandle(server_handle_for_setup.clone()));
             app.manage(ApiServerHandle(Arc::new(std::sync::Mutex::new(None))));
             app.manage(ApiServerRunning(Arc::new(std::sync::atomic::AtomicBool::new(false))));
+            
+            // Initialize TranscodeManager for HLS streaming
+            let app_data_dir = app.path().app_data_dir().map_err(|e| {
+                log::error!("Failed to get app data dir: {}", e);
+                e
+            })?;
+            let cache_root = app_data_dir.join("streaming");
+            let transcode_manager = transcode::TranscodeManager::new(cache_root);
+            // Detect FFmpeg (non-blocking spawn)
+            let app_handle = app.handle().clone();
+            let ffmpeg_path_arc = transcode_manager.ffmpeg_path.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Some(ffmpeg) = transcode::detect_ffmpeg(&app_handle).await {
+                    *ffmpeg_path_arc.lock().await = Some(ffmpeg);
+                }
+            });
+            let transcode_arc = Arc::new(transcode_manager);
+            app.manage(transcode_arc.clone());
             let loaded_config = vpn_optimizer::load_network_config(app.handle());
             let net_config = Arc::new(vpn_optimizer::NetworkConfig::new_with_config(loaded_config));
             app.manage(net_config.clone());
@@ -482,12 +557,13 @@ pub fn run() {
                 let token_for_server = stream_token.clone();
                 let handle_for_thread = server_handle_for_setup.clone();
                 let db_pool_for_server = db_pool.clone();
+                let transcode_for_server = transcode_arc.clone();
                 std::thread::spawn(move || {
                     #[cfg(target_os = "windows")]
                     init_com_on_worker_thread();
                     let sys = actix_rt::System::new();
                     sys.block_on(async move {
-                        match server::start_server(state, STREAM_PORT, token_for_server, db_pool_for_server).await {
+                        match server::start_server(state, STREAM_PORT, token_for_server, db_pool_for_server, transcode_for_server).await {
                             Ok(server) => {
                                 if let Ok(mut handle) = handle_for_thread.lock() {
                                     *handle = Some(server.handle());
@@ -571,6 +647,8 @@ pub fn run() {
             commands::cmd_search_global,
             commands::cmd_check_connection,
             commands::cmd_is_network_available,
+            commands::cmd_test_proxy_traffic,
+            commands::cmd_reconnect_with_network_settings,
             commands::cmd_clean_cache,
             commands::cmd_get_thumbnail,
             commands::cmd_get_stream_info,
@@ -596,6 +674,19 @@ pub fn run() {
             cmd_get_pending_share_count,
             cmd_list_cached_files,
             cmd_remove_cached_path,
+            cmd_get_system_diagnostics,
+            commands::cmd_get_video_metadata,
+            commands::cmd_get_video_metadata_batch,
+            transcode::cmd_get_transcode_capabilities,
+            transcode::cmd_prepare_transcoded_stream,
+            transcode::cmd_get_transcode_status,
+            transcode::cmd_cancel_transcode,
+            transcode::cmd_get_master_playlist_info,
+            transcode::cmd_get_transcode_cache_info,
+            transcode::cmd_set_transcode_cache_limit,
+            transcode::cmd_get_cached_variants,
+            transcode::cmd_get_detailed_transcode_cache,
+            transcode::cmd_clear_transcode_cache,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

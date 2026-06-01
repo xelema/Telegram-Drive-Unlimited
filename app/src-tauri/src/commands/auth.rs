@@ -126,9 +126,11 @@ pub async fn ensure_client_initialized(
     if proxy.enabled && !proxy.host.is_empty() {
         if proxy.proxy_type == "socks5" {
             let url = if !proxy.username.is_empty() {
+                let encoded_user = urlencoding::encode(&proxy.username);
+                let encoded_pass = urlencoding::encode(&proxy.password);
                 format!(
                     "socks5://{}:{}@{}:{}",
-                    proxy.username, proxy.password, proxy.host, proxy.port
+                    encoded_user, encoded_pass, proxy.host, proxy.port
                 )
             } else {
                 format!("socks5://{}:{}", proxy.host, proxy.port)
@@ -224,6 +226,48 @@ pub async fn cmd_check_connection(
     }
 
     Ok(false) // Not connected and no credentials to reconnect
+}
+
+#[tauri::command]
+pub async fn cmd_reconnect_with_network_settings(
+    app_handle: tauri::AppHandle,
+    state: State<'_, TelegramState>,
+) -> Result<bool, String> {
+    let api_id = *state.api_id.lock().await;
+    let api_id = match api_id {
+        Some(id) => id,
+        None => return Err("Not authenticated — no API ID saved.".into()),
+    };
+
+    log::info!("Reconnecting with updated network settings...");
+
+    // 1. Shutdown existing runner
+    {
+        let mut shutdown_guard = state.runner_shutdown.lock().unwrap();
+        if let Some(shutdown_tx) = shutdown_guard.take() {
+            log::info!("Signaling runner shutdown for reconnect...");
+            let _ = shutdown_tx.send(());
+        }
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // 2. Clear old client
+    *state.client.lock().await = None;
+
+    // 3. Reinitialize with current network config (reads from NetworkConfig state)
+    let client = ensure_client_initialized(&app_handle, &state, api_id).await?;
+
+    // 4. Verify the new connection works
+    match client.get_me().await {
+        Ok(_me) => {
+            log::info!("Reconnect successful — verified via get_me().");
+            Ok(true)
+        }
+        Err(e) => {
+            log::error!("Reconnect init succeeded but get_me failed: {}", e);
+            Err(format!("Reconnected but ping failed: {}", e))
+        }
+    }
 }
 
 #[tauri::command]

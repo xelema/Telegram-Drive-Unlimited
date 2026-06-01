@@ -44,14 +44,14 @@ export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPrevi
         const handleResize = () => onClose();
         const handleContextMenu = () => onClose();
 
-        window.addEventListener('click', handleClick);
+        window.addEventListener('click', handleClick, true);
         window.addEventListener('resize', handleResize);
-        window.addEventListener('contextmenu', handleContextMenu); // Close if right click elsewhere
+        window.addEventListener('contextmenu', handleContextMenu, true); // Close if right click elsewhere
 
         return () => {
-            window.removeEventListener('click', handleClick);
+            window.removeEventListener('click', handleClick, true);
             window.removeEventListener('resize', handleResize);
-            window.removeEventListener('contextmenu', handleContextMenu);
+            window.removeEventListener('contextmenu', handleContextMenu, true);
         };
     }, [onClose]);
 

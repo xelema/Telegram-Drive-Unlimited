@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.7.8] - 2026-06-01
+
+### Features & Enhancements
+
+- **Major UI improvements**
+- **Complete media player revamp**
+- **Multiple bug fixes**
+
+---
+
 ## [1.7.0] - 2026-05-29
 
 ### Features & Documentation

@@ -3,6 +3,7 @@ use actix_cors::Cors;
 use crate::commands::TelegramState;
 use crate::commands::utils::resolve_peer;
 use grammers_client::types::Media;
+use crate::transcode::TranscodeManager;
 
 use std::sync::Arc;
 
@@ -133,14 +134,22 @@ async fn stream_media(
                                 let mut bytes_to_skip = 0;
 
                                 if start_byte > 0 {
-                                    const MIN_CHUNK_SIZE: i32 = 4096;
-                                    const MAX_CHUNK_SIZE: i32 = 512 * 1024;
-                                    let chunk_index = (start_byte / MIN_CHUNK_SIZE as u64) as i32;
-                                    download_iter = download_iter
-                                        .chunk_size(MIN_CHUNK_SIZE)
-                                        .skip_chunks(chunk_index)
-                                        .chunk_size(MAX_CHUNK_SIZE);
-                                    bytes_to_skip = (start_byte - (chunk_index as u64 * MIN_CHUNK_SIZE as u64)) as usize;
+                                    // IMPORTANT: Telegram's upload.getFile requires offset aligned to limit.
+                                    // 65536 = 2^16, a valid power-of-2 limit that divides 131072 (moov
+                                    // discovery boundary) evenly so the resume offset stays aligned.
+                                    const CHUNK_SIZE: i32 = 65536;
+                                    let chunk_index = (start_byte / CHUNK_SIZE as u64) as i32;
+                                    if chunk_index > 0 {
+                                        let aligned_start = chunk_index as u64 * CHUNK_SIZE as u64;
+                                        download_iter = download_iter
+                                            .chunk_size(CHUNK_SIZE)
+                                            .skip_chunks(chunk_index);
+                                        bytes_to_skip = (start_byte - aligned_start) as usize;
+                                    } else {
+                                        // Offset < 64KB — download from byte 0 with default chunk_size
+                                        // and skip locally. No grammers API changes needed.
+                                        bytes_to_skip = start_byte as usize;
+                                    }
                                 }
 
                                 let stream = async_stream::stream! {
@@ -249,10 +258,12 @@ pub async fn start_server(
     port: u16,
     token: String,
     db_pool: crate::db::DbConnection,
+    transcode_manager: Arc<TranscodeManager>,
 ) -> std::io::Result<actix_web::dev::Server> {
     let state_data = web::Data::new(state);
     let token_data = web::Data::new(StreamTokenData { token });
     let db_data = web::Data::new(db_pool);
+    let transcode_data = web::Data::new(transcode_manager);
     
     log::info!("Starting Streaming Server on port {}", port);
     
@@ -269,8 +280,10 @@ pub async fn start_server(
             .app_data(state_data.clone())
             .app_data(token_data.clone())
             .app_data(db_data.clone())
+            .app_data(transcode_data.clone())
             .service(stream_media)
             .configure(crate::share_routes::configure_share_routes)
+            .configure(crate::transcode::configure_hls_routes)
     })
     .bind(("0.0.0.0", port))?
     .run();

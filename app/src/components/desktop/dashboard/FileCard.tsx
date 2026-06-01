@@ -1,9 +1,12 @@
 import { motion } from 'framer-motion';
 import { useState, useEffect } from 'react';
-import { Folder, Eye, Trash2, Link } from 'lucide-react';
+import { Folder, Eye, Trash2, Link, Check } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { TelegramFile } from '../../../types';
 import { FileTypeIcon } from '../../shared/FileTypeIcon';
+import { useVideoMetadata } from '../../../hooks/useVideoMetadata';
+import { useCachedVariants } from '../../../hooks/useCachedVariants';
+import { VideoMetaBadge } from '../../shared/VideoMetaBadge';
 
 interface FileCardProps {
     file: TelegramFile;
@@ -33,6 +36,21 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
     const [isDragOver, setIsDragOver] = useState(false);
     const [thumbnail, setThumbnail] = useState<string | null>(null);
     const [thumbnailLoading, setThumbnailLoading] = useState(false);
+
+    // Lazy video metadata badge (.mp4 only)
+    const { data: videoMeta, isLoading: videoMetaLoading } = useVideoMetadata(
+        file.id,
+        file.folder_id ?? null,
+        file.name,
+    );
+
+    // Cached HLS variants
+    const { data: cachedVariants } = useCachedVariants(
+        file.id,
+        file.folder_id ?? null,
+        file.name,
+    );
+    const cachedQualities = (cachedVariants || []).filter(v => v.available).map(v => v.quality);
 
     // Lazy load thumbnail for image files
     useEffect(() => {
@@ -139,7 +157,20 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
                 {/* File info overlay at bottom */}
                 <div className={`absolute bottom-0 left-0 right-0 p-3 ${thumbnail ? 'text-white' : 'text-telegram-text'}`}>
                     <h3 className="text-sm font-medium truncate w-full" title={file.name}>{file.name}</h3>
-                    <p className={`text-xs mt-0.5 ${thumbnail ? 'text-white/70' : 'text-telegram-subtext'}`}>{file.sizeStr}</p>
+                    <div className="flex items-center gap-2 mt-0.5">
+                        <p className={`text-xs ${thumbnail ? 'text-white/70' : 'text-telegram-subtext'}`}>{file.sizeStr}</p>
+                        <VideoMetaBadge metadata={videoMeta} isLoading={videoMetaLoading} />
+                        {cachedQualities.length > 0 && (
+                            <span className="inline-flex items-center gap-0.5">
+                                {cachedQualities.map(q => (
+                                    <span key={q} className="inline-flex items-center gap-0.5 text-[9px] font-medium text-emerald-400 bg-emerald-500/10 px-1 py-0.5 rounded">
+                                        <Check className="w-2.5 h-2.5" />
+                                        {q}
+                                    </span>
+                                ))}
+                            </span>
+                        )}
+                    </div>
                 </div>
 
                 {/* Quick actions on hover */}

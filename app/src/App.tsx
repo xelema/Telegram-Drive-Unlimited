@@ -18,6 +18,7 @@ import { ConfirmProvider } from "./context/ConfirmContext";
 import { ThemeProvider, useTheme } from "./context/ThemeContext";
 import { SettingsProvider } from "./context/SettingsContext";
 import { DropZoneProvider } from "./contexts/DropZoneContext";
+import { useSettings } from "./context/SettingsContext";
 
 const queryClient = new QueryClient();
 
@@ -28,6 +29,32 @@ function AppContent() {
   const { theme } = useTheme();
   const { available, version, downloading, progress, downloadAndInstall, dismissUpdate } = useUpdateCheck();
   const { isMobile } = usePlatform();
+  const { settings, updateSetting, isLoaded } = useSettings();
+
+  // Performance mode: auto-enable when user has prefers-reduced-motion
+  useEffect(() => {
+    const mediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+    if (mediaQuery.matches && !settings.performanceMode) {
+      updateSetting('performanceMode', true);
+    }
+    const handler = (e: MediaQueryListEvent) => {
+      if (e.matches && !settings.performanceMode) {
+        updateSetting('performanceMode', true);
+      }
+    };
+    mediaQuery.addEventListener('change', handler);
+    return () => mediaQuery.removeEventListener('change', handler);
+  }, []);
+
+  // Apply performance-mode class to body (guarded by settings load to avoid flicker)
+  useEffect(() => {
+    if (!isLoaded) return;
+    if (settings.performanceMode) {
+      document.body.classList.add('performance-mode');
+    } else {
+      document.body.classList.remove('performance-mode');
+    }
+  }, [settings.performanceMode, isLoaded]);
 
   // On mount: check for a saved session and auto-restore it.
   // This is the SINGLE source of truth for the initial connection.

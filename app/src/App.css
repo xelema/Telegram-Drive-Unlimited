@@ -246,3 +246,57 @@ body,
 :root.light textarea:focus {
   border-color: var(--color-telegram-primary);
 }
+
+/* ── Performance Mode ──────────────────────────────────────── */
+/* Disables GPU-heavy effects for WebKitGTK / older hardware.  */
+/* Toggle via Settings → General → Performance Mode.           */
+
+.performance-mode *,
+.performance-mode *::before,
+.performance-mode *::after {
+  transition: none !important;
+  animation: none !important;
+}
+
+.performance-mode {
+  /* Kill backdrop-filter completely */
+  --tw-backdrop-blur: none !important;
+}
+
+.performance-mode .backdrop-blur-sm,
+.performance-mode .backdrop-blur,
+.performance-mode .backdrop-blur-md,
+.performance-mode .backdrop-blur-lg,
+.performance-mode .backdrop-blur-xl,
+.performance-mode .backdrop-blur-2xl,
+.performance-mode .backdrop-blur-3xl {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+.performance-mode .glass,
+.performance-mode .auth-glass,
+.performance-mode .glass-input {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* Kill heavy shadows */
+.performance-mode .shadow-lg,
+.performance-mode .shadow-xl,
+.performance-mode .shadow-2xl,
+.performance-mode .drop-shadow-lg {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12) !important;
+  filter: none !important;
+}
+
+/* Disable Framer Motion transforms at the CSS level */
+.performance-mode [style*="transform"] {
+  transform: none !important;
+}
+
+/* Reduce paint cost */
+.performance-mode .animate-pulse,
+.performance-mode .animate-spin {
+  animation: none !important;
+}

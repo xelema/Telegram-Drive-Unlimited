@@ -358,10 +358,6 @@ export function FileExplorer({
                                         onDragStart={onDragStart}
                                         onDragEnd={onDragEnd}
                                         onDrop={onDrop}
-                                        onPreview={handlePreviewRequest}
-                                        onDownload={onDownload}
-                                        onDelete={onDelete}
-                                        onShare={onShare}
                                     />
                                 </div>
                             );

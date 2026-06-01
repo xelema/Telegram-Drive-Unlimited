@@ -3,6 +3,114 @@ use std::time::Duration;
 use tauri::State;
 use crate::vpn_optimizer::NetworkConfig;
 
+/// Test whether Telegram MTProto traffic can pass through the configured proxy.
+/// Unlike cmd_is_network_available (which only TCP-pings the proxy host:port),
+/// this creates a temporary grammers session and attempts a real API call.
+/// Returns true only if the Telegram API responds successfully through the proxy.
+#[tauri::command]
+pub async fn cmd_test_proxy_traffic(
+    net_config: State<'_, std::sync::Arc<NetworkConfig>>,
+) -> Result<bool, String> {
+    // Only test if proxy is actually configured and enabled
+    let proxy = net_config.proxy.read().map_err(|e| e.to_string())?.clone();
+    if !proxy.enabled || proxy.host.is_empty() {
+        return Ok(false);
+    }
+
+    if proxy.proxy_type != "socks5" {
+        return Ok(false); // Only SOCKS5 is supported for proxy auth
+    }
+
+    // Build proxy URL
+    let proxy_url = if !proxy.username.is_empty() {
+        let encoded_user = urlencoding::encode(&proxy.username);
+        let encoded_pass = urlencoding::encode(&proxy.password);
+        format!(
+            "socks5://{}:{}@{}:{}",
+            encoded_user, encoded_pass, proxy.host, proxy.port
+        )
+    } else {
+        format!("socks5://{}:{}", proxy.host, proxy.port)
+    };
+
+    log::info!("Testing proxy traffic through: socks5://{}:{}", proxy.host, proxy.port);
+
+    // Create a temporary session in a temp directory
+    let temp_dir = std::env::temp_dir().join("telegram_drive_proxy_test");
+    let _ = std::fs::create_dir_all(&temp_dir);
+    let session_path = temp_dir.join("test.session");
+    let session_path_str = session_path.to_string_lossy().to_string();
+
+    // Remove any previous test session
+    let _ = std::fs::remove_file(&session_path);
+    let _ = std::fs::remove_file(format!("{}-wal", session_path_str));
+    let _ = std::fs::remove_file(format!("{}-shm", session_path_str));
+
+    let result: Result<bool, String> = tokio::task::spawn_blocking(move || {
+        let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
+        rt.block_on(async {
+            // Open a fresh in-memory-ish SQLite session
+            let session = grammers_session::storages::SqliteSession::open(&session_path_str)
+                .map_err(|e| format!("Failed to open test session: {}", e))?;
+            let session = std::sync::Arc::new(session);
+
+            // Build connection params with proxy
+            let mut conn_params = grammers_mtsender::ConnectionParams::default();
+            conn_params.proxy_url = Some(proxy_url);
+
+            let pool = grammers_mtsender::SenderPool::with_configuration(
+                session.clone(),
+                // Use a hardcoded test app ID (telegram.org test credentials won't work,
+                // but with a real session the API ID doesn't matter for get_me).
+                // We just need the transport to work. Use API ID 0 as a sentinel —
+                // grammers will still establish the TCP+TLS tunnel.
+                // NOTE: grammers requires a non-zero API ID for connection params.
+                // We use a minimal valid value; the session will still try to connect.
+                12345,
+                conn_params,
+            );
+
+            let client = grammers_client::Client::new(&pool);
+
+            // Spawn the runner briefly
+            let grammers_mtsender::SenderPool { runner, .. } = pool;
+            let runner_handle = tokio::spawn(async move {
+                runner.run().await;
+            });
+
+            // Try get_me() with a timeout
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                client.get_me(),
+            ).await;
+
+            // Abort runner regardless of outcome
+            runner_handle.abort();
+
+            // Clean up test session files
+            let _ = std::fs::remove_file(&session_path_str);
+            let _ = std::fs::remove_file(format!("{}-wal", session_path_str));
+            let _ = std::fs::remove_file(format!("{}-shm", session_path_str));
+
+            match result {
+                Ok(Ok(_me)) => Ok(true),
+                Ok(Err(e)) => {
+                    log::warn!("Proxy traffic test failed (API error): {}", e);
+                    Ok(false)
+                }
+                Err(_timeout) => {
+                    log::warn!("Proxy traffic test timed out after 10s");
+                    Ok(false)
+                }
+            }
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    result
+}
+
 /// Telegram DC addresses for connectivity checks and fallback
 const DC_ADDRESSES: &[&str] = &[
     "149.154.167.50:443",  // DC2

@@ -21,6 +21,7 @@ import { PdfViewer } from './dashboard/PdfViewer';
 import { SettingsModal } from './dashboard/SettingsModal';
 import { ShareDialog } from './dashboard/ShareDialog';
 import { RenameFolderModal } from './dashboard/RenameFolderModal';
+import { DesktopAdBanner } from './dashboard/DesktopAdBanner';
 import { Link, Copy, Check, X, Loader2, Share2 } from 'lucide-react';
 
 // Hooks
@@ -552,6 +553,8 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                 isOpen={showSettings}
                 onClose={() => setShowSettings(false)}
             />
+
+            <DesktopAdBanner />
 
             {shareFile && (
                 <ShareDialog

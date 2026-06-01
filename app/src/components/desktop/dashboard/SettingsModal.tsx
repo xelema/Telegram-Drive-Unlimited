@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, RotateCcw, Download, Upload, Trash2, HardDrive, Globe, Key, Copy, Check, RefreshCw, FolderArchive, Shield, Zap, Activity, Gauge, Wifi, ChevronDown, Link, Sparkles, Info } from 'lucide-react';
+import { X, RotateCcw, Download, Upload, Trash2, HardDrive, Globe, Key, Copy, Check, RefreshCw, FolderArchive, Shield, Zap, Activity, Gauge, Wifi, ChevronDown, Link, Sparkles, Info, Clipboard, Monitor, Loader2 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-shell';
 import { toast } from 'sonner';
@@ -8,7 +8,7 @@ import { check, Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { useSettings } from '../../../context/SettingsContext';
 import { useConfirm } from '../../../context/ConfirmContext';
-import { ShareInfo } from '../../../types';
+import { ShareInfo, CacheEntry, DetailedCacheInfo } from '../../../types';
 import { version as appVersion } from '../../../../package.json';
 
 interface SettingsModalProps {
@@ -29,6 +29,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const { settings, updateSetting, resetSettings } = useSettings();
     const { confirm } = useConfirm();
     const [clearing, setClearing] = useState(false);
+
+    // Transcode cache state
+    const [transcodeCache, setTranscodeCache] = useState<DetailedCacheInfo | null>(null);
+    const [cacheLoading, setCacheLoading] = useState(false);
+    const [clearingVariant, setClearingVariant] = useState<string | null>(null); // file_key:quality being cleared
     const [activeTab, setActiveTab] = useState<SettingsTab>('general');
     const [latencyMs, setLatencyMs] = useState<number | null>(null);
     const [vpnDetected, setVpnDetected] = useState<boolean | null>(null);
@@ -39,6 +44,12 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const [updateVersion, setUpdateVersion] = useState<string | null>(null);
     const [updateDownloading, setUpdateDownloading] = useState(false);
     const [updateProgress, setUpdateProgress] = useState(0);
+
+    // Reconnect state
+    const [reconnecting, setReconnecting] = useState(false);
+
+    // Diagnostics state
+    const [diagLoading, setDiagLoading] = useState(false);
 
     const handleCheckForUpdates = useCallback(async () => {
         setUpdateChecking(true);
@@ -173,6 +184,26 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             setKeyCopied(false);
         }
     }, [isOpen, fetchApiSettings]);
+
+    // Fetch transcode cache info
+    const fetchTranscodeCache = useCallback(async () => {
+        setCacheLoading(true);
+        try {
+            const info = await invoke<DetailedCacheInfo>('cmd_get_detailed_transcode_cache');
+            setTranscodeCache(info);
+        } catch {
+            setTranscodeCache(null);
+        } finally {
+            setCacheLoading(false);
+        }
+    }, []);
+
+    // Load transcode cache when on general tab
+    useEffect(() => {
+        if (isOpen && activeTab === 'general') {
+            fetchTranscodeCache();
+        }
+    }, [isOpen, activeTab, fetchTranscodeCache]);
 
     // Poll API status while modal is open and API is enabled
     useEffect(() => {
@@ -485,6 +516,43 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.zipFolders ? 'translate-x-5' : 'translate-x-0'}`} />
                                     </button>
                                 </div>
+
+                                {/* Performance Mode */}
+                                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
+                                    <div className="flex items-center gap-2">
+                                        <Zap className="w-4 h-4 text-telegram-subtext" />
+                                        <div>
+                                            <p className="text-sm text-telegram-text font-medium">Performance Mode</p>
+                                            <p className="text-xs text-telegram-subtext">Disable blur, heavy shadows &amp; animations</p>
+                                        </div>
+                                    </div>
+                                    <button
+                                        onClick={() => updateSetting('performanceMode', !settings.performanceMode)}
+                                        className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${settings.performanceMode ? 'bg-telegram-primary' : 'bg-telegram-border'}`}
+                                    >
+                                        <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.performanceMode ? 'translate-x-5' : 'translate-x-0'}`} />
+                                    </button>
+                                </div>
+
+                                {/* Linux Rendering Fix */}
+                                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
+                                    <div className="flex items-center gap-2">
+                                        <Monitor className="w-4 h-4 text-telegram-subtext" />
+                                        <div>
+                                            <p className="text-sm text-telegram-text font-medium">Linux Rendering Fix</p>
+                                            <p className="text-xs text-telegram-subtext">Disable DMA-BUF renderer (fixes GPU crashes, requires restart)</p>
+                                        </div>
+                                    </div>
+                                    <button
+                                        onClick={() => {
+                                            updateSetting('linuxRenderingFix', !settings.linuxRenderingFix);
+                                            toast.info('Restart the app for this change to take effect', { duration: 5000 });
+                                        }}
+                                        className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${settings.linuxRenderingFix ? 'bg-telegram-primary' : 'bg-telegram-border'}`}
+                                    >
+                                        <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.linuxRenderingFix ? 'translate-x-5' : 'translate-x-0'}`} />
+                                    </button>
+                                </div>
                             </section>
 
                             {/* REST API Section */}
@@ -585,6 +653,27 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     Storage
                                 </h3>
 
+                                {/* Transcode Cache Size */}
+                                <div className="p-3 rounded-lg bg-telegram-hover/50 space-y-2">
+                                    <div className="flex items-center justify-between">
+                                        <div className="flex items-center gap-2">
+                                            <HardDrive className="w-4 h-4 text-telegram-subtext" />
+                                            <div>
+                                                <p className="text-sm text-telegram-text font-medium">Transcode Cache Limit</p>
+                                                <p className="text-xs text-telegram-subtext">Max disk space for HLS variants</p>
+                                            </div>
+                                        </div>
+                                        <span className="text-sm text-telegram-primary font-mono font-medium">{settings.transcodeCacheMaxGb} GB</span>
+                                    </div>
+                                    <input type="range" min="1" max="50" step="1" value={settings.transcodeCacheMaxGb}
+                                        onChange={e => {
+                                            const gb = parseInt(e.target.value);
+                                            updateSetting('transcodeCacheMaxGb', gb);
+                                            invoke('cmd_set_transcode_cache_limit', { maxGb: gb }).catch(() => {});
+                                        }}
+                                        className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
+                                </div>
+
                                 <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
                                     <div className="flex items-center gap-2">
                                         <Trash2 className="w-4 h-4 text-telegram-subtext" />
@@ -617,6 +706,138 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     >
                                         {clearing ? 'Clearing...' : 'Clear'}
                                     </button>
+                                </div>
+
+                                {/* Transcode Cache */}
+                                <div className="p-3 rounded-lg bg-telegram-hover/50 space-y-3">
+                                    <div className="flex items-center justify-between">
+                                        <div className="flex items-center gap-2">
+                                            <HardDrive className="w-4 h-4 text-telegram-subtext" />
+                                            <div>
+                                                <p className="text-sm text-telegram-text font-medium">Transcode Cache</p>
+                                                <p className="text-xs text-telegram-subtext">
+                                                    {transcodeCache
+                                                        ? `${(transcodeCache.total_bytes / 1048576).toFixed(1)} MB / ${(transcodeCache.max_bytes / 1073741824).toFixed(1)} GB`
+                                                        : 'Loading...'}
+                                                </p>
+                                            </div>
+                                        </div>
+                                        <div className="flex items-center gap-1.5">
+                                            <button
+                                                onClick={fetchTranscodeCache}
+                                                disabled={cacheLoading}
+                                                className="p-1.5 rounded-md hover:bg-telegram-hover text-telegram-subtext hover:text-telegram-text transition"
+                                                title="Refresh"
+                                            >
+                                                <RefreshCw className={`w-3 h-3 ${cacheLoading ? 'animate-spin' : ''}`} />
+                                            </button>
+                                            <button
+                                                disabled={!transcodeCache || transcodeCache.entries.length === 0}
+                                                onClick={async () => {
+                                                    const ok = await confirm({
+                                                        title: 'Clear All Transcoded Cache',
+                                                        message: 'This will delete all transcoded HLS variants and cached originals. Files will need to be re-transcoded for HLS playback.',
+                                                        confirmText: 'Clear All',
+                                                        variant: 'danger',
+                                                    });
+                                                    if (!ok) return;
+                                                    setClearingVariant('__all__');
+                                                    try {
+                                                        const msg = await invoke<string>('cmd_clear_transcode_cache', {});
+                                                        toast.success(msg);
+                                                        fetchTranscodeCache();
+                                                    } catch (e) {
+                                                        toast.error(`Failed: ${e}`);
+                                                    } finally {
+                                                        setClearingVariant(null);
+                                                    }
+                                                }}
+                                                className="px-2.5 py-1 rounded-md text-[10px] font-medium bg-red-500/10 text-red-400 hover:bg-red-500/20 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                                            >
+                                                {clearingVariant === '__all__' ? 'Clearing...' : 'Clear All'}
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    {/* Cache entries list */}
+                                    {transcodeCache && transcodeCache.entries.length > 0 ? (
+                                        <div className="space-y-1.5 max-h-[200px] overflow-y-auto pr-1 custom-scrollbar">
+                                            {/* Group HLS variants by file_key (exclude originals, which are cleared via per-file Clear or Clear All) */}
+                                            {(() => {
+                                                const grouped: Record<string, CacheEntry[]> = {};
+                                                for (const e of transcodeCache.entries) {
+                                                    // Skip original entries — they're cleared via per-file or Clear All only
+                                                    if (e.quality === 'original') continue;
+                                                    if (!grouped[e.file_key]) grouped[e.file_key] = [];
+                                                    grouped[e.file_key].push(e);
+                                                }
+                                                return Object.entries(grouped).map(([fileKey, entries]) => (
+                                                    <div key={fileKey} className="p-2 rounded bg-telegram-bg/50 border border-telegram-border/30">
+                                                        <div className="flex items-center justify-between mb-1">
+                                                            <span className="text-[10px] font-mono text-telegram-subtext truncate max-w-[180px]" title={fileKey}>
+                                                                {fileKey}
+                                                            </span>
+                                                            <button
+                                                                disabled={clearingVariant !== null}
+                                                                onClick={async () => {
+                                                                    setClearingVariant(fileKey);
+                                                                    try {
+                                                                        const msg = await invoke<string>('cmd_clear_transcode_cache', { fileKey });
+                                                                        toast.success(msg);
+                                                                        fetchTranscodeCache();
+                                                                    } catch (e) {
+                                                                        toast.error(`Failed: ${e}`);
+                                                                    } finally {
+                                                                        setClearingVariant(null);
+                                                                    }
+                                                                }}
+                                                                className="text-[9px] text-red-400/60 hover:text-red-400 transition px-1 py-0.5 rounded hover:bg-red-500/10 disabled:opacity-30"
+                                                                title={`Clear all variants for ${fileKey}`}
+                                                            >
+                                                                {clearingVariant === fileKey ? '...' : 'Clear'}
+                                                            </button>
+                                                        </div>
+                                                        <div className="flex flex-wrap gap-1">
+                                                            {entries.map(e => (
+                                                                <button
+                                                                    key={`${e.file_key}:${e.quality}`}
+                                                                    disabled={clearingVariant !== null}
+                                                                    onClick={async () => {
+                                                                        const variantKey = `${e.file_key}:${e.quality}`;
+                                                                        setClearingVariant(variantKey);
+                                                                        try {
+                                                                            const msg = await invoke<string>('cmd_clear_transcode_cache', { fileKey: e.file_key, quality: e.quality });
+                                                                            toast.success(msg);
+                                                                            fetchTranscodeCache();
+                                                                        } catch (err) {
+                                                                            toast.error(`Failed: ${err}`);
+                                                                        } finally {
+                                                                            setClearingVariant(null);
+                                                                        }
+                                                                    }}
+                                                                    className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-medium transition ${
+                                                                        e.playlist_exists
+                                                                            ? 'bg-emerald-500/10 text-emerald-400 hover:bg-red-500/10 hover:text-red-400 border border-emerald-500/20'
+                                                                            : 'bg-amber-500/10 text-amber-400/60 border border-amber-500/20'
+                                                                    } disabled:opacity-30`}
+                                                                    title={`${e.quality} — ${(e.size_bytes / 1048576).toFixed(2)} MB${e.playlist_exists ? ' (ready)' : ' (partial)'}`}
+                                                                >
+                                                                    {e.quality === 'original' ? 'Original' : e.quality}
+                                                                    <span className="text-[8px] opacity-60">{e.playlist_exists ? '✓' : '~'}</span>
+                                                                </button>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                ));
+                                            })()}
+                                        </div>
+                                    ) : transcodeCache && transcodeCache.entries.length === 0 ? (
+                                        <p className="text-[11px] text-telegram-subtext/50 text-center py-2">No transcoded files cached</p>
+                                    ) : (
+                                        <div className="flex items-center justify-center py-2">
+                                            <RefreshCw className="w-3 h-3 text-telegram-subtext animate-spin" />
+                                        </div>
+                                    )}
                                 </div>
                             </section>
 
@@ -711,16 +932,15 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                 <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
                                     <div>
                                         <p className="text-sm text-telegram-text font-medium">Proxy Type</p>
-                                        <p className="text-xs text-telegram-subtext">SOCKS5 or MTProto proxy</p>
+                                        <p className="text-xs text-telegram-subtext">SOCKS5 proxy (MTProto not supported by grammers)</p>
                                     </div>
                                     <div className="relative">
                                         <select
                                             value={settings.proxyType}
-                                            onChange={e => updateSetting('proxyType', e.target.value as 'socks5' | 'mtproto')}
+                                            onChange={e => updateSetting('proxyType', e.target.value as 'socks5')}
                                             className="appearance-none bg-telegram-bg border border-telegram-border rounded-md pl-3 pr-8 py-1.5 text-sm text-telegram-text focus:outline-none focus:border-telegram-primary/50 transition cursor-pointer"
                                         >
                                             <option value="socks5">SOCKS5</option>
-                                            <option value="mtproto">MTProto</option>
                                         </select>
                                         <ChevronDown className="w-4 h-4 text-telegram-subtext absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                                     </div>
@@ -789,28 +1009,42 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     </>
                                 )}
 
-                                {/* MTProto secret */}
-                                {settings.proxyType === 'mtproto' && (
-                                    <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                                        <div>
-                                            <p className="text-sm text-telegram-text font-medium">Secret</p>
-                                            <p className="text-xs text-telegram-subtext">MTProto proxy secret key</p>
-                                        </div>
-                                        <input
-                                            type="password"
-                                            placeholder="Required"
-                                            value={settings.proxySecret}
-                                            onChange={e => updateSetting('proxySecret', e.target.value)}
-                                            className="w-40 bg-telegram-bg border border-telegram-border rounded-md px-2 py-1 text-sm text-telegram-text text-right focus:outline-none focus:border-telegram-primary/50 transition placeholder:text-telegram-subtext/40"
-                                        />
-                                    </div>
-                                )}
-
                                 {/* Info note */}
-                                <div className="p-3 rounded-lg bg-yellow-500/5 border border-yellow-500/10">
+                                <div className="p-3 rounded-lg bg-yellow-500/5 border border-yellow-500/10 space-y-2">
                                     <p className="text-[11px] text-yellow-400/70 leading-relaxed">
-                                        ⚠️ Proxy changes require reconnecting. The app will attempt to reconnect automatically when you toggle the proxy.
+                                        ⚠️ Proxy changes require reconnecting to take effect.
                                     </p>
+                                    <button
+                                        onClick={async () => {
+                                            setReconnecting(true);
+                                            try {
+                                                const ok = await invoke<boolean>('cmd_reconnect_with_network_settings');
+                                                if (ok) {
+                                                    toast.success('Reconnected successfully with new proxy settings');
+                                                } else {
+                                                    toast.error('Reconnect failed — check proxy credentials');
+                                                }
+                                            } catch (e) {
+                                                toast.error(`Reconnect failed: ${e}`);
+                                            } finally {
+                                                setReconnecting(false);
+                                            }
+                                        }}
+                                        disabled={reconnecting}
+                                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-telegram-primary/10 text-telegram-primary hover:bg-telegram-primary/20 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                                    >
+                                        {reconnecting ? (
+                                            <>
+                                                <Loader2 className="w-3 h-3 animate-spin" />
+                                                Reconnecting...
+                                            </>
+                                        ) : (
+                                            <>
+                                                <RefreshCw className="w-3 h-3" />
+                                                Reconnect Now
+                                            </>
+                                        )}
+                                    </button>
                                 </div>
                             </motion.section>
                         )}
@@ -1214,6 +1448,31 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
                                             {/* Divider */}
                                             <div className="w-12 h-px bg-telegram-border" />
+
+                                            {/* Diagnostics */}
+                                            <button
+                                                onClick={async () => {
+                                                    setDiagLoading(true);
+                                                    try {
+                                                        const info = await invoke<string>('cmd_get_system_diagnostics');
+                                                        await navigator.clipboard.writeText(info);
+                                                        toast.success('Diagnostics copied to clipboard');
+                                                    } catch (e) {
+                                                        toast.error(`Failed: ${e}`);
+                                                    } finally {
+                                                        setDiagLoading(false);
+                                                    }
+                                                }}
+                                                disabled={diagLoading}
+                                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-telegram-hover border border-telegram-border text-telegram-subtext hover:text-telegram-text hover:bg-telegram-border/30 transition disabled:opacity-50"
+                                            >
+                                                {diagLoading ? (
+                                                    <Loader2 className="w-3 h-3 animate-spin" />
+                                                ) : (
+                                                    <Clipboard className="w-3 h-3" />
+                                                )}
+                                                Copy Diagnostics
+                                            </button>
 
                                             {/* Creator Info */}
                                             <div className="text-center space-y-3">

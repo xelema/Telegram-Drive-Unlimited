@@ -483,14 +483,22 @@ async fn api_download_file(
                     let mut bytes_to_skip = 0;
 
                     if start_byte > 0 {
-                        const MIN_CHUNK_SIZE: i32 = 4096;
-                        const MAX_CHUNK_SIZE: i32 = 512 * 1024;
-                        let chunk_index = (start_byte / MIN_CHUNK_SIZE as u64) as i32;
-                        download_iter = download_iter
-                            .chunk_size(MIN_CHUNK_SIZE)
-                            .skip_chunks(chunk_index)
-                            .chunk_size(MAX_CHUNK_SIZE);
-                        bytes_to_skip = (start_byte - (chunk_index as u64 * MIN_CHUNK_SIZE as u64)) as usize;
+                        // IMPORTANT: Telegram's upload.getFile requires offset aligned to limit.
+                        // 65536 = 2^16, a valid power-of-2 limit that divides 131072 (moov
+                        // discovery boundary) evenly so the resume offset stays aligned.
+                        const CHUNK_SIZE: i32 = 65536;
+                        let chunk_index = (start_byte / CHUNK_SIZE as u64) as i32;
+                        if chunk_index > 0 {
+                            let aligned_start = chunk_index as u64 * CHUNK_SIZE as u64;
+                            download_iter = download_iter
+                                .chunk_size(CHUNK_SIZE)
+                                .skip_chunks(chunk_index);
+                            bytes_to_skip = (start_byte - aligned_start) as usize;
+                        } else {
+                            // Offset < 64KB — download from byte 0 with default chunk_size
+                            // and skip locally. No grammers API changes needed.
+                            bytes_to_skip = start_byte as usize;
+                        }
                     }
 
                     let stream = async_stream::stream! {
