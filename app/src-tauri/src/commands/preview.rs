@@ -62,10 +62,11 @@ pub async fn cmd_get_preview(
     log::info!("Using preview cache dir: {:?}", cache_dir);
     log::info!("Preview Request: msg_id={}", message_id);
     let client_opt = { state.client.lock().await.clone() };
+    #[cfg(debug_assertions)]
     if client_opt.is_none() {
         return Ok("".to_string());
     }
-    let client = client_opt.unwrap();
+    let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
 
     let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
     let messages = client.get_messages_by_id(&peer, &[message_id])
@@ -122,7 +123,7 @@ pub async fn cmd_get_preview(
                     _ => 0,
                 };
                 log::info!("Downloading preview... Size: {}", size);
-                if let Err(e) = bw_state.can_transfer(size) {
+                if let Err(e) = bw_state.try_reserve_down(size) {
                     log::warn!("Bandwidth limit hit for preview: {}", e);
                     false
                 } else {
@@ -138,13 +139,13 @@ pub async fn cmd_get_preview(
                                 false
                             } else {
                                 log::info!("Preview download complete: {} bytes.", written);
-                                bw_state.add_down(size);
                                 prune_preview_cache(cache_dir.clone(), Some(save_path.clone())).await;
                                 true
                             }
                         },
                         Err(e) => {
                             log::error!("Preview Download Error: {}", e);
+                            bw_state.release_down(size);
                             false
                         }
                     }
@@ -196,7 +197,7 @@ pub async fn cmd_clean_preview_cache(
             if let Ok(entries) = std::fs::read_dir(cache_dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if path.is_file() && path.extension().map_or(false, |ext| ext == "pdf") {
+                    if path.is_file() {
                         let _ = std::fs::remove_file(path);
                     }
                 }
@@ -272,10 +273,11 @@ pub async fn cmd_get_thumbnail(
 
     // No cache, need to fetch from Telegram
     let client_opt = { state.client.lock().await.clone() };
+    #[cfg(debug_assertions)]
     if client_opt.is_none() {
         return Ok("".to_string());
     }
-    let client = client_opt.unwrap();
+    let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
 
     let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
     let messages = client.get_messages_by_id(&peer, &[message_id])

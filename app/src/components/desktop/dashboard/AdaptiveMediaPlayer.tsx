@@ -954,9 +954,7 @@ export function AdaptiveMediaPlayer({
                             {hasVideoTrack && !isHlsMode && tracks.find(t => t.type === 'video') && (
                                 <span>
                                     {tracks.find(t => t.type === 'video')?.width}p
-                                    {tracks.find(t => t.type === 'video')?.bitrate
-                                        ? ` · ${Math.round(tracks.find(t => t.type === 'video')!.bitrate! / 1000)}kbps`
-                                        : ''}
+
                                 </span>
                             )}
                             {typeof currentIndex === 'number' && typeof totalItems === 'number' && totalItems > 0 && (

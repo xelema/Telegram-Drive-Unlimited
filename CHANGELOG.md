@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.8.0] - 2026-06-02
+
+### Features, Security & Architecture (MimoPro Analysis Cleanups)
+
+- **Critical Fixes**
+  - Synchronized versions across `package.json`, `tauri.conf.json`, and `Cargo.toml`.
+  - Replaced hardcoded `localhost` references in `sharing.rs` with `127.0.0.1` to ensure local loopback resolution works reliably.
+  - Removed misleading mock rate limit headers (`x-ratelimit-limit`, etc.) from API endpoint responses.
+
+- **Dependency Upgrades**
+  - Upgraded deprecated dependencies (`base64` to `0.22`, `rand` to `0.9`).
+  - Standardized Tauri plugin version strings (`tauri-plugin-dialog`, `tauri-plugin-updater`, `tauri-plugin-process`) to consistently use version `"2"`.
+
+- **Dead Code Cleanup**
+  - Completely removed empty `DropZoneContext.tsx` and removed the `<DropZoneProvider>` wrapper from `App.tsx`.
+  - Cleaned up unused state variables (`_internalDragFileId`) and unused hook exports (`isNetworkError`, `forceLogout`, `handleDownload`).
+  - Removed dead settings fields (`proxySecret`, `ProxyConfig.secret`).
+
+- **Security Enhancements**
+  - Implemented secure `bcrypt` hashing (work factor `12`) for folder share passwords.
+  - Swapped direct comparisons in API key verification for constant-time checks using `constant_time_eq` to prevent timing attacks.
+
+- **Architecture & Code Deduplication**
+  - Extracted shared byte-range parsing and chunk calculation logic for downloads and media streaming.
+  - Consolidated duplicate MP4 container box header navigation and box validations into a single module.
+  - Unified duplicate password hashing and verification code.
+  - Corrected field naming inconsistency (`uploadedBytes` to `downloadedBytes` inside `DownloadItem`).
+
+---
+
 ## [1.7.9] - 2026-06-02
 
 ### Features & Fixes

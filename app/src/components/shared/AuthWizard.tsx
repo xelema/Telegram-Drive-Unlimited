@@ -26,7 +26,6 @@ function AuthThemeToggle() {
     );
 }
 export function AuthWizard({ onLogin }: { onLogin: () => void }) {
-    console.warn("RENDER_TRAP: AuthWizard");
     const isBrowser = typeof window !== 'undefined' && !('__TAURI_INTERNALS__' in window);
 
     if (isBrowser) {

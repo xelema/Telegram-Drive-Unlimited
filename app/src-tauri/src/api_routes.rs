@@ -342,20 +342,7 @@ async fn api_list_files(
         },
     };
 
-    let mut response = HttpResponse::Ok().json(res_body);
-    response.headers_mut().insert(
-        actix_web::http::header::HeaderName::from_static("x-ratelimit-limit"),
-        actix_web::http::header::HeaderValue::from_static("100"),
-    );
-    response.headers_mut().insert(
-        actix_web::http::header::HeaderName::from_static("x-ratelimit-remaining"),
-        actix_web::http::header::HeaderValue::from_static("99"),
-    );
-    response.headers_mut().insert(
-        actix_web::http::header::HeaderName::from_static("x-ratelimit-reset"),
-        actix_web::http::header::HeaderValue::from_static("60"),
-    );
-    response
+    HttpResponse::Ok().json(res_body)
 }
 
 #[derive(serde::Deserialize)]
@@ -442,10 +429,6 @@ async fn api_download_file(
         Ok(messages) => {
             if let Some(Some(msg)) = messages.first() {
                 if let Some(media) = msg.media() {
-                    let size = match &media {
-                        Media::Document(d) => d.size() as u64,
-                        _ => 0,
-                    };
                     let mime = match &media {
                         Media::Document(d) => d.mime_type().unwrap_or("application/octet-stream").to_string(),
                         _ => "application/octet-stream".to_string(),
@@ -456,114 +439,13 @@ async fn api_download_file(
                         _ => "download".to_string(),
                     };
 
-                    // Parse Range header
-                    let mut start_byte = 0;
-                    let mut end_byte = if size > 0 { size - 1 } else { 0 };
-                    let mut is_range = false;
-
-                    if size > 0 {
-                        if let Some(range_header) = req.headers().get(actix_web::http::header::RANGE) {
-                            if let Ok(range_str) = range_header.to_str() {
-                                if let Some((start, end)) = crate::server::parse_range_header(range_str, size) {
-                                    start_byte = start;
-                                    end_byte = end;
-                                    is_range = true;
-                                }
-                            }
-                        }
-                    }
-
-                    let content_length = if is_range {
-                        end_byte - start_byte + 1
-                    } else {
-                        size
-                    };
-
-                    let mut download_iter = client.iter_download(&media);
-                    let mut bytes_to_skip = 0;
-
-                    if start_byte > 0 {
-                        // IMPORTANT: Telegram's upload.getFile requires offset aligned to limit.
-                        // 65536 = 2^16, a valid power-of-2 limit that divides 131072 (moov
-                        // discovery boundary) evenly so the resume offset stays aligned.
-                        const CHUNK_SIZE: i32 = 65536;
-                        let chunk_index = (start_byte / CHUNK_SIZE as u64) as i32;
-                        if chunk_index > 0 {
-                            let aligned_start = chunk_index as u64 * CHUNK_SIZE as u64;
-                            download_iter = download_iter
-                                .chunk_size(CHUNK_SIZE)
-                                .skip_chunks(chunk_index);
-                            bytes_to_skip = (start_byte - aligned_start) as usize;
-                        } else {
-                            // Offset < 64KB — download from byte 0 with default chunk_size
-                            // and skip locally. No grammers API changes needed.
-                            bytes_to_skip = start_byte as usize;
-                        }
-                    }
-
-                    let stream = async_stream::stream! {
-                        let mut skipped = 0;
-                        let mut total_yielded = 0;
-
-                        while let Some(chunk) = download_iter.next().await.transpose() {
-                            match chunk {
-                                Ok(data) => {
-                                    let mut data_slice = data;
-                                    
-                                    // Handle skipping of bytes for unaligned start
-                                    if skipped < bytes_to_skip {
-                                        let to_skip = bytes_to_skip - skipped;
-                                        if data_slice.len() <= to_skip {
-                                            skipped += data_slice.len();
-                                            continue;
-                                        } else {
-                                            data_slice = data_slice[to_skip..].to_vec();
-                                            skipped = bytes_to_skip;
-                                        }
-                                    }
-
-                                    // Handle limit (content_length)
-                                    if total_yielded + data_slice.len() as u64 > content_length {
-                                        let allowed = (content_length - total_yielded) as usize;
-                                        if allowed > 0 {
-                                            yield Ok::<_, actix_web::Error>(web::Bytes::from(data_slice[..allowed].to_vec()));
-                                            total_yielded += allowed as u64;
-                                        }
-                                        break;
-                                    } else {
-                                        let len = data_slice.len() as u64;
-                                        yield Ok::<_, actix_web::Error>(web::Bytes::from(data_slice));
-                                        total_yielded += len;
-                                        if total_yielded >= content_length {
-                                            break;
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    log::error!("API download stream error: {}", e);
-                                    break;
-                                }
-                            }
-                        }
-                        log::debug!("API download request: Stream completed for msg {} (yielded: {})", message_id, total_yielded);
-                    };
-
-                    if is_range {
-                        return HttpResponse::PartialContent()
-                            .insert_header(("Content-Type", mime))
-                            .insert_header(("Content-Range", format!("bytes {}-{}/{}", start_byte, end_byte, size)))
-                            .insert_header(("Content-Length", content_length.to_string()))
-                            .insert_header(("Content-Disposition", format!("attachment; filename=\"{}\"", filename)))
-                            .insert_header(("Accept-Ranges", "bytes"))
-                            .streaming(stream);
-                    } else {
-                        return HttpResponse::Ok()
-                            .insert_header(("Content-Type", mime))
-                            .insert_header(("Content-Length", size.to_string()))
-                            .insert_header(("Content-Disposition", format!("attachment; filename=\"{}\"", filename)))
-                            .insert_header(("Accept-Ranges", "bytes"))
-                            .streaming(stream);
-                    }
+                    return crate::server::build_media_response(
+                        &client, &media, &req, &mime, Some(&filename),
+                        crate::server::StreamingExtras {
+                            extra_headers: vec![],
+                            log_label: "API download",
+                        },
+                    );
                 }
             }
             json_error("NOT_FOUND", "File not found", 404)
@@ -669,23 +551,10 @@ async fn api_bulk_files(
         _ => return json_error("INVALID_ACTION", "Unsupported bulk action", 400),
     }
 
-    let mut response = HttpResponse::Ok().json(BulkResponse {
+    HttpResponse::Ok().json(BulkResponse {
         success: true,
         count: ids.len(),
-    });
-    response.headers_mut().insert(
-        actix_web::http::header::HeaderName::from_static("x-ratelimit-limit"),
-        actix_web::http::header::HeaderValue::from_static("100"),
-    );
-    response.headers_mut().insert(
-        actix_web::http::header::HeaderName::from_static("x-ratelimit-remaining"),
-        actix_web::http::header::HeaderValue::from_static("99"),
-    );
-    response.headers_mut().insert(
-        actix_web::http::header::HeaderName::from_static("x-ratelimit-reset"),
-        actix_web::http::header::HeaderValue::from_static("60"),
-    );
-    response
+    })
 }
 
 #[derive(serde::Deserialize)]
@@ -787,20 +656,7 @@ async fn api_search_files(
         }
     }
 
-    let mut response = HttpResponse::Ok().json(matching_files);
-    response.headers_mut().insert(
-        actix_web::http::header::HeaderName::from_static("x-ratelimit-limit"),
-        actix_web::http::header::HeaderValue::from_static("100"),
-    );
-    response.headers_mut().insert(
-        actix_web::http::header::HeaderName::from_static("x-ratelimit-remaining"),
-        actix_web::http::header::HeaderValue::from_static("99"),
-    );
-    response.headers_mut().insert(
-        actix_web::http::header::HeaderName::from_static("x-ratelimit-reset"),
-        actix_web::http::header::HeaderValue::from_static("60"),
-    );
-    response
+    HttpResponse::Ok().json(matching_files)
 }
 
 /// Register all API routes on the Actix App

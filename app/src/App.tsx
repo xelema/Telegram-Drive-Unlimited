@@ -11,16 +11,12 @@ import { usePlatform } from "./hooks/usePlatform";
 import "./App.css";
 
 const DesktopDashboard = React.lazy(() => import("./components/desktop/DesktopDashboard").then(m => ({ default: m.Dashboard })));
-const MobileDashboard = React.lazy(() => {
-  const moduleName = "MobileDashboard";
-  return import(`./components/mobile/${moduleName}`);
-});
+const MobileDashboard = React.lazy(() => import("./components/mobile/MobileDashboard"));
 
 import { Toaster, toast } from "sonner";
 import { ConfirmProvider } from "./context/ConfirmContext";
 import { ThemeProvider, useTheme } from "./context/ThemeContext";
 import { SettingsProvider } from "./context/SettingsContext";
-import { DropZoneProvider } from "./contexts/DropZoneContext";
 import { useSettings } from "./context/SettingsContext";
 
 const queryClient = new QueryClient();
@@ -187,9 +183,13 @@ function AppContent() {
           </div>
         }>
           {isMobile ? (
-            <MobileDashboard onLogout={() => setAuthStatus("unauthenticated")} />
+            <ErrorBoundary>
+              <MobileDashboard onLogout={() => setAuthStatus("unauthenticated")} />
+            </ErrorBoundary>
           ) : (
-            <DesktopDashboard onLogout={() => setAuthStatus("unauthenticated")} />
+            <ErrorBoundary>
+              <DesktopDashboard onLogout={() => setAuthStatus("unauthenticated")} />
+            </ErrorBoundary>
           )}
         </Suspense>
       )}
@@ -208,9 +208,7 @@ function App() {
         <QueryClientProvider client={queryClient}>
           <ConfirmProvider>
             <SettingsProvider>
-              <DropZoneProvider>
-                <AppContent />
-              </DropZoneProvider>
+              <AppContent />
             </SettingsProvider>
           </ConfirmProvider>
         </QueryClientProvider>

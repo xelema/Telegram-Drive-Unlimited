@@ -1,5 +1,4 @@
 use serde::Serialize;
-use sha2::{Sha256, Digest};
 use tauri::State;
 use rand::Rng;
 use crate::db::DbConnection;
@@ -16,16 +15,15 @@ pub struct ShareInfo {
 }
 
 fn generate_share_token() -> String {
-    let mut rng = rand::thread_rng();
-    let bytes: Vec<u8> = (0..16).map(|_| rng.gen()).collect();
+    let mut rng = rand::rng();
+    let bytes: Vec<u8> = (0..16).map(|_| rng.random()).collect();
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
-fn hash_password(password: &str, salt: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(password.as_bytes());
-    hasher.update(salt.as_bytes());
-    format!("{:x}", hasher.finalize())
+/// Hash a password using bcrypt (cost factor 12).
+/// bcrypt embeds the salt in the output hash string, so no separate salt storage is needed.
+fn hash_password(password: &str) -> Result<String, String> {
+    bcrypt::hash(password, 12).map_err(|e| format!("Password hashing failed: {}", e))
 }
 
 #[tauri::command]
@@ -42,18 +40,16 @@ pub async fn cmd_create_share(
     let created_at = chrono::Utc::now().timestamp();
     let expires_at = expiry_hours.map(|hours| created_at + hours * 3600);
     
-    let (password_hash, password_salt) = if let Some(ref pwd) = password {
+    let password_hash = if let Some(ref pwd) = password {
         if pwd.is_empty() {
-            (None, None)
+            None
         } else {
-            let mut rng = rand::thread_rng();
-            let salt_bytes: Vec<u8> = (0..16).map(|_| rng.gen()).collect();
-            let salt: String = salt_bytes.iter().map(|b| format!("{:02x}", b)).collect();
-            let hash = hash_password(pwd, &salt);
-            (Some(hash), Some(salt))
+            // bcrypt embeds the salt in the hash; password_salt column set to NULL.
+            let hash = hash_password(pwd)?;
+            Some(hash)
         }
     } else {
-        (None, None)
+        None
     };
 
     let conn = db_pool.lock().map_err(|e| e.to_string())?;
@@ -69,13 +65,13 @@ pub async fn cmd_create_share(
     stmt.bind((4, file_name.as_str())).map_err(|e| e.to_string())?;
     stmt.bind((5, file_size)).map_err(|e| e.to_string())?;
     stmt.bind((6, password_hash.as_deref())).map_err(|e| e.to_string())?;
-    stmt.bind((7, password_salt.as_deref())).map_err(|e| e.to_string())?;
+    stmt.bind::<(usize, Option<&str>)>((7, None)).map_err(|e| e.to_string())?;
     stmt.bind((8, expires_at)).map_err(|e| e.to_string())?;
     stmt.bind((9, created_at)).map_err(|e| e.to_string())?;
 
     stmt.next().map_err(|e| e.to_string())?;
 
-    let link = format!("http://localhost:{}/d/{}", crate::STREAM_PORT, token);
+    let link = format!("http://127.0.0.1:{}/d/{}", crate::STREAM_PORT, token);
 
     Ok(ShareInfo {
         id: token,
@@ -108,7 +104,7 @@ pub async fn cmd_list_shares(
         let file_name = stmt.read::<String, _>("file_name").map_err(|e| e.to_string())?;
         let file_size = stmt.read::<i64, _>("file_size").map_err(|e| e.to_string())?;
         let created_at = stmt.read::<i64, _>("created_at").map_err(|e| e.to_string())?;
-        let link = format!("http://localhost:{}/d/{}", crate::STREAM_PORT, id);
+        let link = format!("http://127.0.0.1:{}/d/{}", crate::STREAM_PORT, id);
         
         shares.push(ShareInfo {
             id,

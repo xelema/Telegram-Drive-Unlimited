@@ -12,7 +12,6 @@ pub struct ProxySettingsRequest {
     port: u16,
     username: String,
     password: String,
-    secret: String,
 }
 
 /// Apply proxy settings from the frontend.
@@ -30,7 +29,6 @@ pub async fn cmd_apply_proxy_settings(
         port: req.port,
         username: req.username,
         password: req.password,
-        secret: req.secret,
     };
 
     log::info!(

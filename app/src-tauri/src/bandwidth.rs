@@ -75,6 +75,48 @@ impl BandwidthManager {
         Ok(())
     }
 
+    /// Atomically check the limit AND reserve bandwidth for an upload.
+    /// Call release_up() if the transfer fails to avoid permanently consuming quota.
+    pub fn try_reserve_up(&self, bytes: u64) -> Result<(), String> {
+        self.check_and_reset();
+        let mut stats = self.stats.lock().unwrap();
+        let total = stats.up_bytes + stats.down_bytes + bytes;
+        if total > self.limit {
+            return Err(format!("Daily bandwidth limit ({}) exceeded! Used: {}", self.format_bytes(self.limit), self.format_bytes(total)));
+        }
+        stats.up_bytes += bytes;
+        self.save_locked(&stats);
+        Ok(())
+    }
+
+    /// Atomically check the limit AND reserve bandwidth for a download.
+    /// Call release_down() if the transfer fails to avoid permanently consuming quota.
+    pub fn try_reserve_down(&self, bytes: u64) -> Result<(), String> {
+        self.check_and_reset();
+        let mut stats = self.stats.lock().unwrap();
+        let total = stats.up_bytes + stats.down_bytes + bytes;
+        if total > self.limit {
+            return Err(format!("Daily bandwidth limit ({}) exceeded! Used: {}", self.format_bytes(self.limit), self.format_bytes(total)));
+        }
+        stats.down_bytes += bytes;
+        self.save_locked(&stats);
+        Ok(())
+    }
+
+    /// Release reserved upload bandwidth after a failed transfer.
+    pub fn release_up(&self, bytes: u64) {
+        let mut stats = self.stats.lock().unwrap();
+        stats.up_bytes = stats.up_bytes.saturating_sub(bytes);
+        self.save_locked(&stats);
+    }
+
+    /// Release reserved download bandwidth after a failed transfer.
+    pub fn release_down(&self, bytes: u64) {
+        let mut stats = self.stats.lock().unwrap();
+        stats.down_bytes = stats.down_bytes.saturating_sub(bytes);
+        self.save_locked(&stats);
+    }
+
     pub fn add_up(&self, bytes: u64) {
         self.check_and_reset();
         let mut stats = self.stats.lock().unwrap();

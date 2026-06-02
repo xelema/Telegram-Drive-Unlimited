@@ -149,7 +149,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         const share = shares.find(s => s.id === id);
         if (!share) return;
         
-        let link = `http://localhost:14201/d/${share.id}`;
+        let link = `http://127.0.0.1:14201/d/${share.id}`;
         if (globalDomain.trim()) {
             link = `http://${globalDomain.trim()}/d/${share.id}`;
         }
@@ -223,7 +223,6 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                     port: settings.proxyPort,
                     username: settings.proxyUsername,
                     password: settings.proxyPassword,
-                    secret: settings.proxySecret,
                 });
             } catch {
                 // best-effort sync
@@ -233,7 +232,6 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     }, [
         settings.proxyEnabled, settings.proxyType, settings.proxyHost,
         settings.proxyPort, settings.proxyUsername, settings.proxyPassword,
-        settings.proxySecret,
     ]);
 
     // Sync VPN optimizer settings to backend whenever they change
@@ -1353,7 +1351,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                 className="w-full bg-telegram-surface border border-telegram-border rounded-md px-2.5 py-1.5 text-xs text-telegram-text focus:outline-none focus:border-telegram-primary/50 placeholder:text-telegram-subtext/40"
                                             />
                                             <p className="text-[10px] text-telegram-subtext">
-                                                Automatically replaces 'localhost:14201' with this IP/domain when copying.
+                                                Automatically replaces '127.0.0.1:14201' with this IP/domain when copying.
                                             </p>
                                         </div>
 

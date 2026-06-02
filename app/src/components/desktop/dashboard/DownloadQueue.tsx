@@ -90,8 +90,8 @@ export function DownloadQueue({ items, onClearFinished, onCancelAll, onCancelIte
                                 </div>
                                 <div className="flex justify-between text-[10px] text-telegram-subtext mt-0.5">
                                     <span>
-                                        {item.uploadedBytes !== undefined && item.totalBytes !== undefined
-                                            ? `${formatBytes(item.uploadedBytes)} / ${formatBytes(item.totalBytes)}`
+                                        {item.downloadedBytes !== undefined && item.totalBytes !== undefined
+                                            ? `${formatBytes(item.downloadedBytes)} / ${formatBytes(item.totalBytes)}`
                                             : item.progress !== undefined ? `${item.progress}%` : ''}
                                     </span>
                                     <span>

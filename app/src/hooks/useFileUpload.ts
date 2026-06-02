@@ -21,9 +21,9 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
     const queryClient = useQueryClient();
     const { settings } = useSettings();
     const [uploadQueue, setUploadQueue] = useState<QueueItem[]>([]);
-    const [processing, setProcessing] = useState(false);
     const [initialized, setInitialized] = useState(false);
     const cancelledRef = useRef<Set<string>>(new Set());
+    const activeCountRef = useRef(0);
 
     // Listen for progress events from Rust
     useEffect(() => {
@@ -62,13 +62,16 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
         store.set('uploadQueue', pending).then(() => store.save());
     }, [store, uploadQueue, initialized]);
 
+    // Process up to maxConcurrentUploads in parallel
     useEffect(() => {
-        if (processing) return;
-        const nextItem = uploadQueue.find(i => i.status === 'pending');
-        if (nextItem) {
-            processItem(nextItem);
+        const maxConcurrent = settings.maxConcurrentUploads || 1;
+        const available = maxConcurrent - activeCountRef.current;
+        if (available <= 0) return;
+        const pendingItems = uploadQueue.filter(i => i.status === 'pending').slice(0, available);
+        for (const item of pendingItems) {
+            processItem(item);
         }
-    }, [uploadQueue, processing]);
+    }, [uploadQueue, settings.maxConcurrentUploads]);
 
     // Manage Android Foreground Service for persistent uploads
     useEffect(() => {
@@ -94,7 +97,7 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
     };
 
     const processItem = async (item: QueueItem) => {
-        setProcessing(true);
+        activeCountRef.current++;
         setUploadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'uploading', progress: 0 } : i));
         try {
             await invoke('cmd_upload_file', { path: item.path, folderId: item.folderId, transferId: item.id });
@@ -125,7 +128,7 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
             // Clean up temp zip even on failure
             await cleanupTempZip(item);
         } finally {
-            setProcessing(false);
+            activeCountRef.current--;
         }
     };
 
@@ -145,9 +148,7 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
     const handleManualUpload = async () => {
         const paths = await pickWithFallback(
             async () => {
-                console.log('[Upload] Opening file dialog...');
                 const selected = await open({ multiple: true, directory: false });
-                console.log('[Upload] File dialog result:', selected);
                 if (!selected) return null;
                 return Array.isArray(selected) ? selected : [selected];
             },
@@ -155,9 +156,7 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
             {
                 errorTitle: 'File picker failed',
                 onBrowserPicker: async () => {
-                    console.log('[Upload] Falling back to HTML file input...');
                     const fallbackPaths = await showFileDialogFallback({ directory: false, multiple: true });
-                    console.log('[Upload] HTML fallback result:', fallbackPaths);
                     return fallbackPaths.length > 0 ? fallbackPaths : null;
                 },
             },
@@ -170,16 +169,13 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
     /** Queue files dropped from the OS file manager (drag-and-drop upload) */
     const handleDropUpload = (paths: string[]) => {
         if (!paths || paths.length === 0) return;
-        console.log('[Upload] Drop upload paths:', paths);
         queueFiles(paths);
     };
 
     const handleFolderUpload = async () => {
         const folderPath = await pickWithFallback(
             async () => {
-                console.log('[Upload] Opening folder dialog...');
                 const selected = await open({ multiple: false, directory: true, title: 'Select Folder to Upload' });
-                console.log('[Upload] Folder dialog result:', selected);
                 if (!selected) return null;
                 const fp = Array.isArray(selected) ? selected[0] : selected;
                 return fp || null;
@@ -188,9 +184,7 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
             {
                 errorTitle: 'Folder picker failed',
                 onBrowserPicker: async () => {
-                    console.log('[Upload] Falling back to HTML folder input...');
                     const fallbackPaths = await showFileDialogFallback({ directory: true, multiple: true });
-                    console.log('[Upload] HTML fallback result:', fallbackPaths);
                     if (fallbackPaths.length > 0) {
                         // HTML folder picker returns individual file paths, not a folder path.
                         // We can't zip without a folder path, so files upload individually.

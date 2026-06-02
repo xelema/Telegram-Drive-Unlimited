@@ -17,7 +17,6 @@ pub struct ProxyConfig {
     pub port: u16,
     pub username: String,
     pub password: String,      // SOCKS5
-    pub secret: String,        // MTProto
 }
 
 impl Default for ProxyConfig {
@@ -29,7 +28,6 @@ impl Default for ProxyConfig {
             port: 1080,
             username: String::new(),
             password: String::new(),
-            secret: String::new(),
         }
     }
 }

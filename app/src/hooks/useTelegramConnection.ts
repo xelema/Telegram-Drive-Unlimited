@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Store } from '@tauri-apps/plugin-store';
+import { load, type Store } from '@tauri-apps/plugin-store';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { useConfirm } from '../context/ConfirmContext';
@@ -31,10 +31,10 @@ export function useTelegramConnection(onLogoutParent: () => void) {
     useEffect(() => {
         const initStore = async () => {
             try {
-                let _store = await Store.load('config.json');
+                let _store = await load('config.json');
                 const checkId = await _store.get<string>('api_id');
                 if (!checkId) {
-                    _store = await Store.load('settings.json');
+                    _store = await load('settings.json');
                 }
                 setStore(_store);
 
@@ -62,7 +62,6 @@ export function useTelegramConnection(onLogoutParent: () => void) {
 
         const syncAndRefresh = async () => {
             if (!handleSyncFoldersRef.current) return;
-            console.log("[AutoSync] Triggering sync...");
             await handleSyncFoldersRef.current(true);
             queryClient.invalidateQueries({ queryKey: ['files'] });
         };
@@ -73,7 +72,6 @@ export function useTelegramConnection(onLogoutParent: () => void) {
         // Sync again when the app returns to foreground
         const handleVisibilityChange = () => {
             if (document.visibilityState === 'visible') {
-                console.log("[AutoSync] App resumed/foregrounded. Triggering sync...");
                 syncAndRefresh();
             }
         };
@@ -88,29 +86,6 @@ export function useTelegramConnection(onLogoutParent: () => void) {
     useEffect(() => {
         setIsConnected(networkIsOnline);
     }, [networkIsOnline]);
-
-
-    const isNetworkError = (error: string): boolean => {
-        const keywords = ['timeout', 'connection', 'network', 'socket', 'disconnected', 'EOF', 'ECONNREFUSED', 'overflow'];
-        return keywords.some(k => error.toLowerCase().includes(k.toLowerCase()));
-    };
-
-    const forceLogout = async () => {
-        setIsConnected(false);
-        try {
-            await invoke('cmd_clean_cache').catch(() => { });
-            if (store) {
-                await store.delete('api_id');
-                await store.delete('api_hash');
-                await store.delete('folders');
-                await store.save();
-            }
-        } catch {
-            // best effort cleanup
-        }
-        toast.error("Connection lost. Please log in again.");
-        onLogoutParent();
-    };
 
 
     const handleLogout = async () => {
@@ -228,15 +203,8 @@ export function useTelegramConnection(onLogoutParent: () => void) {
 
 
     const handleFolderRename = async (folderId: number, oldName: string, newNameOverride?: string) => {
-        let newName: string | null;
-        if (newNameOverride !== undefined) {
-            newName = newNameOverride.trim();
-            if (!newName || newName === oldName) return;
-        } else {
-            newName = prompt(`Enter new name for "${oldName}":`);
-            if (!newName || !newName.trim() || newName.trim() === oldName) return;
-            newName = newName.trim();
-        }
+        const newName = newNameOverride?.trim();
+        if (!newName || newName === oldName) return;
 
         try {
             await invoke('cmd_rename_folder', { folderId, newName });
@@ -318,7 +286,5 @@ export function useTelegramConnection(onLogoutParent: () => void) {
         handleFolderRename,
         handleFolderToggleVisibility,
         handleExportFolderInvite,
-        isNetworkError,
-        forceLogout
     };
 }

@@ -40,6 +40,143 @@ pub fn parse_range_header(header_val: &str, total_size: u64) -> Option<(u64, u64
     }
 }
 
+/// Extra headers to inject into streaming responses (e.g. Cache-Control, Content-Disposition).
+pub struct StreamingExtras {
+    pub extra_headers: Vec<(&'static str, String)>,
+    pub log_label: &'static str,
+}
+
+/// Build a streaming HTTP response for a Telegram media file with optional byte-range support.
+/// This is the single shared implementation used by the streaming server, REST API, and share routes.
+pub fn build_media_response(
+    client: &grammers_client::Client,
+    media: &Media,
+    req: &actix_web::HttpRequest,
+    mime: &str,
+    filename: Option<&str>,
+    extras: StreamingExtras,
+) -> HttpResponse {
+    let size = match media {
+        Media::Document(d) => d.size() as u64,
+        Media::Photo(_) => 0,
+        _ => 0,
+    };
+
+    // Parse Range header
+    let mut start_byte = 0u64;
+    let mut end_byte = if size > 0 { size - 1 } else { 0 };
+    let mut is_range = false;
+
+    if size > 0 {
+        if let Some(range_header) = req.headers().get(actix_web::http::header::RANGE) {
+            if let Ok(range_str) = range_header.to_str() {
+                if let Some((start, end)) = parse_range_header(range_str, size) {
+                    start_byte = start;
+                    end_byte = end;
+                    is_range = true;
+                }
+            }
+        }
+    }
+
+    let content_length = if is_range {
+        end_byte - start_byte + 1
+    } else {
+        size
+    };
+
+    // Chunk alignment for Telegram's upload.getFile offset requirement
+    let mut download_iter = client.iter_download(media);
+    let mut bytes_to_skip: usize = 0;
+
+    if start_byte > 0 {
+        const CHUNK_SIZE: i32 = 65536;
+        let chunk_index = (start_byte / CHUNK_SIZE as u64) as i32;
+        if chunk_index > 0 {
+            let aligned_start = chunk_index as u64 * CHUNK_SIZE as u64;
+            download_iter = download_iter
+                .chunk_size(CHUNK_SIZE)
+                .skip_chunks(chunk_index);
+            bytes_to_skip = (start_byte - aligned_start) as usize;
+        } else {
+            bytes_to_skip = start_byte as usize;
+        }
+    }
+
+    let label = extras.log_label;
+    let stream = async_stream::stream! {
+        let mut skipped: usize = 0;
+        let mut total_yielded: u64 = 0;
+
+        while let Some(chunk) = download_iter.next().await.transpose() {
+            match chunk {
+                Ok(data) => {
+                    let mut data_slice = data;
+
+                    if skipped < bytes_to_skip {
+                        let to_skip = bytes_to_skip - skipped;
+                        if data_slice.len() <= to_skip {
+                            skipped += data_slice.len();
+                            continue;
+                        } else {
+                            data_slice = data_slice[to_skip..].to_vec();
+                            skipped = bytes_to_skip;
+                        }
+                    }
+
+                    if total_yielded + data_slice.len() as u64 > content_length {
+                        let allowed = (content_length - total_yielded) as usize;
+                        if allowed > 0 {
+                            yield Ok::<_, actix_web::Error>(web::Bytes::from(data_slice[..allowed].to_vec()));
+                            total_yielded += allowed as u64;
+                        }
+                        break;
+                    } else {
+                        let len = data_slice.len() as u64;
+                        yield Ok::<_, actix_web::Error>(web::Bytes::from(data_slice));
+                        total_yielded += len;
+                        if total_yielded >= content_length {
+                            break;
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::error!("{} stream error: {}", label, e);
+                    break;
+                }
+            }
+        }
+        log::debug!("{} stream completed (yielded: {})", label, total_yielded);
+    };
+
+    let mut resp = if is_range {
+        let mut r = HttpResponse::PartialContent();
+        r.insert_header(("Content-Range", format!("bytes {}-{}/{}", start_byte, end_byte, size)));
+        r.insert_header(("Content-Length", content_length.to_string()));
+        r
+    } else {
+        let mut r = HttpResponse::Ok();
+        r.insert_header(("Content-Length", size.to_string()));
+        r
+    };
+
+    resp.insert_header(("Content-Type", mime.to_owned()));
+    resp.insert_header(("Accept-Ranges", "bytes"));
+
+    if let Some(fname) = filename {
+        resp.insert_header((
+            "Content-Disposition",
+            format!("attachment; filename=\"{}\"", fname),
+        ));
+    }
+
+    for (key, val) in &extras.extra_headers {
+        resp.insert_header((*key, val.clone()));
+    }
+
+    resp.streaming(stream)
+}
+
 #[get("/stream/{folder_id}/{message_id}")]
 async fn stream_media(
     req: actix_web::HttpRequest,
@@ -93,134 +230,14 @@ async fn stream_media(
                         if let Some(Some(msg)) = messages.first() {
                             if let Some(media) = msg.media() {
                                 log::debug!("Stream request: Message and media found for msg {}", message_id);
-                                let size = match &media {
-                                    Media::Document(d) => d.size() as u64,
-                                    Media::Photo(_) => 0, 
-                                    _ => 0,
-                                };
-                                
                                 let mime = mime_type_from_media(&media);
-                                
-                                // Parse Range header
-                                let mut start_byte = 0;
-                                let mut end_byte = if size > 0 { size - 1 } else { 0 };
-                                let mut is_range = false;
-
-                                if size > 0 {
-                                    if let Some(range_header) = req.headers().get(actix_web::http::header::RANGE) {
-                                        if let Ok(range_str) = range_header.to_str() {
-                                            if let Some((start, end)) = parse_range_header(range_str, size) {
-                                                start_byte = start;
-                                                end_byte = end;
-                                                is_range = true;
-                                            }
-                                        }
-                                    }
-                                }
-
-                                let content_length = if is_range {
-                                    end_byte - start_byte + 1
-                                } else {
-                                    size
-                                };
-
-                                log::debug!(
-                                    "Stream request: Starting download for msg {} (mime: {}, size: {}, range: {}-{}, content_length: {})", 
-                                    message_id, mime, size, start_byte, end_byte, content_length
+                                return build_media_response(
+                                    &client, &media, &req, &mime, None,
+                                    StreamingExtras {
+                                        extra_headers: vec![("Cache-Control", "private, max-age=120".to_string())],
+                                        log_label: "Stream",
+                                    },
                                 );
-                                
-                                // Create chunk-streaming response
-                                let mut download_iter = client.iter_download(&media);
-                                let mut bytes_to_skip = 0;
-
-                                if start_byte > 0 {
-                                    // IMPORTANT: Telegram's upload.getFile requires offset aligned to limit.
-                                    // 65536 = 2^16, a valid power-of-2 limit that divides 131072 (moov
-                                    // discovery boundary) evenly so the resume offset stays aligned.
-                                    const CHUNK_SIZE: i32 = 65536;
-                                    let chunk_index = (start_byte / CHUNK_SIZE as u64) as i32;
-                                    if chunk_index > 0 {
-                                        let aligned_start = chunk_index as u64 * CHUNK_SIZE as u64;
-                                        download_iter = download_iter
-                                            .chunk_size(CHUNK_SIZE)
-                                            .skip_chunks(chunk_index);
-                                        bytes_to_skip = (start_byte - aligned_start) as usize;
-                                    } else {
-                                        // Offset < 64KB — download from byte 0 with default chunk_size
-                                        // and skip locally. No grammers API changes needed.
-                                        bytes_to_skip = start_byte as usize;
-                                    }
-                                }
-
-                                let stream = async_stream::stream! {
-                                    let mut chunk_count = 0;
-                                    let mut skipped = 0;
-                                    let mut total_yielded = 0;
-
-                                    while let Some(chunk) = download_iter.next().await.transpose() {
-                                        match chunk {
-                                            Ok(data) => {
-                                                chunk_count += 1;
-                                                if chunk_count % 100 == 0 {
-                                                    log::debug!("Stream request: Streamed {} chunks for msg {}", chunk_count, message_id);
-                                                }
-
-                                                let mut data_slice = data;
-                                                
-                                                // Handle skipping of bytes for unaligned start
-                                                if skipped < bytes_to_skip {
-                                                    let to_skip = bytes_to_skip - skipped;
-                                                    if data_slice.len() <= to_skip {
-                                                        skipped += data_slice.len();
-                                                        continue;
-                                                    } else {
-                                                        data_slice = data_slice[to_skip..].to_vec();
-                                                        skipped = bytes_to_skip;
-                                                    }
-                                                }
-
-                                                // Handle limit (content_length)
-                                                if total_yielded + data_slice.len() as u64 > content_length {
-                                                    let allowed = (content_length - total_yielded) as usize;
-                                                    if allowed > 0 {
-                                                        yield Ok::<_, actix_web::Error>(web::Bytes::from(data_slice[..allowed].to_vec()));
-                                                        total_yielded += allowed as u64;
-                                                    }
-                                                    break;
-                                                } else {
-                                                    let len = data_slice.len() as u64;
-                                                    yield Ok::<_, actix_web::Error>(web::Bytes::from(data_slice));
-                                                    total_yielded += len;
-                                                    if total_yielded >= content_length {
-                                                        break;
-                                                    }
-                                                }
-                                            },
-                                            Err(e) => {
-                                                log::error!("Stream error on msg {}: {}", message_id, e);
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    log::debug!("Stream request: Stream completed for msg {} (total chunks: {}, yielded: {})", message_id, chunk_count, total_yielded);
-                                };
-                                
-                                if is_range {
-                                    return HttpResponse::PartialContent()
-                                        .insert_header(("Content-Type", mime))
-                                        .insert_header(("Content-Range", format!("bytes {}-{}/{}", start_byte, end_byte, size)))
-                                        .insert_header(("Content-Length", content_length.to_string()))
-                                        .insert_header(("Accept-Ranges", "bytes"))
-                                        .insert_header(("Cache-Control", "private, max-age=120"))
-                                        .streaming(stream);
-                                } else {
-                                    return HttpResponse::Ok()
-                                        .insert_header(("Content-Type", mime)) 
-                                        .insert_header(("Content-Length", size.to_string()))
-                                        .insert_header(("Accept-Ranges", "bytes"))
-                                        .insert_header(("Cache-Control", "private, max-age=120"))
-                                        .streaming(stream);
-                                }
                             } else {
                                 log::error!("Stream request failed: Media not found in message {}", message_id);
                             }

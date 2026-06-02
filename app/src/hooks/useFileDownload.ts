@@ -5,6 +5,7 @@ import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
 import { DownloadItem, TelegramFile } from '../types';
 import { isAndroidPlatform, showFileDialogFallback, pickWithFallback } from '../utils';
+import { useSettings } from '../context/SettingsContext';
 import type { Store } from '@tauri-apps/plugin-store';
 
 interface ProgressPayload {
@@ -17,9 +18,10 @@ interface ProgressPayload {
 
 export function useFileDownload(store: Store | null) {
     const [downloadQueue, setDownloadQueue] = useState<DownloadItem[]>([]);
-    const [processing, setProcessing] = useState(false);
     const [initialized, setInitialized] = useState(false);
     const cancelledRef = useRef<Set<string>>(new Set());
+    const activeCountRef = useRef(0);
+    const { settings } = useSettings();
 
     // Listen for progress events from Rust
     useEffect(() => {
@@ -29,7 +31,7 @@ export function useFileDownload(store: Store | null) {
                 i.id === event.payload.id ? {
                     ...i,
                     progress: event.payload.percent,
-                    uploadedBytes: event.payload.uploaded_bytes,
+                    downloadedBytes: event.payload.uploaded_bytes,
                     totalBytes: event.payload.total_bytes,
                     speedBytesPerSec: event.payload.speed_bytes_per_sec,
                 } : i
@@ -60,17 +62,19 @@ export function useFileDownload(store: Store | null) {
         store.set('downloadQueue', pending).then(() => store.save());
     }, [store, downloadQueue, initialized]);
 
-    // Queue Processor
+    // Process up to maxConcurrentDownloads in parallel
     useEffect(() => {
-        if (processing) return;
-        const nextItem = downloadQueue.find(i => i.status === 'pending');
-        if (nextItem) {
-            processItem(nextItem);
+        const maxConcurrent = settings.maxConcurrentDownloads || 1;
+        const available = maxConcurrent - activeCountRef.current;
+        if (available <= 0) return;
+        const pendingItems = downloadQueue.filter(i => i.status === 'pending').slice(0, available);
+        for (const item of pendingItems) {
+            processItem(item);
         }
-    }, [downloadQueue, processing]);
+    }, [downloadQueue, settings.maxConcurrentDownloads]);
 
     const processItem = async (item: DownloadItem) => {
-        setProcessing(true);
+        activeCountRef.current++;
         setDownloadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'downloading', progress: 0 } : i));
 
         try {
@@ -91,7 +95,7 @@ export function useFileDownload(store: Store | null) {
                     );
                     if (!savePath) {
                         setDownloadQueue(q => q.filter(i => i.id !== item.id));
-                        setProcessing(false);
+                        activeCountRef.current--;
                         return;
                     }
                 }
@@ -125,7 +129,7 @@ export function useFileDownload(store: Store | null) {
                 cancelledRef.current.delete(item.id);
             }
         } finally {
-            setProcessing(false);
+            activeCountRef.current--;
         }
     };
 
@@ -225,7 +229,7 @@ export function useFileDownload(store: Store | null) {
     const retryItem = (id: string) => {
         setDownloadQueue(q => q.map(i =>
             i.id === id && (i.status === 'error' || i.status === 'cancelled')
-                ? { ...i, status: 'pending' as const, error: undefined, progress: undefined, uploadedBytes: undefined, totalBytes: undefined, speedBytesPerSec: undefined }
+                ? { ...i, status: 'pending' as const, error: undefined, progress: undefined, downloadedBytes: undefined, totalBytes: undefined, speedBytesPerSec: undefined }
                 : i
         ));
     };

@@ -52,6 +52,7 @@ use commands::TelegramState;
 use commands::streaming::StreamConfig;
 use rand::Rng;
 
+
 pub mod server;
 pub mod api_routes;
 pub mod db;
@@ -59,6 +60,7 @@ pub mod share_routes;
 pub mod upload_service;
 pub mod jni_cache;
 pub mod transcode;
+pub mod mp4_utils;
 
 
 /// Single source of truth for the Actix streaming server port.
@@ -68,8 +70,8 @@ pub const STREAM_PORT: u16 = 14201;
 
 /// Generate a random 32-character hex token for streaming server auth
 fn generate_stream_token() -> String {
-    let mut rng = rand::thread_rng();
-    let bytes: Vec<u8> = (0..16).map(|_| rng.gen()).collect();
+    let mut rng = rand::rng();
+    let bytes: Vec<u8> = (0..16).map(|_| rng.random()).collect();
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
@@ -126,7 +128,10 @@ pub fn restart_api_server(app: &tauri::AppHandle) {
 
             match actix_web::HttpServer::new(move || {
                 let cors = actix_cors::Cors::default()
-                    .allow_any_origin()
+                    .allowed_origin("http://127.0.0.1")
+                    .allowed_origin("http://localhost")
+                    .allowed_origin("tauri://localhost")
+                    .allowed_origin("https://tauri.localhost")
                     .allow_any_method()
                     .allow_any_header();
 
@@ -170,9 +175,7 @@ fn cmd_open_file_externally(path: String, app_handle: tauri::AppHandle) -> Resul
         let mut env = vm.attach_current_thread()
             .map_err(|e| format!("Failed to attach thread: {}", e))?;
         
-        if let Some(cached_ref) = crate::jni_cache::get_main_activity_class() {
-            let main_class: jni::objects::JClass = unsafe { std::mem::transmute_copy(cached_ref.as_obj()) };
-            
+        if let Some(main_class) = crate::jni_cache::get_main_activity_jclass() {
             let path_jstr = env.new_string(&path)
                 .map_err(|e| format!("Failed to create path JString: {}", e))?;
             
@@ -235,8 +238,7 @@ fn cmd_get_pending_share_count() -> Result<i32, String> {
     let mut env = vm.attach_current_thread()
         .map_err(|e| format!("Failed to attach thread: {}", e))?;
 
-    if let Some(cached_ref) = crate::jni_cache::get_main_activity_class() {
-        let main_class: jni::objects::JClass = unsafe { std::mem::transmute_copy(cached_ref.as_obj()) };
+    if let Some(main_class) = crate::jni_cache::get_main_activity_jclass() {
         let count = env.call_static_method(
             &main_class,
             "getAndClearShareCount",
@@ -275,8 +277,7 @@ fn cmd_list_cached_files() -> Result<Vec<CachedFileEntry>, String> {
     let mut env = vm.attach_current_thread()
         .map_err(|e| format!("Failed to attach thread: {}", e))?;
 
-    if let Some(cached_ref) = crate::jni_cache::get_main_activity_class() {
-        let main_class: jni::objects::JClass = unsafe { std::mem::transmute_copy(cached_ref.as_obj()) };
+    if let Some(main_class) = crate::jni_cache::get_main_activity_jclass() {
         let json_val = env.call_static_method(
             &main_class,
             "listCachedFiles",
@@ -316,8 +317,7 @@ fn cmd_remove_cached_path(uri: String) -> Result<(), String> {
     let mut env = vm.attach_current_thread()
         .map_err(|e| format!("Failed to attach thread: {}", e))?;
 
-    if let Some(cached_ref) = crate::jni_cache::get_main_activity_class() {
-        let main_class: jni::objects::JClass = unsafe { std::mem::transmute_copy(cached_ref.as_obj()) };
+    if let Some(main_class) = crate::jni_cache::get_main_activity_jclass() {
         let j_uri = env.new_string(&uri)
             .map_err(|e| format!("Failed to create URI string: {}", e))?;
         env.call_static_method(

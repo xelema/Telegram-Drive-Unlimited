@@ -34,7 +34,6 @@ export function ExternalDropBlocker({ onFilesDropped, onUploadClick }: { onFiles
                 unlisten = await listen<string>('file-dropped', (event) => {
                     const path = event.payload;
                     if (path && typeof path === 'string' && path.length > 0) {
-                        console.log('[ExternalDropBlocker] Received file-dropped event from Rust:', path);
                         onFilesDroppedRef.current?.([path]);
                         // Show the same visual confirmation as DOM-based drops
                         clearTimeout(messageTimeout);

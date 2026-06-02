@@ -2,7 +2,6 @@ use actix_web::{get, post, web, HttpRequest, HttpResponse, Responder, cookie::Co
 use crate::commands::TelegramState;
 use crate::commands::utils::resolve_peer;
 use crate::db::DbConnection;
-use crate::server::parse_range_header;
 use grammers_client::types::Media;
 use sha2::{Sha256, Digest};
 use std::sync::Arc;
@@ -16,7 +15,7 @@ struct SharedLinkRow {
     file_name: String,
     _file_size: i64,
     password_hash: Option<String>,
-    password_salt: Option<String>,
+    _password_salt: Option<String>,
     expires_at: Option<i64>,
     revoked: bool,
 }
@@ -26,11 +25,9 @@ struct VerifyForm {
     password: String,
 }
 
-fn hash_password(password: &str, salt: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(password.as_bytes());
-    hasher.update(salt.as_bytes());
-    format!("{:x}", hasher.finalize())
+/// Verify a password against a bcrypt hash.
+fn verify_password(password: &str, hash: &str) -> bool {
+    bcrypt::verify(password, hash).unwrap_or(false)
 }
 
 fn generate_cookie_val(token: &str, password_hash: &str) -> String {
@@ -58,7 +55,7 @@ fn get_share_by_token(db: &DbConnection, token: &str) -> Result<Option<SharedLin
         let file_name = stmt.read::<String, _>("file_name").map_err(|e| e.to_string())?;
         let file_size = stmt.read::<i64, _>("file_size").map_err(|e| e.to_string())?;
         let password_hash = stmt.read::<Option<String>, _>("password_hash").ok().flatten();
-        let password_salt = stmt.read::<Option<String>, _>("password_salt").ok().flatten();
+        let _password_salt = stmt.read::<Option<String>, _>("password_salt").ok().flatten();
         let expires_at = stmt.read::<Option<i64>, _>("expires_at").ok().flatten();
         let revoked = stmt.read::<i64, _>("revoked").map_err(|e| e.to_string())? != 0;
 
@@ -69,7 +66,7 @@ fn get_share_by_token(db: &DbConnection, token: &str) -> Result<Option<SharedLin
             file_name,
             _file_size: file_size,
             password_hash,
-            password_salt,
+            _password_salt,
             expires_at,
             revoked,
         }))
@@ -78,6 +75,13 @@ fn get_share_by_token(db: &DbConnection, token: &str) -> Result<Option<SharedLin
     }
 }
 
+/// Renders the password entry form for protected share links.
+///
+/// NOTE: This HTML contains an inline `<style>` block which requires
+/// `style-src 'unsafe-inline'` in the Tauri CSP (tauri.conf.json).
+/// This is acceptable because the page is served only over the local
+/// Actix streaming server (127.0.0.1/0.0.0.0:14201), not the public internet,
+/// so the XSS attack surface is minimal.
 fn render_password_form(file_name: &str, token: &str, error: Option<&str>) -> HttpResponse {
     let error_html = match error {
         Some(err) => format!("<div class=\"error\">{}</div>", err),
@@ -241,124 +245,19 @@ async fn get_shared_file(
         Ok(messages) => {
             if let Some(Some(msg)) = messages.first() {
                 if let Some(media) = msg.media() {
-                    let size = match &media {
-                        Media::Document(d) => d.size() as u64,
-                        _ => 0,
-                    };
                     let mime = match &media {
                         Media::Document(d) => d.mime_type().unwrap_or("application/octet-stream").to_string(),
                         _ => "application/octet-stream".to_string(),
                     };
                     let filename = &row.file_name;
 
-                    // Parse Range header
-                    let mut start_byte = 0;
-                    let mut end_byte = if size > 0 { size - 1 } else { 0 };
-                    let mut is_range = false;
-
-                    if size > 0 {
-                        if let Some(range_header) = req.headers().get(actix_web::http::header::RANGE) {
-                            if let Ok(range_str) = range_header.to_str() {
-                                if let Some((start, end)) = parse_range_header(range_str, size) {
-                                    start_byte = start;
-                                    end_byte = end;
-                                    is_range = true;
-                                }
-                            }
-                        }
-                    }
-
-                    let content_length = if is_range {
-                        end_byte - start_byte + 1
-                    } else {
-                        size
-                    };
-
-                    let mut download_iter = client.iter_download(&media);
-                    let mut bytes_to_skip = 0;
-
-                    if start_byte > 0 {
-                        // IMPORTANT: Telegram's upload.getFile requires offset aligned to limit.
-                        // 65536 = 2^16, a valid power-of-2 limit that divides 131072 (moov
-                        // discovery boundary) evenly so the resume offset stays aligned.
-                        const CHUNK_SIZE: i32 = 65536;
-                        let chunk_index = (start_byte / CHUNK_SIZE as u64) as i32;
-                        if chunk_index > 0 {
-                            let aligned_start = chunk_index as u64 * CHUNK_SIZE as u64;
-                            download_iter = download_iter
-                                .chunk_size(CHUNK_SIZE)
-                                .skip_chunks(chunk_index);
-                            bytes_to_skip = (start_byte - aligned_start) as usize;
-                        } else {
-                            // Offset < 64KB — download from byte 0 with default chunk_size
-                            // and skip locally. No grammers API changes needed.
-                            bytes_to_skip = start_byte as usize;
-                        }
-                    }
-
-                    let stream = async_stream::stream! {
-                        let mut skipped = 0;
-                        let mut total_yielded = 0;
-
-                        while let Some(chunk) = download_iter.next().await.transpose() {
-                            match chunk {
-                                Ok(data) => {
-                                    let mut data_slice = data;
-                                    
-                                    // Handle skipping of bytes for unaligned start
-                                    if skipped < bytes_to_skip {
-                                        let to_skip = bytes_to_skip - skipped;
-                                        if data_slice.len() <= to_skip {
-                                            skipped += data_slice.len();
-                                            continue;
-                                        } else {
-                                            data_slice = data_slice[to_skip..].to_vec();
-                                            skipped = bytes_to_skip;
-                                        }
-                                    }
-
-                                    // Handle limit (content_length)
-                                    if total_yielded + data_slice.len() as u64 > content_length {
-                                        let allowed = (content_length - total_yielded) as usize;
-                                        if allowed > 0 {
-                                            yield Ok::<_, actix_web::Error>(web::Bytes::from(data_slice[..allowed].to_vec()));
-                                            total_yielded += allowed as u64;
-                                        }
-                                        break;
-                                    } else {
-                                        let len = data_slice.len() as u64;
-                                        yield Ok::<_, actix_web::Error>(web::Bytes::from(data_slice));
-                                        total_yielded += len;
-                                        if total_yielded >= content_length {
-                                            break;
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    log::error!("Share download stream error: {}", e);
-                                    break;
-                                }
-                            }
-                        }
-                        log::debug!("Share download request: Stream completed for token {} (yielded: {})", token, total_yielded);
-                    };
-
-                    if is_range {
-                        return HttpResponse::PartialContent()
-                            .insert_header(("Content-Type", mime))
-                            .insert_header(("Content-Range", format!("bytes {}-{}/{}", start_byte, end_byte, size)))
-                            .insert_header(("Content-Length", content_length.to_string()))
-                            .insert_header(("Content-Disposition", format!("attachment; filename=\"{}\"", filename)))
-                            .insert_header(("Accept-Ranges", "bytes"))
-                            .streaming(stream);
-                    } else {
-                        return HttpResponse::Ok()
-                            .insert_header(("Content-Type", mime))
-                            .insert_header(("Content-Length", size.to_string()))
-                            .insert_header(("Content-Disposition", format!("attachment; filename=\"{}\"", filename)))
-                            .insert_header(("Accept-Ranges", "bytes"))
-                            .streaming(stream);
-                    }
+                    return crate::server::build_media_response(
+                        &client, &media, &req, &mime, Some(filename),
+                        crate::server::StreamingExtras {
+                            extra_headers: vec![],
+                            log_label: "Share download",
+                        },
+                    );
                 }
             }
             HttpResponse::NotFound().body("Message or media not found in Telegram")
@@ -396,11 +295,12 @@ async fn verify_shared_file_password(
         None => return HttpResponse::BadRequest().body("No password required for this link"),
     };
     
-    let salt = row.password_salt.as_deref().unwrap_or("");
-    let entered_hash = hash_password(&form.password, salt);
-    
-    if &entered_hash == hash {
-        // Set short-lived secure session cookie
+    if verify_password(&form.password, hash) {
+        // Set session cookie (30 min).
+        // NOTE: The streaming share server binds to 0.0.0.0 over plain HTTP (not HTTPS),
+        // so the cookie cannot use `.secure(true)` without becoming unusable.
+        // The cookie is protected by `.http_only(true)` and `.same_site(Strict)`
+        // to mitigate XSS and CSRF within the constraints of a local-network HTTP service.
         let val = generate_cookie_val(&token, hash);
         let cookie = Cookie::build(format!("share_auth_{}", token), val)
             .path(format!("/d/{}", token))

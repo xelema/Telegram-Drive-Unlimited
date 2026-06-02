@@ -22,6 +22,7 @@ use tokio::io::AsyncBufReadExt;
 use tokio::sync::Mutex;
 
 use crate::commands::TelegramState;
+use crate::mp4_utils;
 use grammers_client::types::Media;
 use tauri::Manager;
 
@@ -683,113 +684,11 @@ fn parse_time_to_secs(time: &str) -> f64 {
     }
 }
 
-// ── Get video metadata from cached original ─────────────────────────────
-
-pub fn get_source_height(cached_path: &Path) -> Option<u32> {
+/// Detect video resolution from a cached original MP4 file.
+pub fn get_source_height(cached_path: &std::path::Path) -> Option<u32> {
     let data = std::fs::read(cached_path).ok()?;
     let buffer = &data[..std::cmp::min(2 * 1024 * 1024, data.len())];
-    scan_source_resolution(buffer).1
-}
-
-// We need to expose scan_video_tkhd_dimensions publicly
-// It's defined in commands/video_metadata.rs but we'll use our own copy
-fn scan_source_resolution(buffer: &[u8]) -> (Option<u32>, Option<u32>) {
-    let moov_end = match find_box(buffer, 0, b"moov") {
-        Some(end) => end,
-        None => return (None, None),
-    };
-    let moov_start = match moov_end.checked_sub(match box_size_at(buffer, moov_end) { Some(s) => s, None => return (None, None) }) {
-        Some(s) => s,
-        None => return (None, None),
-    };
-    let moov_data_end = moov_end;
-
-    let mut pos = moov_start + 8;
-    while pos + 8 < moov_data_end {
-        let box_sz = match read_u32_be(buffer, pos) {
-            Some(sz) => sz as usize,
-            None => break,
-        };
-        if box_sz < 8 { break; }
-
-        if &buffer[pos + 4..pos + 8] == b"trak" {
-            let trak_data_start = pos + 8;
-            let trak_data_end = pos + box_sz;
-
-            if trak_has_vmhd(buffer, trak_data_start, trak_data_end) {
-                let mut tpos = trak_data_start;
-                while tpos + 8 < trak_data_end {
-                    let tsz = match read_u32_be(buffer, tpos) {
-                        Some(sz) => sz as usize,
-                        None => break,
-                    };
-                    if tsz < 8 { break; }
-
-                    if &buffer[tpos + 4..tpos + 8] == b"tkhd" {
-                        let version = buffer.get(tpos + 8).copied().unwrap_or(0);
-                        let (w_off, h_off) = if version == 1 {
-                            (tpos + 8 + 88, tpos + 8 + 92)
-                        } else {
-                            (tpos + 8 + 76, tpos + 8 + 80)
-                        };
-                        let width = read_u32_be(buffer, w_off).map(|w| w >> 16);
-                        let height = read_u32_be(buffer, h_off).map(|h| h >> 16);
-                        return (width, height);
-                    }
-                    tpos += tsz;
-                }
-            }
-        }
-        pos += box_sz;
-    }
-    (None, None)
-}
-
-fn read_u32_be(data: &[u8], offset: usize) -> Option<u32> {
-    let b = data.get(offset..offset + 4)?;
-    Some(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
-}
-
-fn find_box(buffer: &[u8], start: usize, fourcc: &[u8; 4]) -> Option<usize> {
-    find_box_in_range(buffer, start, buffer.len(), fourcc)
-}
-
-fn find_box_in_range(buffer: &[u8], start: usize, end: usize, fourcc: &[u8; 4]) -> Option<usize> {
-    let mut offset = start;
-    while offset + 8 <= end {
-        let size = read_u32_be(buffer, offset)? as usize;
-        if size < 8 { break; }
-        if &buffer[offset + 4..offset + 8] == fourcc {
-            return Some(offset + size);
-        }
-        offset += size;
-    }
-    None
-}
-
-fn box_size_at(buffer: &[u8], box_end: usize) -> Option<usize> {
-    let sz = read_u32_be(buffer, box_end.saturating_sub(8))?;
-    if sz < 8 { None } else { Some(sz as usize) }
-}
-
-fn trak_has_vmhd(buffer: &[u8], trak_data_start: usize, trak_data_end: usize) -> bool {
-    let mdia_end = match find_box_in_range(buffer, trak_data_start, trak_data_end, b"mdia") {
-        Some(end) => end,
-        None => return false,
-    };
-    let mdia_data_start = match mdia_end.checked_sub(match box_size_at(buffer, mdia_end) { Some(s) => s, None => return false }) {
-        Some(s) => s + 8,
-        None => return false,
-    };
-    let minf_end = match find_box_in_range(buffer, mdia_data_start, mdia_end, b"minf") {
-        Some(end) => end,
-        None => return false,
-    };
-    let minf_data_start = match minf_end.checked_sub(match box_size_at(buffer, minf_end) { Some(s) => s, None => return false }) {
-        Some(s) => s + 8,
-        None => return false,
-    };
-    find_box_in_range(buffer, minf_data_start, minf_end, b"vmhd").is_some()
+    mp4_utils::scan_video_tkhd_dimensions(buffer).1
 }
 
 // ── Execute Full Transcode Pipeline ─────────────────────────────────────
@@ -868,7 +767,7 @@ pub async fn execute_transcode_pipeline(
     let source_height = {
         let data = std::fs::read(&original_path).unwrap_or_default();
         if data.len() > 1024 {
-            scan_source_resolution(&data[..std::cmp::min(2 * 1024 * 1024, data.len())]).1
+            mp4_utils::scan_video_tkhd_dimensions(&data[..std::cmp::min(2 * 1024 * 1024, data.len())]).1
         } else {
             None
         }

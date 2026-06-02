@@ -1,7 +1,7 @@
 import { useCallback, useRef } from 'react';
 import { showFileDialogFallback, pickWithFallback } from '../utils';
 import { invoke } from '@tauri-apps/api/core';
-import { save, open } from '@tauri-apps/plugin-dialog';
+import { open } from '@tauri-apps/plugin-dialog';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { useConfirm } from '../context/ConfirmContext';
@@ -11,7 +11,8 @@ export function useFileOperations(
     activeFolderId: number | null,
     selectedIds: number[],
     setSelectedIds: (ids: number[]) => void,
-    displayedFiles: TelegramFile[]
+    displayedFiles: TelegramFile[],
+    queueBulkDownload?: (files: TelegramFile[], folderId: number | null) => void,
 ) {
     const queryClient = useQueryClient();
     const { confirm } = useConfirm();
@@ -56,32 +57,20 @@ export function useFileOperations(
         if (fail > 0) toast.error(`Failed to delete ${fail} files.`);
     }, [activeFolderId, confirm, queryClient, setSelectedIds]);
 
-    const handleDownload = useCallback(async (id: number, name: string) => {
-        try {
-            const savePath = await pickWithFallback(
-                () => save({ defaultPath: name }),
-                () => handleDownload(id, name),
-                { errorTitle: 'Save dialog failed' },
-            );
-            if (!savePath) return;
-            toast.info(`Download started: ${name}`);
-            await invoke('cmd_download_file', { req: { message_id: id, save_path: savePath, folder_id: activeFolderId } });
-            toast.success(`Download complete: ${name}`);
-        } catch (e) {
-            toast.error(`Download failed: ${e}`);
-        }
-    }, [activeFolderId]);
-
     const handleBulkDownload = useCallback(async () => {
         const ids = selectedIdsRef.current;
         if (ids.length === 0) return;
-
+        const currentFiles = displayedFilesRef.current;
+        const targetFiles = currentFiles.filter((f) => ids.includes(f.id));
+        if (targetFiles.length === 0) return;
+        if (queueBulkDownload) {
+            queueBulkDownload(targetFiles, activeFolderId);
+            setSelectedIds([]);
+            return;
+        }
+        // Fallback: direct download if queue not provided
         const downloadToDir = async (dirPath: string) => {
             let successCount = 0;
-            const currentIds = selectedIdsRef.current;
-            const currentFiles = displayedFilesRef.current;
-            const targetFiles = currentFiles.filter((f) => currentIds.includes(f.id));
-            toast.info(`Starting batch download of ${targetFiles.length} files...`);
             const sep = dirPath.includes('\\') ? '\\' : '/';
             for (const file of targetFiles) {
                 const filePath = dirPath.endsWith(sep) ? `${dirPath}${file.name}` : `${dirPath}${sep}${file.name}`;
@@ -93,12 +82,9 @@ export function useFileOperations(
             toast.success(`Downloaded ${successCount} files.`);
             setSelectedIds([]);
         };
-
         try {
             const dirPath = await pickWithFallback(
-                () => open({
-                    directory: true, multiple: false, title: "Select Download Destination"
-                }),
+                () => open({ directory: true, multiple: false, title: "Select Download Destination" }),
                 () => handleBulkDownload(),
                 {
                     errorTitle: 'Folder picker failed',
@@ -115,7 +101,7 @@ export function useFileOperations(
         } catch (e) {
             toast.error(`Bulk download failed: ${e}`);
         }
-    }, [activeFolderId, setSelectedIds]);
+    }, [activeFolderId, setSelectedIds, queueBulkDownload]);
 
     const handleBulkMove = useCallback(async (targetFolderId: number | null, onSuccess?: () => void) => {
         const ids = selectedIdsRef.current;
@@ -141,13 +127,16 @@ export function useFileOperations(
             toast.info("Folder is empty.");
             return;
         }
-
+        if (queueBulkDownload) {
+            queueBulkDownload(files, activeFolderId);
+            return;
+        }
+        // Fallback: direct download if queue not provided
         const downloadToDir = async (dirPath: string) => {
             let successCount = 0;
-            const currentFiles = displayedFilesRef.current;
-            toast.info(`Downloading folder contents (${currentFiles.length} files)...`);
+            toast.info(`Downloading folder contents (${files.length} files)...`);
             const sep = dirPath.includes('\\') ? '\\' : '/';
-            for (const file of currentFiles) {
+            for (const file of files) {
                 const filePath = dirPath.endsWith(sep) ? `${dirPath}${file.name}` : `${dirPath}${sep}${file.name}`;
                 try {
                     await invoke('cmd_download_file', { req: { message_id: file.id, save_path: filePath, folder_id: activeFolderId } });
@@ -156,7 +145,6 @@ export function useFileOperations(
             }
             toast.success(`Folder Download Complete: ${successCount} files.`);
         };
-
         try {
             const dirPath = await pickWithFallback(
                 () => import('@tauri-apps/plugin-dialog').then(d => d.open({
@@ -178,7 +166,7 @@ export function useFileOperations(
         } catch (e) {
             toast.error("Error: " + e);
         }
-    }, [activeFolderId]);
+    }, [activeFolderId, queueBulkDownload]);
 
     const handleGlobalSearch = useCallback(async (query: string) => {
         try {
@@ -191,7 +179,6 @@ export function useFileOperations(
     return {
         handleDelete,
         handleBulkDelete,
-        handleDownload,
         handleBulkDownload,
         handleBulkMove,
         handleDownloadFolder,

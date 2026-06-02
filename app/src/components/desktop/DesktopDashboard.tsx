@@ -54,12 +54,10 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     const [searchTerm, setSearchTerm] = useState("");
     const [searchResults, setSearchResults] = useState<TelegramFile[]>([]);
     const [isSearching, setIsSearching] = useState(false);
-    const [_internalDragFileId, setInternalDragFileIdState] = useState<number | null>(null);
     const internalDragRef = useRef<number | null>(null);
 
     const setInternalDragFileId = (id: number | null) => {
         internalDragRef.current = id;
-        setInternalDragFileIdState(id);
     };
     const [playingFile, setPlayingFile] = useState<TelegramFile | null>(null);
     const [pdfFile, setPdfFile] = useState<TelegramFile | null>(null);
@@ -73,10 +71,10 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
 
     const { data: allFiles = [], isLoading, error } = useQuery({
         queryKey: ['files', activeFolderId],
-        queryFn: () => invoke<any[]>('cmd_get_files', { folderId: activeFolderId }).then(res => res.map(f => ({
+        queryFn: () => invoke<Array<{ id: number; name: string; size: number; icon_type: string; folder_id: number | null; created_at: string; mime_type?: string; file_ext?: string }>>('cmd_get_files', { folderId: activeFolderId }).then(res => res.map(f => ({
             ...f,
             sizeStr: formatBytes(f.size),
-            type: f.icon_type || (f.name.endsWith('/') ? 'folder' : 'file')
+            type: (f.icon_type as TelegramFile['type']) || 'file'
         }))),
         enabled: !!store,
     });
@@ -93,11 +91,14 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     });
 
 
+    const { uploadQueue, setUploadQueue, handleManualUpload, handleFolderUpload, handleDropUpload, cancelAll: cancelUploads, cancelItem: cancelUploadItem, retryItem: retryUploadItem } = useFileUpload(activeFolderId, store);
+    const { downloadQueue, queueDownload, queueBulkDownload, clearFinished: clearDownloads, cancelAll: cancelDownloads, cancelItem: cancelDownloadItem, retryItem: retryDownloadItem } = useFileDownload(store);
+
     const {
         handleDelete, handleBulkDelete, handleBulkDownload,
         handleBulkMove, handleDownloadFolder, handleGlobalSearch
 
-    } = useFileOperations(activeFolderId, selectedIds, setSelectedIds, displayedFiles);
+    } = useFileOperations(activeFolderId, selectedIds, setSelectedIds, displayedFiles, queueBulkDownload);
 
     // Bulk share: generate links for all selected non-folder files
     const handleBulkShare = useCallback(async () => {
@@ -150,9 +151,6 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
             return next;
         }), 2000);
     }, []);
-
-    const { uploadQueue, setUploadQueue, handleManualUpload, handleFolderUpload, handleDropUpload, cancelAll: cancelUploads, cancelItem: cancelUploadItem, retryItem: retryUploadItem } = useFileUpload(activeFolderId, store);
-    const { downloadQueue, queueDownload, clearFinished: clearDownloads, cancelAll: cancelDownloads, cancelItem: cancelDownloadItem, retryItem: retryDownloadItem } = useFileDownload(store);
 
 
     const handleSelectAll = useCallback(() => {
@@ -231,7 +229,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
         }, 500);
 
         return () => clearTimeout(timer);
-    }, [searchTerm]);
+    }, [searchTerm, handleGlobalSearch]);
 
 
 

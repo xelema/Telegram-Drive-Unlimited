@@ -15,7 +15,6 @@ export interface Settings {
     proxyPort: number;
     proxyUsername: string;
     proxyPassword: string;   // SOCKS5
-    proxySecret: string;     // Deprecated — kept for backward compat; no longer surfaced in UI
 
     // ── VPN Optimizer (master toggle) ─────────────────────
     vpnMode: boolean;
@@ -60,7 +59,6 @@ const defaultSettings: Settings = {
     proxyPort: 1080,
     proxyUsername: '',
     proxyPassword: '',
-    proxySecret: '',
 
     // VPN Optimizer — off by default (preserves existing behaviour)
     vpnMode: false,

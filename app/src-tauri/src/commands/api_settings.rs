@@ -59,9 +59,11 @@ fn hash_key(key: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-/// Verify a plaintext key against a stored hash
+/// Verify a plaintext key against a stored hash using constant-time comparison
+/// to prevent timing side-channel attacks.
 pub fn verify_key(plaintext: &str, stored_hash: &str) -> bool {
-    hash_key(plaintext) == stored_hash
+    let computed = hash_key(plaintext);
+    constant_time_eq::constant_time_eq(computed.as_bytes(), stored_hash.as_bytes())
 }
 
 #[tauri::command]
@@ -130,8 +132,8 @@ pub async fn cmd_regenerate_api_key(
     let mut settings = load_settings(&app);
 
     // Generate a secure 32-byte random key as hex
-    let mut rng = rand::thread_rng();
-    let bytes: Vec<u8> = (0..32).map(|_| rand::Rng::gen(&mut rng)).collect();
+    let mut rng = rand::rng();
+    let bytes: Vec<u8> = (0..32).map(|_| rand::Rng::random(&mut rng)).collect();
     let plaintext_key: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
 
     // Store only the hash
