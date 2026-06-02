@@ -38,7 +38,7 @@ Telegram Drive leverages the Telegram API to allow you to upload, organize, and 
 *   **Privacy Focused**: API keys and data stay local. No third-party servers.
 *   **Cross-Platform**: Native apps for macOS (Intel/ARM), Windows, Linux and Android.
 
-## 📱 Android (Pre‑built, Unsigned APK)
+## Android (Pre‑built, Unsigned APK)
 
 A pre-built **unsigned APK** is available for Android sideloading via the [v2.1.5-android release](https://github.com/caamer20/Telegram-Drive/releases/tag/Androidv2.1.5beta).
 
