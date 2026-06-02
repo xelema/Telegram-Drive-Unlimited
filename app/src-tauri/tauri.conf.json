@@ -32,7 +32,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' http://localhost:* http://127.0.0.1:* https://asset.localhost http://asset.localhost https://www.highperformanceformat.com; media-src 'self' http://localhost:* http://127.0.0.1:*; img-src 'self' data: blob: asset: https://asset.localhost; style-src 'self' 'unsafe-inline'; script-src 'self' blob: https://www.highperformanceformat.com; frame-src 'self' blob: https://www.highperformanceformat.com; worker-src 'self' blob:;",
+      "csp": "default-src 'self'; connect-src 'self' http://localhost:* http://127.0.0.1:* https://asset.localhost http://asset.localhost https://www.highperformanceformat.com https://*.effectivecpmnetwork.com; media-src 'self' http://localhost:* http://127.0.0.1:*; img-src 'self' data: blob: asset: https://asset.localhost https://*.effectivecpmnetwork.com; style-src 'self' 'unsafe-inline'; script-src 'self' blob: https://www.highperformanceformat.com https://*.effectivecpmnetwork.com; frame-src 'self' blob: https://www.highperformanceformat.com https://*.effectivecpmnetwork.com; worker-src 'self' blob:;",
       "capabilities": [
         "default",
         "mobile-only"

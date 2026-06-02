@@ -37,16 +37,39 @@ jobs:
           RELEASE_VERSION: ${{ steps.get_version.outputs.VERSION }}
         with:
           script: |
-            const { data } = await github.rest.repos.createRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              tag_name: `v${process.env.RELEASE_VERSION}`,
-              name: `Telegram Drive v${process.env.RELEASE_VERSION}`,
-              body: process.env.RELEASE_BODY,
-              draft: true,
-              prerelease: false
-            });
-            return data.id
+            const tag = `v${process.env.RELEASE_VERSION}`;
+            try {
+              const { data: existingRelease } = await github.rest.repos.getReleaseByTag({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag: tag
+              });
+              await github.rest.repos.updateRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                release_id: existingRelease.id,
+                body: process.env.RELEASE_BODY,
+                draft: true
+              });
+              console.log(`Updated existing release for tag ${tag} (ID: ${existingRelease.id})`);
+              return existingRelease.id;
+            } catch (err) {
+              if (err.status === 404) {
+                const { data: newRelease } = await github.rest.repos.createRelease({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  tag_name: tag,
+                  name: `Telegram Drive v${process.env.RELEASE_VERSION}`,
+                  body: process.env.RELEASE_BODY,
+                  draft: true,
+                  prerelease: false
+                });
+                console.log(`Created new release for tag ${tag} (ID: ${newRelease.id})`);
+                return newRelease.id;
+              } else {
+                throw err;
+              }
+            }
 
   build-tauri:
     needs: create-release

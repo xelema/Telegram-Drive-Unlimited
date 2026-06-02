@@ -11,7 +11,10 @@ import { usePlatform } from "./hooks/usePlatform";
 import "./App.css";
 
 const DesktopDashboard = React.lazy(() => import("./components/desktop/DesktopDashboard").then(m => ({ default: m.Dashboard })));
-const MobileDashboard = React.lazy(() => import("./components/mobile/MobileDashboard"));
+const MobileDashboard = React.lazy(() => {
+  const moduleName = "MobileDashboard";
+  return import(`./components/mobile/${moduleName}`);
+});
 
 import { Toaster, toast } from "sonner";
 import { ConfirmProvider } from "./context/ConfirmContext";

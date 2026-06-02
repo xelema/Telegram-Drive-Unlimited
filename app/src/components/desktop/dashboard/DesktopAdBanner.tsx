@@ -1,21 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { X } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-shell';
 
 const AD_INTERVAL_MS = 1000 * 60 * 45; // 45 minutes
 const AUTO_DISMISS_SECONDS = 10; // auto-close after 10s
 const DISMISSED_AT_KEY = 'desktopAdDismissedAt';
 
-const AD_SCRIPT_SRC = 'https://www.highperformanceformat.com/9cf449272b7e1c83054b82b7639c6029/invoke.js';
-const AD_SCRIPT_INLINE = `
-  atOptions = {
-    'key' : '9cf449272b7e1c83054b82b7639c6029',
-    'format' : 'inline',
-    'height' : 250,
-    'width' : 300,
-    'params' : {}
-  };
-`;
+const AD_SCRIPT_SRC = 'https://pl29613714.effectivecpmnetwork.com/17/20/30/17203020d60eedd6d22a91318044dbd4.js';
 
 /**
  * Periodic ad banner for the desktop dashboard (every 45 minutes).
@@ -37,10 +27,16 @@ export function DesktopAdBanner() {
   const [countdown, setCountdown] = useState(AUTO_DISMISS_SECONDS);
   const [isHovering, setIsHovering] = useState(false);
   const scriptInjected = useRef(false);
+  const initialCheckDone = useRef(false);
 
   // ── Check whether enough time has passed since last dismissal ──────────
   useEffect(() => {
     const check = () => {
+      if (!initialCheckDone.current) {
+        initialCheckDone.current = true;
+        setVisible(true);
+        return;
+      }
       try {
         const raw = localStorage.getItem(DISMISSED_AT_KEY);
         if (!raw) {
@@ -202,21 +198,28 @@ export function DesktopAdBanner() {
     return () => clearTimeout(timer);
   }, [visible, countdown, exiting, isHovering, handleDismissInternal]);
 
+  // ── Detect clicks on cross-origin iframe ads using window blur ──────────
+  useEffect(() => {
+    if (!visible) return;
+    const handleBlur = () => {
+      // Focus shifted away from the window — check if activeElement is an iframe (ad click)
+      setTimeout(() => {
+        if (document.activeElement && document.activeElement.tagName === 'IFRAME') {
+          handleDismissInternal();
+        }
+      }, 100);
+    };
+    window.addEventListener('blur', handleBlur);
+    return () => window.removeEventListener('blur', handleBlur);
+  }, [visible, handleDismissInternal]);
+
   // ── Inject script elements when the container is mounted and visible ──
   useEffect(() => {
     if (!visible || !containerRef.current || scriptInjected.current) return;
 
     const container = containerRef.current;
-    // Clear any previous content
     container.innerHTML = '';
 
-    // 1. Inline config script
-    const inlineScript = document.createElement('script');
-    inlineScript.type = 'text/javascript';
-    inlineScript.textContent = AD_SCRIPT_INLINE;
-    container.appendChild(inlineScript);
-
-    // 2. External invoke script
     const externalScript = document.createElement('script');
     externalScript.type = 'text/javascript';
     externalScript.src = AD_SCRIPT_SRC;
@@ -226,17 +229,11 @@ export function DesktopAdBanner() {
     scriptInjected.current = true;
 
     return () => {
-      // Cleanup on visibility toggle – reset for next re-injection
       scriptInjected.current = false;
     };
   }, [visible]);
 
-  // ── Dismiss handler (for events) ───────────────────────────────────────
-  const handleDismiss = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    handleDismissInternal();
-  }, [handleDismissInternal]);
+
 
   // ── Document-level click listener (non-blocking dismiss on outside click)
   //    Uses capture phase so we can catch the click before ad scripts handle
@@ -273,21 +270,11 @@ export function DesktopAdBanner() {
           ${exiting ? 'opacity-0 scale-95 translate-y-2' : 'opacity-100 scale-100'}
         `}
       >
-        {/* Header bar with dismiss button and countdown */}
-        <div className="flex items-center justify-between px-3 py-1.5 bg-telegram-hover/30 border-b border-telegram-border/30">
-          <span className="text-[10px] font-semibold text-telegram-subtext/70 uppercase tracking-wider flex items-center gap-1.5">
-            Sponsored
-            <span className="text-[9px] font-mono text-telegram-subtext/40 tabular-nums">
-              {!exiting ? `${countdown}s` : ''}
-            </span>
+        {/* Header bar with dismiss countdown text */}
+        <div className="flex items-center justify-center px-4 py-2 bg-telegram-hover/30 border-b border-telegram-border/30 select-none">
+          <span className="text-[11px] font-medium text-telegram-text/80">
+            Click Ad to close now or wait <span className="font-bold text-telegram-primary tabular-nums">{countdown}</span> seconds!
           </span>
-          <button
-            onClick={handleDismiss}
-            className="p-1 rounded-md text-telegram-subtext/50 hover:text-telegram-text hover:bg-telegram-hover/50 transition"
-            aria-label="Dismiss ad"
-          >
-            <X className="w-3 h-3" />
-          </button>
         </div>
 
         {/* Ad container — the script injects the ad content here */}
