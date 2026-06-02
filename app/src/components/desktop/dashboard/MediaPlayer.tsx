@@ -149,16 +149,22 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
     return (
         <div className={`fixed inset-0 z-[200] bg-black/90 animate-in fade-in duration-200 ${isFullscreen ? 'p-0' : 'flex items-center justify-center p-4 backdrop-blur-md'}`} onClick={onClose}>
             <div ref={containerRef} className={`relative ${isFullscreen ? 'w-full h-full' : 'w-full max-w-6xl flex flex-col items-center'}`} onClick={e => e.stopPropagation()}>
-                <button onClick={toggleFullscreen} className={`p-2 text-white/50 hover:text-white bg-white/10 hover:bg-white/20 rounded-full transition-all z-30 ${isFullscreen ? 'absolute top-4 right-16' : 'absolute -top-12 right-10'}`} title={isFullscreen ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}>
-                    {isFullscreen ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
-                </button>
-                <button
-                    onClick={onClose}
-                    className={`p-2 text-white/50 hover:text-white bg-white/10 hover:bg-white/20 rounded-full transition-all z-30 ${isFullscreen ? 'absolute top-4 right-4' : 'absolute -top-12 right-0'}`}
-                    title="Close (Esc)"
-                >
-                    <X className="w-6 h-6" />
-                </button>
+                <div className={`absolute z-30 flex items-center gap-2 ${isFullscreen ? 'top-4 right-4' : '-top-12 right-0'}`}>
+                    <button
+                        onClick={toggleFullscreen}
+                        className="w-10 h-10 flex items-center justify-center text-white/50 hover:text-white bg-white/10 hover:bg-white/20 rounded-full transition-all"
+                        title={isFullscreen ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}
+                    >
+                        {isFullscreen ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
+                    </button>
+                    <button
+                        onClick={onClose}
+                        className="w-10 h-10 flex items-center justify-center text-white/50 hover:text-white bg-white/10 hover:bg-white/20 rounded-full transition-all"
+                        title="Close (Esc)"
+                    >
+                        <X className="w-5 h-5" />
+                    </button>
+                </div>
                 <button
                     onClick={onPrev}
                     className={`absolute top-1/2 -translate-y-1/2 p-2 text-white/50 hover:text-white bg-white/10 hover:bg-white/20 rounded-full transition-all z-10 ${isFullscreen ? 'left-4' : 'left-2'}`}

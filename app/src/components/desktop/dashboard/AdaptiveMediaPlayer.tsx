@@ -678,12 +678,22 @@ export function AdaptiveMediaPlayer({
                 <button onClick={onNext} className={`absolute right-2 top-1/2 -translate-y-1/2 p-2 text-white/50 hover:text-white bg-white/10 hover:bg-white/20 rounded-full transition-all z-10 ${isFullscreen ? 'right-4' : ''}`} title="Next (ArrowRight / L)">
                     <ChevronRight className="w-6 h-6" />
                 </button>
-                <button onClick={toggleFullscreen} className={`p-2 text-white/50 hover:text-white bg-white/10 hover:bg-white/20 rounded-full transition-all z-30 ${isFullscreen ? 'absolute top-4 right-16' : 'absolute -top-12 right-10'}`} title={isFullscreen ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}>
-                    {isFullscreen ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
-                </button>
-                <button onClick={onClose} className={`p-2 text-white/50 hover:text-white bg-white/10 hover:bg-white/20 rounded-full transition-all z-30 ${isFullscreen ? 'absolute top-4 right-4' : 'absolute -top-12 right-0'}`} title="Close (Esc)">
-                    <X className="w-6 h-6" />
-                </button>
+                <div className={`absolute z-30 flex items-center gap-2 ${isFullscreen ? 'top-4 right-4' : '-top-12 right-0'}`}>
+                    <button
+                        onClick={toggleFullscreen}
+                        className="w-10 h-10 flex items-center justify-center text-white/50 hover:text-white bg-white/10 hover:bg-white/20 rounded-full transition-all"
+                        title={isFullscreen ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}
+                    >
+                        {isFullscreen ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
+                    </button>
+                    <button
+                        onClick={onClose}
+                        className="w-10 h-10 flex items-center justify-center text-white/50 hover:text-white bg-white/10 hover:bg-white/20 rounded-full transition-all"
+                        title="Close (Esc)"
+                    >
+                        <X className="w-5 h-5" />
+                    </button>
+                </div>
 
                 {/* Video container */}
                 <div className={`bg-black overflow-hidden flex items-center justify-center relative ${isFullscreen ? 'w-full h-full rounded-none shadow-none ring-0' : 'w-full aspect-video rounded-xl shadow-2xl ring-1 ring-white/10'}`}>
@@ -912,12 +922,20 @@ export function AdaptiveMediaPlayer({
                                 )}
 
                                 {/* Exit fullscreen */}
-                                <button onClick={exitFullscreen} className="p-2 text-white/60 hover:text-white hover:bg-white/10 rounded-full transition-all" title="Exit fullscreen (F)">
+                                <button
+                                    onClick={exitFullscreen}
+                                    className="w-10 h-10 flex items-center justify-center text-white/60 hover:text-white hover:bg-white/10 rounded-full transition-all"
+                                    title="Exit fullscreen (F)"
+                                >
                                     <Minimize2 className="w-5 h-5" />
                                 </button>
 
                                 {/* Close */}
-                                <button onClick={onClose} className="p-2 text-white/60 hover:text-white hover:bg-white/10 rounded-full transition-all" title="Close (Esc)">
+                                <button
+                                    onClick={onClose}
+                                    className="w-10 h-10 flex items-center justify-center text-white/60 hover:text-white hover:bg-white/10 rounded-full transition-all"
+                                    title="Close (Esc)"
+                                >
                                     <X className="w-5 h-5" />
                                 </button>
                             </div>

@@ -51,11 +51,11 @@ export function SidebarItem({ icon: Icon, label, active = false, onClick, onDrop
     useEffect(() => {
         if (!contextMenu) return;
         const handler = () => setContextMenu(null);
-        window.addEventListener('click', handler, true);
-        window.addEventListener('contextmenu', handler, true);
+        window.addEventListener('click', handler);
+        window.addEventListener('contextmenu', handler);
         return () => {
-            window.removeEventListener('click', handler, true);
-            window.removeEventListener('contextmenu', handler, true);
+            window.removeEventListener('click', handler);
+            window.removeEventListener('contextmenu', handler);
         };
     }, [contextMenu]);
 

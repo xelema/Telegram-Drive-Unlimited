@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.7.9] - 2026-06-02
+
+### Features & Fixes
+
+- **Folder Rename Bug Fix** — Resolved an issue where renaming a folder in the sidebar failed because the capture-phase click listener unmounted the context menu before the button's action could execute.
+- **Media Player Styling** — Equalized the close and fullscreen circle buttons to standard sizes with a small gap between them.
+
+---
+
 ## [1.7.8] - 2026-06-01
 
 ### Features & Enhancements
