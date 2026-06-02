@@ -8,6 +8,7 @@ your Telegram account into an unlimited, secure cloud storage drive. Built with
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20MacOS%20%7C%20Linux-blue)]()
+![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/:user/:repo/total?style=for-the-badge)
 [![Downloads](https://img.shields.io/badge/downloads-20k-blue)](https://github.com/caamer20/telegram-drive/releases)
 [![oosmetrics](https://api.oosmetrics.com/api/v1/badge/achievement/ae8e5a6b-e815-4799-a408-4a59980cf9c8.svg)](https://oosmetrics.com/repo/caamer20/Telegram-Drive)
 [![oosmetrics](https://api.oosmetrics.com/api/v1/badge/achievement/029fb97b-a54a-4566-a1eb-aa1a5039065d.svg)](https://oosmetrics.com/repo/caamer20/Telegram-Drive)
