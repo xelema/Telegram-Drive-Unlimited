@@ -32,7 +32,6 @@ local.properties
 *.DMP
 
 # Android app files to exclude from git
-/app/src/components/mobile/
 /app/src-tauri/src-android/
 /app/src-tauri/tests/android_uri_cache_tests.rs
 /app/src-tauri/gen/schemas/android-schema.json
