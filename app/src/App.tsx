@@ -11,10 +11,10 @@ import { usePlatform } from "./hooks/usePlatform";
 import "./App.css";
 
 const DesktopDashboard = React.lazy(() => import("./components/desktop/DesktopDashboard").then(m => ({ default: m.Dashboard })));
-const MobileDashboard = React.lazy(() => {
-  const moduleName = "MobileDashboard";
-  return import(`./components/mobile/${moduleName}.tsx`);
-});
+// Vite requires a fully static import path for dynamic imports so it can
+// perform static analysis and code-splitting. Template literals with
+// variables prevent Vite from resolving the module at build time.
+const MobileDashboard = React.lazy(() => import("./components/mobile/MobileDashboard.tsx"));
 
 import { Toaster, toast } from "sonner";
 import { ConfirmProvider } from "./context/ConfirmContext";

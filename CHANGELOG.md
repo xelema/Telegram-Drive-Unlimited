@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.8.3] - 2026-06-03
+
+### Bug Fixes & UI Enhancements
+
+- **Cross-Platform Video Streaming Resolution**
+  - Resolved dynamic CORS blocking behavior across client webviews, rectifying media loading and playback errors on Windows, macOS, and Linux.
+- **File Grid UI & Layout Alignment**
+  - Corrected card shifting and overlapping behaviors within the file explorer's grid layout.
+  - Configured automated scroll reset and virtualizer cache purging during directory navigation.
+
+---
+
 ## [1.8.2] - 2026-06-03
 
 ### Streaming Hotfix: Cross-Platform Video Playback Correction

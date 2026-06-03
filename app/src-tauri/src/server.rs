@@ -5,6 +5,7 @@ use crate::commands::utils::resolve_peer;
 use grammers_client::types::Media;
 use crate::transcode::TranscodeManager;
 
+use std::net::TcpListener;
 use std::sync::Arc;
 
 /// Holds the per-session streaming token for Actix validation
@@ -283,7 +284,25 @@ pub async fn start_server(
     let transcode_data = web::Data::new(transcode_manager);
     
     log::info!("Starting Streaming Server on port {}", port);
-    
+
+    // Bind the listener: prefer IPv6 dual-stack ([::] accepts IPv4+IPv6 on
+    // modern Linux/macOS/Windows). Fall back to IPv4-only on systems without
+    // IPv6 (older Windows, some CI environments, etc.).
+    let ipv6_addr = format!("[::]:{}", port);
+    let listener = match TcpListener::bind(&ipv6_addr) {
+        Ok(l) => {
+            log::info!("Streaming Server listening on {} (dual-stack IPv4+IPv6)", ipv6_addr);
+            l
+        }
+        Err(e) => {
+            log::warn!("IPv6 dual-stack bind failed ({}), falling back to IPv4 only", e);
+            let ipv4_addr = format!("0.0.0.0:{}", port);
+            let l = TcpListener::bind(&ipv4_addr)?;
+            log::info!("Streaming Server listening on {} (IPv4 only)", ipv4_addr);
+            l
+        }
+    };
+
     let server = HttpServer::new(move || {
         let cors = Cors::default()
             .allowed_origin_fn(|origin, _req_head| {
@@ -310,10 +329,10 @@ pub async fn start_server(
             .configure(crate::share_routes::configure_share_routes)
             .configure(crate::transcode::configure_hls_routes)
     })
-    .bind(("0.0.0.0", port))?
+    .listen(listener)?
     .run();
 
-    log::info!("Streaming Server started successfully on http://0.0.0.0:{}", port);
+    log::info!("Streaming Server started successfully on port {}", port);
 
     Ok(server)
 }

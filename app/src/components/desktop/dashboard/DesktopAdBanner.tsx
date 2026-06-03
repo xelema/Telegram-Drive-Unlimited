@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { open } from '@tauri-apps/plugin-shell';
 import { X } from 'lucide-react';
 
 const AD_INTERVAL_MS = 1000 * 60 * 45; // 45 minutes
@@ -22,36 +21,42 @@ function safeTrySet(key: string, value: string): void {
 /**
  * Periodic ad banner for the desktop dashboard (every 45 minutes).
  *
- * Displays a 300×250 inline ad in a floating panel. Three ways to dismiss:
- * 1. Click the X button
- * 2. Click anywhere outside the ad panel (non-blocking — clicks pass through)
- * 3. Wait 10 seconds for auto-close (pauses on hover)
- * Dismissal timing is persisted to localStorage so the timer survives reloads.
+ * Renders a 300×250 ad inside a **sandboxed iframe** so the external ad
+ * script cannot attach global event listeners or pollute the main document.
+ * Without this sandbox, the ad network's scripts can install document-level
+ * click handlers that open popups/popunders on random clicks anywhere in
+ * the app — especially noticeable on Windows WebView2.
  *
- * Anchor tags inside the ad are intercepted so clicks open in the system
- * browser via Tauri's shell plugin rather than failing silently in the webview.
+ * Sandbox permissions:
+ *   allow-scripts              → ad script can execute
+ *   allow-popups               → ad clicks can open popups
+ *   allow-popups-to-escape-sandbox → popups open as full browser windows
+ *
+ * No allow-same-origin — the iframe cannot access the parent document.
+ *
+ * Dismissal works three ways:
+ * 1. Click the X button
+ * 2. Click anywhere outside the ad panel
+ * 3. Wait 10 seconds for auto-close (pauses on hover)
  */
 export function DesktopAdBanner() {
-  const containerRef = useRef<HTMLDivElement>(null);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const [visible, setVisible] = useState(false);
   const [exiting, setExiting] = useState(false);
   const [countdown, setCountdown] = useState(AUTO_DISMISS_SECONDS);
   const [isHovering, setIsHovering] = useState(false);
-  const scriptInjected = useRef(false);
   const mountedRef = useRef(true);
 
-  // ── Auto-focus the close button when the panel appears so keyboard
-  //    users can dismiss immediately without tabbing through the page.
+  // ── Auto-focus the close button when the panel appears ──────────────
   useEffect(() => {
     if (!visible) return;
-    // Small delay to ensure the DOM is painted before focusing
     const id = setTimeout(() => closeButtonRef.current?.focus(), 50);
     return () => clearTimeout(id);
   }, [visible]);
 
-  // ── Check whether enough time has passed since last dismissal ──────────
+  // ── Check dismissal interval ─────────────────────────────────────────
   useEffect(() => {
     mountedRef.current = true;
 
@@ -71,8 +76,6 @@ export function DesktopAdBanner() {
 
     check();
 
-    // Re-check periodically (every 30s) only while the banner is hidden,
-    // waiting for the interval to elapse.
     let interval: ReturnType<typeof setInterval> | undefined;
     if (!visible) {
       interval = setInterval(check, 30_000);
@@ -83,117 +86,42 @@ export function DesktopAdBanner() {
     };
   }, [visible]);
 
-  // ── Intercept clicks on ad links so they open in the system browser ────
-  //    Tauri's webview does not navigate target="_blank" links from cross-
-  //    origin iframes; this handler catches anchor clicks (both inline and
-  //    inside any iframes the ad network may still inject) and opens them
-  //    via the shell plugin.
-  useEffect(() => {
-    if (!visible || !containerRef.current) return;
-    const container = containerRef.current;
+  // ── Build sandboxed iframe srcdoc with the ad script ─────────────────
+  const srcdoc = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 300px; height: 250px; overflow: hidden;
+      background: #1a1a2e;
+      display: flex; align-items: center; justify-content: center;
+    }
+  </style>
+</head>
+<body>
+  <script type="text/javascript" src="${AD_SCRIPT_SRC}" async></script>
+</body>
+</html>`;
 
-    const handleClick = (e: MouseEvent) => {
-      const target = e.target as HTMLElement;
-      const anchor = target.closest('a[href]') as HTMLAnchorElement | null;
-      if (!anchor) return;
-      const href = anchor.getAttribute('href');
-      if (!href || href.startsWith('javascript:')) return;
-
-      e.preventDefault();
-      e.stopPropagation();
-      open(href).catch(() => {
-        // Fallback for environments where the shell plugin isn't available
-        window.open(href, '_blank');
-      });
-    };
-
-    // Capture phase so we catch events before the ad's own scripts handle them
-    container.addEventListener('click', handleClick, true);
-
-    return () => {
-      container.removeEventListener('click', handleClick, true);
-    };
-  }, [visible]);
-
-  // ── Watch for iframes injected by the ad network & try to forward clicks ──
-  //    Even with format:'inline', some ad networks wrap content in an iframe.
-  //    Clicks inside a cross-origin iframe never reach the parent, so we try to
-  //    access each injected iframe's document (same-origin) and install the same
-  //    click→shell.open interception. If the iframe is cross-origin, this
-  //    silently fails — the inline click handler above is the primary fix.
-  useEffect(() => {
-    if (!visible || !containerRef.current) return;
-    const container = containerRef.current;
-    const hookedIframes = new WeakSet<HTMLIFrameElement>();
-
-    const hookIframe = (iframe: HTMLIFrameElement) => {
-      if (hookedIframes.has(iframe)) return;
-      hookedIframes.add(iframe);
-
-      const tryHook = () => {
-        try {
-          const doc = iframe.contentDocument;
-          if (!doc) return;
-
-          doc.addEventListener('click', (e: Event) => {
-            const target = e.target as HTMLElement;
-            const anchor = target.closest('a[href]') as HTMLAnchorElement | null;
-            if (!anchor) return;
-            const href = anchor.getAttribute('href');
-            if (!href || href.startsWith('javascript:')) return;
-
-            e.preventDefault();
-            e.stopPropagation();
-            open(href).catch(() => window.open(href, '_blank'));
-          }, true);
-        } catch {
-          // Cross-origin iframe — contentDocument is inaccessible, which is
-          // expected. The inline click handler + format:'inline' handle it.
-        }
-      };
-
-      // Try immediately (for srcdoc / inline iframes)
-      tryHook();
-      // Also try on load (for src-based iframes that are still loading)
-      iframe.addEventListener('load', tryHook, { once: true });
-    };
-
-    const observer = new MutationObserver((mutations) => {
-      for (const m of mutations) {
-        for (const node of m.addedNodes) {
-          if (node instanceof HTMLIFrameElement) {
-            hookIframe(node);
-          } else if (node instanceof HTMLElement) {
-            node.querySelectorAll('iframe').forEach(hookIframe);
-          }
-        }
-      }
-    });
-
-    // Also hook any iframes already present (e.g. from a previous injection)
-    container.querySelectorAll('iframe').forEach(hookIframe);
-
-    observer.observe(container, { childList: true, subtree: true });
-
-    return () => observer.disconnect();
-  }, [visible]);
-
-  // ── Internal dismiss (shared by X button, backdrop click, and timer) ──
+  // ── Internal dismiss (shared by X button, outside click, and timer) ──
   const handleDismissInternal = useCallback(() => {
-    if (containerRef.current) {
-      containerRef.current.innerHTML = '';
-      scriptInjected.current = false;
+    // Clear the iframe src to stop scripts
+    if (iframeRef.current) {
+      iframeRef.current.src = 'about:blank';
     }
     safeTrySet(DISMISSED_AT_KEY, Date.now().toString());
     setExiting(true);
-    setCountdown(0); // stop the timer
+    setCountdown(0);
     setTimeout(() => {
       setVisible(false);
       setExiting(false);
     }, 300);
   }, []);
 
-  // ── Auto-dismiss after 10 seconds ───────────────────────────────────────
+  // ── Auto-dismiss after 10 seconds ─────────────────────────────────────
   useEffect(() => {
     if (!visible) {
       setCountdown(AUTO_DISMISS_SECONDS);
@@ -203,60 +131,19 @@ export function DesktopAdBanner() {
       if (!exiting) handleDismissInternal();
       return;
     }
-    // Pause countdown while the user's mouse is hovering over the ad panel
     if (isHovering) return;
     const timer = setTimeout(() => setCountdown(c => c - 1), 1000);
     return () => clearTimeout(timer);
   }, [visible, countdown, exiting, isHovering, handleDismissInternal]);
 
-  // ── Detect clicks on cross-origin iframe ads using window blur ──────────
-  useEffect(() => {
-    if (!visible) return;
-    const handleBlur = () => {
-      // Focus shifted away from the window — check if activeElement is an iframe (ad click)
-      setTimeout(() => {
-        if (document.activeElement && document.activeElement.tagName === 'IFRAME') {
-          handleDismissInternal();
-        }
-      }, 100);
-    };
-    window.addEventListener('blur', handleBlur);
-    return () => window.removeEventListener('blur', handleBlur);
-  }, [visible, handleDismissInternal]);
-
-  // ── Inject script elements when the container is mounted and visible ──
-  useEffect(() => {
-    if (!visible || !containerRef.current || scriptInjected.current) return;
-
-    const container = containerRef.current;
-    container.innerHTML = '';
-
-    const externalScript = document.createElement('script');
-    externalScript.type = 'text/javascript';
-    externalScript.src = AD_SCRIPT_SRC;
-    externalScript.async = true;
-    container.appendChild(externalScript);
-
-    scriptInjected.current = true;
-
-    return () => {
-      scriptInjected.current = false;
-    };
-  }, [visible]);
-
-
-
   // ── Document-level click listener (non-blocking dismiss on outside click)
-  //    Uses capture phase so we can catch the click before ad scripts handle
-  //    it, but does NOT preventDefault/stopPropagation — the click still
-  //    reaches the real app element underneath (file card, sidebar, etc.).
+  //    Uses capture phase so clicks reach the real app element underneath
+  //    (file card, sidebar, etc.) — we just dismiss without interfering.
   useEffect(() => {
     if (!visible) return;
 
     const handleDocumentClick = (e: MouseEvent) => {
-      // Ignore clicks inside the ad panel itself
       if (panelRef.current?.contains(e.target as Node)) return;
-      // Click was outside — dismiss the ad without interfering
       handleDismissInternal();
     };
 
@@ -268,14 +155,13 @@ export function DesktopAdBanner() {
 
   return (
     <>
-      {/* Ad panel — CSS containment prevents ad content from leaking outside */}
+      {/* Ad panel */}
       <div
         ref={panelRef}
         role="dialog"
         aria-label="Sponsored advertisement — closes automatically after 10 seconds"
         onMouseEnter={() => setIsHovering(true)}
         onMouseLeave={() => setIsHovering(false)}
-        style={{ contain: 'layout style paint' }}
         className={`
           fixed bottom-20 right-5 z-[90]
           bg-telegram-surface border border-telegram-border/60
@@ -284,8 +170,7 @@ export function DesktopAdBanner() {
           ${exiting ? 'opacity-0 scale-95 translate-y-2' : 'opacity-100 scale-100'}
         `}
       >
-        {/* Visually-hidden close button for screen readers and keyboard users.
-            Becomes visible on focus so sighted keyboard users can also use it. */}
+        {/* Visually-hidden close button for screen readers and keyboard users */}
         <button
           ref={closeButtonRef}
           onClick={handleDismissInternal}
@@ -309,11 +194,16 @@ export function DesktopAdBanner() {
             : 'Advertisement closed'}
         </div>
 
-        {/* Ad container — the script injects the ad content here */}
-        <div
-          ref={containerRef}
-          style={{ width: 300, height: 250, overflow: 'hidden' }}
-          className="bg-telegram-bg/50 flex items-center justify-center"
+        {/* Sandboxed ad iframe — isolates external scripts from the main document */}
+        <iframe
+          ref={iframeRef}
+          srcDoc={srcdoc}
+          sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
+          title="Advertisement"
+          width={300}
+          height={250}
+          style={{ border: 'none', overflow: 'hidden' }}
+          className="bg-telegram-bg/50"
         />
       </div>
     </>
