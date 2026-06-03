@@ -104,7 +104,6 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
             }}
         >
             <motion.div
-                layout
                 draggable={!isFolder}
                 onDragStart={(e: any) => {
                     if (onDragStart) onDragStart(file.id);

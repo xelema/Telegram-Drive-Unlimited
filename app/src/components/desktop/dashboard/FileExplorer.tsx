@@ -142,12 +142,20 @@ export function FileExplorer({
         gridVirtualizer.measure();
     }, [rowHeight, gridVirtualizer]);
 
-    const listVirtualizer = useVirtualizer({
+     const listVirtualizer = useVirtualizer({
         count: listItems.length,
         getScrollElement: () => parentRef.current,
         estimateSize: () => 48,
         overscan: 5,
     });
+
+    useEffect(() => {
+        if (parentRef.current) {
+            parentRef.current.scrollTop = 0;
+        }
+        gridVirtualizer.scrollToOffset(0);
+        listVirtualizer.scrollToOffset(0);
+    }, [activeFolderId, gridVirtualizer, listVirtualizer]);
 
     const handleSort = (field: SortField) => {
         if (sortField === field) {
@@ -249,6 +257,7 @@ export function FileExplorer({
 
 
                     <div
+                        key={activeFolderId ?? 'root'}
                         className="relative w-full"
                         style={{ height: `${gridVirtualizer.getTotalSize()}px` }}
                     >
@@ -336,6 +345,7 @@ export function FileExplorer({
 
 
                     <div
+                        key={activeFolderId ?? 'root'}
                         className="relative w-full"
                         style={{ height: `${listVirtualizer.getTotalSize()}px` }}
                     >
