@@ -390,8 +390,7 @@ export function FileExplorer({
                             }
                             const file = item;
                             return (
-                                <div
-                                    key={file.id}
+                                <div                                        key={file.id}
                                     className="absolute top-0 left-0 w-full"
                                     style={{ transform: `translateY(${virtualItem.start}px)` }}
                                 >

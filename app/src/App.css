@@ -290,11 +290,6 @@ body,
   filter: none !important;
 }
 
-/* Disable Framer Motion transforms at the CSS level */
-.performance-mode [style*="transform"] {
-  transform: none !important;
-}
-
 /* Reduce paint cost */
 .performance-mode .animate-pulse,
 .performance-mode .animate-spin {
