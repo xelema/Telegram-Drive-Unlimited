@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
-import { Plus, ArrowUpDown, ArrowUp, ArrowDown, FolderUp } from 'lucide-react';
+import { Plus, ArrowUpDown, ArrowUp, ArrowDown, FolderUp, ZoomIn, ZoomOut } from 'lucide-react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { FileCard } from './FileCard';
 import { EmptyState } from './EmptyState';
@@ -24,13 +24,14 @@ interface FileExplorerProps {
     onManualUpload: () => void;
     onFolderUpload: () => void;
     showFolderUpload: boolean;
-    onSelectionClear: () => void;
     onToggleSelection: (id: number) => void;
     onDrop?: (e: React.DragEvent, folderId: number) => void;
     onDragStart?: (fileId: number) => void;
     onDragEnd?: () => void;
     onShare?: (file: TelegramFile) => void;
     folders?: TelegramFolder[];
+    cardScale: number;
+    onCardScaleChange: (scale: number) => void;
 }
 
 
@@ -62,15 +63,18 @@ function useGridColumns(containerRef: React.RefObject<HTMLDivElement | null>) {
 
 export function FileExplorer({
     files, loading, error, viewMode, selectedIds, activeFolderId,
-    onFileClick, onDelete, onDownload, onPreview, onManualUpload, onFolderUpload, showFolderUpload, onSelectionClear, onToggleSelection, onDrop, onDragStart, onDragEnd, onShare,
-    folders
+    onFileClick, onDelete, onDownload, onPreview, onManualUpload, onFolderUpload, showFolderUpload, onToggleSelection, onDrop, onDragStart, onDragEnd, onShare,
+    folders, cardScale, onCardScaleChange
 }: FileExplorerProps) {
     const [sortField, setSortField] = useState<SortField>('name');
     const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
     const [contextMenu, setContextMenu] = useState<{ x: number; y: number; file: TelegramFile } | null>(null);
 
     const parentRef = useRef<HTMLDivElement>(null);
-    const { columns, containerWidth } = useGridColumns(parentRef);
+    const { columns: baseColumns, containerWidth } = useGridColumns(parentRef);
+
+    // Scale columns by cardScale: higher scale = fewer columns = larger cards
+    const columns = Math.max(1, Math.round(baseColumns / cardScale));
 
     const GAP = 6;
     const cardWidth = (containerWidth - (GAP * (columns - 1))) / columns;
@@ -186,9 +190,6 @@ export function FileExplorer({
         <div
             ref={parentRef}
             className="flex-1 p-6 overflow-auto custom-scrollbar"
-            onClick={(e) => {
-                if (e.target === e.currentTarget) onSelectionClear();
-            }}
         >
             {viewMode === 'grid' ? (
                 <>
@@ -213,6 +214,37 @@ export function FileExplorer({
                         >
                             Date <SortIcon field="date" />
                         </button>
+
+                        {/* Zoom slider */}
+                        <div className="ml-auto flex items-center gap-1.5">
+                            <button
+                                onClick={() => onCardScaleChange(Math.max(0.5, cardScale - 0.25))}
+                                className="p-1 rounded hover:bg-white/10 text-telegram-subtext hover:text-telegram-text transition-colors"
+                                title="Smaller thumbnails"
+                                disabled={cardScale <= 0.5}
+                            >
+                                <ZoomOut className="w-3.5 h-3.5" />
+                            </button>
+                            <input
+                                type="range"
+                                min="0.5"
+                                max="2"
+                                step="0.25"
+                                value={cardScale}
+                                onChange={(e) => onCardScaleChange(parseFloat(e.target.value))}
+                                className="w-20 h-1 bg-telegram-border rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-telegram-primary [&::-webkit-slider-thumb]:cursor-pointer [&::-webkit-slider-thumb]:transition-transform [&::-webkit-slider-thumb]:hover:scale-125"
+                                title={`Thumbnail zoom: ${Math.round(cardScale * 100)}%`}
+                            />
+                            <button
+                                onClick={() => onCardScaleChange(Math.min(2, cardScale + 0.25))}
+                                className="p-1 rounded hover:bg-white/10 text-telegram-subtext hover:text-telegram-text transition-colors"
+                                title="Larger thumbnails"
+                                disabled={cardScale >= 2}
+                            >
+                                <ZoomIn className="w-3.5 h-3.5" />
+                            </button>
+                            <span className="text-[10px] text-telegram-subtext/60 w-10 text-right tabular-nums">{Math.round(cardScale * 100)}%</span>
+                        </div>
                     </div>
 
 

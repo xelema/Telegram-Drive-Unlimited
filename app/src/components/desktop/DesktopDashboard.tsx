@@ -54,6 +54,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     const [searchTerm, setSearchTerm] = useState("");
     const [searchResults, setSearchResults] = useState<TelegramFile[]>([]);
     const [isSearching, setIsSearching] = useState(false);
+    const [cardScale, setCardScale] = useState(1.0);
     const internalDragRef = useRef<number | null>(null);
 
     const setInternalDragFileId = (id: number | null) => {
@@ -164,6 +165,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     }, [selectedIds, handleBulkDelete]);
 
     const handleEscape = useCallback(() => {
+        lastClickedIndexRef.current = -1;
         setSelectedIds([]);
         setSearchTerm("");
         setPreviewFile(null);
@@ -203,6 +205,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
 
 
     useEffect(() => {
+        lastClickedIndexRef.current = -1;
         setSelectedIds([]);
         setShowMoveModal(false);
         setSearchTerm("");
@@ -234,11 +237,30 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
 
 
 
+    const lastClickedIndexRef = useRef<number>(-1);
+
+    const clearSelection = useCallback(() => {
+        lastClickedIndexRef.current = -1;
+        setSelectedIds([]);
+    }, []);
+
     const handleFileClick = (e: React.MouseEvent, id: number) => {
         e.stopPropagation();
-        if (e.metaKey || e.ctrlKey) {
+        const currentIndex = displayedFiles.findIndex(f => f.id === id);
+
+        if (e.shiftKey && lastClickedIndexRef.current >= 0) {
+            // Shift+Click: range select from last clicked to current
+            const start = Math.min(lastClickedIndexRef.current, currentIndex);
+            const end = Math.max(lastClickedIndexRef.current, currentIndex);
+            const rangeIds = displayedFiles.slice(start, end + 1).map(f => f.id);
+            setSelectedIds(rangeIds);
+        } else if (e.metaKey || e.ctrlKey) {
+            // Ctrl/Cmd+Click: toggle individual file
+            lastClickedIndexRef.current = currentIndex;
             setSelectedIds(ids => ids.includes(id) ? ids.filter(i => i !== id) : [...ids, id]);
         } else {
+            // Plain click: select single file
+            lastClickedIndexRef.current = currentIndex;
             setSelectedIds([id]);
         }
     }
@@ -396,7 +418,6 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     return (
         <div
             className="flex h-screen w-full overflow-hidden bg-telegram-bg relative"
-            onClick={() => setSelectedIds([])}
             onDragOver={handleRootDragOver}
             onDragEnter={handleRootDragEnter}
         >
@@ -471,7 +492,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                 bandwidth={bandwidth || null}
             />
 
-            <main className="flex-1 flex flex-col" onClick={(e) => { if (e.target === e.currentTarget) setSelectedIds([]); }}>
+            <main className="flex-1 flex flex-col">
                 <TopBar
                     currentFolderName={currentFolderName}
                     selectedIds={selectedIds}
@@ -480,6 +501,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                     onBulkDelete={handleBulkDelete}
                     onBulkShare={handleBulkShare}
                     onDownloadFolder={handleDownloadFolder}
+                    onClearSelection={clearSelection}
                     viewMode={viewMode}
                     setViewMode={setViewMode}
                     searchTerm={searchTerm}
@@ -508,12 +530,13 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                     onManualUpload={handleManualUpload}
                     onFolderUpload={handleFolderUpload}
                     showFolderUpload={settings.zipFolders}
-                    onSelectionClear={() => setSelectedIds([])}
                     onToggleSelection={handleToggleSelection}
                     onDrop={handleDropOnFolder}
                     onDragStart={(fileId) => setInternalDragFileId(fileId)}
                     onDragEnd={() => setTimeout(() => setInternalDragFileId(null), 50)}
                     onShare={setShareFile}
+                    cardScale={cardScale}
+                    onCardScaleChange={setCardScale}
                 />
             </main>
 

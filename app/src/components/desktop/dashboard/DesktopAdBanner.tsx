@@ -1,11 +1,23 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { open } from '@tauri-apps/plugin-shell';
+import { X } from 'lucide-react';
 
 const AD_INTERVAL_MS = 1000 * 60 * 45; // 45 minutes
 const AUTO_DISMISS_SECONDS = 10; // auto-close after 10s
 const DISMISSED_AT_KEY = 'desktopAdDismissedAt';
 
 const AD_SCRIPT_SRC = 'https://pl29613714.effectivecpmnetwork.com/17/20/30/17203020d60eedd6d22a91318044dbd4.js';
+
+// Safe localStorage wrappers — prevent crashes in restricted webview environments
+function safeTryGet(key: string): string | null {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+function safeTryRemove(key: string): void {
+  try { localStorage.removeItem(key); } catch { /* unavailable */ }
+}
+function safeTrySet(key: string, value: string): void {
+  try { localStorage.setItem(key, value); } catch { /* unavailable */ }
+}
 
 /**
  * Periodic ad banner for the desktop dashboard (every 45 minutes).
@@ -22,39 +34,37 @@ const AD_SCRIPT_SRC = 'https://pl29613714.effectivecpmnetwork.com/17/20/30/17203
 export function DesktopAdBanner() {
   const containerRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
   const [visible, setVisible] = useState(false);
   const [exiting, setExiting] = useState(false);
   const [countdown, setCountdown] = useState(AUTO_DISMISS_SECONDS);
   const [isHovering, setIsHovering] = useState(false);
   const scriptInjected = useRef(false);
-  const initialCheckDone = useRef(false);
+  const mountedRef = useRef(true);
+
+  // ── Auto-focus the close button when the panel appears so keyboard
+  //    users can dismiss immediately without tabbing through the page.
+  useEffect(() => {
+    if (!visible) return;
+    // Small delay to ensure the DOM is painted before focusing
+    const id = setTimeout(() => closeButtonRef.current?.focus(), 50);
+    return () => clearTimeout(id);
+  }, [visible]);
 
   // ── Check whether enough time has passed since last dismissal ──────────
   useEffect(() => {
+    mountedRef.current = true;
+
     const check = () => {
-      if (!initialCheckDone.current) {
-        initialCheckDone.current = true;
+      if (!mountedRef.current) return;
+      const raw = safeTryGet(DISMISSED_AT_KEY);
+      if (!raw) {
         setVisible(true);
         return;
       }
-      try {
-        const raw = localStorage.getItem(DISMISSED_AT_KEY);
-        if (!raw) {
-          setVisible(true);
-          return;
-        }
-        const dismissedAt = parseInt(raw, 10);
-        if (isNaN(dismissedAt)) {
-          setVisible(true);
-          return;
-        }
-        const elapsed = Date.now() - dismissedAt;
-        if (elapsed >= AD_INTERVAL_MS) {
-          // Interval has passed — show again and clear the stored timestamp
-          localStorage.removeItem(DISMISSED_AT_KEY);
-          setVisible(true);
-        }
-      } catch {
+      const dismissedAt = parseInt(raw, 10);
+      if (isNaN(dismissedAt) || Date.now() - dismissedAt >= AD_INTERVAL_MS) {
+        safeTryRemove(DISMISSED_AT_KEY);
         setVisible(true);
       }
     };
@@ -67,7 +77,10 @@ export function DesktopAdBanner() {
     if (!visible) {
       interval = setInterval(check, 30_000);
     }
-    return () => { if (interval) clearInterval(interval); };
+    return () => {
+      mountedRef.current = false;
+      if (interval) clearInterval(interval);
+    };
   }, [visible]);
 
   // ── Intercept clicks on ad links so they open in the system browser ────
@@ -171,9 +184,7 @@ export function DesktopAdBanner() {
       containerRef.current.innerHTML = '';
       scriptInjected.current = false;
     }
-    try {
-      localStorage.setItem(DISMISSED_AT_KEY, Date.now().toString());
-    } catch { /* non-critical */ }
+    safeTrySet(DISMISSED_AT_KEY, Date.now().toString());
     setExiting(true);
     setCountdown(0); // stop the timer
     setTimeout(() => {
@@ -257,11 +268,14 @@ export function DesktopAdBanner() {
 
   return (
     <>
-      {/* Ad panel */}
+      {/* Ad panel — CSS containment prevents ad content from leaking outside */}
       <div
         ref={panelRef}
+        role="dialog"
+        aria-label="Sponsored advertisement — closes automatically after 10 seconds"
         onMouseEnter={() => setIsHovering(true)}
         onMouseLeave={() => setIsHovering(false)}
+        style={{ contain: 'layout style paint' }}
         className={`
           fixed bottom-20 right-5 z-[90]
           bg-telegram-surface border border-telegram-border/60
@@ -270,6 +284,17 @@ export function DesktopAdBanner() {
           ${exiting ? 'opacity-0 scale-95 translate-y-2' : 'opacity-100 scale-100'}
         `}
       >
+        {/* Visually-hidden close button for screen readers and keyboard users.
+            Becomes visible on focus so sighted keyboard users can also use it. */}
+        <button
+          ref={closeButtonRef}
+          onClick={handleDismissInternal}
+          className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:right-2 focus:z-10 focus:p-1.5 focus:rounded-full focus:bg-black/70 focus:text-white hover:bg-black/90 focus:outline-none focus:ring-2 focus:ring-telegram-primary"
+          aria-label="Close advertisement"
+        >
+          <X className="w-4 h-4" />
+        </button>
+
         {/* Header bar with dismiss countdown text */}
         <div className="flex items-center justify-center px-4 py-2 bg-telegram-hover/30 border-b border-telegram-border/30 select-none">
           <span className="text-[11px] font-medium text-telegram-text/80">
@@ -277,10 +302,17 @@ export function DesktopAdBanner() {
           </span>
         </div>
 
+        {/* Screen-reader countdown announcements */}
+        <div aria-live="polite" className="sr-only">
+          {countdown > 0
+            ? `Advertisement closes in ${countdown} ${countdown === 1 ? 'second' : 'seconds'}`
+            : 'Advertisement closed'}
+        </div>
+
         {/* Ad container — the script injects the ad content here */}
         <div
           ref={containerRef}
-          style={{ width: 300, height: 250 }}
+          style={{ width: 300, height: 250, overflow: 'hidden' }}
           className="bg-telegram-bg/50 flex items-center justify-center"
         />
       </div>

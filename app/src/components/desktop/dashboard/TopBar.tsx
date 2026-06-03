@@ -1,4 +1,4 @@
-import { HardDrive, LayoutGrid, Sun, Moon, Settings, Share2 } from 'lucide-react';
+import { HardDrive, LayoutGrid, Sun, Moon, Settings, Share2, X } from 'lucide-react';
 import { useTheme } from '../../../context/ThemeContext';
 
 interface TopBarProps {
@@ -9,6 +9,7 @@ interface TopBarProps {
     onBulkDelete: () => void;
     onBulkShare: () => void;
     onDownloadFolder: () => void;
+    onClearSelection: () => void;
     viewMode: 'grid' | 'list';
     setViewMode: (mode: 'grid' | 'list') => void;
     searchTerm: string;
@@ -18,7 +19,7 @@ interface TopBarProps {
 
 export function TopBar({
     currentFolderName, selectedIds, onShowMoveModal, onBulkDownload, onBulkDelete, onBulkShare,
-    onDownloadFolder, viewMode, setViewMode, searchTerm, onSearchChange, onSettingsClick
+    onDownloadFolder, onClearSelection, viewMode, setViewMode, searchTerm, onSearchChange, onSettingsClick
 }: TopBarProps) {
     const { theme, toggleTheme } = useTheme();
 
@@ -46,6 +47,7 @@ export function TopBar({
                 {selectedIds.length > 0 && (
                     <div className="flex items-center gap-2 mr-4 animate-in fade-in slide-in-from-top-2">
                         <span className="text-xs text-telegram-subtext mr-2">{selectedIds.length} Selected</span>
+                        <button onClick={onClearSelection} className="px-2 py-1.5 hover:bg-telegram-hover rounded-md text-xs text-telegram-subtext hover:text-telegram-text transition flex items-center gap-1" title="Clear selection (Esc)"><X className="w-3 h-3" /></button>
                         <button onClick={onShowMoveModal} className="px-3 py-1.5 bg-telegram-primary/20 hover:bg-telegram-primary/30 text-telegram-primary rounded-md text-xs transition font-medium">Move to...</button>
                         <button onClick={onBulkDownload} className="px-3 py-1.5 bg-telegram-hover hover:bg-telegram-border rounded-md text-xs text-telegram-text transition">Download Selected</button>
                         <button onClick={onBulkShare} className="px-3 py-1.5 bg-telegram-primary/20 hover:bg-telegram-primary/30 text-telegram-primary rounded-md text-xs transition font-medium flex items-center gap-1"><Share2 className="w-3 h-3" />Share ({selectedIds.length})</button>

@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { ExternalLink, Loader2 } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-shell';
@@ -23,6 +23,13 @@ export function AdGateway({ onContinue }: AdGatewayProps) {
   const [isOpening, setIsOpening] = useState(false);
   const [skipCountdown, setSkipCountdown] = useState(5);
   const { isMobile } = usePlatform();
+  const continueButtonRef = useRef<HTMLButtonElement>(null);
+
+  // Auto-focus the primary button so keyboard users can act immediately
+  useEffect(() => {
+    const id = setTimeout(() => continueButtonRef.current?.focus(), 50);
+    return () => clearTimeout(id);
+  }, []);
 
   // Persist the gateway flag so future launches skip this screen.
   // The flag check happens in App.tsx checkSession before this component mounts,
@@ -80,7 +87,10 @@ export function AdGateway({ onContinue }: AdGatewayProps) {
   }, [skipCountdown, hasClicked]);
 
   return (
-    <div className="h-full w-full auth-gradient flex items-center justify-center p-6 pt-[calc(1.5rem+env(safe-area-inset-top,24px))] relative overflow-hidden">
+    <div
+      role="dialog"
+      aria-label="Welcome — tap the sponsored link to continue, or skip to your files"
+      className="h-full w-full auth-gradient flex items-center justify-center p-6 pt-[calc(1.5rem+env(safe-area-inset-top,24px))] relative overflow-hidden">
       {/* Background glow effects */}
       <div className="fixed top-[-20%] left-[-10%] w-[500px] h-[500px] bg-blue-600/20 rounded-full blur-[120px] pointer-events-none -z-10" />
       <div className="fixed bottom-[-10%] right-[-10%] w-[400px] h-[400px] bg-purple-600/10 rounded-full blur-[100px] pointer-events-none -z-10" />
@@ -105,6 +115,7 @@ export function AdGateway({ onContinue }: AdGatewayProps) {
 
         {/* SmartLink button — opens the ad in the external browser */}
         <button
+          ref={continueButtonRef}
           onClick={handleSmartLinkClick}
           disabled={hasClicked}
           className={`w-full rounded-2xl font-bold flex items-center justify-center gap-2.5 transition-all duration-300 ${isMobile ? 'py-3.5 text-sm' : 'py-5 text-base'} ${
@@ -148,6 +159,13 @@ export function AdGateway({ onContinue }: AdGatewayProps) {
           This helps support development and keeps Telegram Drive free.
           You'll only see this once.
         </p>
+
+        {/* Screen-reader countdown announcements */}
+        <div aria-live="polite" className="sr-only">
+          {skipCountdown > 0
+            ? `Skip available in ${skipCountdown} ${skipCountdown === 1 ? 'second' : 'seconds'}`
+            : 'Skip now available'}
+        </div>
 
         {/* Skip button — only shown before the ad is clicked, with a 5-second delay */}
         {!hasClicked && (

@@ -64,6 +64,8 @@ export default function AdsterraBanner({ visible }: AdsterraBannerProps) {
   return (
     <div
       id="adsterra-banner-container"
+      role="complementary"
+      aria-label="Sponsored content"
       className="w-full flex justify-center bg-telegram-surface/80 border-t border-telegram-border/30 transition-all duration-300 ease-out overflow-hidden relative"
       style={{
         visibility: isVisible ? 'visible' : 'hidden',

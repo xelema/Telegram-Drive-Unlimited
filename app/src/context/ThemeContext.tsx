@@ -10,10 +10,28 @@ interface ThemeContextType {
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
+// Safe localStorage read: returns the value or null on any error
+function safeTryGet(key: string): string | null {
+    try {
+        return localStorage.getItem(key);
+    } catch {
+        return null;
+    }
+}
+
+// Safe localStorage write: best-effort, silently ignores errors
+function safeTrySet(key: string, value: string): void {
+    try {
+        localStorage.setItem(key, value);
+    } catch {
+        // Storage unavailable — theme still works in-memory for this session
+    }
+}
+
 // Get initial theme synchronously to prevent flash
 function getInitialTheme(): Theme {
     if (typeof window !== 'undefined') {
-        const saved = localStorage.getItem('theme') as Theme;
+        const saved = safeTryGet('theme') as Theme | null;
         if (saved === 'light' || saved === 'dark') return saved;
         if (window.matchMedia('(prefers-color-scheme: light)').matches) {
             return 'light';
@@ -45,7 +63,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     // Use useLayoutEffect to apply theme synchronously before paint
     useLayoutEffect(() => {
         applyTheme(theme);
-        localStorage.setItem('theme', theme);
+        safeTrySet('theme', theme);
     }, [theme]);
 
     const toggleTheme = () => {

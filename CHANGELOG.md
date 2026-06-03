@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.8.1] - 2026-06-03
+
+### Features, Security & Architecture (MimoPro Cleanups Part 2)
+
+- **User Interface Enhancements**
+  - Optimized the media player controls by standardizing close and fullscreen overlay buttons.
+  - Refined layout geometries for player circle buttons and balanced spacing gaps.
+  - Integrated a new periodic interstitial ad flow, featuring timed countdowns and automated clicks/focus dismissal logic.
+
+- **Storage & Backend Stability Fixes**
+  - Recreated missing mobile capability rules to support compilation of Tauri configuration context.
+  - Corrected progress field mappings (`downloadedBytes`) in UI progress bars and download queues.
+  - Resolved dynamic import resolution behavior for local builds.
+  - Expanded Content Security Policy (CSP) rules to permit ad network script invocations.
+
+- **Improved Accessibility Support**
+  - Auto-enabled performance and reduced-motion modes using platform media queries.
+  - Wrapped major component views in granular error boundaries to prevent app-wide crashes.
+
+---
+
 ## [1.8.0] - 2026-06-02
 
 ### Features, Security & Architecture (MimoPro Analysis Cleanups)
