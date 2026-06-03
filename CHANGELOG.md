@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.8.2] - 2026-06-03
+
+### Streaming Hotfix: Cross-Platform Video Playback Correction
+
+- **CORS Configuration Update**
+  - Updated CORS configuration on local streaming and API servers to use dynamic origin matching.
+  - Resolved video playback failures (`TypeError: Failed to fetch` / `TypeError: Load failed`) on Windows, macOS, and Linux clients by explicitly supporting platform-specific custom schemes and WebKit's `null` origin.
+
+---
+
 ## [1.8.1] - 2026-06-03
 
 ### Features, Security & Architecture (MimoPro Cleanups Part 2)
