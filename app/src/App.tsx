@@ -13,7 +13,7 @@ import "./App.css";
 const DesktopDashboard = React.lazy(() => import("./components/desktop/DesktopDashboard").then(m => ({ default: m.Dashboard })));
 const MobileDashboard = React.lazy(() => {
   const moduleName = "MobileDashboard";
-  return import(`./components/mobile/${moduleName}`);
+  return import(`./components/mobile/${moduleName}.tsx`);
 });
 
 import { Toaster, toast } from "sonner";
