@@ -43,8 +43,14 @@ function useGridColumns(containerRef: React.RefObject<HTMLDivElement | null>) {
         if (!containerRef.current) return;
 
         const updateColumns = () => {
-            const width = containerRef.current?.clientWidth || 800;
-            setContainerWidth(width);
+            const el = containerRef.current;
+            if (!el) return;
+            // clientWidth includes padding — subtract it so card size
+            // calculations match the actual grid content area.
+            const cs = getComputedStyle(el);
+            const padX = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+            const width = el.clientWidth - padX;
+            setContainerWidth(width > 0 ? width : 800);
             if (width < 640) setColumns(2);
             else if (width < 768) setColumns(3);
             else if (width < 1024) setColumns(4);
@@ -79,7 +85,6 @@ export function FileExplorer({
     const GAP = 6;
     const cardWidth = (containerWidth - (GAP * (columns - 1))) / columns;
     const cardHeight = cardWidth * 0.75; // aspect-[4/3]
-    const rowHeight = Math.max(cardHeight + GAP, 150);
 
     const handleContextMenu = useCallback((e: React.MouseEvent, file: TelegramFile) => {
         e.preventDefault();
@@ -132,17 +137,12 @@ export function FileExplorer({
     const gridVirtualizer = useVirtualizer({
         count: gridRows.length,
         getScrollElement: () => parentRef.current,
-        estimateSize: useCallback(() => rowHeight, [rowHeight]),
+        estimateSize: useCallback(() => cardHeight, [cardHeight]),
         overscan: 2,
         gap: GAP,
     });
 
-
-    useEffect(() => {
-        gridVirtualizer.measure();
-    }, [rowHeight, gridVirtualizer]);
-
-     const listVirtualizer = useVirtualizer({
+    const listVirtualizer = useVirtualizer({
         count: listItems.length,
         getScrollElement: () => parentRef.current,
         estimateSize: () => 48,
@@ -257,7 +257,6 @@ export function FileExplorer({
 
 
                     <div
-                        key={activeFolderId ?? 'root'}
                         className="relative w-full"
                         style={{ height: `${gridVirtualizer.getTotalSize()}px` }}
                     >
@@ -280,7 +279,7 @@ export function FileExplorer({
                                                 <button
                                                     key="upload"
                                                     onClick={(e) => { e.stopPropagation(); onManualUpload(); }}
-                                                    className="border-2 border-dashed border-telegram-border rounded-xl flex flex-col items-center justify-center text-telegram-subtext hover:border-telegram-primary hover:text-telegram-primary transition-all group"
+                                                    className="border-2 border-dashed border-telegram-border rounded-xl flex flex-col items-center justify-center text-telegram-subtext hover:border-telegram-primary hover:text-telegram-primary transition-all group overflow-hidden"
                                                     style={{ height: `${cardHeight}px` }}
                                                 >
                                                     <Plus className="w-8 h-8 mb-2 group-hover:scale-110 transition-transform" />
@@ -293,7 +292,7 @@ export function FileExplorer({
                                                 <button
                                                     key="upload-folder"
                                                     onClick={(e) => { e.stopPropagation(); onFolderUpload(); }}
-                                                    className="border-2 border-dashed border-telegram-border rounded-xl flex flex-col items-center justify-center text-telegram-subtext hover:border-telegram-primary hover:text-telegram-primary transition-all group"
+                                                    className="border-2 border-dashed border-telegram-border rounded-xl flex flex-col items-center justify-center text-telegram-subtext hover:border-telegram-primary hover:text-telegram-primary transition-all group overflow-hidden"
                                                     style={{ height: `${cardHeight}px` }}
                                                 >
                                                     <FolderUp className="w-8 h-8 mb-2 group-hover:scale-110 transition-transform" />
@@ -345,7 +344,6 @@ export function FileExplorer({
 
 
                     <div
-                        key={activeFolderId ?? 'root'}
                         className="relative w-full"
                         style={{ height: `${listVirtualizer.getTotalSize()}px` }}
                     >

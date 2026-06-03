@@ -285,20 +285,23 @@ pub async fn start_server(
     
     log::info!("Starting Streaming Server on port {}", port);
 
-    // Bind the listener: prefer IPv6 dual-stack ([::] accepts IPv4+IPv6 on
-    // modern Linux/macOS/Windows). Fall back to IPv4-only on systems without
-    // IPv6 (older Windows, some CI environments, etc.).
-    let ipv6_addr = format!("[::]:{}", port);
-    let listener = match TcpListener::bind(&ipv6_addr) {
+    // Bind the listener to 127.0.0.1 explicitly.
+    // The streaming server is only accessed from the local frontend — binding
+    // to 0.0.0.0 is unnecessary and can trigger firewall prompts on Windows.
+    // 127.0.0.1 is the most universally reliable loopback address across all
+    // platforms (Windows, macOS, Linux) and pairs correctly with the "localhost"
+    // hostname used by the client (localhost → 127.0.0.1 is the standard mapping).
+    let ipv4_addr = format!("127.0.0.1:{}", port);
+    let listener = match TcpListener::bind(&ipv4_addr) {
         Ok(l) => {
-            log::info!("Streaming Server listening on {} (dual-stack IPv4+IPv6)", ipv6_addr);
+            log::info!("Streaming Server listening on {} (IPv4)", ipv4_addr);
             l
         }
         Err(e) => {
-            log::warn!("IPv6 dual-stack bind failed ({}), falling back to IPv4 only", e);
-            let ipv4_addr = format!("0.0.0.0:{}", port);
-            let l = TcpListener::bind(&ipv4_addr)?;
-            log::info!("Streaming Server listening on {} (IPv4 only)", ipv4_addr);
+            log::warn!("IPv4 loopback bind failed ({}), falling back to IPv6 loopback", e);
+            let ipv6_addr = format!("[::1]:{}", port);
+            let l = TcpListener::bind(&ipv6_addr)?;
+            log::info!("Streaming Server listening on {} (IPv6 loopback)", ipv6_addr);
             l
         }
     };

@@ -184,6 +184,9 @@ export function useAdaptiveStreaming(
     // Tail data for moov-at-end files (stored separately with correct offset)
     const discoverySuffixRef = useRef<ArrayBuffer | null>(null);
     const discoverySuffixOffsetRef = useRef(0);
+    // Flag set synchronously by initSegments when initializeSegmentation crashes,
+    // allowing the onReady caller to bail out before calling startDownload.
+    const segmentationFailedRef = useRef(false);
 
     // ── React state (UI-relevant only) ───────────────────────────────
     const videoRef = useRef<HTMLVideoElement>(null);
@@ -351,13 +354,15 @@ export function useAdaptiveStreaming(
                     const fileStart = fetchOffsetRef.current;
                     const mp4boxBuffer = MP4BoxBuffer.fromArrayBuffer(chunkBuffer, fileStart);
                     const nextOffset = mp4boxfile.appendBuffer(mp4boxBuffer);
-                    // ── Safety net: backward nextOffset means mp4box is confused ──
-                    // A regressing offset indicates non-contiguous or corrupt data is
-                    // tripping up the parser (most common on Windows WebView2). Fall
-                    // back to native <video> immediately rather than feeding more bad data.
+                    // ── Safety net: backward nextOffset means mp4box wants to rewind ──
+                    // For large moov-at-end files, mp4box legitimately requests an
+                    // earlier offset to read mdat. We can't rewind the HTTP stream,
+                    // so silently switch to native <video> (no error UI).
                     if (nextOffset < fileStart) {
-                        console.error('[AdaptiveStreaming] ⚠️ mp4box nextOffset regressed from', fileStart, 'to', nextOffset, '— falling back to native video');
-                        throw new Error('mp4box nextOffset regression detected');
+                        console.warn('[AdaptiveStreaming] ⚠️ mp4box nextOffset regressed from', fileStart, 'to', nextOffset, '— silently falling back to native video');
+                        abortController.abort();
+                        setDynamicFallback(true);
+                        return;
                     }
                     fetchOffsetRef.current = nextOffset;
 
@@ -587,6 +592,12 @@ export function useAdaptiveStreaming(
             playbackFile.onReady = () => {
                 console.log('[AdaptiveStreaming] 🏗️ fresh file onReady — setting up segmentation');
                 initSegments(playbackFile, sb);
+                // If initSegments triggered fallback (e.g. initializeSegmentation crash),
+                // don't start the download — native <video> will handle playback.
+                if (segmentationFailedRef.current) {
+                    console.warn('[AdaptiveStreaming] 🏗️ segmentation failed — skipping startDownload');
+                    return;
+                }
                 playerPhaseRef.current = 'playing';
                 setState(s => ({ ...s, phase: 'playing' }));
                 // For moov-at-end: resume from byte 0 to fill contiguously.
@@ -684,7 +695,25 @@ export function useAdaptiveStreaming(
             nbSamples: 30,
             rapAlignement: true,
         });
-        const initResult = mp4boxfile.initializeSegmentation();
+        let initResult: { buffer?: ArrayBuffer } | null = null;
+        try {
+            initResult = mp4boxfile.initializeSegmentation();
+        } catch (e) {
+            console.error('[AdaptiveStreaming] 📐 initializeSegmentation crashed:', e);
+            // mp4box can't segment this file (missing mvex/mehd) — fall back to native <video>
+            segmentationFailedRef.current = true;
+            // Immediately switch to native <video> instead of waiting for safety timeout.
+            // Stop mp4box and clean up the MediaSource pipeline, then trigger dynamic
+            // fallback. The AdaptiveMediaPlayer will unmount the MSE <video> and mount
+            // a fresh native <video src={fallbackUrl}> — no need to set src here since
+            // the MSE element will be replaced in the next render.
+            try { mp4boxfile.stop(); } catch {}
+            clearSourceBuffer();
+            playerPhaseRef.current = 'ready';
+            setState(s => ({ ...s, phase: 'ready' }));
+            setDynamicFallback(true);
+            return;
+        }
         console.log('[AdaptiveStreaming] 📐 initializeSegmentation result has buffer:', !!initResult?.buffer);
 
         // Append init segment through the queue so it never collides with
@@ -800,6 +829,7 @@ export function useAdaptiveStreaming(
         fileSizeRef.current = 0;
         appendQueueRef.current = [];
         tracksRef.current = [];
+        segmentationFailedRef.current = false;
         let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
 
         const mp4boxfile = createFile();
@@ -848,6 +878,33 @@ export function useAdaptiveStreaming(
             tracksRef.current = tracks;
             setState(s => ({ ...s, tracks, loadProgress: 100 }));
 
+            // Progressive (non-fragmented) MP4: mp4box can't segment these files
+            // (initializeSegmentation crashes on missing mvex/mehd). Use native <video>.
+            if (!movieInfo.isFragmented) {
+                console.log('[AdaptiveStreaming] 📦 Progressive MP4 detected — using native <video>');
+                setDynamicFallback(true);
+                return;
+            }
+
+            // Fragmented MP4 missing mehd box: mp4box v2.3.0 crashes in
+            // initializeSegmentation (accesses this.moov.mvex.mehd.fragment_duration
+            // without null-checking mehd). Detect and skip MSE immediately.
+            // Uses internal mp4box API (moov property) — if this changes in a
+            // future version, the duration=0 fallback below catches it instead.
+            const moov = (mp4boxfile as any).moov;
+            if (moov?.mvex && !moov?.mvex?.mehd) {
+                console.log('[AdaptiveStreaming] 📦 Fragmented MP4 missing mehd — using native <video>');
+                setDynamicFallback(true);
+                return;
+            }
+            // Secondary signal: fragmented MP4 with duration 0 typically means
+            // mehd is missing (proper fragmented files get duration from mehd).
+            if (movieInfo.isFragmented && movieInfo.duration === 0) {
+                console.log('[AdaptiveStreaming] 📦 Fragmented MP4 with duration 0 (likely missing mehd) — using native <video>');
+                setDynamicFallback(true);
+                return;
+            }
+
             // Capture accurate resume offset if discovery didn't set one (moov-at-end)
             if (moovEndOffsetRef.current === 0 && fetchOffsetRef.current > 0) {
                 moovEndOffsetRef.current = fetchOffsetRef.current;
@@ -885,7 +942,7 @@ export function useAdaptiveStreaming(
             abortFetch();
             abortDiscovery();
             setDynamicFallback(true);
-        }, 45000);
+        }, 10000);
 
         function beginMoovDiscovery() {
             const ctrl = new AbortController();
