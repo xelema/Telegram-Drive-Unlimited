@@ -157,6 +157,11 @@ export function FileExplorer({
         listVirtualizer.scrollToOffset(0);
     }, [activeFolderId, gridVirtualizer, listVirtualizer]);
 
+    // Remeasure the grid virtualizer when columns or cardHeight changes to prevent overlapping
+    useEffect(() => {
+        gridVirtualizer.measure();
+    }, [columns, cardHeight, gridVirtualizer]);
+
     const handleSort = (field: SortField) => {
         if (sortField === field) {
             setSortDirection(d => d === 'asc' ? 'desc' : 'asc');

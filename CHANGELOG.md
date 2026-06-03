@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.8.4] - 2026-06-03
+
+### Bug Fixes & UI Enhancements
+
+- **Grid Virtualizer Cache Invalidation**
+  - Resolved layout overlapping issues where "Upload File" and "Upload Folder" buttons overlapped with files in the Grid view by forcing virtualizer remeasurement on layout changes.
+
+---
+
 ## [1.8.3] - 2026-06-03
 
 ### Bug Fixes & UI Enhancements
