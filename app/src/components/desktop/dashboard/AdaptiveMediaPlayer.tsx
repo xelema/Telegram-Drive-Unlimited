@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { X, ChevronLeft, ChevronRight, AlertTriangle, Loader2, RefreshCw, StopCircle, Maximize2, Minimize2, Volume2, VolumeX, Volume1, Play, Activity, Trash2 } from 'lucide-react';
+import { X, ChevronLeft, ChevronRight, AlertTriangle, Loader2, RefreshCw, StopCircle, Maximize2, Minimize2, Volume2, VolumeX, Volume1, Play, Activity, Trash2, Zap } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { toast } from 'sonner';
@@ -37,15 +37,144 @@ export function AdaptiveMediaPlayer({
     // Must be declared BEFORE restartStreamUrl useMemo
     const [restartNonce, setRestartNonce] = useState(0);
 
+    // ── fMP4 remux state ────────────────────────────────────────────
+    const [fmp4Remuxing, setFmp4Remuxing] = useState(false);
+    const [fmp4RemuxError, setFmp4RemuxError] = useState<string | null>(null);
+    const [fmp4StreamUrl, setFmp4StreamUrl] = useState<string | null>(null);
+    const fmp4RemuxingRef = useRef(false);
+    // Generation counter bumped on source change so stale async IIFEs
+    // from a previous file don't set state on the current file.
+    const remuxGenerationRef = useRef(0);
+
+    // ── Effective stream URL: use fMP4 URL when available ────────────
+    const effectiveStreamUrl = fmp4StreamUrl || streamUrl;
+
     // ── Original MSE streaming (for "original" quality) ──────────────
     // Changing restartNonce forces the hook to reinitialize by altering the streamUrl
     const restartStreamUrl = useMemo(() => {
         if (restartNonce > 0) {
-            const sep = streamUrl.includes('?') ? '&' : '?';
-            return `${streamUrl}${sep}_r=${restartNonce}`;
+            const sep = effectiveStreamUrl.includes('?') ? '&' : '?';
+            return `${effectiveStreamUrl}${sep}_r=${restartNonce}`;
         }
-        return streamUrl;
-    }, [streamUrl, restartNonce]);
+        return effectiveStreamUrl;
+    }, [effectiveStreamUrl, restartNonce]);
+
+    // ── Refs for late-bound values needed by progressive handler ─────
+    const abortMseRef = useRef<(() => void) | null>(null);
+    const logRef = useRef<((msg: string, ...args: unknown[]) => void) | null>(null);
+    const transcodeCapsRef = useRef<TranscodeCapabilities | null>(null);
+
+    // ── Handle progressive MP4 detection — trigger fMP4 remux ──────
+    const handleProgressiveDetected = useCallback(() => {
+        if (fmp4RemuxingRef.current) return;
+
+        // Don't attempt fMP4 remux if FFmpeg is not available — silently
+        // fall back to native <video> without showing an error overlay.
+        if (!transcodeCapsRef.current?.available) {
+            logRef.current?.('Progressive MP4 detected, but FFmpeg unavailable — using native video');
+            return;
+        }
+
+        fmp4RemuxingRef.current = true;
+        setFmp4Remuxing(true);
+        setFmp4RemuxError(null);
+
+        // Capture the generation counter so the async IIFE can bail out
+        // if the user navigates to a different file before the remux
+        // completes (prevents stale errors from leaking onto the wrong file).
+        const gen = remuxGenerationRef.current;
+
+        logRef.current?.('Progressive MP4 detected — triggering fMP4 remux...');
+
+        (async () => {
+            try {
+                const result = await invoke<{ url: string; output_file_key: string; status: string }>(
+                    'cmd_prepare_fmp4_stream',
+                    {
+                        messageId: file.id,
+                        folderId: activeFolderId,
+                    },
+                );
+
+                if (gen !== remuxGenerationRef.current) {
+                    logRef.current?.('fMP4 remux: source changed, discarding stale result');
+                    fmp4RemuxingRef.current = false;
+                    return;
+                }
+
+                if (result.status === 'ready') {
+                    // Already cached — switch immediately
+                    const fullUrl = `${streamBaseRef.current}${result.url}?token=${streamTokenRef.current}`;
+                    logRef.current?.('fMP4 already cached, switching to:', fullUrl);
+                    abortMseRef.current?.();
+                    setFmp4StreamUrl(fullUrl);
+                    setFmp4Remuxing(false);
+                    fmp4RemuxingRef.current = false;
+                    setRestartNonce(n => n + 1);
+                    return;
+                }
+
+                // status === 'processing' — poll until ready
+                logRef.current?.('fMP4 remux started in background, polling status...');
+                const fileKey = result.output_file_key;
+                const fmp4Url = result.url;
+
+                const poll = async (): Promise<void> => {
+                    for (let i = 0; i < 600; i++) { // max 10 minutes
+                        await new Promise(r => setTimeout(r, 1000));
+                        if (gen !== remuxGenerationRef.current) {
+                            logRef.current?.('fMP4 poll: source changed, stopping');
+                            fmp4RemuxingRef.current = false;
+                            return;
+                        }
+
+                        const status = await invoke<{ status: string; error: string | null }>(
+                            'cmd_get_fmp4_status',
+                            { fileKey },
+                        );
+
+                        if (status.status === 'ready') {
+                            const fullUrl = `${streamBaseRef.current}${fmp4Url}?token=${streamTokenRef.current}`;
+                            logRef.current?.('fMP4 remux complete, switching to:', fullUrl);
+                            abortMseRef.current?.();
+                            setFmp4StreamUrl(fullUrl);
+                            setFmp4Remuxing(false);
+                            fmp4RemuxingRef.current = false;
+                            setRestartNonce(n => n + 1);
+                            return;
+                        }
+
+                        if (status.status === 'error') {
+                            throw new Error(status.error || 'fMP4 remux failed');
+                        }
+
+                        // status === 'processing' — continue polling
+                    }
+                    throw new Error('fMP4 remux timed out after 10 minutes');
+                };
+
+                await poll();
+            } catch (e: any) {
+                // Don't show error if the user already moved to another file.
+                if (gen !== remuxGenerationRef.current) {
+                    fmp4RemuxingRef.current = false;
+                    return;
+                }
+                logRef.current?.('fMP4 remux failed:', String(e));
+                setFmp4RemuxError(String(e));
+                setFmp4Remuxing(false);
+                fmp4RemuxingRef.current = false;
+                // The hook will fall back to native video since we
+                // didn't provide a new URL
+            }
+        })();
+    }, [file.id, activeFolderId]);
+
+    // ── progressive callback for useAdaptiveStreaming ────────────────
+    const progressiveCallback = useMemo(
+        () => handleProgressiveDetected,
+        [handleProgressiveDetected],
+    );
 
     const {
         videoRef: mseVideoRef,
@@ -61,7 +190,7 @@ export function AdaptiveMediaPlayer({
         useFallback,
         fallbackUrl,
         abort: abortMse,
-    } = useAdaptiveStreaming(restartStreamUrl, file.name);
+    } = useAdaptiveStreaming(restartStreamUrl, file.name, progressiveCallback);
 
     // ── HLS transcode state ──────────────────────────────────────────
     // playbackMode is the single source of truth: 'original' or 'hls'
@@ -97,6 +226,8 @@ export function AdaptiveMediaPlayer({
     const log = useCallback((msg: string, ...args: unknown[]) => {
         console.log(`[AdaptivePlayer] ${msg}`, ...args);
     }, []);
+    // Wire late-bound refs for the progressive handler
+    logRef.current = log;
 
     // ── Volume state ─────────────────────────────────────────────────
     const [volume, setVolume] = useState(1);
@@ -202,6 +333,9 @@ export function AdaptiveMediaPlayer({
         if (clamped > 0) volumeBeforeMute.current = clamped;
     }, [applyVolume]);
 
+    // Wire abortMse ref for progressive handler
+    abortMseRef.current = abortMse;
+
     const toggleMute = useCallback(() => {
         if (isMuted) {
             setIsMuted(false);
@@ -238,6 +372,19 @@ export function AdaptiveMediaPlayer({
                 streamBaseRef.current = url.origin;
             }
         } catch { /* ignore */ }
+
+        // Reset fMP4 remux state when switching files.
+        // Prevents stale error / loading state from a previous progressive
+        // MP4 from leaking into the current file (especially fragmented MP4s
+        // that never trigger the remux pipeline).
+        // Also bump the generation counter so any in-flight async invokes
+        // from the previous file discard their results instead of setting
+        // state on the new file.
+        setFmp4Remuxing(false);
+        setFmp4RemuxError(null);
+        setFmp4StreamUrl(null);
+        fmp4RemuxingRef.current = false;
+        remuxGenerationRef.current += 1;
     }, [streamUrl]);
 
     // ── Fetch transcode capabilities ──────────────────────────────────
@@ -246,8 +393,13 @@ export function AdaptiveMediaPlayer({
             .then(caps => {
                 log('transcodeCapabilities', caps);
                 setTranscodeCapabilities(caps);
+                transcodeCapsRef.current = caps;
             })
-            .catch(() => setTranscodeCapabilities({ available: false, variants: [], mode: 'original' }));
+            .catch(() => {
+                const fallback = { available: false, variants: [], mode: 'original' as const };
+                setTranscodeCapabilities(fallback);
+                transcodeCapsRef.current = fallback;
+            });
     }, []);
 
     // ── Poll transcode status ────────────────────────────────────────
@@ -697,6 +849,31 @@ export function AdaptiveMediaPlayer({
 
                 {/* Video container */}
                 <div className={`bg-black overflow-hidden flex items-center justify-center relative ${isFullscreen ? 'w-full h-full rounded-none shadow-none ring-0' : 'w-full aspect-video rounded-xl shadow-2xl ring-1 ring-white/10'}`}>
+                    {/* fMP4 remux loading overlay */}
+                    {fmp4Remuxing && (
+                        <div className="flex flex-col items-center gap-4 text-white absolute inset-0 bg-black/80 z-10">
+                            <Zap className="w-10 h-10 text-telegram-primary animate-pulse" />
+                            <div className="flex flex-col items-center gap-1">
+                                <p className="text-sm font-medium">Converting to streaming format...</p>
+                                <p className="text-[11px] text-white/30 mt-1">
+                                    Remuxing MP4 for optimal playback. This only happens once per file.
+                                </p>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* fMP4 remux error */}
+                    {fmp4RemuxError && !fmp4Remuxing && (
+                        <div className="flex flex-col items-center gap-3 text-white absolute inset-0 bg-black/80 z-10">
+                            <AlertTriangle className="w-10 h-10 text-amber-400" />
+                            <p className="text-sm text-amber-400 font-medium">Streaming conversion failed</p>
+                            <p className="text-xs text-white/40 text-center max-w-md">
+                                {fmp4RemuxError}
+                            </p>
+                            <p className="text-[11px] text-white/20">Falling back to native video player...</p>
+                        </div>
+                    )}
+
                     {/* Error display */}
                     {(displayPhase === 'error' || displayPhase === 'failed') && (
                         <div className="flex flex-col items-center gap-3 text-white px-8">

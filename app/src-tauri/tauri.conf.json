@@ -12,7 +12,7 @@
     }
   },
   "productName": "Telegram Drive",
-  "version": "1.8.4",
+  "version": "1.8.5",
   "identifier": "com.cameronamer.telegramdrive",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -32,7 +32,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' http://localhost:* https://asset.localhost http://asset.localhost https://www.highperformanceformat.com https://*.effectivecpmnetwork.com; media-src 'self' blob: http://localhost:*; img-src 'self' data: blob: asset: https://asset.localhost https://*.effectivecpmnetwork.com; style-src 'self' 'unsafe-inline'; script-src 'self' blob: https://www.highperformanceformat.com https://*.effectivecpmnetwork.com; frame-src 'self' blob: https://www.highperformanceformat.com https://*.effectivecpmnetwork.com; worker-src 'self' blob:;",
+      "csp": "default-src 'self'; connect-src 'self' https: http://localhost:* https://asset.localhost http://asset.localhost; media-src 'self' blob: http://localhost:*; img-src 'self' data: blob: asset: https: https://asset.localhost; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-eval' blob: https:; frame-src 'self' blob: https:; worker-src 'self' blob:;",
       "capabilities": [
         "default",
         "mobile-only"

@@ -58,6 +58,36 @@ const MOOV_DISCOVERY_BYTES = 131072;   // 128KB — covers ftyp + moov for most 
 const MOOV_RETRY_BYTES = 524288;       // 512KB — retry with larger range before tail lookup
 const MOOV_TAIL_BYTES = 524288;        // 512KB — tail fetch for moov-at-end files
 const MOOV_FALLBACK_TIMEOUT_MS = 3000;
+const PROGRESSIVE_CACHE_WARM_BYTES = 3145728; // 3MB — pre-warm HTTP cache for native <video> moov discovery
+
+// ── Pre-warm browser HTTP cache for progressive MP4 moov tail ─────
+// When a progressive (non-fragmented) MP4 is detected and we fall back to
+// native <video>, the native player must make a Range request to the end
+// of the file to find the moov atom. This round-trip through the backend
+// to Telegram is slow, causing buffering delays on large files.
+//
+// By pre-fetching the tail ourselves before triggering the fallback, we
+// populate the browser's HTTP cache. When the native player requests the
+// same range moments later, it's a cache hit and playback initializes
+// almost instantly.
+function warmProgressiveMoovCache(streamUrl: string, fileSize: number): void {
+    const warmBytes = Math.min(PROGRESSIVE_CACHE_WARM_BYTES, fileSize);
+    const tailStart = Math.max(0, fileSize - warmBytes);
+
+    console.log('[AdaptiveStreaming] 🔥 warmProgressiveMoovCache: pre-fetching last', warmBytes, 'bytes from offset', tailStart);
+
+    fetch(streamUrl, {
+        headers: { Range: `bytes=${tailStart}-` },
+        // Fire-and-forget: we don't need the result — only need the
+        // browser's HTTP cache to be populated for the native <video>
+        // element that will mount moments later.
+        cache: 'default',
+    }).then(() => {
+        console.log('[AdaptiveStreaming] 🔥 warmProgressiveMoovCache: cache warmed successfully');
+    }).catch(() => {
+        // Best-effort: failure is non-critical
+    });
+}
 
 // ── Extract just the moov atom from raw MP4 bytes ──────────────────
 // Scans for the 'moov' box fourcc, validates its size, and returns
@@ -157,11 +187,12 @@ export interface UseAdaptiveStreamingResult {
 export function useAdaptiveStreaming(
     streamUrl: string,
     fileName: string,
+    onProgressiveDetected?: () => void,
 ): UseAdaptiveStreamingResult {
     // ── Ref-based mutable state ──────────────────────────────────────
     const mp4boxRef = useRef<ISOFile | null>(null);
     const mediaSourceRef = useRef<MediaSource | null>(null);
-    const sourceBufferRef = useRef<SourceBuffer | null>(null);
+    const sourceBuffersRef = useRef<{ [trackId: number]: SourceBuffer }>({});
     const abortRef = useRef<AbortController | null>(null);
     const discoveryAbortRef = useRef<AbortController | null>(null);
     const fetchOffsetRef = useRef(0);
@@ -172,7 +203,7 @@ export function useAdaptiveStreaming(
     const pendingSeekTimeRef = useRef<number | null>(null);
     const speedSamplesRef = useRef<{ time: number; bytes: number }[]>([]);
     const fileSizeRef = useRef<number>(0);
-    const appendQueueRef = useRef<ArrayBuffer[]>([]);
+    const appendQueuesRef = useRef<{ [trackId: number]: ArrayBuffer[] }>({});
     const lastSampleNumRef = useRef<number>(0);
     const tracksRef = useRef<VideoTrackInfo[]>([]);
     const onReadyCalledRef = useRef(false);
@@ -233,53 +264,60 @@ export function useAdaptiveStreaming(
     }, []);
 
     // ── SourceBuffer append queue ────────────────────────────────────
-    const drainAppendQueue = useCallback(() => {
-        const sb = sourceBufferRef.current;
+    const drainAppendQueue = useCallback((trackId: number) => {
+        const sb = sourceBuffersRef.current[trackId];
         if (!sb || sb.updating) return;
-        const queue = appendQueueRef.current;
-        if (queue.length === 0) return;
+        const queue = appendQueuesRef.current[trackId];
+        if (!queue || queue.length === 0) return;
         try {
             sb.appendBuffer(queue.shift()!);
         } catch (e: any) {
             if (e.name === 'QuotaExceededError') {
-                sb.addEventListener('updateend', () => drainAppendQueue(), { once: true });
+                sb.addEventListener('updateend', () => drainAppendQueue(trackId), { once: true });
             } else {
-                console.warn('[AdaptiveStreaming] appendBuffer error:', e);
+                console.warn(`[AdaptiveStreaming] appendBuffer error for track ${trackId}:`, e);
             }
         }
     }, []);
 
     const clearSourceBuffer = useCallback(() => {
-        const sb = sourceBufferRef.current;
         const ms = mediaSourceRef.current;
-        if (sb && ms && ms.readyState === 'open') {
-            try {
-                appendQueueRef.current = [];
-                if (sb.updating) {
-                    sb.addEventListener('updateend', () => {
-                        try { ms.removeSourceBuffer(sb); } catch { /* ignore */ }
-                    }, { once: true });
-                    sb.abort();
-                } else {
-                    ms.removeSourceBuffer(sb);
+        if (ms && ms.readyState === 'open') {
+            for (const idStr in sourceBuffersRef.current) {
+                const trackId = parseInt(idStr, 10);
+                const sb = sourceBuffersRef.current[trackId];
+                if (sb) {
+                    try {
+                        appendQueuesRef.current[trackId] = [];
+                        if (sb.updating) {
+                            sb.addEventListener('updateend', () => {
+                                try { ms.removeSourceBuffer(sb); } catch { /* ignore */ }
+                            }, { once: true });
+                            sb.abort();
+                        } else {
+                            ms.removeSourceBuffer(sb);
+                        }
+                    } catch { /* already removed */ }
                 }
-            } catch { /* already removed */ }
+            }
         }
-        sourceBufferRef.current = null;
+        sourceBuffersRef.current = {};
+        appendQueuesRef.current = {};
     }, []);
 
-    const createSourceBuffer = useCallback((codec: string): SourceBuffer | null => {
+    const createSourceBuffer = useCallback((codec: string, trackId: number, isAudio: boolean): SourceBuffer | null => {
         const ms = mediaSourceRef.current;
         if (!ms || ms.readyState !== 'open') return null;
         try {
             // mp4box returns raw codec strings like "avc1.42E01E" — wrap in full MIME type
-            const mimeType = codec.includes('/') ? codec : `video/mp4; codecs="${codec}"`;
+            const container = isAudio ? 'audio/mp4' : 'video/mp4';
+            const mimeType = codec.includes('/') ? codec : `${container}; codecs="${codec}"`;
             const sb = ms.addSourceBuffer(mimeType);
-            sb.addEventListener('updateend', () => drainAppendQueue());
-            sb.addEventListener('error', () => console.warn('[AdaptiveStreaming] SourceBuffer error'));
+            sb.addEventListener('updateend', () => drainAppendQueue(trackId));
+            sb.addEventListener('error', () => console.warn(`[AdaptiveStreaming] SourceBuffer error for track ${trackId}`));
             return sb;
         } catch (e) {
-            console.error('[AdaptiveStreaming] Failed to create SourceBuffer:', e);
+            console.error(`[AdaptiveStreaming] Failed to create SourceBuffer for track ${trackId}:`, e);
             return null;
         }
     }, [drainAppendQueue]);
@@ -354,17 +392,19 @@ export function useAdaptiveStreaming(
                     const fileStart = fetchOffsetRef.current;
                     const mp4boxBuffer = MP4BoxBuffer.fromArrayBuffer(chunkBuffer, fileStart);
                     const nextOffset = mp4boxfile.appendBuffer(mp4boxBuffer);
-                    // ── Safety net: backward nextOffset means mp4box wants to rewind ──
-                    // For large moov-at-end files, mp4box legitimately requests an
-                    // earlier offset to read mdat. We can't rewind the HTTP stream,
-                    // so silently switch to native <video> (no error UI).
+                    // ── Handle backward nextOffset (mp4box wants to rewind) ──
+                    // For moov-at-end progressive files, the onReady callback
+                    // already triggers fMP4 remux before we get here.
+                    // For fragmented MP4s, mp4box may request an earlier offset
+                    // for interleaved tracks — we can't rewind the HTTP stream,
+                    // so just continue feeding sequential data. Each fMP4 fragment
+                    // is self-contained so playback continues fine.
                     if (nextOffset < fileStart) {
-                        console.warn('[AdaptiveStreaming] ⚠️ mp4box nextOffset regressed from', fileStart, 'to', nextOffset, '— silently falling back to native video');
-                        abortController.abort();
-                        setDynamicFallback(true);
-                        return;
+                        console.warn('[AdaptiveStreaming] ⚠️ mp4box nextOffset regressed from', fileStart, 'to', nextOffset, '— continuing sequential download');
+                        fetchOffsetRef.current = fileStart + chunkBuffer.byteLength;
+                    } else {
+                        fetchOffsetRef.current = nextOffset;
                     }
-                    fetchOffsetRef.current = nextOffset;
 
                     if (fileSizeRef.current > 0 && playerPhaseRef.current === 'loading') {
                         setState(s => ({
@@ -516,6 +556,136 @@ export function useAdaptiveStreaming(
         }
     }, [streamUrl]);
 
+    // ── Initialize segments callback ─────────────────────────────────
+    const initSegments = useCallback((mp4boxfile: ISOFile) => {
+        const tracks = tracksRef.current;
+        console.log('[AdaptiveStreaming] 📐 initSegments starting for tracks:', tracks.map(t => t.id));
+
+        // ── Register onSegment BEFORE initializeSegmentation ──────────
+        // mp4box docs require onSegment to be set before segmentation starts.
+        mp4boxfile.onSegment = (id: number, _user: unknown, buffer: ArrayBuffer, sampleNum: number, _last: boolean) => {
+            lastSampleNumRef.current = sampleNum;
+            const currentSb = sourceBuffersRef.current[id];
+            if (!currentSb || mediaSourceRef.current?.readyState !== 'open') {
+                console.warn('[AdaptiveStreaming] 📐 onSegment dropped — SourceBuffer not ready for track', id);
+                return;
+            }
+
+            console.log('[AdaptiveStreaming] 📐 onSegment: track=', id, 'sample=', sampleNum, 'bytes=', buffer.byteLength);
+            
+            if (!appendQueuesRef.current[id]) {
+                appendQueuesRef.current[id] = [];
+            }
+            const queue = appendQueuesRef.current[id];
+
+            if (currentSb.updating) {
+                queue.push(buffer);
+            } else {
+                try {
+                    currentSb.appendBuffer(buffer);
+                } catch (e: any) {
+                    if (e.name === 'QuotaExceededError') {
+                        queue.unshift(buffer);
+                        currentSb.addEventListener('updateend', () => drainAppendQueue(id), { once: true });
+                    } else {
+                        console.warn(`[AdaptiveStreaming] appendBuffer failed for track ${id}:`, e);
+                    }
+                }
+            }
+
+            try { mp4boxfile.releaseUsedSamples(id, sampleNum); } catch { /* best-effort */ }
+        };
+
+        const initBuffers: { [trackId: number]: ArrayBuffer } = {};
+        let hasInitializedAny = false;
+
+        // Loop through all tracks to generate track-specific isolated initialization segments
+        for (const track of tracks) {
+            const sb = sourceBuffersRef.current[track.id];
+            if (!sb) continue;
+
+            // Clear any other track options to keep this one isolated
+            for (const t of tracks) {
+                try { (mp4boxfile as any).unsetSegmentOptions(t.id); } catch {}
+            }
+            (mp4boxfile as any).isFragmentationInitialized = false;
+
+            console.log('[AdaptiveStreaming] 📐 initSegments: generating isolated options for track id=', track.id);
+            mp4boxfile.setSegmentOptions(track.id, sb as unknown as object, {
+                nbSamples: 30,
+                rapAlignement: true,
+            });
+
+            try {
+                const res = (mp4boxfile as any).initializeSegmentation();
+                if (res && res.buffer) {
+                    initBuffers[track.id] = res.buffer;
+                    hasInitializedAny = true;
+                }
+            } catch (e) {
+                console.warn(`[AdaptiveStreaming] 📐 Failed to generate init segment for track ${track.id}:`, e);
+            }
+        }
+
+        // Now restore/set segment options for ALL active tracks together so mp4box segments them during playback
+        for (const t of tracks) {
+            try { (mp4boxfile as any).unsetSegmentOptions(t.id); } catch {}
+        }
+        (mp4boxfile as any).isFragmentationInitialized = false;
+
+        for (const track of tracks) {
+            const sb = sourceBuffersRef.current[track.id];
+            if (sb) {
+                mp4boxfile.setSegmentOptions(track.id, sb as unknown as object, {
+                    nbSamples: 30,
+                    rapAlignement: true,
+                });
+            }
+        }
+
+        if (!hasInitializedAny) {
+            console.error('[AdaptiveStreaming] 📐 initSegments: failed to initialize any track segmentation');
+            segmentationFailedRef.current = true;
+            try { mp4boxfile.stop(); } catch {}
+            clearSourceBuffer();
+            playerPhaseRef.current = 'ready';
+            setState(s => ({ ...s, phase: 'ready' }));
+            setDynamicFallback(true);
+            return;
+        }
+
+        // Initialize multi-track segmentation state on the file
+        try {
+            (mp4boxfile as any).initializeSegmentation();
+        } catch (e) {
+            console.error('[AdaptiveStreaming] 📐 Final initializeSegmentation crashed:', e);
+            segmentationFailedRef.current = true;
+            try { mp4boxfile.stop(); } catch {}
+            clearSourceBuffer();
+            playerPhaseRef.current = 'ready';
+            setState(s => ({ ...s, phase: 'ready' }));
+            setDynamicFallback(true);
+            return;
+        }
+
+        // Append the isolated track-specific init segments to their respective SourceBuffers
+        for (const trackIdStr in initBuffers) {
+            const trackId = parseInt(trackIdStr, 10);
+            const buf = initBuffers[trackId];
+            const sb = sourceBuffersRef.current[trackId];
+            if (sb && buf) {
+                if (!appendQueuesRef.current[trackId]) {
+                    appendQueuesRef.current[trackId] = [];
+                }
+                appendQueuesRef.current[trackId].push(buf);
+                if (!sb.updating) drainAppendQueue(trackId);
+            }
+        }
+
+        // ── mp4box.start() is REQUIRED for segmentation callbacks to fire ──
+        mp4boxfile.start();
+    }, [drainAppendQueue, clearSourceBuffer]);
+
     // ── Build MSE pipeline (shared by onReady and cache-hit paths) ───
     const buildMsePipeline = useCallback((mp4boxfile: ISOFile, tracks: VideoTrackInfo[]) => {
         console.log('[AdaptiveStreaming] 🏗️ buildMsePipeline: creating MediaSource, videoRef.current=', !!videoRef.current);
@@ -563,15 +733,26 @@ export function useAdaptiveStreaming(
                 }
             };
 
-            const sb = createSourceBuffer(videoTrack.codec);
-            console.log('[AdaptiveStreaming] 🏗️ createSourceBuffer result:', !!sb);
-            if (!sb) {
+            // Recreate all source buffers (both video and audio if present)
+            let createdCount = 0;
+            for (const track of tracks) {
+                if (track.codec) {
+                    const isAudio = track.type === 'audio';
+                    const sb = createSourceBuffer(track.codec, track.id, isAudio);
+                    if (sb) {
+                        sourceBuffersRef.current[track.id] = sb;
+                        createdCount++;
+                    }
+                }
+            }
+
+            const videoSb = sourceBuffersRef.current[videoTrack.id];
+            if (!videoSb) {
                 playerPhaseRef.current = 'error';
-                setState(s => ({ ...s, phase: 'error', error: 'Failed to create SourceBuffer' }));
+                setState(s => ({ ...s, phase: 'error', error: 'Failed to create video SourceBuffer' }));
                 setDynamicFallback(true);
                 return;
             }
-            sourceBufferRef.current = sb;
 
             const prefix = discoveryPrefixRef.current;
             const suffix = discoverySuffixRef.current;
@@ -591,7 +772,15 @@ export function useAdaptiveStreaming(
             // during appendBuffer, so the callback must be registered first.
             playbackFile.onReady = () => {
                 console.log('[AdaptiveStreaming] 🏗️ fresh file onReady — setting up segmentation');
-                initSegments(playbackFile, sb);
+                // Patch missing mehd on the *playback* file (the scout file
+                // was patched earlier, but this is a fresh mp4box instance
+                // with its own moov parsed from the discovery bytes).
+                const pbMoov = (playbackFile as any).moov;
+                if (pbMoov?.mvex && !pbMoov.mvex.mehd) {
+                    console.log('[AdaptiveStreaming] 🏗️ Patching missing mehd on playback file');
+                    pbMoov.mvex.mehd = { fragment_duration: 0 };
+                }
+                initSegments(playbackFile);
                 // If initSegments triggered fallback (e.g. initializeSegmentation crash),
                 // don't start the download — native <video> will handle playback.
                 if (segmentationFailedRef.current) {
@@ -650,82 +839,7 @@ export function useAdaptiveStreaming(
         } else {
             console.error('[AdaptiveStreaming] 🏗️ videoRef.current is NULL — cannot set MediaSource src!');
         }
-    }, [createSourceBuffer, startDownload]);
-
-    // ── Initialize segments callback ─────────────────────────────────
-    const initSegments = useCallback((mp4boxfile: ISOFile, sb: SourceBuffer) => {
-        const tracks = tracksRef.current;
-        const videoTrack = tracks.find(t => t.type === 'video');
-        if (!videoTrack || !videoTrack.codec) return;
-
-        console.log('[AdaptiveStreaming] 📐 initSegments: track id=', videoTrack.id, 'codec=', videoTrack.codec);
-
-        // ── Register onSegment BEFORE initializeSegmentation ──────────
-        // mp4box docs require onSegment to be set before segmentation starts.
-        mp4boxfile.onSegment = (id: number, _user: unknown, buffer: ArrayBuffer, sampleNum: number, _last: boolean) => {
-            lastSampleNumRef.current = sampleNum;
-            const currentSb = sourceBufferRef.current;
-            if (!currentSb || mediaSourceRef.current?.readyState !== 'open') {
-                console.warn('[AdaptiveStreaming] 📐 onSegment dropped — SourceBuffer not ready');
-                return;
-            }
-
-            console.log('[AdaptiveStreaming] 📐 onSegment: sample=', sampleNum, 'bytes=', buffer.byteLength);
-            if (currentSb.updating) {
-                appendQueueRef.current.push(buffer);
-            } else {
-                try {
-                    currentSb.appendBuffer(buffer);
-                } catch (e: any) {
-                    if (e.name === 'QuotaExceededError') {
-                        appendQueueRef.current.unshift(buffer);
-                        currentSb.addEventListener('updateend', () => drainAppendQueue(), { once: true });
-                    } else {
-                        console.warn('[AdaptiveStreaming] appendBuffer failed:', e);
-                    }
-                }
-            }
-
-            try { mp4boxfile.releaseUsedSamples(id, sampleNum); } catch { /* best-effort */ }
-        };
-
-        // nbSamples: 60 means segments emit every ~60 samples (≈2s at 30fps).
-        // 1000 was too large and delayed segments indefinitely on short clips.
-        mp4boxfile.setSegmentOptions(videoTrack.id, sb as unknown as object, {
-            nbSamples: 30,
-            rapAlignement: true,
-        });
-        let initResult: { buffer?: ArrayBuffer } | null = null;
-        try {
-            initResult = mp4boxfile.initializeSegmentation();
-        } catch (e) {
-            console.error('[AdaptiveStreaming] 📐 initializeSegmentation crashed:', e);
-            // mp4box can't segment this file (missing mvex/mehd) — fall back to native <video>
-            segmentationFailedRef.current = true;
-            // Immediately switch to native <video> instead of waiting for safety timeout.
-            // Stop mp4box and clean up the MediaSource pipeline, then trigger dynamic
-            // fallback. The AdaptiveMediaPlayer will unmount the MSE <video> and mount
-            // a fresh native <video src={fallbackUrl}> — no need to set src here since
-            // the MSE element will be replaced in the next render.
-            try { mp4boxfile.stop(); } catch {}
-            clearSourceBuffer();
-            playerPhaseRef.current = 'ready';
-            setState(s => ({ ...s, phase: 'ready' }));
-            setDynamicFallback(true);
-            return;
-        }
-        console.log('[AdaptiveStreaming] 📐 initializeSegmentation result has buffer:', !!initResult?.buffer);
-
-        // Append init segment through the queue so it never collides with
-        // SourceBuffer.updating === true during drainAppendQueue.
-        if (initResult?.buffer) {
-            appendQueueRef.current.push(initResult.buffer);
-            if (!sb.updating) drainAppendQueue();
-        }
-
-        // ── mp4box.start() is REQUIRED for segmentation callbacks to fire ──
-        mp4boxfile.start();
-    }, [drainAppendQueue]);
+    }, [createSourceBuffer, startDownload, initSegments]);
 
     // ── Seek ─────────────────────────────────────────────────────────
     const seek = useCallback((time: number) => {
@@ -747,21 +861,25 @@ export function useAdaptiveStreaming(
             abortFetch();
 
             // Unset old segment options before clearing buffer to prevent stale refs
-            const videoTrack = tracksRef.current.find(t => t.type === 'video');
-            if (videoTrack) {
-                try { mp4boxfile.unsetSegmentOptions(videoTrack.id); } catch { /* ignore */ }
+            for (const track of tracksRef.current) {
+                try { mp4boxfile.unsetSegmentOptions(track.id); } catch { /* ignore */ }
             }
 
             clearSourceBuffer();
             const seekInfo = mp4boxfile.seek(targetTime, true);
 
-            if (videoTrack && videoTrack.codec) {
-                const sb = createSourceBuffer(videoTrack.codec);
-                if (sb) {
-                    sourceBufferRef.current = sb;
-                    initSegments(mp4boxfile, sb);
+            // Recreate all source buffers
+            for (const track of tracksRef.current) {
+                if (track.codec) {
+                    const isAudio = track.type === 'audio';
+                    const sb = createSourceBuffer(track.codec, track.id, isAudio);
+                    if (sb) {
+                        sourceBuffersRef.current[track.id] = sb;
+                    }
                 }
             }
+
+            initSegments(mp4boxfile);
 
             if (videoRef.current) videoRef.current.currentTime = seekInfo.time;
             startDownload(seekInfo.offset);
@@ -827,7 +945,7 @@ export function useAdaptiveStreaming(
         moovEndOffsetRef.current = 0;
         setState(s => ({ ...s, phase: 'loading', error: null, loadProgress: 0 }));
         fileSizeRef.current = 0;
-        appendQueueRef.current = [];
+        appendQueuesRef.current = {};
         tracksRef.current = [];
         segmentationFailedRef.current = false;
         let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
@@ -881,28 +999,32 @@ export function useAdaptiveStreaming(
             // Progressive (non-fragmented) MP4: mp4box can't segment these files
             // (initializeSegmentation crashes on missing mvex/mehd). Use native <video>.
             if (!movieInfo.isFragmented) {
-                console.log('[AdaptiveStreaming] 📦 Progressive MP4 detected — using native <video>');
+                console.log('[AdaptiveStreaming] 📦 Progressive MP4 detected — warming moov cache, then falling back to native <video>');
+                // Pre-fetch tail to warm the browser's HTTP cache so the native
+                // <video> element finds the moov atom instantly.
+                if (fileSizeRef.current > 0) {
+                    warmProgressiveMoovCache(streamUrl, fileSizeRef.current);
+                }
+                // Notify parent so it can trigger fMP4 remux in the background.
+                // Always fall back to native video — the parent can override
+                // later by providing a new stream URL once remux completes.
+                if (onProgressiveDetected) {
+                    onProgressiveDetected();
+                }
                 setDynamicFallback(true);
                 return;
             }
 
             // Fragmented MP4 missing mehd box: mp4box v2.3.0 crashes in
-            // initializeSegmentation (accesses this.moov.mvex.mehd.fragment_duration
-            // without null-checking mehd). Detect and skip MSE immediately.
-            // Uses internal mp4box API (moov property) — if this changes in a
-            // future version, the duration=0 fallback below catches it instead.
+            // initializeSegmentation because it accesses
+            // this.moov.mvex.mehd.fragment_duration without null-checking.
+            // Fix: inject a stub mehd so initializeSegmentation succeeds.
+            // Duration of 0 is safe — MSE computes actual duration from
+            // segment timestamps (same as DASH/CMAF live streams).
             const moov = (mp4boxfile as any).moov;
-            if (moov?.mvex && !moov?.mvex?.mehd) {
-                console.log('[AdaptiveStreaming] 📦 Fragmented MP4 missing mehd — using native <video>');
-                setDynamicFallback(true);
-                return;
-            }
-            // Secondary signal: fragmented MP4 with duration 0 typically means
-            // mehd is missing (proper fragmented files get duration from mehd).
-            if (movieInfo.isFragmented && movieInfo.duration === 0) {
-                console.log('[AdaptiveStreaming] 📦 Fragmented MP4 with duration 0 (likely missing mehd) — using native <video>');
-                setDynamicFallback(true);
-                return;
+            if (moov?.mvex && !moov.mvex.mehd) {
+                console.log('[AdaptiveStreaming] 📦 Patching missing mehd on fragmented MP4');
+                moov.mvex.mehd = { fragment_duration: 0 };
             }
 
             // Capture accurate resume offset if discovery didn't set one (moov-at-end)
@@ -997,7 +1119,8 @@ export function useAdaptiveStreaming(
             }
             mp4boxRef.current = null;
             mediaSourceRef.current = null;
-            sourceBufferRef.current = null;            appendQueueRef.current = [];
+            sourceBuffersRef.current = {};
+            appendQueuesRef.current = {};
             discoveryPrefixRef.current = null;
             discoverySuffixRef.current = null;
         };

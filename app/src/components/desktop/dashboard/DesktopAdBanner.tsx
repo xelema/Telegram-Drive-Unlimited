@@ -1,11 +1,43 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { X } from 'lucide-react';
+import { open } from '@tauri-apps/plugin-shell';
+
 
 const AD_INTERVAL_MS = 1000 * 60 * 45; // 45 minutes
 const AUTO_DISMISS_SECONDS = 10; // auto-close after 10s
 const DISMISSED_AT_KEY = 'desktopAdDismissedAt';
 
-const AD_SCRIPT_SRC = 'https://pl29613714.effectivecpmnetwork.com/17/20/30/17203020d60eedd6d22a91318044dbd4.js';
+// Ad network offerwall URL — opened in the external browser on click.
+// Matches the highperformanceformat.com provider used by the embedded ad.
+const AD_CLICK_URL = 'https://www.highperformanceformat.com/9cf449272b7e1c83054b82b7639c6029';
+
+// Inline ad HTML embedded via srcdoc — avoids file-loading origin issues.
+const AD_SRCDOC = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 300px; height: 250px; overflow: hidden;
+      background: #1a1a2e;
+    }
+  </style>
+</head>
+<body>
+  <script>
+    window.atOptions = {
+      'key': '9cf449272b7e1c83054b82b7639c6029',
+      'format': 'iframe',
+      'height': 250,
+      'width': 300,
+      'params': {}
+    };
+  <\/script>
+  <script src="https://www.highperformanceformat.com/9cf449272b7e1c83054b82b7639c6029/invoke.js" async><\/script>
+</body>
+</html>`;
+
 
 // Safe localStorage wrappers — prevent crashes in restricted webview environments
 function safeTryGet(key: string): string | null {
@@ -27,34 +59,35 @@ function safeTrySet(key: string, value: string): void {
  * click handlers that open popups/popunders on random clicks anywhere in
  * the app — especially noticeable on Windows WebView2.
  *
+ * Clicks on the ad are handled by our own onClick wrapper which opens the
+ * ad network URL in the system browser via @tauri-apps/plugin-shell.
+ * This avoids the complexity of sandbox navigation interception.
+ *
  * Sandbox permissions:
  *   allow-scripts              → ad script can execute
+ *   allow-same-origin          → ad script runs on the parent origin
+ *                              (localhost/tauri) — needed for cookies,
+ *                              localStorage, and XHR/fetch to function.
  *   allow-popups               → ad clicks can open popups
  *   allow-popups-to-escape-sandbox → popups open as full browser windows
  *
- * No allow-same-origin — the iframe cannot access the parent document.
- *
- * Dismissal works three ways:
- * 1. Click the X button
- * 2. Click anywhere outside the ad panel
- * 3. Wait 10 seconds for auto-close (pauses on hover)
+ * Dismissal:
+ * The ad auto-closes after AUTO_DISMISS_SECONDS (10 s). The countdown
+ * pauses while the user hovers over the panel. Manual dismissal is disabled
+ * during the countdown to ensure the full ad impression is served.
  */
 export function DesktopAdBanner() {
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const panelRef = useRef<HTMLDivElement>(null);
-  const closeButtonRef = useRef<HTMLButtonElement>(null);
   const [visible, setVisible] = useState(false);
   const [exiting, setExiting] = useState(false);
   const [countdown, setCountdown] = useState(AUTO_DISMISS_SECONDS);
   const [isHovering, setIsHovering] = useState(false);
   const mountedRef = useRef(true);
 
-  // ── Auto-focus the close button when the panel appears ──────────────
+  // Clear dismissed state on mount so it shows on every reload
   useEffect(() => {
-    if (!visible) return;
-    const id = setTimeout(() => closeButtonRef.current?.focus(), 50);
-    return () => clearTimeout(id);
-  }, [visible]);
+    safeTryRemove(DISMISSED_AT_KEY);
+  }, []);
 
   // ── Check dismissal interval ─────────────────────────────────────────
   useEffect(() => {
@@ -86,27 +119,8 @@ export function DesktopAdBanner() {
     };
   }, [visible]);
 
-  // ── Build sandboxed iframe srcdoc with the ad script ─────────────────
-  const srcdoc = `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      width: 300px; height: 250px; overflow: hidden;
-      background: #1a1a2e;
-      display: flex; align-items: center; justify-content: center;
-    }
-  </style>
-</head>
-<body>
-  <script type="text/javascript" src="${AD_SCRIPT_SRC}" async></script>
-</body>
-</html>`;
 
-  // ── Internal dismiss (shared by X button, outside click, and timer) ──
+  // ── Internal dismiss ──
   const handleDismissInternal = useCallback(() => {
     // Clear the iframe src to stop scripts
     if (iframeRef.current) {
@@ -119,6 +133,16 @@ export function DesktopAdBanner() {
       setVisible(false);
       setExiting(false);
     }, 300);
+  }, []);
+
+  // ── Handle ad click — open in system browser ────────────────────────
+  const handleAdClick = useCallback(async () => {
+    try {
+      await open(AD_CLICK_URL);
+    } catch {
+      // Fallback: try window.open if shell plugin fails
+      window.open(AD_CLICK_URL, '_blank');
+    }
   }, []);
 
   // ── Auto-dismiss after 10 seconds ─────────────────────────────────────
@@ -136,54 +160,41 @@ export function DesktopAdBanner() {
     return () => clearTimeout(timer);
   }, [visible, countdown, exiting, isHovering, handleDismissInternal]);
 
-  // ── Document-level click listener (non-blocking dismiss on outside click)
-  //    Uses capture phase so clicks reach the real app element underneath
-  //    (file card, sidebar, etc.) — we just dismiss without interfering.
-  useEffect(() => {
-    if (!visible) return;
-
-    const handleDocumentClick = (e: MouseEvent) => {
-      if (panelRef.current?.contains(e.target as Node)) return;
-      handleDismissInternal();
-    };
-
-    document.addEventListener('click', handleDocumentClick, true);
-    return () => document.removeEventListener('click', handleDocumentClick, true);
-  }, [visible, handleDismissInternal]);
-
   if (!visible) return null;
 
   return (
     <>
       {/* Ad panel */}
       <div
-        ref={panelRef}
         role="dialog"
         aria-label="Sponsored advertisement — closes automatically after 10 seconds"
         onMouseEnter={() => setIsHovering(true)}
         onMouseLeave={() => setIsHovering(false)}
         className={`
-          fixed bottom-20 right-5 z-[90]
+          fixed bottom-20 right-5 z-[100]
           bg-telegram-surface border border-telegram-border/60
           rounded-xl shadow-2xl overflow-hidden
           transition-all duration-300 ease-out
           ${exiting ? 'opacity-0 scale-95 translate-y-2' : 'opacity-100 scale-100'}
         `}
       >
-        {/* Visually-hidden close button for screen readers and keyboard users */}
-        <button
-          ref={closeButtonRef}
-          onClick={handleDismissInternal}
-          className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:right-2 focus:z-10 focus:p-1.5 focus:rounded-full focus:bg-black/70 focus:text-white hover:bg-black/90 focus:outline-none focus:ring-2 focus:ring-telegram-primary"
-          aria-label="Close advertisement"
+        {/* Countdown display — shows seconds remaining until auto-close */}
+        <div
+          className="
+            absolute top-1.5 right-1.5 z-20
+            p-1 rounded-md text-[10px] font-bold
+            flex items-center justify-center min-w-[24px] h-[20px]
+            bg-white/5 text-white/40 border border-white/10
+          "
+          aria-label={`Advertisement closes in ${countdown} seconds`}
         >
-          <X className="w-4 h-4" />
-        </button>
+          {countdown}s
+        </div>
 
         {/* Header bar with dismiss countdown text */}
-        <div className="flex items-center justify-center px-4 py-2 bg-telegram-hover/30 border-b border-telegram-border/30 select-none">
+        <div className="flex items-center justify-center pl-4 pr-10 py-2 bg-telegram-hover/30 border-b border-telegram-border/30 select-none">
           <span className="text-[11px] font-medium text-telegram-text/80">
-            Click Ad to close now or wait <span className="font-bold text-telegram-primary tabular-nums">{countdown}</span> seconds!
+            Sponsored Ad — closes in <span className="font-bold text-telegram-primary tabular-nums">{countdown}</span>s
           </span>
         </div>
 
@@ -194,17 +205,26 @@ export function DesktopAdBanner() {
             : 'Advertisement closed'}
         </div>
 
-        {/* Sandboxed ad iframe — isolates external scripts from the main document */}
-        <iframe
-          ref={iframeRef}
-          srcDoc={srcdoc}
-          sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
-          title="Advertisement"
-          width={300}
-          height={250}
-          style={{ border: 'none', overflow: 'hidden' }}
-          className="bg-telegram-bg/50"
-        />
+        {/* Clickable ad wrapper — opens ad URL in system browser on click */}
+        <button
+          onClick={handleAdClick}
+          className="relative block cursor-pointer border-0 bg-transparent p-0 m-0 w-[300px] h-[250px]"
+          aria-label="Click to open sponsored content in browser"
+        >
+          {/* Sandboxed ad iframe — isolates external scripts from the main document.
+              pointer-events-none prevents the ad from intercepting clicks so our
+              onClick handler always fires. */}
+          <iframe
+            ref={iframeRef}
+            srcDoc={AD_SRCDOC}
+            sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+            title="Advertisement"
+            width={300}
+            height={250}
+            style={{ border: 'none', overflow: 'hidden', pointerEvents: 'none' }}
+            className="bg-telegram-bg/50"
+          />
+        </button>
       </div>
     </>
   );

@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "1.8.4"
+version = "1.8.5"
 description = "Turn your Telegram account into an unlimited, secure cloud storage drive. an Open-source desktop app built with Tauri, Rust, and React."
 authors = ["Cameron Amer"]
 edition = "2021"
@@ -39,6 +39,7 @@ env_logger = "0.11"
 tauri-plugin-updater = "2"
 actix-web = "4"
 actix-cors = "0.7"
+actix-files = "0.6"
 futures = "0.3"
 async-stream = "0.3"
 actix-rt = "2"

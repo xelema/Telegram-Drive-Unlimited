@@ -86,22 +86,59 @@ pub fn build_media_response(
         size
     };
 
-    // Chunk alignment for Telegram's upload.getFile offset requirement
+    // Chunk alignment for Telegram's upload.getFile offset requirement.
+    //
+    // CRITICAL: Without the `precise` flag (which grammers-client does not
+    // expose), Telegram may route the request through a CDN that rounds the
+    // offset down to a CDN chunk boundary (commonly 512 KB = 524288 bytes).
+    // If our requested offset is not aligned to this boundary, the CDN
+    // silently returns data starting from the rounded-down position.
+    //
+    // Example: requesting offset 111935488 (213.48 × 512 KB) gets rounded
+    // to 111673344 (213 × 512 KB), introducing a 262 KB shift. This
+    // misalignment accumulates across successive Range requests and
+    // eventually corrupts the MP4 box parsing (triggering the "ORrI" error).
+    //
+    // Fix: always align to 512 KB boundaries, then slice off the leading
+    // bytes to serve the exact byte range the client requested.
     let mut download_iter = client.iter_download(media);
     let mut bytes_to_skip: usize = 0;
 
     if start_byte > 0 {
+        /// MTProto chunk size (must be divisible by grammers' MIN_CHUNK_SIZE).
+        /// 65536 is safe — it is the default and widely tested.
         const CHUNK_SIZE: i32 = 65536;
-        let chunk_index = (start_byte / CHUNK_SIZE as u64) as i32;
+        /// Telegram CDN alignment boundary. 512 KB is the largest observed
+        /// CDN chunk size; aligning to this boundary prevents ANY rounding.
+        const CDN_ALIGNMENT: u64 = 524288; // 512 KB
+
+        // 1) Round the requested start down to a CDN-safe boundary.
+        let cdn_aligned_start = (start_byte / CDN_ALIGNMENT) * CDN_ALIGNMENT;
+
+        // 2) Compute how many 64 KB chunks to skip to reach that boundary.
+        let chunk_index = (cdn_aligned_start / CHUNK_SIZE as u64) as i32;
+
+        // Always set chunk size for predictable download behaviour.
+        download_iter = download_iter.chunk_size(CHUNK_SIZE);
         if chunk_index > 0 {
-            let aligned_start = chunk_index as u64 * CHUNK_SIZE as u64;
-            download_iter = download_iter
-                .chunk_size(CHUNK_SIZE)
-                .skip_chunks(chunk_index);
-            bytes_to_skip = (start_byte - aligned_start) as usize;
-        } else {
-            bytes_to_skip = start_byte as usize;
+            download_iter = download_iter.skip_chunks(chunk_index);
         }
+
+        // 3) Leading bytes between the CDN-aligned offset and the client's
+        //    actual requested start must be discarded.
+        bytes_to_skip = (start_byte - cdn_aligned_start) as usize;
+
+        // Safety: cdn_aligned_start ≤ start_byte by construction.
+        debug_assert!(
+            cdn_aligned_start <= start_byte,
+            "CDN alignment invariant violated: aligned {} > requested {}",
+            cdn_aligned_start, start_byte
+        );
+
+        log::debug!(
+            "Range alignment: requested={}, cdn_aligned={}, chunk_index={}, bytes_to_skip={}",
+            start_byte, cdn_aligned_start, chunk_index, bytes_to_skip,
+        );
     }
 
     let label = extras.log_label;
@@ -331,6 +368,7 @@ pub async fn start_server(
             .service(stream_media)
             .configure(crate::share_routes::configure_share_routes)
             .configure(crate::transcode::configure_hls_routes)
+            .configure(crate::fmp4_remux::configure_fmp4_routes)
     })
     .listen(listener)?
     .run();

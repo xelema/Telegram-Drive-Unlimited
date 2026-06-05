@@ -114,6 +114,14 @@
 
 ---
 
+
+
+
+
+
+
+
+
 ## 4. Security Concerns
 
 ### 4.1 SHA-256 Password Hashing Without Proper KDF
@@ -147,6 +155,15 @@
 - **Impact:** `verify_key` uses `==` for string comparison, which is vulnerable to timing attacks. Should use `constant_time_eq` or similar.
 
 ---
+
+
+
+
+
+
+
+
+
 
 ## 5. Code Duplication
 
@@ -182,6 +199,13 @@ Both files contain nearly identical implementations of:
 ### 5.5 Rate Limit Header Injection — Duplicated 3 Times
 
 The same 3-line rate limit header insertion block is copy-pasted in `api_list_files`, `api_bulk_files`, and `api_search_files` in `api_routes.rs`.
+
+
+
+
+
+
+
 
 ---
 
@@ -232,6 +256,22 @@ The same 3-line rate limit header insertion block is copy-pasted in `api_list_fi
 - **File:** `src/context/SettingsContext.tsx`
 - **Impact:** `maxConcurrentDownloads: 6` is defined in settings but downloads also process one at a time.
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 ---
 
 ## 7. Architecture & Design Issues
@@ -269,7 +309,17 @@ The same 3-line rate limit header insertion block is copy-pasted in `api_list_fi
 
 ---
 
-## 8. Frontend-Specific Issues
+
+
+
+
+
+
+
+
+
+
+
 
 ### 8.1 Console.log Statements Left in Production Code
 
@@ -305,6 +355,19 @@ Multiple `console.log` and `console.warn` statements remain throughout:
 - **Impact:** `.performance-mode *` selector with `!important` overrides every element. This is heavy-handed and could cause unexpected style breakage.
 
 ---
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 ## 9. Backend (Rust) Specific Issues
 

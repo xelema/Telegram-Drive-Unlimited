@@ -60,6 +60,7 @@ pub mod share_routes;
 pub mod upload_service;
 pub mod jni_cache;
 pub mod transcode;
+pub mod fmp4_remux;
 pub mod mp4_utils;
 
 
@@ -544,6 +545,7 @@ pub fn run() {
             });
             let transcode_arc = Arc::new(transcode_manager);
             app.manage(transcode_arc.clone());
+            app.manage(fmp4_remux::Fmp4RemuxState::new());
             let loaded_config = vpn_optimizer::load_network_config(app.handle());
             let net_config = Arc::new(vpn_optimizer::NetworkConfig::new_with_config(loaded_config));
             app.manage(net_config.clone());
@@ -625,7 +627,6 @@ pub fn run() {
                 });
             }
 
-
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -694,6 +695,8 @@ pub fn run() {
             transcode::cmd_get_cached_variants,
             transcode::cmd_get_detailed_transcode_cache,
             transcode::cmd_clear_transcode_cache,
+            fmp4_remux::cmd_prepare_fmp4_stream,
+            fmp4_remux::cmd_get_fmp4_status,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
