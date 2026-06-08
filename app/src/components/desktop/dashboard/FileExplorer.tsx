@@ -97,7 +97,7 @@ export function FileExplorer({
             let comparison = 0;
             switch (sortField) {
                 case 'name':
-                    comparison = a.name.localeCompare(b.name);
+                    comparison = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
                     break;
                 case 'size':
                     comparison = (a.size || 0) - (b.size || 0);
