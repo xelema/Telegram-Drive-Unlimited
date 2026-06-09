@@ -217,3 +217,12 @@ export function showFileDialogFallback(options: FileDialogFallbackOptions = {}):
     input.click();
   });
 }
+
+export function sanitizeFilename(name: string): string {
+    return name
+        .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+        .trim()
+        .replace(/^\.+|\.+$/g, '')
+        || 'file';
+}
+

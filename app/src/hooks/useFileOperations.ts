@@ -1,5 +1,5 @@
 import { useCallback, useRef } from 'react';
-import { showFileDialogFallback, pickWithFallback } from '../utils';
+import { showFileDialogFallback, pickWithFallback, sanitizeFilename } from '../utils';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useQueryClient } from '@tanstack/react-query';
@@ -73,7 +73,8 @@ export function useFileOperations(
             let successCount = 0;
             const sep = dirPath.includes('\\') ? '\\' : '/';
             for (const file of targetFiles) {
-                const filePath = dirPath.endsWith(sep) ? `${dirPath}${file.name}` : `${dirPath}${sep}${file.name}`;
+                const sanitizedName = sanitizeFilename(file.name);
+                const filePath = dirPath.endsWith(sep) ? `${dirPath}${sanitizedName}` : `${dirPath}${sep}${sanitizedName}`;
                 try {
                     await invoke('cmd_download_file', { req: { message_id: file.id, save_path: filePath, folder_id: activeFolderId } });
                     successCount++;
@@ -137,7 +138,8 @@ export function useFileOperations(
             toast.info(`Downloading folder contents (${files.length} files)...`);
             const sep = dirPath.includes('\\') ? '\\' : '/';
             for (const file of files) {
-                const filePath = dirPath.endsWith(sep) ? `${dirPath}${file.name}` : `${dirPath}${sep}${file.name}`;
+                const sanitizedName = sanitizeFilename(file.name);
+                const filePath = dirPath.endsWith(sep) ? `${dirPath}${sanitizedName}` : `${dirPath}${sep}${sanitizedName}`;
                 try {
                     await invoke('cmd_download_file', { req: { message_id: file.id, save_path: filePath, folder_id: activeFolderId } });
                     successCount++;

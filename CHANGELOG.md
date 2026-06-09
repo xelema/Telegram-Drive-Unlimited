@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.8.7] - 2026-06-09
+
+### Bug Fixes & Windows Enhancements
+
+- **Windows Filename Sanitization**
+  - Added filename sanitization to strip colons (`:`) and other invalid OS characters from target filenames, preventing Windows OS from refusing to save downloads or writing streams to NTFS Alternate Data Streams (ADS).
+- **Cache Download Integrity**
+  - Added strict file size verification in backend caching logic to detect interrupted downloads or server connection drop-offs. Prevents truncated files from being cached and causing FFmpeg remux parsing errors (like `Invalid data found while parsing box`).
+
+---
+
 ## [1.8.4] - 2026-06-03
 
 ### Bug Fixes & UI Enhancements

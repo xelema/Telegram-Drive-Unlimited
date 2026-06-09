@@ -505,7 +505,7 @@ pub async fn cache_original(
     file.flush().await.map_err(|e| format!("Flush error: {}", e))?;
     drop(file);
 
-    // Validate file size
+    // Validate file size matches expected size
     let actual_size = tokio::fs::metadata(&tmp_path)
         .await
         .map_err(|e| format!("Metadata error: {}", e))?
@@ -514,6 +514,14 @@ pub async fn cache_original(
     if actual_size == 0 {
         let _ = tokio::fs::remove_file(&tmp_path).await;
         return Err("Downloaded zero bytes".to_string());
+    }
+
+    if actual_size != total_size {
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+        return Err(format!(
+            "Incomplete download: expected {} bytes, received {} bytes",
+            total_size, actual_size
+        ));
     }
 
     // Rename .part → .mp4

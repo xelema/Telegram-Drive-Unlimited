@@ -4,7 +4,7 @@ import { save, open } from '@tauri-apps/plugin-dialog';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
 import { DownloadItem, TelegramFile } from '../types';
-import { isAndroidPlatform, showFileDialogFallback, pickWithFallback } from '../utils';
+import { isAndroidPlatform, showFileDialogFallback, pickWithFallback, sanitizeFilename } from '../utils';
 import { useSettings } from '../context/SettingsContext';
 import type { Store } from '@tauri-apps/plugin-store';
 
@@ -137,7 +137,7 @@ export function useFileDownload(store: Store | null) {
         const newItem: DownloadItem = {
             id: Math.random().toString(36).substr(2, 9),
             messageId,
-            filename,
+            filename: sanitizeFilename(filename),
             folderId,
             status: 'pending'
         };
@@ -152,7 +152,7 @@ export function useFileDownload(store: Store | null) {
             const newItems: DownloadItem[] = files.map(file => ({
                 id: Math.random().toString(36).substr(2, 9),
                 messageId: file.id,
-                filename: file.name,
+                filename: sanitizeFilename(file.name),
                 folderId,
                 status: 'pending' as const,
             }));
@@ -163,14 +163,17 @@ export function useFileDownload(store: Store | null) {
 
         const enqueueFiles = (dir: string) => {
             const separator = dir.includes('\\') ? '\\' : '/';
-            const newItems: DownloadItem[] = files.map(file => ({
-                id: Math.random().toString(36).substr(2, 9),
-                messageId: file.id,
-                filename: file.name,
-                folderId,
-                status: 'pending' as const,
-                savePath: dir.endsWith(separator) ? `${dir}${file.name}` : `${dir}${separator}${file.name}`
-            }));
+            const newItems: DownloadItem[] = files.map(file => {
+                const sanitizedName = sanitizeFilename(file.name);
+                return {
+                    id: Math.random().toString(36).substr(2, 9),
+                    messageId: file.id,
+                    filename: sanitizedName,
+                    folderId,
+                    status: 'pending' as const,
+                    savePath: dir.endsWith(separator) ? `${dir}${sanitizedName}` : `${dir}${separator}${sanitizedName}`
+                };
+            });
             setDownloadQueue(prev => [...prev, ...newItems]);
             toast.info(`Queued ${files.length} files for download`);
         };
