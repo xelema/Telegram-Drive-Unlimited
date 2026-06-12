@@ -27,8 +27,9 @@ export interface FolderInviteInfo {
 export interface QueueItem {
     id: string;
     path: string;
+    url?: string;
     folderId: number | null;
-    status: 'pending' | 'uploading' | 'success' | 'error' | 'cancelled';
+    status: 'pending' | 'downloading' | 'uploading' | 'success' | 'error' | 'cancelled';
     error?: string;
     progress?: number; // 0-100
     uploadedBytes?: number;

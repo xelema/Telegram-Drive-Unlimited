@@ -22,6 +22,7 @@ import { SettingsModal } from './dashboard/SettingsModal';
 import { ShareDialog } from './dashboard/ShareDialog';
 import { RenameFolderModal } from './dashboard/RenameFolderModal';
 import { DesktopAdBanner } from './dashboard/DesktopAdBanner';
+import { RemoteUploadModal } from './dashboard/RemoteUploadModal';
 import { Link, Copy, Check, X, Loader2, Share2 } from 'lucide-react';
 
 // Hooks
@@ -60,6 +61,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     const setInternalDragFileId = (id: number | null) => {
         internalDragRef.current = id;
     };
+    const [showRemoteUpload, setShowRemoteUpload] = useState(false);
     const [playingFile, setPlayingFile] = useState<TelegramFile | null>(null);
     const [pdfFile, setPdfFile] = useState<TelegramFile | null>(null);
     const [shareFile, setShareFile] = useState<TelegramFile | null>(null);
@@ -92,7 +94,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     });
 
 
-    const { uploadQueue, setUploadQueue, handleManualUpload, handleFolderUpload, handleDropUpload, cancelAll: cancelUploads, cancelItem: cancelUploadItem, retryItem: retryUploadItem } = useFileUpload(activeFolderId, store);
+    const { uploadQueue, setUploadQueue, handleManualUpload, handleFolderUpload, handleDropUpload, handleUrlUpload, cancelAll: cancelUploads, cancelItem: cancelUploadItem, retryItem: retryUploadItem } = useFileUpload(activeFolderId, store);
     const { downloadQueue, queueDownload, queueBulkDownload, clearFinished: clearDownloads, cancelAll: cancelDownloads, cancelItem: cancelDownloadItem, retryItem: retryDownloadItem } = useFileDownload(store);
 
     const {
@@ -458,6 +460,15 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                         key="pdf-viewer"
                     />
                 )}
+                {showRemoteUpload && (
+                    <RemoteUploadModal
+                        isOpen={showRemoteUpload}
+                        onClose={() => setShowRemoteUpload(false)}
+                        folders={folders}
+                        onUpload={handleUrlUpload}
+                        key="remote-upload-modal"
+                    />
+                )}
             </AnimatePresence>
 
             <Sidebar
@@ -507,6 +518,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                     searchTerm={searchTerm}
                     onSearchChange={setSearchTerm}
                     onSettingsClick={() => setShowSettings(true)}
+                    onRemoteUploadClick={() => setShowRemoteUpload(true)}
                 />
                 {searchTerm.length > 2 && (
                     <div className="px-6 pt-4 pb-0">

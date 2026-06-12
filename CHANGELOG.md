@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.8.8] - 2026-06-12
+
+### Features & Caching Polish
+
+- **Enterprise-Grade Remote Upload**
+  - Integrated dual-phase remote file upload from direct HTTP/HTTPS URLs.
+  - Added frontend dialog `RemoteUploadModal` for URL input and destination folder selection.
+  - Implemented backend download cache manager (`cmd_upload_from_url`) with disk space pre-flight checks, resumable downloads using HTTP `Range` headers, SOCKS5/MTProto proxy routing config, oneshot cancellation tracking, and bandwidth throttling.
+  - Integrated dual-phase progress states and progress bars in `UploadQueue` UI.
+
+---
+
 ## [1.8.7] - 2026-06-09
 
 ### Bug Fixes & Windows Enhancements

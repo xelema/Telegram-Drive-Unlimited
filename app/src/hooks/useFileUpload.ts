@@ -17,6 +17,15 @@ interface ProgressPayload {
     speed_bytes_per_sec: number;
 }
 
+interface RemoteProgressPayload {
+    id: string;
+    phase: 'downloading' | 'uploading';
+    percent: number;
+    speed: number;
+    uploaded_bytes: number;
+    total_bytes: number;
+}
+
 export function useFileUpload(activeFolderId: number | null, store: Store | null) {
     const queryClient = useQueryClient();
     const { settings } = useSettings();
@@ -27,7 +36,9 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
 
     // Listen for progress events from Rust
     useEffect(() => {
-        let unlisten: UnlistenFn | undefined;
+        let unlistenProgress: UnlistenFn | undefined;
+        let unlistenRemote: UnlistenFn | undefined;
+
         listen<ProgressPayload>('upload-progress', (event) => {
             setUploadQueue(q => q.map(i =>
                 i.id === event.payload.id ? {
@@ -38,8 +49,25 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
                     speedBytesPerSec: event.payload.speed_bytes_per_sec,
                 } : i
             ));
-        }).then(fn => { unlisten = fn; });
-        return () => { unlisten?.(); };
+        }).then(fn => { unlistenProgress = fn; });
+
+        listen<RemoteProgressPayload>('remote-upload-progress', (event) => {
+            setUploadQueue(q => q.map(i =>
+                i.id === event.payload.id ? {
+                    ...i,
+                    status: event.payload.phase,
+                    progress: event.payload.percent,
+                    speedBytesPerSec: event.payload.speed,
+                    uploadedBytes: event.payload.uploaded_bytes,
+                    totalBytes: event.payload.total_bytes,
+                } : i
+            ));
+        }).then(fn => { unlistenRemote = fn; });
+
+        return () => {
+            unlistenProgress?.();
+            unlistenRemote?.();
+        };
     }, []);
 
     useEffect(() => {
@@ -98,9 +126,14 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
 
     const processItem = async (item: QueueItem) => {
         activeCountRef.current++;
-        setUploadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'uploading', progress: 0 } : i));
+        const initialStatus = item.url ? 'downloading' : 'uploading';
+        setUploadQueue(q => q.map(i => i.id === item.id ? { ...i, status: initialStatus, progress: 0 } : i));
         try {
-            await invoke('cmd_upload_file', { path: item.path, folderId: item.folderId, transferId: item.id });
+            if (item.url) {
+                await invoke('cmd_upload_from_url', { url: item.url, folderId: item.folderId, transferId: item.id });
+            } else {
+                await invoke('cmd_upload_file', { path: item.path, folderId: item.folderId, transferId: item.id });
+            }
             // Check if cancelled during upload
             if (cancelledRef.current.has(item.id)) {
                 cancelledRef.current.delete(item.id);
@@ -119,8 +152,9 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
                     setUploadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'error', error: errMsg } : i));
                     toast.error(`Upload failed: Telegram has a 2 GB file size limit. Try splitting large folders.`);
                 } else {
+                    const displayPath = item.url || item.path;
                     setUploadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'error', error: errMsg } : i));
-                    toast.error(`Upload failed for ${item.path.split('/').pop()}: ${e}`);
+                    toast.error(`Upload failed for ${displayPath.split('/').pop()}: ${e}`);
                 }
             } else {
                 cancelledRef.current.delete(item.id);
@@ -223,14 +257,14 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
 
     const cancelAll = () => {
         setUploadQueue(q => {
-            const uploading = q.find(i => i.status === 'uploading');
-            if (uploading) {
-                cancelledRef.current.add(uploading.id);
-                invoke('cmd_cancel_transfer', { transferId: uploading.id }).catch(() => {});
+            const activeItems = q.filter(i => i.status === 'uploading' || i.status === 'downloading');
+            for (const item of activeItems) {
+                cancelledRef.current.add(item.id);
+                invoke('cmd_cancel_transfer', { transferId: item.id }).catch(() => {});
             }
             return q
                 .filter(i => i.status !== 'pending')
-                .map(i => i.status === 'uploading' ? { ...i, status: 'cancelled' as const } : i);
+                .map(i => (i.status === 'uploading' || i.status === 'downloading') ? { ...i, status: 'cancelled' as const } : i);
         });
         toast.info('All uploads cancelled');
     };
@@ -238,7 +272,7 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
     const cancelItem = (id: string) => {
         setUploadQueue(q => {
             const item = q.find(i => i.id === id);
-            if (item?.status === 'uploading') {
+            if (item?.status === 'uploading' || item?.status === 'downloading') {
                 cancelledRef.current.add(id);
                 invoke('cmd_cancel_transfer', { transferId: id }).catch(() => {});
                 return q.map(i => i.id === id ? { ...i, status: 'cancelled' as const } : i);
@@ -259,12 +293,32 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
         ));
     };
 
+    const handleUrlUpload = (url: string, folderId: number | null) => {
+        if (!url || !url.trim()) return;
+        let filename: string;
+        try {
+            filename = new URL(url).pathname.split('/').pop() || 'remote_file';
+        } catch {
+            filename = url.split('/').pop() || 'remote_file';
+        }
+        const item: QueueItem = {
+            id: Math.random().toString(36).substr(2, 9),
+            path: filename,
+            url: url.trim(),
+            folderId: folderId,
+            status: 'pending' as const,
+        };
+        setUploadQueue(prev => [...prev, item]);
+        toast.info(`Queued remote upload from URL`);
+    };
+
     return {
         uploadQueue,
         setUploadQueue,
         handleManualUpload,
         handleFolderUpload,
         handleDropUpload,
+        handleUrlUpload,
         cancelAll,
         cancelItem,
         retryItem,

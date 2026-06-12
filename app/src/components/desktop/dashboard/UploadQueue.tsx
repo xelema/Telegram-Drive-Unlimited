@@ -20,7 +20,7 @@ interface UploadQueueProps {
 export function UploadQueue({ items, onClearFinished, onCancelAll, onCancelItem, onRetryItem }: UploadQueueProps) {
     if (items.length === 0) return null;
 
-    const hasPendingOrActive = items.some(i => i.status === 'pending' || i.status === 'uploading');
+    const hasPendingOrActive = items.some(i => i.status === 'pending' || i.status === 'uploading' || i.status === 'downloading');
 
     return (
         <div className="fixed bottom-4 right-4 w-80 bg-telegram-surface border border-telegram-border rounded-xl shadow-2xl overflow-hidden z-[100]">
@@ -38,14 +38,15 @@ export function UploadQueue({ items, onClearFinished, onCancelAll, onCancelItem,
                     <div key={item.id} className="flex flex-col gap-1 p-2 bg-telegram-hover rounded">
                         <div className="flex items-center gap-3 text-sm">
                             <div className={`w-2 h-2 rounded-full flex-shrink-0 ${item.status === 'pending' ? 'bg-yellow-500' :
+                                item.status === 'downloading' ? 'bg-cyan-500 animate-pulse' :
                                 item.status === 'uploading' ? 'bg-blue-500 animate-pulse' :
                                     item.status === 'cancelled' ? 'bg-gray-500' :
                                         item.status === 'error' ? 'bg-red-500' : 'bg-green-500'
                                 }`} />
-                            <div className="flex-1 truncate text-telegram-subtext" title={item.path}>
-                                {item.path.split('/').pop()}
+                            <div className="flex-1 truncate text-telegram-subtext" title={item.url || item.path}>
+                                {(item.url || item.path).split('/').pop()}
                             </div>
-                            {item.status === 'uploading' && (
+                            {(item.status === 'uploading' || item.status === 'downloading') && (
                                 <button onClick={() => onCancelItem(item.id)} className="text-gray-400 hover:text-red-400 transition-colors flex-shrink-0" title="Cancel">
                                     <X className="w-3.5 h-3.5" />
                                 </button>
@@ -61,20 +62,21 @@ export function UploadQueue({ items, onClearFinished, onCancelAll, onCancelItem,
                                 </button>
                             )}
                         </div>
-                        {item.status === 'uploading' && (
+                        {(item.status === 'uploading' || item.status === 'downloading') && (
                             <>
                                 <div className="w-full bg-telegram-border h-1 mt-1 rounded-full overflow-hidden">
                                     {item.progress !== undefined ? (
                                         <div
-                                            className="bg-blue-500 h-full rounded-full transition-all duration-300"
+                                            className={`${item.status === 'downloading' ? 'bg-cyan-500' : 'bg-blue-500'} h-full rounded-full transition-all duration-300`}
                                             style={{ width: `${item.progress}%` }}
                                         />
                                     ) : (
-                                        <div className="bg-blue-500 h-full w-full animate-progress-indeterminate" />
+                                        <div className={`${item.status === 'downloading' ? 'bg-cyan-500' : 'bg-blue-500'} h-full w-full animate-progress-indeterminate`} />
                                     )}
                                 </div>
                                 <div className="flex justify-between text-[10px] text-telegram-subtext mt-0.5">
                                     <span>
+                                        {item.status === 'downloading' ? 'Caching: ' : 'Uploading: '}
                                         {item.uploadedBytes !== undefined && item.totalBytes !== undefined
                                             ? `${formatBytes(item.uploadedBytes)} / ${formatBytes(item.totalBytes)}`
                                             : item.progress !== undefined ? `${item.progress}%` : ''}

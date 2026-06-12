@@ -1,4 +1,4 @@
-import { HardDrive, LayoutGrid, Sun, Moon, Settings, Share2, X } from 'lucide-react';
+import { HardDrive, LayoutGrid, Sun, Moon, Settings, Share2, X, Globe } from 'lucide-react';
 import { useTheme } from '../../../context/ThemeContext';
 
 interface TopBarProps {
@@ -15,11 +15,13 @@ interface TopBarProps {
     searchTerm: string;
     onSearchChange: (term: string) => void;
     onSettingsClick: () => void;
+    onRemoteUploadClick: () => void;
 }
 
 export function TopBar({
     currentFolderName, selectedIds, onShowMoveModal, onBulkDownload, onBulkDelete, onBulkShare,
-    onDownloadFolder, onClearSelection, viewMode, setViewMode, searchTerm, onSearchChange, onSettingsClick
+    onDownloadFolder, onClearSelection, viewMode, setViewMode, searchTerm, onSearchChange, onSettingsClick,
+    onRemoteUploadClick
 }: TopBarProps) {
     const { theme, toggleTheme } = useTheme();
 
@@ -59,6 +61,13 @@ export function TopBar({
                     <HardDrive className="w-5 h-5" />
                     <span className="absolute -bottom-8 left-1/2 -translate-x-1/2 text-[10px] bg-telegram-surface border border-telegram-border px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50 shadow-lg">
                         Download All Files
+                    </span>
+                </button>
+
+                <button onClick={onRemoteUploadClick} className="p-2 hover:bg-telegram-hover rounded-md text-telegram-subtext hover:text-telegram-text transition group relative" title="Remote Upload">
+                    <Globe className="w-5 h-5" />
+                    <span className="absolute -bottom-8 left-1/2 -translate-x-1/2 text-[10px] bg-telegram-surface border border-telegram-border px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50 shadow-lg">
+                        Remote Upload (URL)
                     </span>
                 </button>
 

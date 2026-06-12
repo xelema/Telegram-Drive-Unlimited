@@ -1795,3 +1795,544 @@ pub async fn cmd_export_folder_invite(
         })
     }
 }
+
+#[derive(Clone, serde::Serialize)]
+struct RemoteProgressPayload {
+    id: String,
+    phase: &'static str,
+    percent: u8,
+    speed: u64,
+    uploaded_bytes: u64,
+    total_bytes: u64,
+}
+
+#[tauri::command]
+pub async fn cmd_upload_from_url(
+    url: String,
+    folder_id: Option<i64>,
+    transfer_id: String,
+    app_handle: tauri::AppHandle,
+    state: State<'_, TelegramState>,
+    bw_state: State<'_, BandwidthManager>,
+    net_config: State<'_, std::sync::Arc<NetworkConfig>>,
+) -> Result<String, String> {
+    let mut client_builder = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::limited(10));
+    
+    if net_config.is_proxy_active() {
+        if let Some(proxy_addr) = net_config.proxy_addr() {
+            let proxy_obj = {
+                let proxy_cfg = net_config.proxy.read().unwrap();
+                if !proxy_cfg.username.is_empty() {
+                    let encoded_user = urlencoding::encode(&proxy_cfg.username);
+                    let encoded_pass = urlencoding::encode(&proxy_cfg.password);
+                    format!("socks5://{}:{}@{}", encoded_user, encoded_pass, proxy_addr)
+                } else {
+                    format!("socks5://{}", proxy_addr)
+                }
+            };
+            if let Ok(p) = reqwest::Proxy::all(&proxy_obj) {
+                client_builder = client_builder.proxy(p);
+            }
+        }
+    }
+    
+    let client = client_builder.build().map_err(|e| e.to_string())?;
+
+    let res = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    let headers = res.headers();
+
+    // Reject HTML pages — they're download gateways, not actual files
+    if let Some(ct) = headers.get(reqwest::header::CONTENT_TYPE) {
+        let ct_str = ct.to_str().unwrap_or_default().to_lowercase();
+        if ct_str.contains("text/html") {
+            return Err("URL returned an HTML page, not a downloadable file. The server may require a direct download link or authentication.".to_string());
+        }
+    }
+
+    // Prefer Content-Disposition filename over URL path extraction
+    let server_filename: Option<String> = headers.get(reqwest::header::CONTENT_DISPOSITION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|header_value| {
+            // Parse RFC 6266/5987 Content-Disposition: attachment; filename="..." or filename*=UTF-8''...
+            // Look for filename* first (RFC 5987), then filename
+            if let Some(encoded) = header_value.split(';')
+                .map(|p| p.trim())
+                .find(|p| p.starts_with("filename*="))
+                .and_then(|p| p.strip_prefix("filename*="))
+            {
+                // filename*=UTF-8''percent%20encoded
+                if let Some((_charset, value)) = encoded.split_once('\'') {
+                    let value = value.split('\'').last().unwrap_or(value);
+                    urlencoding::decode(value).ok()
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.into_owned())
+                } else {
+                    None
+                }
+            } else {
+                header_value.split(';')
+                    .map(|p| p.trim())
+                    .find(|p| p.starts_with("filename="))
+                    .and_then(|p| p.strip_prefix("filename="))
+                    .map(|f| f.trim_matches('"').to_string())
+                    .filter(|f| !f.is_empty())
+            }
+        });
+
+    let known_size: Option<u64> = headers.get(reqwest::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok());
+
+    let temp_dir = std::env::temp_dir();
+
+    if let Some(sz) = known_size {
+        if sz > 2_147_483_648 {
+            return Err("Exceeds 2GB Telegram limit.".into());
+        }
+        let free_space = tokio::task::spawn_blocking({
+            let temp_dir = temp_dir.clone();
+            move || {
+                let disks = sysinfo::Disks::new_with_refreshed_list();
+                disks.iter()
+                    .filter(|d| temp_dir.starts_with(d.mount_point()))
+                    .map(|d| d.available_space())
+                    .next()
+                    .unwrap_or(u64::MAX)
+            }
+        }).await.map_err(|e| format!("Disk check panicked: {}", e))?;
+        if free_space < sz + 52_428_800 {
+            return Err("Insufficient disk space in temp directory.".to_string());
+        }
+        bw_state.try_reserve_down(sz)?;
+        if let Err(e) = bw_state.try_reserve_up(sz) {
+            bw_state.release_down(sz);
+            return Err(e);
+        }
+    }
+
+    let display_total = known_size.unwrap_or(0); // 0 = unknown size to frontend
+    let _ = app_handle.emit("remote-upload-progress", RemoteProgressPayload {
+        id: transfer_id.clone(),
+        phase: "downloading",
+        percent: 0,
+        speed: 0,
+        uploaded_bytes: 0,
+        total_bytes: display_total,
+    });
+
+    let temp_file_path = temp_dir.join(format!("tg_drive_{}.tmp", transfer_id));
+    let temp_file_str = temp_file_path.to_string_lossy().to_string();
+
+    let mut downloaded = 0u64;
+    let mut range_supported = false;
+
+    if let Some(accept_ranges) = headers.get(reqwest::header::ACCEPT_RANGES) {
+        if accept_ranges.to_str().unwrap_or_default() == "bytes" {
+            range_supported = true;
+        }
+    }
+
+    if temp_file_path.exists() {
+        if range_supported && known_size.is_some() {
+            if let Ok(metadata) = std::fs::metadata(&temp_file_path) {
+                downloaded = metadata.len();
+                let sz = known_size.unwrap();
+                if downloaded >= sz {
+                    downloaded = sz;
+                }
+            }
+        } else {
+            // No resumption without both range support and a known total size
+            let _ = std::fs::remove_file(&temp_file_path);
+        }
+    }
+
+    let need_download = known_size.map_or(true, |sz| downloaded < sz);
+
+    let stream_res = if downloaded > 0 && need_download {
+        let req = client.get(&url)
+            .header(reqwest::header::RANGE, format!("bytes={}-", downloaded));
+        match req.send().await {
+            Ok(r) => r,
+            Err(e) => {
+                if let Some(sz) = known_size {
+                    bw_state.release_down(sz);
+                    bw_state.release_up(sz);
+                }
+                return Err(e.to_string());
+            }
+        }
+    } else {
+        res
+    };
+
+    let mut file = if downloaded > 0 && need_download {
+        let status = stream_res.status();
+        if status == reqwest::StatusCode::PARTIAL_CONTENT {
+            match tokio::fs::OpenOptions::new()
+                .write(true)
+                .append(true)
+                .open(&temp_file_path)
+                .await {
+                    Ok(f) => f,
+                    Err(e) => {
+                        if let Some(sz) = known_size {
+                            bw_state.release_down(sz);
+                            bw_state.release_up(sz);
+                        }
+                        return Err(e.to_string());
+                    }
+                }
+        } else {
+            downloaded = 0;
+            match tokio::fs::File::create(&temp_file_path).await {
+                Ok(f) => f,
+                Err(e) => {
+                    if let Some(sz) = known_size {
+                        bw_state.release_down(sz);
+                        bw_state.release_up(sz);
+                    }
+                    return Err(e.to_string());
+                }
+            }
+        }
+    } else if !need_download {
+        match tokio::fs::OpenOptions::new()
+            .read(true)
+            .open(&temp_file_path)
+            .await {
+                Ok(f) => f,
+                Err(e) => {
+                    if let Some(sz) = known_size {
+                        bw_state.release_down(sz);
+                        bw_state.release_up(sz);
+                    }
+                    return Err(e.to_string());
+                }
+            }
+    } else {
+        match tokio::fs::File::create(&temp_file_path).await {
+            Ok(f) => f,
+            Err(e) => {
+                if let Some(sz) = known_size {
+                    bw_state.release_down(sz);
+                    bw_state.release_up(sz);
+                }
+                return Err(e.to_string());
+            }
+        }
+    };
+
+    if need_download {
+        let mut stream = stream_res.bytes_stream();
+        let mut last_emit_time = std::time::Instant::now();
+        let mut last_emit_bytes = downloaded;
+
+        while let Some(chunk_result) = futures::StreamExt::next(&mut stream).await {
+            if state.cancelled_transfers.read().await.contains(&transfer_id) {
+                state.cancelled_transfers.write().await.remove(&transfer_id);
+                drop(file);
+                let _ = tokio::fs::remove_file(&temp_file_path).await;
+                if let Some(sz) = known_size {
+                    bw_state.release_down(sz);
+                    bw_state.release_up(sz);
+                }
+                return Err("Transfer cancelled".to_string());
+            }
+
+            let chunk = match chunk_result {
+                Ok(c) => c,
+                Err(e) => {
+                    if let Some(sz) = known_size {
+                        bw_state.release_down(sz);
+                        bw_state.release_up(sz);
+                    }
+                    return Err(e.to_string());
+                }
+            };
+
+            if let Err(e) = tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await {
+                if let Some(sz) = known_size {
+                    bw_state.release_down(sz);
+                    bw_state.release_up(sz);
+                }
+                return Err(e.to_string());
+            }
+            downloaded += chunk.len() as u64;
+
+            // Dynamic 2GB check when total size is unknown
+            if known_size.is_none() && downloaded > 2_147_483_648 {
+                drop(file);
+                let _ = tokio::fs::remove_file(&temp_file_path).await;
+                return Err("Downloaded file exceeds 2GB Telegram limit.".to_string());
+            }
+
+            let now = std::time::Instant::now();
+            let dt = now.duration_since(last_emit_time).as_secs_f64();
+            let emit_total = known_size.unwrap_or(downloaded);
+            let emit_done = known_size.map_or(false, |sz| downloaded >= sz);
+            if dt >= 0.25 || emit_done {
+                let speed = if dt > 0.0 { ((downloaded - last_emit_bytes) as f64 / dt) as u64 } else { 0 };
+                let percent = if let Some(sz) = known_size {
+                    if sz > 0 { ((downloaded as f64 / sz as f64) * 100.0).min(99.0) as u8 } else { 0 }
+                } else {
+                    0u8
+                };
+
+                let _ = app_handle.emit("remote-upload-progress", RemoteProgressPayload {
+                    id: transfer_id.clone(),
+                    phase: "downloading",
+                    percent,
+                    speed,
+                    uploaded_bytes: downloaded,
+                    total_bytes: emit_total,
+                });
+                last_emit_time = now;
+                last_emit_bytes = downloaded;
+            }
+
+            let dl_limit = net_config.download_limit_bytes_per_sec();
+            if dl_limit > 0 {
+                let elapsed = last_emit_time.elapsed().as_secs_f64().max(0.001);
+                let current_rate = (downloaded - last_emit_bytes) as f64 / elapsed;
+                if current_rate > dl_limit as f64 {
+                    let sleep_ms = ((current_rate / dl_limit as f64 - 1.0) * elapsed * 1000.0) as u64;
+                    if sleep_ms > 0 && sleep_ms < 5000 {
+                        tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
+                    }
+                }
+            }
+        }
+
+        if let Err(e) = tokio::io::AsyncWriteExt::flush(&mut file).await {
+            if let Some(sz) = known_size {
+                bw_state.release_down(sz);
+                bw_state.release_up(sz);
+            }
+            return Err(e.to_string());
+        }
+        if let Err(e) = file.sync_all().await {
+            if let Some(sz) = known_size {
+                bw_state.release_down(sz);
+                bw_state.release_up(sz);
+            }
+            return Err(e.to_string());
+        }
+    }
+
+    drop(file);
+    if let Some(sz) = known_size {
+        bw_state.release_down(sz);
+        // Release the upfront upload reservation — we'll re-reserve based on actual size below
+        bw_state.release_up(sz);
+    }
+
+    // Determine actual file size from disk (authoritative, works even without Content-Length)
+    let actual_size = tokio::fs::metadata(&temp_file_path)
+        .await
+        .map_err(|e| format!("Failed to read downloaded file metadata: {}", e))?
+        .len();
+
+    if actual_size == 0 {
+        let _ = tokio::fs::remove_file(&temp_file_path).await;
+        return Err("Downloaded file is empty".to_string());
+    }
+
+    if actual_size > 2_147_483_648 {
+        let _ = tokio::fs::remove_file(&temp_file_path).await;
+        return Err("Downloaded file exceeds 2GB Telegram limit.".to_string());
+    }
+
+    // Reserve upload bandwidth based on the real file size (handles both known and unknown upfront)
+    if let Err(e) = bw_state.try_reserve_up(actual_size) {
+        let _ = tokio::fs::remove_file(&temp_file_path).await;
+        return Err(e);
+    }
+
+    let client_opt = { state.client.lock().await.clone() };
+    let client = match client_opt {
+        Some(c) => c,
+        None => {
+            bw_state.release_up(actual_size);
+            let _ = tokio::fs::remove_file(&temp_file_path).await;
+            return Err("Client not connected".to_string());
+        }
+    };
+
+    let _ = app_handle.emit("remote-upload-progress", RemoteProgressPayload {
+        id: transfer_id.clone(),
+        phase: "uploading",
+        percent: 0,
+        speed: 0,
+        uploaded_bytes: 0,
+        total_bytes: actual_size,
+    });
+
+    let (mut reader, file_size, bytes_counter) = match ProgressReader::new(&temp_file_str).await {
+        Ok(res) => res,
+        Err(e) => {
+            bw_state.release_up(actual_size);
+            let _ = tokio::fs::remove_file(&temp_file_path).await;
+            return Err(e);
+        }
+    };
+
+    let cancelled = state.cancelled_transfers.clone();
+    let progress_tid = transfer_id.clone();
+    let progress_handle = app_handle.clone();
+    let progress_counter = bytes_counter.clone();
+    let progress_task = tokio::spawn(async move {
+        let mut last_bytes: u64 = 0;
+        let mut last_time = std::time::Instant::now();
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            let current = progress_counter.load(std::sync::atomic::Ordering::Relaxed);
+            let now = std::time::Instant::now();
+            let dt = now.duration_since(last_time).as_secs_f64();
+            let speed = if dt > 0.0 { ((current - last_bytes) as f64 / dt) as u64 } else { 0 };
+            let percent = if file_size > 0 { ((current as f64 / file_size as f64) * 100.0).min(99.0) as u8 } else { 0 };
+
+            let _ = progress_handle.emit("remote-upload-progress", RemoteProgressPayload {
+                id: progress_tid.clone(),
+                phase: "uploading",
+                percent,
+                speed,
+                uploaded_bytes: current,
+                total_bytes: file_size,
+            });
+
+            last_bytes = current;
+            last_time = now;
+
+            if current >= file_size { break; }
+            if cancelled.read().await.contains(&progress_tid) { break; }
+        }
+    });
+
+    if state.cancelled_transfers.read().await.contains(&transfer_id) {
+        state.cancelled_transfers.write().await.remove(&transfer_id);
+        progress_task.abort();
+        bw_state.release_up(actual_size);
+        let _ = tokio::fs::remove_file(&temp_file_path).await;
+        return Err("Transfer cancelled".to_string());
+    }
+
+    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+    get_upload_cancellations().lock().unwrap().insert(transfer_id.clone(), cancel_tx);
+
+    let client_clone = client.clone();
+    let file_name = server_filename.unwrap_or_else(|| {
+        reqwest::Url::parse(&url)
+            .ok()
+            .and_then(|u| {
+                u.path_segments()
+                    .and_then(|segs| segs.last())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_else(|| "remote_file".to_string())
+    });
+    
+    let mut upload_task = tokio::spawn(async move {
+        client_clone.upload_stream(&mut reader, file_size as usize, file_name).await
+    });
+
+    let uploaded_file = {
+        tokio::select! {
+            res = &mut upload_task => {
+                get_upload_cancellations().lock().unwrap().remove(&transfer_id);
+                match res {
+                    Ok(Ok(file)) => file,
+                    Ok(Err(e)) => {
+                        bw_state.release_up(actual_size);
+                        progress_task.abort();
+                        let _ = tokio::fs::remove_file(&temp_file_path).await;
+                        return Err(map_error(e));
+                    }
+                    Err(e) => {
+                        bw_state.release_up(actual_size);
+                        progress_task.abort();
+                        let _ = tokio::fs::remove_file(&temp_file_path).await;
+                        return Err(format!("Task join error: {}", e));
+                    }
+                }
+            }
+            _ = cancel_rx => {
+                log::info!("Aborting remote upload task for transfer ID: {}", transfer_id);
+                upload_task.abort();
+                state.cancelled_transfers.write().await.remove(&transfer_id);
+                progress_task.abort();
+                bw_state.release_up(actual_size);
+                let _ = tokio::fs::remove_file(&temp_file_path).await;
+                return Err("Transfer cancelled".to_string());
+            }
+        }
+    };
+
+    progress_task.abort();
+
+    let message = InputMessage::new().text("").file(uploaded_file);
+
+    let peer = match resolve_peer(&client, folder_id, &state.peer_cache).await {
+        Ok(p) => p,
+        Err(e) => {
+            bw_state.release_up(actual_size);
+            let _ = tokio::fs::remove_file(&temp_file_path).await;
+            return Err(e);
+        }
+    };
+
+    let max_retries = net_config.retry_attempts();
+    let base_ms = net_config.retry_base_backoff_ms();
+    let max_ms = net_config.retry_max_backoff_ms();
+    let respect_flood = net_config.should_respect_flood_wait();
+    let mut last_err = String::new();
+    let mut send_success = false;
+
+    for attempt in 0..=max_retries {
+        match client.send_message(&peer, message.clone()).await {
+            Ok(_) => {
+                send_success = true;
+                break;
+            }
+            Err(e) => {
+                let err = map_error(e);
+                log::warn!("send_message attempt {}/{}: {}", attempt + 1, max_retries + 1, err);
+
+                if respect_flood && err.starts_with("FLOOD_WAIT_") {
+                    if let Ok(secs) = err.trim_start_matches("FLOOD_WAIT_").parse::<u64>() {
+                        let wait = secs.min(300);
+                        tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                        last_err = err;
+                        continue;
+                    }
+                }
+
+                last_err = err;
+                if attempt < max_retries {
+                    let delay = backoff_ms(attempt, base_ms, max_ms);
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                }
+            }
+        }
+    }
+
+    let _ = tokio::fs::remove_file(&temp_file_path).await;
+
+    if send_success {
+        let _ = app_handle.emit("remote-upload-progress", RemoteProgressPayload {
+            id: transfer_id,
+            phase: "uploading",
+            percent: 100,
+            speed: 0,
+            uploaded_bytes: actual_size,
+            total_bytes: actual_size,
+        });
+        Ok("File uploaded successfully".to_string())
+    } else {
+        bw_state.release_up(actual_size);
+        Err(format!("Upload failed after {} attempts: {}", max_retries + 1, last_err))
+    }
+}

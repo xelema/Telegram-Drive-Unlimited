@@ -636,6 +636,7 @@ pub fn run() {
             commands::cmd_get_files,
             commands::cmd_upload_file,
             commands::initiate_upload,
+            commands::cmd_upload_from_url,
             cmd_open_file_externally,
             upload_service::cmd_start_foreground_service,
             upload_service::cmd_stop_foreground_service,
