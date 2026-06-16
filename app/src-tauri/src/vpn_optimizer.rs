@@ -52,6 +52,7 @@ pub struct VpnConfig {
     pub chunk_size_kb: u32,            // 128, 256, 512
     pub keep_alive_interval_sec: u32,  // 0 = disabled, 30–120
     pub auto_detect_vpn: bool,
+    pub archive_max_bytes: u64,          // 0 = unlimited, max bytes for bulk archive (API)
 }
 
 impl Default for VpnConfig {
@@ -74,6 +75,7 @@ impl Default for VpnConfig {
             chunk_size_kb: 512,
             keep_alive_interval_sec: 0,
             auto_detect_vpn: false,
+            archive_max_bytes: 256 * 1024 * 1024, // 256 MiB
         }
     }
 }
@@ -215,6 +217,17 @@ impl NetworkConfig {
     pub fn keep_alive_interval_sec(&self) -> u32 {
         let vpn = self.vpn.read().unwrap();
         if vpn.enabled { vpn.keep_alive_interval_sec } else { 0 }
+    }
+
+    /// Maximum total uncompressed bytes for a single bulk archive (API).
+    /// 0 = unlimited.
+    pub fn archive_max_bytes(&self) -> u64 {
+        let vpn = self.vpn.read().unwrap();
+        if vpn.enabled {
+            vpn.archive_max_bytes // 0 = unlimited when VPN is on
+        } else {
+            256 * 1024 * 1024 // default 256 MiB when VPN off
+        }
     }
 }
 

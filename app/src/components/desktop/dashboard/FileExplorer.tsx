@@ -26,9 +26,11 @@ interface FileExplorerProps {
     showFolderUpload: boolean;
     onToggleSelection: (id: number) => void;
     onDrop?: (e: React.DragEvent, folderId: number) => void;
-    onDragStart?: (fileId: number) => void;
+    onDragStart?: (fileIds: number[]) => void;
     onDragEnd?: () => void;
     onShare?: (file: TelegramFile) => void;
+    onRename?: (file: TelegramFile) => void;
+    onFileMove?: (file: TelegramFile) => void;
     folders?: TelegramFolder[];
     cardScale: number;
     onCardScaleChange: (scale: number) => void;
@@ -69,7 +71,7 @@ function useGridColumns(containerRef: React.RefObject<HTMLDivElement | null>) {
 
 export function FileExplorer({
     files, loading, error, viewMode, selectedIds, activeFolderId,
-    onFileClick, onDelete, onDownload, onPreview, onManualUpload, onFolderUpload, showFolderUpload, onToggleSelection, onDrop, onDragStart, onDragEnd, onShare,
+    onFileClick, onDelete, onDownload, onPreview, onManualUpload, onFolderUpload, showFolderUpload, onToggleSelection, onDrop, onDragStart, onDragEnd, onShare, onRename, onFileMove,
     folders, cardScale, onCardScaleChange
 }: FileExplorerProps) {
     const [sortField, setSortField] = useState<SortField>('name');
@@ -323,6 +325,7 @@ export function FileExplorer({
                                                 height={cardHeight}
                                                 onToggleSelection={() => onToggleSelection(file.id)}
                                                 onShare={onShare ? () => onShare(file) : undefined}
+                                                selectedIds={selectedIds}
                                             />
                                         );
                                     })}
@@ -434,6 +437,14 @@ export function FileExplorer({
                     }}
                     onShare={onShare ? () => {
                         onShare(contextMenu.file);
+                        setContextMenu(null);
+                    } : undefined}
+                    onRename={onRename ? () => {
+                        onRename(contextMenu.file);
+                        setContextMenu(null);
+                    } : undefined}
+                    onMove={onFileMove ? () => {
+                        onFileMove(contextMenu.file);
                         setContextMenu(null);
                     } : undefined}
                     folders={folders}

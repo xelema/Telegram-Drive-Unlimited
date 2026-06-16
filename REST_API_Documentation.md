@@ -36,16 +36,11 @@ Check API availability, status, and running version.
 * **Method:** `GET`
 * **Auth Required:** No
 
-#### Example Request
-```bash
-curl http://localhost:8550/api/v1/health
-```
-
 #### Response (200 OK)
 ```json
 {
   "status": "ok",
-  "version": "1.8.4"
+  "version": "1.8.8"
 }
 ```
 
@@ -68,19 +63,10 @@ Retrieve metadata for files stored in Telegram Drive.
 | `search` | String | Filter files by matching search term in filename |
 | `offset_id` | Integer | Message ID offset for pagination |
 | `sort` | String | Field to sort by: `name`, `size`, or `created_at` |
-| `order` | String | Sort order: `asc` (ascending) or `desc` (descending) |
+| `order` | String | Sort order: `asc` or `desc` |
 | `mime_type` | String | Filter files by a specific MIME type |
-| `created_after` | String | Filter files created after date (ISO format) |
-| `created_before` | String | Filter files created before date (ISO format) |
 | `size_min` | Integer | Minimum file size in bytes |
 | `size_max` | Integer | Maximum file size in bytes |
-| `fields` | String | Comma-separated list of fields to include in response |
-
-#### Example Request
-```bash
-curl -H "X-API-Key: YOUR_API_KEY" \
-  "http://localhost:8550/api/v1/files?page=1&limit=20"
-```
 
 #### Response (200 OK)
 ```json
@@ -101,12 +87,6 @@ Retrieve detailed metadata for a specific file.
 * **URL:** `/files/{message_id}`
 * **Method:** `GET`
 * **Auth Required:** Yes
-
-#### Example Request
-```bash
-curl -H "X-API-Key: YOUR_API_KEY" \
-  http://localhost:8550/api/v1/files/123
-```
 
 #### Response (200 OK)
 ```json
@@ -129,18 +109,6 @@ Stream or download a file directly from Telegram Drive.
 * **Method:** `GET`
 * **Auth Required:** Yes
 
-#### Features Supported
-* **HTTP Range Requests** (e.g., seeking in videos/audios)
-* **Resumable Downloads**
-* **Direct Content Streaming**
-
-#### Example Request
-```bash
-curl -H "X-API-Key: YOUR_API_KEY" \
-  -o file.bin \
-  http://localhost:8550/api/v1/files/123/download
-```
-
 ---
 
 ### 5. Search Files
@@ -155,53 +123,180 @@ Search files by filename with optional filtering.
 | Parameter | Type | Description |
 | :--- | :--- | :--- |
 | `q` | String | **Required.** Search query string |
-| `folder_id` | Integer | Optional folder ID filter |
-| `recursive` | Boolean | Perform recursive search across folders |
 
-#### Example Request
-```bash
-curl -H "X-API-Key: YOUR_API_KEY" \
-  "http://localhost:8550/api/v1/files/search?q=python"
-```
+---
+
+### 6. Upload File
+Upload a file to Telegram Drive.
+
+* **URL:** `/files`
+* **Method:** `POST`
+* **Auth Required:** Yes
+* **Content-Type:** `multipart/form-data`
+
+#### Form Fields
+* `file`: Binary file content
+* `folder_id` (Optional): ID of target folder/channel
 
 #### Response (200 OK)
 ```json
-[
-  {
-    "id": 123,
-    "name": "python-guide.pdf",
-    "size": 204800
-  }
-]
+{
+  "id": 123,
+  "folder_id": 456,
+  "name": "uploaded_file.txt",
+  "size": 1024,
+  "mime_type": "text/plain",
+  "created_at": "2026-06-16T01:00:00Z"
+}
 ```
 
 ---
 
-### 6. Bulk Operations
-Perform action operations (such as move or delete) across multiple files.
+### 7. Delete File
+Delete a specific file.
+
+* **URL:** `/files/{message_id}`
+* **Method:** `DELETE`
+* **Auth Required:** Yes
+
+#### Query Parameters
+* `folder_id` (Optional): ID of folder containing the file
+
+---
+
+### 8. Copy File
+Forward a file/message to another folder.
+
+* **URL:** `/files/{message_id}/copy`
+* **Method:** `POST`
+* **Auth Required:** Yes
+
+#### Request Body
+```json
+{
+  "folder_id": 789,
+  "source_folder_id": 456
+}
+```
+
+---
+
+### 9. Update File (Rename / Move)
+Rename (edit description) or move a file.
+
+* **URL:** `/files/{message_id}`
+* **Method:** `PATCH`
+* **Auth Required:** Yes
+
+#### Request Body (All fields optional)
+```json
+{
+  "name": "new_name.txt",
+  "folder_id": 789,
+  "source_folder_id": 456
+}
+```
+
+---
+
+### 10. Folder Management
+
+#### List Folders
+* **URL:** `/folders`
+* **Method:** `GET`
+
+#### Create Folder
+* **URL:** `/folders`
+* **Method:** `POST`
+* Request Body: `{"name": "New Folder"}`
+
+#### Rename Folder
+* **URL:** `/folders/{folder_id}`
+* **Method:** `PATCH`
+* Request Body: `{"name": "New Folder Name"}`
+
+#### Delete Folder
+* **URL:** `/folders/{folder_id}`
+* **Method:** `DELETE`
+
+---
+
+### 11. Storage Stats & Analytics
+
+#### Storage Stats
+Retrieve total storage consumed, file counts, and breakdown by folders and MIME types.
+* **URL:** `/storage/stats`
+* **Method:** `GET`
+
+#### Response (200 OK)
+```json
+{
+  "total_storage_used_bytes": 10485760,
+  "total_file_count": 12,
+  "folders": [
+    { "id": 456, "name": "Documents", "file_count": 5, "size_bytes": 5242880 }
+  ],
+  "mime_types": [
+    { "mime_type": "application/pdf", "file_count": 5, "size_bytes": 5242880 }
+  ]
+}
+```
+
+#### Duplicate Files Finder
+List groups of files with identical filenames and sizes.
+* **URL:** `/storage/duplicates`
+* **Method:** `GET`
+
+#### Empty Folders
+List folders that do not contain any files.
+* **URL:** `/folders/empty`
+* **Method:** `GET`
+
+---
+
+### 12. File Media & Thumbnails
+
+#### Get File Thumbnail
+Return the raw binary image data for a file's thumbnail.
+* **URL:** `/files/{message_id}/thumbnail`
+* **Method:** `GET`
+* Query Param: `folder_id` (Optional)
+
+#### Get Extended Media Info
+Return video duration, resolution, audio title, or audio performer metadata.
+* **URL:** `/files/{message_id}/media-info`
+* **Method:** `GET`
+* Query Param: `folder_id` (Optional)
+
+---
+
+### 13. Bulk Operations
+Perform action operations (such as move, delete, or archive) across multiple files.
 
 * **URL:** `/files/bulk`
 * **Method:** `POST`
 * **Auth Required:** Yes
 
-#### Bulk Delete Request Body
+#### Bulk Archive (Zip Download)
+Download selected files as a zip archive stream.
 ```json
 {
-  "action": "delete",
-  "file_ids": [123, 124, 125]
+  "action": "archive",
+  "file_ids": [123, 124, 125],
+  "folder_id": 456
 }
 ```
 
-#### Example Delete Request
-```bash
-curl -X POST \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: YOUR_API_KEY" \
-  -d '{"action":"delete","file_ids":[123,124]}' \
-  http://localhost:8550/api/v1/files/bulk
+#### Bulk Delete
+```json
+{
+  "action": "delete",
+  "file_ids": [123, 124, 125],
+  "folder_id": 456
+}
 ```
 
-#### Bulk Move Request Body
+#### Bulk Move
 ```json
 {
   "action": "move",
@@ -213,69 +308,17 @@ curl -X POST \
 }
 ```
 
-#### Example Move Request
-```bash
-curl -X POST \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: YOUR_API_KEY" \
-  -d '{"action":"move","file_ids":[123],"folder_id":111,"payload":{"folder_id":222}}' \
-  http://localhost:8550/api/v1/files/bulk
-```
-
-#### Response (200 OK)
-```json
-{
-  "success": true,
-  "count": 1
-}
-```
-
 ---
 
 ## Error Responses
 
 The API returns standardized JSON error formats on failure:
 
-### Unauthorized (Invalid API Key)
-* **Status:** `401 Unauthorized`
 ```json
 {
   "error": {
     "code": "UNAUTHORIZED",
     "message": "Invalid API key"
-  }
-}
-```
-
-### Missing API Key
-* **Status:** `401 Unauthorized`
-```json
-{
-  "error": {
-    "code": "UNAUTHORIZED",
-    "message": "Missing X-API-Key header"
-  }
-}
-```
-
-### File Not Found
-* **Status:** `404 Not Found`
-```json
-{
-  "error": {
-    "code": "NOT_FOUND",
-    "message": "File not found"
-  }
-}
-```
-
-### Invalid Request Action
-* **Status:** `400 Bad Request`
-```json
-{
-  "error": {
-    "code": "INVALID_ACTION",
-    "message": "Unsupported bulk action"
   }
 }
 ```

@@ -5,7 +5,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 
 import { TelegramFile, BandwidthStats, ShareInfo } from '../../types';
-import { formatBytes, isMediaFile, isPdfFile, nativeShareOrCopy, copyToClipboard } from '../../utils';
+import { formatBytes, isMediaFile, isPdfFile, isArchiveFile, nativeShareOrCopy, copyToClipboard } from '../../utils';
 
 // Components
 import { Sidebar } from './dashboard/Sidebar';
@@ -18,9 +18,11 @@ import { PreviewModal } from './dashboard/PreviewModal';
 import { MediaPlayer } from './dashboard/MediaPlayer';
 import { ExternalDropBlocker } from './dashboard/ExternalDropBlocker';
 import { PdfViewer } from './dashboard/PdfViewer';
+import { ArchiveViewerModal } from './dashboard/ArchiveViewerModal';
 import { SettingsModal } from './dashboard/SettingsModal';
 import { ShareDialog } from './dashboard/ShareDialog';
 import { RenameFolderModal } from './dashboard/RenameFolderModal';
+import { RenameFileModal } from './dashboard/RenameFileModal';
 import { DesktopAdBanner } from './dashboard/DesktopAdBanner';
 import { RemoteUploadModal } from './dashboard/RemoteUploadModal';
 import { Link, Copy, Check, X, Loader2, Share2 } from 'lucide-react';
@@ -32,6 +34,7 @@ import { useFileUpload } from '../../hooks/useFileUpload';
 import { useFileDownload } from '../../hooks/useFileDownload';
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts';
 import { useSettings } from '../../context/SettingsContext';
+import { useConfirm } from '../../context/ConfirmContext';
 
 export function Dashboard({ onLogout }: { onLogout: () => void }) {
     const queryClient = useQueryClient();
@@ -45,6 +48,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
 
 
     const { settings, updateSetting } = useSettings();
+    const { confirm } = useConfirm();
     const viewMode = settings.viewMode;
     const setViewMode = (mode: 'grid' | 'list') => updateSetting('viewMode', mode);
 
@@ -56,14 +60,15 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     const [searchResults, setSearchResults] = useState<TelegramFile[]>([]);
     const [isSearching, setIsSearching] = useState(false);
     const [cardScale, setCardScale] = useState(1.0);
-    const internalDragRef = useRef<number | null>(null);
+    const internalDragRef = useRef<number[] | null>(null);
 
-    const setInternalDragFileId = (id: number | null) => {
-        internalDragRef.current = id;
+    const setInternalDragIds = (ids: number[] | null) => {
+        internalDragRef.current = ids;
     };
     const [showRemoteUpload, setShowRemoteUpload] = useState(false);
     const [playingFile, setPlayingFile] = useState<TelegramFile | null>(null);
     const [pdfFile, setPdfFile] = useState<TelegramFile | null>(null);
+    const [archiveViewFile, setArchiveViewFile] = useState<TelegramFile | null>(null);
     const [shareFile, setShareFile] = useState<TelegramFile | null>(null);
     const [bulkShareLinks, setBulkShareLinks] = useState<Array<{ file: TelegramFile; link: string }> | null>(null);
     const [bulkShareLoading, setBulkShareLoading] = useState(false);
@@ -71,6 +76,8 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     const [previewContextFiles, setPreviewContextFiles] = useState<TelegramFile[]>([]);
     const [previewContextIndex, setPreviewContextIndex] = useState(-1);
     const [renameFolder, setRenameFolder] = useState<{ id: number; name: string } | null>(null);
+    const [moveFileTarget, setMoveFileTarget] = useState<TelegramFile | null>(null);
+    const [renameFileTarget, setRenameFileTarget] = useState<TelegramFile | null>(null);
 
     const { data: allFiles = [], isLoading, error } = useQuery({
         queryKey: ['files', activeFolderId],
@@ -173,6 +180,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
         setPreviewFile(null);
         setPlayingFile(null);
         setPdfFile(null);
+        setArchiveViewFile(null);
     }, []);
 
     const handleFocusSearch = useCallback(() => {
@@ -196,15 +204,6 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
         }
     }, [selectedIds, displayedFiles, setActiveFolderId]);
 
-    useKeyboardShortcuts({
-        onSelectAll: handleSelectAll,
-        onDelete: handleKeyboardDelete,
-        onEscape: handleEscape,
-        onSearch: handleFocusSearch,
-        onEnter: handleEnter,
-        enabled: !previewFile && !playingFile && !pdfFile && !showMoveModal // Disable when modals are open
-    });
-
 
     useEffect(() => {
         lastClickedIndexRef.current = -1;
@@ -217,6 +216,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
         setPdfFile(null);
         setPreviewContextFiles([]);
         setPreviewContextIndex(-1);
+        setArchiveViewFile(null);
     }, [activeFolderId]);
 
 
@@ -271,6 +271,64 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
         setSelectedIds(ids => ids.includes(id) ? ids.filter(i => i !== id) : [...ids, id]);
     }, []);
 
+    const handleFileMove = useCallback((file: TelegramFile) => {
+        setMoveFileTarget(file);
+        setShowMoveModal(true);
+    }, []);
+
+    const handleRename = useCallback((file: TelegramFile) => {
+        setRenameFileTarget(file);
+    }, []);
+
+    const handleRenameSubmit = useCallback(async (newName: string) => {
+        if (!renameFileTarget) return;
+        try {
+            await invoke('cmd_rename_file', {
+                messageId: renameFileTarget.id,
+                folderId: activeFolderId,
+                newName,
+            });
+            queryClient.invalidateQueries({ queryKey: ['files', activeFolderId] });
+            toast.success(`Renamed to "${newName}"`);
+        } catch (e) {
+            toast.error(`Failed to rename: ${e}`);
+            throw e;
+        }
+    }, [renameFileTarget, activeFolderId, queryClient]);
+
+    const handleKeyboardDownload = useCallback(() => {
+        if (selectedIds.length > 0) {
+            handleBulkDownload();
+        }
+    }, [selectedIds, handleBulkDownload]);
+
+    const handleKeyboardShare = useCallback(() => {
+        if (selectedIds.length > 0) {
+            handleBulkShare();
+        }
+    }, [selectedIds, handleBulkShare]);
+
+    const handleKeyboardRename = useCallback(() => {
+        if (selectedIds.length === 1) {
+            const selected = displayedFiles.find(f => f.id === selectedIds[0]);
+            if (selected && selected.type !== 'folder') {
+                handleRename(selected);
+            }
+        }
+    }, [selectedIds, displayedFiles, handleRename]);
+
+    useKeyboardShortcuts({
+        onSelectAll: handleSelectAll,
+        onDelete: handleKeyboardDelete,
+        onEscape: handleEscape,
+        onSearch: handleFocusSearch,
+        onEnter: handleEnter,
+        onDownload: handleKeyboardDownload,
+        onShare: handleKeyboardShare,
+        onRename: handleKeyboardRename,
+        enabled: !previewFile && !playingFile && !pdfFile && !archiveViewFile && !showMoveModal
+    });
+
     const handlePreview = (file: TelegramFile, orderedFiles?: TelegramFile[]) => {
         const contextFiles = (orderedFiles || displayedFiles).filter((f) => f.type !== 'folder');
         const contextIndex = contextFiles.findIndex((f) => f.id === file.id);
@@ -280,26 +338,35 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
 
         const isMedia = isMediaFile(file.name);
         const isPdf = isPdfFile(file.name);
+        const isArchive = isArchiveFile(file.name);
 
-        if (isMedia) {
+        if (isArchive) {
+            setArchiveViewFile(file);
+            setPreviewFile(null);
+            setPlayingFile(null);
+            setPdfFile(null);
+        } else if (isMedia) {
             setPlayingFile(file);
             setPreviewFile(null);
             setPdfFile(null);
+            setArchiveViewFile(null);
         } else if (isPdf) {
             setPdfFile(file);
             setPreviewFile(null);
             setPlayingFile(null);
+            setArchiveViewFile(null);
         } else {
             setPreviewFile(file);
             setPlayingFile(null);
             setPdfFile(null);
+            setArchiveViewFile(null);
         }
     };
 
     const navigatePreview = useCallback((step: 1 | -1) => {
         if (previewContextFiles.length === 0) return;
 
-        const currentFileId = previewFile?.id ?? playingFile?.id ?? pdfFile?.id;
+        const currentFileId = previewFile?.id ?? playingFile?.id ?? pdfFile?.id ?? archiveViewFile?.id;
         if (!currentFileId) return;
 
         const currentIndex = previewContextFiles.findIndex((f) => f.id === currentFileId);
@@ -313,21 +380,30 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
 
         const isMedia = isMediaFile(nextFile.name);
         const isPdf = isPdfFile(nextFile.name);
+        const isArchive = isArchiveFile(nextFile.name);
 
-        if (isMedia) {
+        if (isArchive) {
+            setArchiveViewFile(nextFile);
+            setPreviewFile(null);
+            setPlayingFile(null);
+            setPdfFile(null);
+        } else if (isMedia) {
             setPlayingFile(nextFile);
             setPreviewFile(null);
             setPdfFile(null);
+            setArchiveViewFile(null);
         } else if (isPdf) {
             setPdfFile(nextFile);
             setPreviewFile(null);
             setPlayingFile(null);
+            setArchiveViewFile(null);
         } else {
             setPreviewFile(nextFile);
             setPlayingFile(null);
             setPdfFile(null);
+            setArchiveViewFile(null);
         }
-    }, [previewContextFiles, previewFile, playingFile, pdfFile]);
+    }, [previewContextFiles, previewFile, playingFile, pdfFile, archiveViewFile]);
 
     const handleNextPreview = useCallback(() => {
         navigatePreview(1);
@@ -342,7 +418,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
             return { nextFile: null as TelegramFile | null, prevFile: null as TelegramFile | null };
         }
 
-        const currentFileId = previewFile?.id ?? playingFile?.id ?? pdfFile?.id;
+        const currentFileId = previewFile?.id ?? playingFile?.id ?? pdfFile?.id ?? archiveViewFile?.id;
         if (!currentFileId) {
             return { nextFile: null as TelegramFile | null, prevFile: null as TelegramFile | null };
         }
@@ -359,38 +435,60 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
             nextFile: previewContextFiles[nextIdx] || null,
             prevFile: previewContextFiles[prevIdx] || null,
         };
-    }, [previewContextFiles, previewFile, playingFile, pdfFile]);
+    }, [previewContextFiles, previewFile, playingFile, pdfFile, archiveViewFile]);
 
     const handleDropOnFolder = async (e: React.DragEvent, targetFolderId: number | null) => {
         e.preventDefault();
         e.stopPropagation();
 
-        const dataTransferFileId = e.dataTransfer.getData("application/x-telegram-file-id");
+        // Read multi-ID drag data (new format) or fall back to single-ID (legacy)
+        let idsToMove: number[] | null = null;
+        const rawIds = e.dataTransfer.getData("application/x-telegram-file-ids");
+        if (rawIds) {
+            try { idsToMove = JSON.parse(rawIds); } catch { /* ignore parse errors */ }
+        }
+        if (!idsToMove || idsToMove.length === 0) {
+            const singleId = e.dataTransfer.getData("application/x-telegram-file-id");
+            if (singleId) idsToMove = [parseInt(singleId)];
+        }
+        if (!idsToMove || idsToMove.length === 0) {
+            idsToMove = internalDragRef.current;
+        }
+        if (!idsToMove || idsToMove.length === 0) return;
 
-        if (activeFolderId === targetFolderId) return;
+        if (activeFolderId === targetFolderId) {
+            toast.info('File is already in this folder');
+            return;
+        }
 
-        const fileId = internalDragRef.current || (dataTransferFileId ? parseInt(dataTransferFileId) : null);
+        if (idsToMove.length >= 10) {
+            const confirmed = await confirm({
+                title: 'Bulk Move Confirmation',
+                message: `You are about to move ${idsToMove.length} files. Are you sure?`,
+                confirmText: `Move ${idsToMove.length} Files`,
+                variant: 'info',
+            });
+            if (!confirmed) return;
+        }
 
-        if (fileId) {
-            try {
-                const idsToMove = selectedIds.includes(fileId) ? selectedIds : [fileId];
+        try {
+            await invoke('cmd_move_files', {
+                messageIds: idsToMove,
+                sourceFolderId: activeFolderId,
+                targetFolderId: targetFolderId
+            });
+            // Clean up stale thumbnail and preview cache entries for the old message IDs
+            await Promise.all(idsToMove.flatMap(id => [
+                invoke('cmd_delete_image_thumbnail', { messageId: id, folderId: activeFolderId }).catch(() => {}),
+                invoke('cmd_delete_preview_for_message', { messageId: id, folderId: activeFolderId }).catch(() => {}),
+            ]));
 
-                await invoke('cmd_move_files', {
-                    messageIds: idsToMove,
-                    sourceFolderId: activeFolderId,
-                    targetFolderId: targetFolderId
-                });
-
-                queryClient.invalidateQueries({ queryKey: ['files', activeFolderId] });
-
-                if (selectedIds.includes(fileId)) setSelectedIds([]);
-
-                toast.success(`Moved ${idsToMove.length} file(s).`);
-
-                setInternalDragFileId(null);
-            } catch {
-                toast.error(`Failed to move file(s).`);
-            }
+            queryClient.invalidateQueries({ queryKey: ['files', activeFolderId] });
+            setSelectedIds([]);
+            toast.success(`Moved ${idsToMove.length} file(s).`);
+            setInternalDragIds(null);
+        } catch {
+            toast.error(`Failed to move file(s).`);
         }
     }
 
@@ -400,7 +498,11 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
 
 
     const handleRootDragOver = (e: React.DragEvent) => {
-        if (internalDragRef.current) {
+        // Accept our internal file drags (custom MIME type) so drops work anywhere
+        const isInternalDrag = internalDragRef.current !== null ||
+            e.dataTransfer.types.includes("application/x-telegram-file-id") ||
+            e.dataTransfer.types.includes("application/x-telegram-file-ids");
+        if (isInternalDrag) {
             e.preventDefault();
             e.stopPropagation();
             e.dataTransfer.dropEffect = 'move';
@@ -408,7 +510,10 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     };
 
     const handleRootDragEnter = (e: React.DragEvent) => {
-        if (internalDragRef.current) {
+        const isInternalDrag = internalDragRef.current !== null ||
+            e.dataTransfer.types.includes("application/x-telegram-file-id") ||
+            e.dataTransfer.types.includes("application/x-telegram-file-ids");
+        if (isInternalDrag) {
             e.preventDefault();
             e.stopPropagation();
             e.dataTransfer.dropEffect = 'move';
@@ -430,8 +535,32 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                 {showMoveModal && (
                     <MoveToFolderModal
                         folders={folders}
-                        onClose={() => setShowMoveModal(false)}
-                        onSelect={handleBulkMove}
+                        fileName={moveFileTarget?.name}
+                        onClose={() => { setShowMoveModal(false); setMoveFileTarget(null); }}
+                        onSelect={async (targetFolderId: number | null) => {
+                            if (moveFileTarget) {
+                                try {
+                                    await invoke('cmd_move_files', {
+                                        messageIds: [moveFileTarget.id],
+                                        sourceFolderId: activeFolderId,
+                                        targetFolderId,
+                                    });
+                                    // Clean up stale thumbnail and preview cache for the old message ID
+                                    await Promise.all([
+                                        invoke('cmd_delete_image_thumbnail', { messageId: moveFileTarget.id, folderId: activeFolderId }).catch(() => {}),
+                                        invoke('cmd_delete_preview_for_message', { messageId: moveFileTarget.id, folderId: activeFolderId }).catch(() => {}),
+                                    ]);
+                                    queryClient.invalidateQueries({ queryKey: ['files', activeFolderId] });
+                                    toast.success(`Moved "${moveFileTarget.name}"`);
+                                    setMoveFileTarget(null);
+                                    setShowMoveModal(false);
+                                } catch {
+                                    toast.error('Failed to move file');
+                                }
+                            } else {
+                                handleBulkMove(targetFolderId, () => setShowMoveModal(false));
+                            }
+                        }}
                         activeFolderId={activeFolderId}
                         key="move-modal"
                     />
@@ -544,9 +673,11 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                     showFolderUpload={settings.zipFolders}
                     onToggleSelection={handleToggleSelection}
                     onDrop={handleDropOnFolder}
-                    onDragStart={(fileId) => setInternalDragFileId(fileId)}
-                    onDragEnd={() => setTimeout(() => setInternalDragFileId(null), 50)}
+                    onDragStart={(ids) => setInternalDragIds(ids)}
+                    onDragEnd={() => setTimeout(() => setInternalDragIds(null), 50)}
                     onShare={setShareFile}
+                    onRename={handleRename}
+                    onFileMove={handleFileMove}
                     cardScale={cardScale}
                     onCardScaleChange={setCardScale}
                 />
@@ -557,6 +688,21 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                     file={previewFile}
                     activeFolderId={activeFolderId}
                     onClose={() => setPreviewFile(null)}
+                    onNext={handleNextPreview}
+                    onPrev={handlePrevPreview}
+                    currentIndex={previewContextIndex}
+                    totalItems={previewContextFiles.length}
+                    nextFile={previewNeighbors.nextFile}
+                    prevFile={previewNeighbors.prevFile}
+                />
+            )}
+
+            {archiveViewFile && (
+                <ArchiveViewerModal
+                    file={archiveViewFile}
+                    activeFolderId={activeFolderId}
+                    folders={folders}
+                    onClose={() => setArchiveViewFile(null)}
                     onNext={handleNextPreview}
                     onPrev={handlePrevPreview}
                     currentIndex={previewContextIndex}
@@ -602,6 +748,14 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                     currentName={renameFolder.name}
                     onRename={handleFolderRename}
                     onClose={() => setRenameFolder(null)}
+                />
+            )}
+
+            {renameFileTarget && (
+                <RenameFileModal
+                    fileName={renameFileTarget.name}
+                    onRename={handleRenameSubmit}
+                    onClose={() => setRenameFileTarget(null)}
                 />
             )}
 

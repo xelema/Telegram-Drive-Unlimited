@@ -256,6 +256,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                     chunkSizeKb: settings.chunkSizeKb,
                     keepAliveIntervalSec: settings.keepAliveIntervalSec,
                     autoDetectVpn: settings.autoDetectVpn,
+                    archiveMaxBytes: settings.archiveMaxBytes * 1024 * 1024,
                 });
             } catch {
                 // best-effort sync
@@ -268,7 +269,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         settings.pollingMinSec, settings.pollingMaxSec, settings.preferredDC,
         settings.dcFallbackAttempts, settings.floodWaitRespect, settings.peerCacheSize,
         settings.bandwidthLimitUpKBs, settings.bandwidthLimitDownKBs, settings.chunkSizeKb,
-        settings.keepAliveIntervalSec, settings.autoDetectVpn,
+        settings.keepAliveIntervalSec, settings.autoDetectVpn, settings.archiveMaxBytes,
     ]);
 
     // Poll latency when VPN tab is active
@@ -1293,6 +1294,22 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         </div>
                                         <input type="range" min="0" max="120" step="15" value={settings.keepAliveIntervalSec}
                                             onChange={e => updateSetting('keepAliveIntervalSec', parseInt(e.target.value))}
+                                            className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
+                                    </div>
+
+                                    {/* Archive Size Limit */}
+                                    <div className="p-3 rounded-lg bg-telegram-hover/50 space-y-2">
+                                        <div className="flex items-center justify-between">
+                                            <div>
+                                                <p className="text-sm text-telegram-text font-medium">Bulk Archive Size Limit</p>
+                                                <p className="text-xs text-telegram-subtext">Max RAM for API archive downloads</p>
+                                            </div>
+                                            <span className="text-sm text-telegram-primary font-mono font-medium">
+                                                {settings.archiveMaxBytes === 0 ? 'Unlimited' : `${settings.archiveMaxBytes} MiB`}
+                                            </span>
+                                        </div>
+                                        <input type="range" min="0" max="2048" step="64" value={settings.archiveMaxBytes}
+                                            onChange={e => updateSetting('archiveMaxBytes', parseInt(e.target.value))}
                                             className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
                                     </div>
 

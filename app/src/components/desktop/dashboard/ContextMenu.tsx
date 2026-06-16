@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Eye, HardDrive, Trash2, FolderOpen, Pencil, Play, FileText, Link, Copy } from 'lucide-react';
+import { Eye, HardDrive, Trash2, FolderOpen, Pencil, Play, FileText, Link, Copy, ArrowRightLeft } from 'lucide-react';
 import { TelegramFile, TelegramFolder } from '../../../types';
 import { isMediaFile, isPdfFile } from '../../../utils';
 import { toast } from 'sonner';
@@ -13,11 +13,13 @@ interface ContextMenuProps {
     onDelete: () => void;
     onPreview: () => void;
     onShare?: () => void;
+    onRename?: () => void;
+    onMove?: () => void;
     folders?: TelegramFolder[];
     activeFolderId?: number | null;
 }
 
-export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPreview, onShare, folders, activeFolderId }: ContextMenuProps) {
+export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPreview, onShare, onRename, onMove, folders, activeFolderId }: ContextMenuProps) {
     const [adjustedPos, setAdjustedPos] = useState({ x, y });
     const menuRef = useRef<HTMLDivElement>(null);
 
@@ -38,15 +40,23 @@ export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPrevi
         }
     }, [x, y]);
 
-    // Close on outside click
+    // Close on outside click — ignore clicks inside the menu so button handlers can fire
     useEffect(() => {
-        const handleClick = () => onClose();
+        const handleClick = (e: MouseEvent) => {
+            if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+                onClose();
+            }
+        };
         const handleResize = () => onClose();
-        const handleContextMenu = () => onClose();
+        const handleContextMenu = (e: MouseEvent) => {
+            if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+                onClose();
+            }
+        };
 
         window.addEventListener('click', handleClick, true);
         window.addEventListener('resize', handleResize);
-        window.addEventListener('contextmenu', handleContextMenu, true); // Close if right click elsewhere
+        window.addEventListener('contextmenu', handleContextMenu, true);
 
         return () => {
             window.removeEventListener('click', handleClick, true);
@@ -144,10 +154,26 @@ export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPrevi
                 })()
             )}
 
-            <button disabled className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-subtext hover:bg-telegram-hover rounded transition-colors text-left w-full cursor-not-allowed opacity-50">
-                <Pencil className="w-4 h-4" />
-                Rename
-            </button>
+            {file.type !== 'folder' && onMove && (
+                <button onClick={onMove} className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-text hover:bg-telegram-hover rounded transition-colors text-left w-full">
+                    <ArrowRightLeft className="w-4 h-4 text-amber-400" />
+                    Move to Folder
+                </button>
+            )}
+
+            {file.type !== 'folder' && onRename && (
+                <button onClick={onRename} className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-text hover:bg-telegram-hover rounded transition-colors text-left w-full">
+                    <Pencil className="w-4 h-4 text-blue-400" />
+                    Rename
+                </button>
+            )}
+
+            {file.type !== 'folder' && !onRename && (
+                <button disabled className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-subtext hover:bg-telegram-hover rounded transition-colors text-left w-full cursor-not-allowed opacity-50">
+                    <Pencil className="w-4 h-4" />
+                    Rename
+                </button>
+            )}
 
             <div className="h-px bg-telegram-border my-1" />
 

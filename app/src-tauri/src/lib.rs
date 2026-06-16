@@ -111,9 +111,16 @@ pub fn restart_api_server(app: &tauri::AppHandle) {
 
     // Need TelegramState to share with the API server
     let tg_state = Arc::new(app.state::<TelegramState>().inner().clone());
+    let bw_manager = app.state::<Arc<bandwidth::BandwidthManager>>().inner().clone();
+    let net_config = app.state::<Arc<vpn_optimizer::NetworkConfig>>().inner().clone();
+    let db_pool = app.state::<db::DbConnection>().inner().clone();
     let api_port = settings.port;
     let key_hash = settings.key_hash.clone();
     let handle_for_thread = api_handle_arc.clone();
+
+    // Resolve cache dirs before the thread spawn since app is a reference
+    let preview_dir = app.path().app_cache_dir().unwrap_or_default().join("previews");
+    let thumbnail_dir = app.path().app_data_dir().unwrap_or_default().join("thumbnails");
 
     std::thread::spawn(move || {
         #[cfg(target_os = "windows")]
@@ -124,6 +131,13 @@ pub fn restart_api_server(app: &tauri::AppHandle) {
             let api_state = actix_web::web::Data::new(api_routes::ApiState {
                 key_hash,
             });
+            let cache_dirs = actix_web::web::Data::new(api_routes::CacheDirs {
+                thumbnail_dir,
+                preview_dir,
+            });
+            let api_bw = actix_web::web::Data::new(bw_manager);
+            let api_net = actix_web::web::Data::new(net_config);
+            let api_db = actix_web::web::Data::new(db_pool);
 
             log::info!("Starting REST API server on port {}", api_port);
 
@@ -147,6 +161,10 @@ pub fn restart_api_server(app: &tauri::AppHandle) {
                     .wrap(cors)
                     .app_data(api_state_data.clone())
                     .app_data(api_state.clone())
+                    .app_data(cache_dirs.clone())
+                    .app_data(api_bw.clone())
+                    .app_data(api_net.clone())
+                    .app_data(api_db.clone())
                     .configure(api_routes::configure_api)
             })
             .bind(("127.0.0.1", api_port)) {
@@ -522,7 +540,7 @@ pub fn run() {
                 peer_cache: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
                 cancelled_transfers: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
             });
-            app.manage(bandwidth::BandwidthManager::new(app.handle()));
+            app.manage(Arc::new(bandwidth::BandwidthManager::new(app.handle())));
             app.manage(StreamConfig { token: stream_token.clone(), port: STREAM_PORT });
             app.manage(ActixServerHandle(server_handle_for_setup.clone()));
             app.manage(ApiServerHandle(Arc::new(std::sync::Mutex::new(None))));
@@ -648,7 +666,9 @@ pub fn run() {
             commands::cmd_create_folder,
             commands::cmd_delete_folder,
             commands::cmd_rename_folder,
+            commands::cmd_rename_file,
             commands::cmd_get_bandwidth,
+            commands::cmd_delete_preview_for_message,
             commands::cmd_get_preview,
             commands::cmd_clean_preview_cache,
             commands::cmd_logout,
@@ -698,6 +718,8 @@ pub fn run() {
             transcode::cmd_clear_transcode_cache,
             fmp4_remux::cmd_prepare_fmp4_stream,
             fmp4_remux::cmd_get_fmp4_status,
+            commands::cmd_list_archive_contents,
+            commands::cmd_extract_archive_entry,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

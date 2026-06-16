@@ -36,6 +36,7 @@ export interface Settings {
     chunkSizeKb: number;             // 128, 256, 512
     keepAliveIntervalSec: number;    // 0 = disabled, 30–120
     autoDetectVpn: boolean;
+    archiveMaxBytes: number;           // 0 = unlimited, MiB for bulk archive (API)
 
     // ── Performance ────────────────────────────────────────
     performanceMode: boolean;        // Disable blur, shadows, and heavy animations
@@ -78,6 +79,7 @@ const defaultSettings: Settings = {
     chunkSizeKb: 512,
     keepAliveIntervalSec: 0,
     autoDetectVpn: false,
+    archiveMaxBytes: 256,  // 256 MiB
 
     performanceMode: false,
     linuxRenderingFix: true,

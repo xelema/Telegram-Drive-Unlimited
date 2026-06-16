@@ -1,10 +1,15 @@
 use tauri::State;
 use tauri::Manager;
+use std::sync::Arc;
 use grammers_client::types::Media;
 use base64::{Engine as _, engine::general_purpose};
 use crate::TelegramState;
 use crate::bandwidth::BandwidthManager;
 use crate::commands::utils::resolve_peer;
+
+/// Supported image file extensions for thumbnails.
+/// Shared between Tauri commands and the REST API cache cleanup.
+pub const THUMBNAIL_EXTS: &[&str] = &["jpg", "png", "gif", "webp"];
 
 const PREVIEW_CACHE_MAX_FILES: usize = 30;
 const PREVIEW_CACHE_MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
@@ -49,7 +54,7 @@ pub async fn cmd_get_preview(
     folder_id: Option<i64>,
     app_handle: tauri::AppHandle,
     state: State<'_, TelegramState>,
-    bw_state: State<'_, BandwidthManager>,
+    bw_state: State<'_, Arc<BandwidthManager>>,
 ) -> Result<String, String> {
     let cache_dir = app_handle
         .path()
@@ -253,10 +258,14 @@ pub async fn cmd_get_thumbnail(
         let _ = tokio::fs::create_dir_all(&cache_dir).await;
     }
 
+    let folder_key = folder_id
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "home".to_string());
+
     // Check for any cached thumbnail for this message by checking predicted paths
-    let supported_exts = ["jpg", "png", "gif", "webp"];
-    for ext in &supported_exts {
-        let path = cache_dir.join(format!("{}.{}", message_id, ext));
+    let supported_exts = THUMBNAIL_EXTS;
+    for ext in supported_exts {
+        let path = cache_dir.join(format!("{}_{}.{}", folder_key, message_id, ext));
         if tokio::fs::metadata(&path).await.is_ok() {
             if let Ok(bytes) = tokio::fs::read(&path).await {
                 let mime = match *ext {
@@ -307,7 +316,7 @@ pub async fn cmd_get_thumbnail(
 
             if is_image {
                 // Get photo thumbnail (largest available for best quality)
-                let save_path = cache_dir.join(format!("{}.{}", message_id, ext));
+                let save_path = cache_dir.join(format!("{}_{}.{}", folder_key, message_id, ext));
                 let save_path_str = save_path.to_string_lossy().to_string();
 
                 let thumbs = match &media {
@@ -341,9 +350,48 @@ pub async fn cmd_get_thumbnail(
     Ok("".to_string())
 }
 
+/// Delete stale preview cache entries for a specific message in a specific folder.
+/// Preview cache files are named `{folder_key}_{message_id}.{ext}`.
+/// This removes all extensions for the given folder+message_id pair.
+#[tauri::command]
+pub async fn cmd_delete_preview_for_message(
+    message_id: i32,
+    folder_id: Option<i64>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let cache_dir = app_handle
+        .path()
+        .app_cache_dir()
+        .map_err(|e: tauri::Error| e.to_string())?
+        .join("previews");
+
+    let folder_key = folder_id
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "home".to_string());
+
+    let prefix = format!("{}_{}.", folder_key, message_id);
+
+    let _ = tokio::task::spawn_blocking(move || {
+        if let Ok(entries) = std::fs::read_dir(&cache_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_file() {
+                    continue;
+                }
+                let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if fname.starts_with(&prefix) {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
+    }).await;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn cmd_delete_image_thumbnail(
     message_id: i32,
+    folder_id: Option<i64>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     let cache_dir = app_handle
@@ -352,10 +400,14 @@ pub async fn cmd_delete_image_thumbnail(
         .map_err(|e: tauri::Error| e.to_string())?
         .join("thumbnails");
         
+    let folder_key = folder_id
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "home".to_string());
+
     let _ = tokio::task::spawn_blocking(move || {
-        let supported_exts = ["jpg", "png", "gif", "webp"];
-        for ext in &supported_exts {
-            let path = cache_dir.join(format!("{}.{}", message_id, ext));
+        let supported_exts = THUMBNAIL_EXTS;
+        for ext in supported_exts {
+            let path = cache_dir.join(format!("{}_{}.{}", folder_key, message_id, ext));
             if path.exists() {
                 let _ = std::fs::remove_file(path);
             }

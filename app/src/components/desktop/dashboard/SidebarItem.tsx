@@ -24,6 +24,7 @@ interface SidebarItemProps {
  */
 export function SidebarItem({ icon: Icon, label, active = false, onClick, onDrop, onDelete, folderId, isPublic, onRename, onToggleVisibility, onExportInvite }: SidebarItemProps) {
     const [isOver, setIsOver] = useState(false);
+    const [dragCount, setDragCount] = useState(0);
     const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
     const menuRef = useRef<HTMLDivElement>(null);
     const settingsBtnRef = useRef<HTMLDivElement>(null);
@@ -72,6 +73,17 @@ export function SidebarItem({ icon: Icon, label, active = false, onClick, onDrop
         }
     }, [contextMenu]);
 
+    // Parse drop count from drag data so we can show a badge
+    const parseDragCount = useCallback((e: React.DragEvent): number => {
+        const rawIds = e.dataTransfer.getData("application/x-telegram-file-ids");
+        if (rawIds) {
+            try { const ids = JSON.parse(rawIds); if (Array.isArray(ids) && ids.length > 0) return ids.length; } catch { /* ignore */ }
+        }
+        const singleId = e.dataTransfer.getData("application/x-telegram-file-id");
+        if (singleId) return 1;
+        return 0;
+    }, []);
+
     return (
         <div
             onClick={onClick}
@@ -79,6 +91,7 @@ export function SidebarItem({ icon: Icon, label, active = false, onClick, onDrop
                 e.preventDefault();
                 e.stopPropagation();
                 setIsOver(true);
+                setDragCount(parseDragCount(e));
             }}
             onDragOver={(e) => {
                 e.preventDefault();
@@ -93,12 +106,14 @@ export function SidebarItem({ icon: Icon, label, active = false, onClick, onDrop
                 const y = e.clientY;
                 if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) {
                     setIsOver(false);
+                    setDragCount(0);
                 }
             }}
             onDrop={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
                 setIsOver(false);
+                setDragCount(0);
                 if (onDrop) onDrop(e);
             }}
             onContextMenu={openContextMenu}
@@ -111,6 +126,11 @@ export function SidebarItem({ icon: Icon, label, active = false, onClick, onDrop
         >
             <Icon className={`w-4 h-4 ${isOver ? 'text-telegram-primary' : ''}`} />
             <span className="flex-1 text-left truncate">{label}</span>
+            {isOver && dragCount > 1 && (
+                <span className="flex-shrink-0 px-1.5 py-0.5 bg-telegram-primary text-white text-[10px] font-bold rounded-full leading-none min-w-[18px] text-center">
+                    {dragCount}
+                </span>
+            )}
             {isPublic && (
                 <Globe className="w-3 h-3 text-emerald-400 flex-shrink-0" />
             )}

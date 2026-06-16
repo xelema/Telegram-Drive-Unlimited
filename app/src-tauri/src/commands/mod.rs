@@ -40,6 +40,7 @@ pub mod api_settings;
 pub mod settings;
 pub mod sharing;
 pub mod video_metadata;
+pub mod archive;
 
 pub use auth::*;
 pub use fs::*;
@@ -51,4 +52,5 @@ pub use api_settings::*;
 pub use settings::*;
 pub use sharing::*;
 pub use video_metadata::*;
+pub use archive::*;
 

@@ -174,6 +174,13 @@ export type TranscodeJobPhase = 'idle' | 'preparing' | 'caching' | 'transcoding'
 
 // ── Rust command return types ────────────────────────────────────────
 
+export interface ArchiveEntry {
+    filename: string;
+    size: number;
+    compressed_size: number;
+    is_dir: boolean;
+}
+
 export interface VideoMetadata {
     duration_secs: number | null;
     video_codec: string | null;

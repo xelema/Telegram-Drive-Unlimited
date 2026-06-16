@@ -65,6 +65,7 @@ pub struct VpnSettingsRequest {
     chunk_size_kb: u32,
     keep_alive_interval_sec: u32,
     auto_detect_vpn: bool,
+    archive_max_bytes: u64,
 }
 
 /// Apply VPN optimizer settings from the frontend.
@@ -93,6 +94,7 @@ pub async fn cmd_apply_vpn_settings(
         chunk_size_kb: req.chunk_size_kb.clamp(64, 512),
         keep_alive_interval_sec: if req.keep_alive_interval_sec == 0 { 0 } else { req.keep_alive_interval_sec.clamp(30, 120) },
         auto_detect_vpn: req.auto_detect_vpn,
+        archive_max_bytes: req.archive_max_bytes,
     };
 
     log::info!(

@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.9.0] - 2026-06-16
+
+### Features & Bug Fixes
+
+- **Expanded REST API Interface**
+  - Upgraded the REST API server to a fully functional programmatic Cloud Drive interface.
+  - Implemented secure API key authentication and endpoints for file upload (via multipart forms), renaming, moving, copying, and deletion.
+  - Added folder CRUD endpoints to manage Telegram channels programmatically.
+  - Added endpoints for storage statistics, duplicate detection, empty folder discovery, and media metadata inspection.
+  - Implemented a streaming ZIP archive generation endpoint for downloading bulk files.
+
+- **Built-in Archive Viewer & Extractor**
+  - Added support for viewing the contents of ZIP, RAR, and 7Z archives directly inside the application.
+  - Implemented archive extraction capabilities to extract files to local storage or re-upload them.
+
+- **Drag and Drop Interface**
+  - Integrated drag-and-drop mechanics inside the file explorer to move files between folder views dynamically.
+
+- **Context Menu Alignment**
+  - Refined context menu positioning, boundaries, and quick-action menu options.
+
+- **Thumbnail Resolution & Scoping**
+  - Fixed duplicate thumbnail displays by scoping cache lookups and storage directories under folder-specific keys.
+
+---
+
 ## [1.8.8] - 2026-06-12
 
 ### Features & Caching Polish

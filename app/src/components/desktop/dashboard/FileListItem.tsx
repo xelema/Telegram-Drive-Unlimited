@@ -1,17 +1,19 @@
 import { useState } from 'react';
 import { Folder, MoreVertical, Check } from 'lucide-react';
 import { TelegramFile } from '../../../types';
+import { createDragGhost } from '../../../utils';
 import { FileTypeIcon } from '../../shared/FileTypeIcon';
 import { useVideoMetadata } from '../../../hooks/useVideoMetadata';
 import { useCachedVariants } from '../../../hooks/useCachedVariants';
 import { VideoMetaBadge } from '../../shared/VideoMetaBadge';
+
 
 interface FileListItemProps {
     file: TelegramFile;
     selectedIds: number[];
     onFileClick: (e: React.MouseEvent, id: number) => void;
     handleContextMenu: (e: React.MouseEvent, file: TelegramFile) => void;
-    onDragStart?: (fileId: number) => void;
+    onDragStart?: (fileIds: number[]) => void;
     onDragEnd?: () => void;
     onDrop?: (e: React.DragEvent, folderId: number) => void;
 }
@@ -44,9 +46,14 @@ export function FileListItem({
             onContextMenu={(e) => handleContextMenu(e, file)}
             draggable
             onDragStart={(e) => {
-                if (onDragStart) onDragStart(file.id);
-                e.dataTransfer.setData("application/x-telegram-file-id", file.id.toString());
+                const idsToDrag = selectedIds.includes(file.id) ? selectedIds : [file.id];
+                if (onDragStart) onDragStart(idsToDrag);
+                e.dataTransfer.setData("application/x-telegram-file-ids", JSON.stringify(idsToDrag));
                 e.dataTransfer.effectAllowed = 'move';
+                const dragCount = idsToDrag.length;
+                const ghost = createDragGhost(file.name, isFolder, dragCount);
+                e.dataTransfer.setDragImage(ghost, 0, 0);
+                requestAnimationFrame(() => ghost.remove());
             }}
             onDragEnd={() => {
                 if (onDragEnd) onDragEnd();

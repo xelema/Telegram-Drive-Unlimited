@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react';
 import { Folder, Eye, Trash2, Link, Check } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { TelegramFile } from '../../../types';
+import { createDragGhost } from '../../../utils';
 import { FileTypeIcon } from '../../shared/FileTypeIcon';
 import { useVideoMetadata } from '../../../hooks/useVideoMetadata';
 import { useCachedVariants } from '../../../hooks/useCachedVariants';
@@ -18,11 +19,12 @@ interface FileCardProps {
     onClick?: (e: React.MouseEvent) => void;
     onContextMenu?: (e: React.MouseEvent) => void;
     onDrop?: (e: React.DragEvent, folderId: number) => void;
-    onDragStart?: (fileId: number) => void;
+    onDragStart?: (fileIds: number[]) => void;
     onDragEnd?: () => void;
     activeFolderId?: number | null;
     height?: number;
     onToggleSelection?: () => void;
+    selectedIds?: number[];
 }
 
 // Check if file is an image type that can have a thumbnail
@@ -31,7 +33,8 @@ function isImageFile(filename: string): boolean {
     return ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].includes(ext);
 }
 
-export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSelected, onClick, onContextMenu, onDrop, onDragStart, onDragEnd, activeFolderId, height, onToggleSelection }: FileCardProps) {
+
+export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSelected, onClick, onContextMenu, onDrop, onDragStart, onDragEnd, activeFolderId, height, onToggleSelection, selectedIds }: FileCardProps) {
     const isFolder = file.type === 'folder';
     const [isDragOver, setIsDragOver] = useState(false);
     const [thumbnail, setThumbnail] = useState<string | null>(null);
@@ -78,8 +81,22 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
     return (
         <div
             className="relative"
+            draggable={!isFolder}
             onContextMenu={onContextMenu}
             onClick={onClick}
+            onDragStart={!isFolder ? (e: any) => {
+                const idsToDrag = selectedIds && selectedIds.includes(file.id) ? selectedIds : [file.id];
+                if (onDragStart) onDragStart(idsToDrag);
+                e.dataTransfer.setData("application/x-telegram-file-ids", JSON.stringify(idsToDrag));
+                e.dataTransfer.effectAllowed = 'move';
+                const dragCount = idsToDrag.length;
+                const ghost = createDragGhost(file.name, isFolder, dragCount);
+                e.dataTransfer.setDragImage(ghost, 0, 0);
+                requestAnimationFrame(() => ghost.remove());
+            } : undefined}
+            onDragEnd={!isFolder ? () => {
+                if (onDragEnd) onDragEnd();
+            } : undefined}
             onDragOver={(e) => {
                 if (isFolder) {
                     e.preventDefault();
@@ -104,15 +121,6 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
             }}
         >
             <motion.div
-                draggable={!isFolder}
-                onDragStart={(e: any) => {
-                    if (onDragStart) onDragStart(file.id);
-                    e.dataTransfer.setData("application/x-telegram-file-id", file.id.toString());
-                    e.dataTransfer.effectAllowed = 'move';
-                }}
-                onDragEnd={() => {
-                    if (onDragEnd) onDragEnd();
-                }}
                 whileHover={{ y: -4 }}
                 className={`group cursor-pointer bg-telegram-surface rounded-xl overflow-hidden border hover:shadow-[0_4px_20px_rgba(0,0,0,0.2)] transition-all relative
                 ${isSelected ? 'border-telegram-primary bg-telegram-primary/5 ring-1 ring-telegram-primary' : 'border-telegram-border hover:border-telegram-primary/50'}

@@ -6,6 +6,9 @@ interface UseKeyboardShortcutsProps {
     onEscape: () => void;
     onSearch: () => void;
     onEnter?: () => void;
+    onDownload?: () => void;
+    onShare?: () => void;
+    onRename?: () => void;
     enabled?: boolean;
 }
 
@@ -15,6 +18,9 @@ export function useKeyboardShortcuts({
     onEscape,
     onSearch,
     onEnter,
+    onDownload,
+    onShare,
+    onRename,
     enabled = true
 }: UseKeyboardShortcutsProps) {
 
@@ -67,7 +73,28 @@ export function useKeyboardShortcuts({
             onEnter?.();
             return;
         }
-    }, [enabled, onSelectAll, onDelete, onEscape, onSearch, onEnter]);
+
+        // F2 - Rename selected file
+        if (e.key === 'F2') {
+            e.preventDefault();
+            onRename?.();
+            return;
+        }
+
+        // Ctrl/Cmd + D - Download selected
+        if (isMod && e.key.toLowerCase() === 'd') {
+            e.preventDefault();
+            onDownload?.();
+            return;
+        }
+
+        // Ctrl/Cmd + Shift + S - Share selected
+        if (isMod && e.shiftKey && e.key.toLowerCase() === 's') {
+            e.preventDefault();
+            onShare?.();
+            return;
+        }
+    }, [enabled, onSelectAll, onDelete, onEscape, onSearch, onEnter, onDownload, onShare, onRename]);
 
     useEffect(() => {
         window.addEventListener('keydown', handleKeyDown);

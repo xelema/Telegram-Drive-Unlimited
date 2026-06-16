@@ -1,4 +1,5 @@
 use tauri::{State, Emitter};
+use std::sync::Arc;
 use grammers_client::types::{Media, Peer};
 use grammers_client::InputMessage;
 use grammers_tl_types as tl;
@@ -443,6 +444,54 @@ pub fn copy_to_android_cache(_raw_path: &str) -> Result<String, String> {
     Err("Not supported on this platform".to_string())
 }
 
+pub async fn create_folder_inner(
+    name: &str,
+    client: &grammers_client::Client,
+    peer_cache: &Arc<tokio::sync::RwLock<HashMap<i64, Peer>>>,
+) -> Result<FolderMetadata, String> {
+    log::info!("Creating Telegram Channel: {}", name);
+    
+    let result = client.invoke(&tl::functions::channels::CreateChannel {
+        broadcast: true,
+        megagroup: false,
+        title: format!("{} [TD]", name),
+        about: "Telegram Drive Storage Folder\n[telegram-drive-folder]".to_string(),
+        geo_point: None,
+        address: None,
+        for_import: false,
+        forum: false,
+        ttl_period: None,
+    }).await.map_err(map_error)?;
+    
+    let (chat_id, access_hash) = match &result {
+        tl::enums::Updates::Updates(u) => {
+             let chat = u.chats.first().ok_or("No chat in updates")?;
+             match chat {
+                 tl::enums::Chat::Channel(c) => {
+                      let channel_obj = grammers_client::types::Channel { raw: c.clone() };
+                      peer_cache.write().await.insert(c.id, grammers_client::types::Peer::Channel(channel_obj));
+                      (c.id, c.access_hash.unwrap_or(0))
+                 }
+                 _ => return Err("Created chat is not a channel".to_string()),
+             }
+        },
+        _ => return Err("Unexpected response (not Updates::Updates)".to_string()), 
+    };
+
+    let _ = client.invoke(&tl::functions::messages::SetHistoryTtl {
+        peer: tl::enums::InputPeer::Channel(tl::types::InputPeerChannel { channel_id: chat_id, access_hash }),
+        period: 0, 
+    }).await;
+
+    Ok(FolderMetadata {
+        id: chat_id,
+        name: name.to_string(),
+        parent_id: None,
+        username: None,
+        is_public: false,
+    })
+}
+
 #[tauri::command]
 pub async fn cmd_create_folder(
     name: String,
@@ -465,55 +514,34 @@ pub async fn cmd_create_folder(
         });
     }
     let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
-    log::info!("Creating Telegram Channel: {}", name);
+    create_folder_inner(&name, &client, &state.peer_cache).await
+}
+
+pub async fn delete_folder_inner(
+    folder_id: i64,
+    client: &grammers_client::Client,
+    peer_cache: &Arc<tokio::sync::RwLock<HashMap<i64, Peer>>>,
+) -> Result<bool, String> {
+    log::info!("Deleting folder/channel: {}", folder_id);
+
+    let peer = resolve_peer(client, Some(folder_id), peer_cache).await?;
     
-    let result = client.invoke(&tl::functions::channels::CreateChannel {
-        broadcast: true,
-        megagroup: false,
-        title: format!("{} [TD]", name),
-        about: "Telegram Drive Storage Folder\n[telegram-drive-folder]".to_string(),
-        geo_point: None,
-        address: None,
-        for_import: false,
-        forum: false,
-        ttl_period: None, // Initial creation TTL
-    }).await.map_err(map_error)?;
-    
-    let (chat_id, access_hash) = match &result {
-        tl::enums::Updates::Updates(u) => {
-             let chat = u.chats.first().ok_or("No chat in updates")?;
-             match chat {
-                 tl::enums::Chat::Channel(c) => {
-                     // Cache the newly created peer immediately so that invite link generation
-                     // and other commands don't experience a peer cache miss on warm start.
-                     let channel_obj = grammers_client::types::Channel { raw: c.clone() };
-                     state.peer_cache.write().await.insert(c.id, grammers_client::types::Peer::Channel(channel_obj));
-                     (c.id, c.access_hash.unwrap_or(0))
-                 }
-                 _ => return Err("Created chat is not a channel".to_string()),
-             }
+    let input_channel = match peer {
+        Peer::Channel(c) => {
+             let chan = &c.raw;
+             tl::enums::InputChannel::Channel(tl::types::InputChannel {
+                 channel_id: chan.id,
+                 access_hash: chan.access_hash.ok_or("No access hash for channel")?,
+              })
         },
-        _ => return Err("Unexpected response (not Updates::Updates)".to_string()), 
+        _ => return Err("Only channels (folders) can be deleted.".to_string()),
     };
-
-    // Explicitly Disable TTL
-    let _input_channel = tl::enums::InputChannel::Channel(tl::types::InputChannel {
-         channel_id: chat_id,
-         access_hash,
-    });
-
-    let _ = client.invoke(&tl::functions::messages::SetHistoryTtl {
-        peer: tl::enums::InputPeer::Channel(tl::types::InputPeerChannel { channel_id: chat_id, access_hash }),
-        period: 0, 
-    }).await;
-
-    Ok(FolderMetadata {
-        id: chat_id,
-        name,
-        parent_id: None,
-        username: None,
-        is_public: false,
-    })
+    
+    client.invoke(&tl::functions::channels::DeleteChannel {
+        channel: input_channel,
+    }).await.map_err(|e| format!("Failed to delete channel: {}", e))?;
+    
+    Ok(true)
 }
 
 #[tauri::command]
@@ -531,9 +559,18 @@ pub async fn cmd_delete_folder(
         return Ok(true);
     }
     let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
-    log::info!("Deleting folder/channel: {}", folder_id);
+    delete_folder_inner(folder_id, &client, &state.peer_cache).await
+}
 
-    let peer = resolve_peer(&client, Some(folder_id), &state.peer_cache).await?;
+pub async fn rename_folder_inner(
+    folder_id: i64,
+    new_name: &str,
+    client: &grammers_client::Client,
+    peer_cache: &Arc<tokio::sync::RwLock<HashMap<i64, Peer>>>,
+) -> Result<bool, String> {
+    log::info!("Renaming folder/channel: {} to {}", folder_id, new_name);
+
+    let peer = resolve_peer(client, Some(folder_id), peer_cache).await?;
     
     let input_channel = match peer {
         Peer::Channel(c) => {
@@ -543,12 +580,13 @@ pub async fn cmd_delete_folder(
                  access_hash: chan.access_hash.ok_or("No access hash for channel")?,
              })
         },
-        _ => return Err("Only channels (folders) can be deleted.".to_string()),
+        _ => return Err("Only channels (folders) can be renamed.".to_string()),
     };
     
-    client.invoke(&tl::functions::channels::DeleteChannel {
+    client.invoke(&tl::functions::channels::EditTitle {
         channel: input_channel,
-    }).await.map_err(|e| format!("Failed to delete channel: {}", e))?;
+        title: format!("{} [TD]", new_name),
+    }).await.map_err(|e| format!("Failed to rename channel: {}", e))?;
     
     Ok(true)
 }
@@ -569,27 +607,7 @@ pub async fn cmd_rename_folder(
         return Ok(true);
     }
     let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
-    log::info!("Renaming folder/channel: {} to {}", folder_id, new_name);
-
-    let peer = resolve_peer(&client, Some(folder_id), &state.peer_cache).await?;
-    
-    let input_channel = match peer {
-        Peer::Channel(c) => {
-             let chan = &c.raw;
-             tl::enums::InputChannel::Channel(tl::types::InputChannel {
-                 channel_id: chan.id,
-                 access_hash: chan.access_hash.ok_or("No access hash for channel")?,
-             })
-        },
-        _ => return Err("Only channels (folders) can be renamed.".to_string()),
-    };
-    
-    client.invoke(&tl::functions::channels::EditTitle {
-        channel: input_channel,
-        title: format!("{} [TD]", new_name),
-    }).await.map_err(|e| format!("Failed to rename channel: {}", e))?;
-    
-    Ok(true)
+    rename_folder_inner(folder_id, &new_name, &client, &state.peer_cache).await
 }
 
 
@@ -681,7 +699,7 @@ pub async fn cmd_upload_file(
     transfer_id: Option<String>,
     app_handle: tauri::AppHandle,
     state: State<'_, TelegramState>,
-    bw_state: State<'_, BandwidthManager>,
+    bw_state: State<'_, Arc<BandwidthManager>>,
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
 ) -> Result<String, String> {
     let mut temp_cache_path: Option<String> = None;
@@ -727,7 +745,7 @@ async fn cmd_upload_file_inner(
     transfer_id: Option<String>,
     app_handle: tauri::AppHandle,
     state: State<'_, TelegramState>,
-    bw_state: State<'_, BandwidthManager>,
+    bw_state: State<'_, Arc<BandwidthManager>>,
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
 ) -> Result<String, String> {
 
@@ -898,7 +916,7 @@ pub async fn initiate_upload(
     transfer_id: Option<String>,
     app_handle: tauri::AppHandle,
     state: State<'_, TelegramState>,
-    bw_state: State<'_, BandwidthManager>,
+    bw_state: State<'_, Arc<BandwidthManager>>,
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
 ) -> Result<String, String> {
     crate::upload_service::start_foreground_service();
@@ -911,6 +929,73 @@ pub async fn initiate_upload(
         bw_state,
         net_config,
     ).await
+}
+
+#[tauri::command]
+pub async fn cmd_rename_file(
+    message_id: i32,
+    folder_id: Option<i64>,
+    new_name: String,
+    state: State<'_, TelegramState>,
+) -> Result<bool, String> {
+    let client_opt = { state.client.lock().await.clone() };
+    #[cfg(debug_assertions)]
+    if client_opt.is_none() {
+        log::info!("[MOCK] Renamed message {} to {}", message_id, new_name);
+        return Ok(true);
+    }
+    let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
+
+    let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
+
+    // Verify the message exists before attempting to edit it.
+    // This avoids a cryptic MESSAGE_ID_INVALID RPC error when the message
+    // was moved (forwarded → new ID) or deleted since the file list was loaded.
+    let messages = client.get_messages_by_id(&peer, &[message_id])
+        .await
+        .map_err(|e| format!("Failed to fetch message for rename: {}", e))?;
+    if messages.iter().flatten().next().is_none() {
+        return Err(format!(
+            "Message {} not found in folder {:?}. The file may have been moved or deleted. Please refresh the folder.",
+            message_id, folder_id
+        ));
+    }
+
+    let input_peer = match &peer {
+        Peer::User(u) => {
+            let (id, access_hash) = match &u.raw {
+                tl::enums::User::User(usr) => (usr.id, usr.access_hash.unwrap_or(0)),
+                tl::enums::User::Empty(usr) => (usr.id, 0),
+            };
+            tl::enums::InputPeer::User(tl::types::InputPeerUser {
+                user_id: id,
+                access_hash,
+            })
+        }
+        Peer::Channel(c) => {
+            tl::enums::InputPeer::Channel(tl::types::InputPeerChannel {
+                channel_id: c.raw.id,
+                access_hash: c.raw.access_hash.ok_or("No access hash for channel")?,
+            })
+        }
+        _ => return Err("Unsupported peer type".to_string()),
+    };
+
+    client.invoke(&tl::functions::messages::EditMessage {
+        peer: input_peer,
+        id: message_id,
+        no_webpage: false,
+        invert_media: false,
+        message: Some(new_name),
+        media: None,
+        reply_markup: None,
+        entities: None,
+        schedule_date: None,
+        quick_reply_shortcut_id: None,
+        schedule_repeat_period: None,
+    }).await.map_err(|e| format!("Failed to rename file: {}", e))?;
+
+    Ok(true)
 }
 
 #[tauri::command]
@@ -928,6 +1013,20 @@ pub async fn cmd_delete_file(
     let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
 
     let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
+
+    // Verify the message exists before attempting to delete it.
+    // This avoids a cryptic MESSAGE_ID_INVALID RPC error when the message
+    // was already moved or deleted since the file list was loaded.
+    let messages = client.get_messages_by_id(&peer, &[message_id])
+        .await
+        .map_err(|e| format!("Failed to fetch message for delete: {}", e))?;
+    if messages.iter().flatten().next().is_none() {
+        return Err(format!(
+            "Message {} not found in folder {:?}. The file may have already been moved or deleted. Please refresh the folder.",
+            message_id, folder_id
+        ));
+    }
+
     client.delete_messages(&peer, &[message_id]).await.map_err(|e| e.to_string())?;
     Ok(true)
 }
@@ -945,7 +1044,7 @@ pub async fn cmd_download_file(
     req: DownloadFileRequest,
     app_handle: tauri::AppHandle,
     state: State<'_, TelegramState>,
-    bw_state: State<'_, BandwidthManager>,
+    bw_state: State<'_, Arc<BandwidthManager>>,
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
 ) -> Result<String, String> {
     let tid = req.transfer_id.unwrap_or_default();
@@ -1292,11 +1391,16 @@ pub async fn cmd_get_files(
         if let Some(doc) = msg.media() {
             let (name, size, mime, ext) = match doc {
                 Media::Document(d) => {
-                    let n = d.name().to_string();
+                    let doc_name = d.name().to_string();
+                    // Prefer the message caption (set by rename via EditMessage) over the
+                    // document's built-in filename attribute, so renames persist across refreshes.
+                    let caption = msg.text();
+                    let display_name = if caption.is_empty() { doc_name.clone() } else { caption.to_string() };
                     let s = d.size();
                     let m = d.mime_type().map(|s| s.to_string());
-                    let e = std::path::Path::new(&n).extension().map(|os| os.to_str().unwrap_or("").to_string());
-                    (n, s, m, e)
+                    // Extension always from the original document name for correct file-type icon
+                    let e = std::path::Path::new(&doc_name).extension().map(|os| os.to_str().unwrap_or("").to_string());
+                    (display_name, s, m, e)
                 },
                 Media::Photo(_) => ("Photo.jpg".to_string(), 0, Some("image/jpeg".into()), Some("jpg".into())),
                 _ => ("Unknown".to_string(), 0, None, None),
@@ -1317,13 +1421,15 @@ fn extract_search_files(msgs: &[tl::enums::Message]) -> Vec<FileMetadata> {
         if let tl::enums::Message::Message(m) = msg {
             if let Some(tl::enums::MessageMedia::Document(d)) = &m.media {
                 if let Some(tl::enums::Document::Document(doc)) = &d.document {
-                    let name = doc.attributes.iter().find_map(|a| match a {
+                    let doc_name = doc.attributes.iter().find_map(|a| match a {
                         tl::enums::DocumentAttribute::Filename(f) => Some(f.file_name.clone()),
                         _ => None
                     }).unwrap_or("Unknown".to_string());
+                    // Prefer the message caption over the built-in document filename
+                    let name = if m.message.is_empty() { doc_name.clone() } else { m.message.clone() };
                     let size = doc.size as u64;
                     let mime = doc.mime_type.clone();
-                    let ext = std::path::Path::new(&name).extension().map(|os| os.to_str().unwrap_or("").to_string());
+                    let ext = std::path::Path::new(&doc_name).extension().map(|os| os.to_str().unwrap_or("").to_string());
                     let folder_id = match &m.peer_id {
                         tl::enums::Peer::Channel(c) => Some(c.channel_id),
                         tl::enums::Peer::User(u) => Some(u.user_id),
@@ -1813,7 +1919,7 @@ pub async fn cmd_upload_from_url(
     transfer_id: String,
     app_handle: tauri::AppHandle,
     state: State<'_, TelegramState>,
-    bw_state: State<'_, BandwidthManager>,
+    bw_state: State<'_, Arc<BandwidthManager>>,
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
 ) -> Result<String, String> {
     let mut client_builder = reqwest::Client::builder()
