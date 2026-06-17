@@ -56,7 +56,7 @@ A pre-built **unsigned APK** is available for Android sideloading via the [v2.1.
 > - **Compatibility**: Requires **Android 7.0 (API level 24)** or higher.
 > - **Android 15+ Installation**: If you encounter blocks or security restrictions when installing on Android 15+ emulator/device, bypass it using ADB:
 >   ```bash
->   adb install --bypass-low-target-sdk-block Telegram-Drive-v2.1.0-beta.apk
+>   adb install --bypass-low-target-sdk-block Telegram-Drive-v2.1.5-beta.apk
 >   ```
 > - The Android build is a **community/beta release** compiled locally. The desktop app (Windows/macOS/Linux) remains the primary supported platform, built and signed automatically by GitHub CI.
 
