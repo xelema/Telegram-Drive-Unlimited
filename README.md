@@ -47,7 +47,7 @@ A pre-built **unsigned APK** is available for Android sideloading via the [v2.1.
 
 ### How to Sideload
 
-1. Download `Telegram-Drive-v2.1.0-beta.apk` from the [v2.1.5-android release](https://github.com/caamer20/Telegram-Drive/releases/tag/Androidv2.1.5beta).
+1. Download `Telegram-Drive-v2.1.5-beta.apk` from the [v2.1.5-android release](https://github.com/caamer20/Telegram-Drive/releases/tag/Androidv2.1.5beta).
 2. On your Android device, go to **Settings → Apps → Special App Access → Install unknown apps** and allow your browser or file manager.
 3. Open the downloaded APK and tap **Install**.
 4. Enter your Telegram API credentials on first launch (same as the desktop app).
