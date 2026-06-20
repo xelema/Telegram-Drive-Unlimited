@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import "./i18n";
 
 window.onerror = function (message, source, lineno, colno, error) {
   console.error("Global JS Error:", message, "at", source, lineno + ":" + colno, error?.stack || error);

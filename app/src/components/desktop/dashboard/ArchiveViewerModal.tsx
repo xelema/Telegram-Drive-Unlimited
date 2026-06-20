@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { useQueryClient } from '@tanstack/react-query';
 import { X, Folder, File, Archive, Loader2, AlertTriangle, FileArchive, Download, ChevronDown, HardDrive, Zap, Square, CheckCircle, XCircle } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { ArchiveEntry, TelegramFile, TelegramFolder } from '../../../types';
 import { formatBytes } from '../../../utils';
 import { toast } from 'sonner';
@@ -42,6 +43,7 @@ export function ArchiveViewerModal({
     const [entries, setEntries] = useState<ArchiveEntry[] | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
+    const { t } = useTranslation();
 
     // Debounce cache invalidations so rapid successive extracts don't
     // flood React Query with individual refetch requests.
@@ -107,7 +109,7 @@ export function ArchiveViewerModal({
     }, [extractAllFolderMenuOpen]);
 
     const extractAllTargetName = extractAllTargetFolderId === null
-        ? 'Saved Messages'
+        ? t('common.saved_messages')
         : folders.find(f => f.id === extractAllTargetFolderId)?.name ?? 'Current Folder';
 
     const handleExtractAll = async () => {
@@ -206,7 +208,7 @@ export function ArchiveViewerModal({
         debouncedInvalidate(extractAllTargetFolderId);
 
         // Summary toast
-        const destName = extractAllTargetFolderId === null ? 'Saved Messages' : extractAllTargetName;
+        const destName = extractAllTargetFolderId === null ? t('common.saved_messages') : extractAllTargetName;
         if (wasCancelled) {
             if (done > 0) {
                 toast.info(`${done} extracted, cancelled — to ${destName}`);
@@ -385,7 +387,7 @@ export function ArchiveViewerModal({
                                                 title={`Extract all ${fileCount} files to ${extractAllTargetName}`}
                                             >
                                                 <Zap className="w-3 h-3" />
-                                                <span>Extract All ({fileCount})</span>
+                                                <span>{t('archive.extract_all')} ({fileCount})</span>
                                             </button>
                                             <button
                                                 onClick={(e) => { e.stopPropagation(); setExtractAllFolderMenuOpen(o => !o); }}
@@ -404,7 +406,7 @@ export function ArchiveViewerModal({
                                             onClick={e => e.stopPropagation()}
                                         >
                                             <div className="px-3 py-2 border-b border-telegram-border/50">
-                                                <p className="text-[10px] uppercase tracking-wider text-telegram-subtext">Extract all to</p>
+                                                <p className="text-[10px] uppercase tracking-wider text-telegram-subtext">{t('archive.extract_all_to')}</p>
                                             </div>
                                             <div className="max-h-48 overflow-y-auto py-1">
                                                 <button
@@ -412,7 +414,7 @@ export function ArchiveViewerModal({
                                                     className={`w-full flex items-center gap-2 px-3 py-2 text-xs text-left hover:bg-telegram-hover transition-colors ${extractAllTargetFolderId === null ? 'bg-emerald-500/10 text-emerald-600' : 'text-telegram-text'}`}
                                                 >
                                                     <HardDrive className="w-3.5 h-3.5 shrink-0" />
-                                                    <span className="truncate">Saved Messages</span>
+                                                    <span className="truncate">{t('common.saved_messages')}</span>
                                                     {extractAllTargetFolderId === null && (
                                                         <span className="ml-auto shrink-0 w-1.5 h-1.5 rounded-full bg-emerald-500" />
                                                     )}
@@ -445,7 +447,7 @@ export function ArchiveViewerModal({
                     {loading && (
                         <div className="flex flex-col items-center justify-center py-16 space-y-3">
                             <Loader2 className="w-8 h-8 text-telegram-primary animate-spin" />
-                            <p className="text-sm text-telegram-subtext">Reading archive contents...</p>
+                            <p className="text-sm text-telegram-subtext">{t('common.loading')}</p>
                         </div>
                     )}
 
@@ -454,7 +456,7 @@ export function ArchiveViewerModal({
                         <div className="flex flex-col items-center justify-center py-16 space-y-3 px-6">
                             <AlertTriangle className="w-10 h-10 text-amber-500" />
                             <p className="text-sm text-center text-telegram-text font-medium">
-                                Failed to read archive
+                                {t('archive.failed_read')}
                             </p>
                             <p className="text-xs text-center text-telegram-subtext max-w-sm break-words">
                                 {error}
@@ -466,7 +468,7 @@ export function ArchiveViewerModal({
                     {entries && entries.length === 0 && !loading && !error && (
                         <div className="flex flex-col items-center justify-center py-16 space-y-3">
                             <Archive className="w-10 h-10 text-telegram-subtext/50" />
-                            <p className="text-sm text-telegram-subtext">This archive contains no files</p>
+                            <p className="text-sm text-telegram-subtext">{t('archive.empty_archive')}</p>
                         </div>
                     )}
 
@@ -511,7 +513,7 @@ export function ArchiveViewerModal({
                                                 /* Extracting spinner */
                                                 <div className="flex items-center gap-1.5 mt-1">
                                                     <Loader2 className="w-2.5 h-2.5 text-telegram-subtext animate-spin" />
-                                                    <span className="text-[10px] text-telegram-subtext">Extracting...</span>
+                                                    <span className="text-[10px] text-telegram-subtext">{t('archive.extracting')}</span>
                                                 </div>
                                             )
                                         ) : extractAllEntryStatuses.current.get(i) === 'done' ? (
@@ -570,7 +572,7 @@ export function ArchiveViewerModal({
                         onClick={onClose}
                         className="w-full px-4 py-2 rounded-lg bg-telegram-hover hover:bg-telegram-hover/70 text-telegram-text text-sm font-medium transition-colors"
                     >
-                        Close
+                        {t('common.close')}
                     </button>
                 </div>
             </div>
@@ -607,6 +609,7 @@ function ExtractButton({ file, activeFolderId, folders, entryIndex, entryName, e
     const [folderMenuOpen, setFolderMenuOpen] = useState(false);
     const unlistenRef = useRef<UnlistenFn | null>(null);
     const menuRef = useRef<HTMLDivElement | null>(null);
+    const { t } = useTranslation();
 
     // Close folder menu on click outside
     useEffect(() => {
@@ -628,7 +631,7 @@ function ExtractButton({ file, activeFolderId, folders, entryIndex, entryName, e
     }, []);
 
     const targetFolderName = targetFolderId === null
-        ? 'Saved Messages'
+        ? t('common.saved_messages')
         : folders.find(f => f.id === targetFolderId)?.name ?? 'Current Folder';
 
     const handleExtract = async () => {
@@ -672,7 +675,7 @@ function ExtractButton({ file, activeFolderId, folders, entryIndex, entryName, e
                 transferId,
             });
 
-            const destName = targetFolderId === null ? 'Saved Messages' : targetFolderName;
+            const destName = targetFolderId === null ? t('common.saved_messages') : targetFolderName;
             toast.success(`"${entryName}" extracted to ${destName}`);
 
             // Refresh the file list for the target folder (debounced)
@@ -702,7 +705,7 @@ function ExtractButton({ file, activeFolderId, folders, entryIndex, entryName, e
     };
 
     const isBusy = extracting || uploading;
-    const label = extracting ? 'Extracting...' : 'Uploading...';
+    const label = extracting ? t('archive.extracting') : 'Uploading...';
     const progressPct = progress ? Math.min(progress.percent, 99) : 0;
     const showProgress = uploading && progress;
 
@@ -720,7 +723,7 @@ function ExtractButton({ file, activeFolderId, folders, entryIndex, entryName, e
                     ) : (
                         <Download className="w-3 h-3" />
                     )}
-                    <span>{isBusy ? label : 'Extract'}</span>
+                    <span>{isBusy ? label : t('archive.extract')}</span>
                 </button>
 
                 {/* Folder selector trigger */}
@@ -741,7 +744,7 @@ function ExtractButton({ file, activeFolderId, folders, entryIndex, entryName, e
                     onClick={e => e.stopPropagation()}
                 >
                     <div className="px-3 py-2 border-b border-telegram-border/50">
-                        <p className="text-[10px] uppercase tracking-wider text-telegram-subtext">Extract to</p>
+                        <p className="text-[10px] uppercase tracking-wider text-telegram-subtext">{t('archive.extract_to')}</p>
                     </div>
                     <div className="max-h-48 overflow-y-auto py-1">
                         {/* Saved Messages */}
@@ -750,7 +753,7 @@ function ExtractButton({ file, activeFolderId, folders, entryIndex, entryName, e
                             className={`w-full flex items-center gap-2 px-3 py-2 text-xs text-left hover:bg-telegram-hover transition-colors ${targetFolderId === null ? 'bg-telegram-primary/10 text-telegram-primary' : 'text-telegram-text'}`}
                         >
                             <HardDrive className="w-3.5 h-3.5 shrink-0" />
-                            <span className="truncate">Saved Messages</span>
+                            <span className="truncate">{t('common.saved_messages')}</span>
                             {targetFolderId === null && (
                                 <span className="ml-auto shrink-0 w-1.5 h-1.5 rounded-full bg-telegram-primary" />
                             )}

@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, ReactNode, useCallback } from 'react';
 import { load } from '@tauri-apps/plugin-store';
+import { SupportedLanguage } from '../i18n/languages';
 
 export interface Settings {
     viewMode: 'grid' | 'list';
@@ -7,6 +8,7 @@ export interface Settings {
     maxConcurrentUploads: number;
     maxConcurrentDownloads: number;
     zipFolders: boolean;
+    language: SupportedLanguage;
 
     // ── Proxy ──────────────────────────────────────────────
     proxyEnabled: boolean;
@@ -52,6 +54,7 @@ const defaultSettings: Settings = {
     maxConcurrentUploads: 6,
     maxConcurrentDownloads: 6,
     zipFolders: true,
+    language: 'en',
 
     // Proxy — off by default
     proxyEnabled: false,

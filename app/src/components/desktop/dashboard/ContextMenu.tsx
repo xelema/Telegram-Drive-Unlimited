@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Eye, HardDrive, Trash2, FolderOpen, Pencil, Play, FileText, Link, Copy, ArrowRightLeft } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { TelegramFile, TelegramFolder } from '../../../types';
 import { isMediaFile, isPdfFile } from '../../../utils';
 import { toast } from 'sonner';
@@ -22,6 +23,7 @@ interface ContextMenuProps {
 export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPreview, onShare, onRename, onMove, folders, activeFolderId }: ContextMenuProps) {
     const [adjustedPos, setAdjustedPos] = useState({ x, y });
     const menuRef = useRef<HTMLDivElement>(null);
+    const { t } = useTranslation();
 
     // Adjust position to stay in bounds
     useLayoutEffect(() => {
@@ -82,17 +84,17 @@ export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPrevi
                     {isMediaFile(file.name) ? (
                         <>
                             <Play className="w-4 h-4 text-telegram-primary" />
-                            Play
+                            {t('common.play')}
                         </>
                     ) : isPdfFile(file.name) ? (
                         <>
                             <FileText className="w-4 h-4 text-red-400" />
-                            View PDF
+                            {t('files.view_pdf')}
                         </>
                     ) : (
                         <>
                             <Eye className="w-4 h-4 text-blue-500" />
-                            Preview
+                            {t('files.preview')}
                         </>
                     )}
                 </button>
@@ -101,19 +103,19 @@ export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPrevi
             {file.type === 'folder' && (
                 <button onClick={onPreview} className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-text hover:bg-telegram-hover rounded transition-colors text-left w-full">
                     <FolderOpen className="w-4 h-4 text-yellow-500" />
-                    Open
+                    {t('files.open')}
                 </button>
             )}
 
             <button onClick={onDownload} className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-text hover:bg-telegram-hover rounded transition-colors text-left w-full">
                 <HardDrive className="w-4 h-4 text-green-500" />
-                Download
+                {t('files.download')}
             </button>
 
             {file.type !== 'folder' && onShare && (
                 <button onClick={onShare} className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-text hover:bg-telegram-hover rounded transition-colors text-left w-full">
                     <Link className="w-4 h-4 text-telegram-primary" />
-                    Share Link
+                    {t('files.share_link')}
                 </button>
             )}
 
@@ -127,16 +129,16 @@ export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPrevi
                             const url = `https://t.me/${username}/${file.id}`;
                             try {
                                 await navigator.clipboard.writeText(url);
-                                toast.success("Telegram link copied");
+                                toast.success(t('notifications.telegram_link_copied'));
                             } catch (e) {
-                                toast.error("Failed to copy link");
+                                toast.error(t('notifications.copy_link_failed'));
                             }
                             onClose();
                         };
                         return (
                             <button onClick={handleCopyLink} className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-text hover:bg-telegram-hover rounded transition-colors text-left w-full">
                                 <Copy className="w-4 h-4 text-telegram-primary" />
-                                Copy Telegram Link
+                                {t('files.copy_telegram_link')}
                             </button>
                         );
                     } else {
@@ -147,7 +149,7 @@ export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPrevi
                                 className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-subtext hover:bg-telegram-hover rounded transition-colors text-left w-full cursor-not-allowed opacity-50"
                             >
                                 <Copy className="w-4 h-4" />
-                                Copy Telegram Link
+                                {t('files.copy_telegram_link')}
                             </button>
                         );
                     }
@@ -157,21 +159,21 @@ export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPrevi
             {file.type !== 'folder' && onMove && (
                 <button onClick={onMove} className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-text hover:bg-telegram-hover rounded transition-colors text-left w-full">
                     <ArrowRightLeft className="w-4 h-4 text-amber-400" />
-                    Move to Folder
+                    {t('files.move_to_folder')}
                 </button>
             )}
 
             {file.type !== 'folder' && onRename && (
                 <button onClick={onRename} className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-text hover:bg-telegram-hover rounded transition-colors text-left w-full">
                     <Pencil className="w-4 h-4 text-blue-400" />
-                    Rename
+                    {t('files.rename')}
                 </button>
             )}
 
             {file.type !== 'folder' && !onRename && (
                 <button disabled className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-subtext hover:bg-telegram-hover rounded transition-colors text-left w-full cursor-not-allowed opacity-50">
                     <Pencil className="w-4 h-4" />
-                    Rename
+                    {t('files.rename')}
                 </button>
             )}
 
@@ -179,7 +181,7 @@ export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPrevi
 
             <button onClick={onDelete} className="flex items-center gap-2 px-2 py-1.5 text-sm text-red-500 hover:bg-red-500/10 rounded transition-colors text-left w-full">
                 <Trash2 className="w-4 h-4" />
-                Delete
+                {t('files.delete')}
             </button>
         </div>
     );

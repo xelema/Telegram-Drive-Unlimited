@@ -1,6 +1,8 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { Plus, ArrowUpDown, ArrowUp, ArrowDown, FolderUp, ZoomIn, ZoomOut } from 'lucide-react';
 import { useVirtualizer } from '@tanstack/react-virtual';
+import { useTranslation } from 'react-i18next';
+import { useSettings } from '../../../context/SettingsContext';
 import { FileCard } from './FileCard';
 import { EmptyState } from './EmptyState';
 import { TelegramFile, TelegramFolder } from '../../../types';
@@ -77,6 +79,8 @@ export function FileExplorer({
     const [sortField, setSortField] = useState<SortField>('name');
     const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
     const [contextMenu, setContextMenu] = useState<{ x: number; y: number; file: TelegramFile } | null>(null);
+    const { t } = useTranslation();
+    const { settings } = useSettings();
 
     const parentRef = useRef<HTMLDivElement>(null);
     const { columns: baseColumns, containerWidth } = useGridColumns(parentRef);
@@ -99,7 +103,7 @@ export function FileExplorer({
             let comparison = 0;
             switch (sortField) {
                 case 'name':
-                    comparison = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+                    comparison = a.name.localeCompare(b.name, settings.language, { numeric: true, sensitivity: 'base' });
                     break;
                 case 'size':
                     comparison = (a.size || 0) - (b.size || 0);
@@ -290,7 +294,7 @@ export function FileExplorer({
                                                     style={{ height: `${cardHeight}px` }}
                                                 >
                                                     <Plus className="w-8 h-8 mb-2 group-hover:scale-110 transition-transform" />
-                                                    <span className="text-sm font-medium">Upload File</span>
+                                                    <span className="text-sm font-medium">{t('common.upload_file')}</span>
                                                 </button>
                                             );
                                         }
@@ -303,7 +307,7 @@ export function FileExplorer({
                                                     style={{ height: `${cardHeight}px` }}
                                                 >
                                                     <FolderUp className="w-8 h-8 mb-2 group-hover:scale-110 transition-transform" />
-                                                    <span className="text-sm font-medium">Upload Folder</span>
+                                                    <span className="text-sm font-medium">{t('common.upload_folder')}</span>
                                                 </button>
                                             );
                                         }
@@ -340,16 +344,15 @@ export function FileExplorer({
                     <div className="grid grid-cols-[2rem_2fr_6rem_8rem] gap-4 px-4 py-2 text-xs font-semibold text-telegram-subtext border-b border-telegram-border mb-2 select-none items-center">
                         <div className="text-center">#</div>
                         <button onClick={() => handleSort('name')} className="flex items-center gap-1 hover:text-telegram-text transition-colors">
-                            Name <SortIcon field="name" />
+                            {t('common.name')} <SortIcon field="name" />
                         </button>
                         <button onClick={() => handleSort('size')} className="flex items-center gap-1 justify-end hover:text-telegram-text transition-colors">
-                            Size <SortIcon field="size" />
+                            {t('common.size')} <SortIcon field="size" />
                         </button>
                         <button onClick={() => handleSort('date')} className="flex items-center gap-1 justify-end hover:text-telegram-text transition-colors">
-                            Date <SortIcon field="date" />
+                            {t('common.date')} <SortIcon field="date" />
                         </button>
                     </div>
-
 
                     <div
                         className="relative w-full"
@@ -369,7 +372,7 @@ export function FileExplorer({
                                             className="flex items-center gap-4 px-4 py-3 rounded-lg cursor-pointer border border-dashed border-telegram-border text-telegram-subtext hover:text-telegram-text hover:bg-telegram-hover w-full"
                                         >
                                             <div className="w-5 h-5 flex items-center justify-center"><Plus className="w-4 h-4" /></div>
-                                            <span className="text-sm font-medium">Upload File...</span>
+                                            <span className="text-sm font-medium">{t('common.upload_file')}...</span>
                                         </button>
                                     </div>
                                 );
@@ -386,14 +389,15 @@ export function FileExplorer({
                                             className="flex items-center gap-4 px-4 py-3 rounded-lg cursor-pointer border border-dashed border-telegram-border text-telegram-subtext hover:text-telegram-text hover:bg-telegram-hover w-full"
                                         >
                                             <div className="w-5 h-5 flex items-center justify-center"><FolderUp className="w-4 h-4" /></div>
-                                            <span className="text-sm font-medium">Upload Folder...</span>
+                                            <span className="text-sm font-medium">{t('common.upload_folder')}...</span>
                                         </button>
                                     </div>
                                 );
                             }
                             const file = item;
                             return (
-                                <div                                        key={file.id}
+                                <div
+                                    key={file.id}
                                     className="absolute top-0 left-0 w-full"
                                     style={{ transform: `translateY(${virtualItem.start}px)` }}
                                 >

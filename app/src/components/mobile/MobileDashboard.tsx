@@ -26,8 +26,11 @@ import { useTheme } from '../../context/ThemeContext';
 import { TelegramFile, TelegramFolder, ShareInfo, BandwidthStats } from '../../types';
 import { useSettings } from '../../context/SettingsContext';
 import { version as appVersion } from '../../../package.json';
+import { LANGUAGES } from '../../i18n/languages';
+import { useTranslation } from 'react-i18next';
 
 export default function MobileDashboard({ onLogout }: { onLogout?: () => void }) {
+  const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<'files' | 'downloads' | 'settings'>('files');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const { isAndroid } = usePlatform();
@@ -516,11 +519,11 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
         {activeTab === 'settings' && (
           <div className="space-y-4">
             <div className="p-4 rounded-2xl bg-telegram-hover/20 border border-telegram-border/30 space-y-4">
-              <h3 className="text-sm font-bold text-telegram-primary tracking-wide uppercase text-[10px]">Preferences</h3>
-              <div className="flex items-center justify-between py-2">
+              <h3 className="text-sm font-bold text-telegram-primary tracking-wide uppercase text-[10px]">{t('common.preferences')}</h3>
+              <div className="flex items-center justify-between py-2 border-b border-telegram-border/20">
                 <div>
-                  <p className="text-xs font-medium">Zip Folders Before Upload</p>
-                  <p className="text-[10px] text-telegram-subtext">Compress folders into .zip before uploading</p>
+                  <p className="text-xs font-medium">{t('settings.zip_before_upload')}</p>
+                  <p className="text-[10px] text-telegram-subtext">{t('settings.zip_folders_desc')}</p>
                 </div>
                 <button
                   onClick={() => updateSetting('zipFolders', !settings.zipFolders)}
@@ -529,25 +532,46 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
                   <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.zipFolders ? 'translate-x-5' : 'translate-x-0'}`} />
                 </button>
               </div>
+
+              <div className="flex items-center justify-between py-2">
+                <div>
+                  <p className="text-xs font-medium">{t('common.language')}</p>
+                  <p className="text-[10px] text-telegram-subtext">{t('settings.select_app_language')}</p>
+                </div>
+                <div className="relative">
+                  <select
+                    value={settings.language}
+                    onChange={e => updateSetting('language', e.target.value as any)}
+                    className="appearance-none bg-telegram-bg border border-telegram-border rounded-lg pl-2.5 pr-7 py-1.5 text-xs text-telegram-text focus:outline-none focus:border-telegram-primary/50 transition cursor-pointer"
+                  >
+                    {LANGUAGES.map(lang => (
+                      <option key={lang.code} value={lang.code}>
+                        {lang.nativeLabel}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown className="w-3.5 h-3.5 text-telegram-subtext absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+                </div>
+              </div>
             </div>
 
             {/* Connection Diagnostics */}
             <div className="p-4 rounded-2xl bg-telegram-hover/20 border border-telegram-border/30 space-y-4">
               <h3 className="text-sm font-bold text-telegram-primary tracking-wide uppercase text-[10px] flex items-center gap-1.5">
                 <Wifi className="w-3 h-3" />
-                Connection Diagnostics
+                {t('settings.connection_diagnostics')}
               </h3>
 
               {/* Connection status indicator */}
               <div className="flex items-center justify-between py-2 border-b border-telegram-border/20">
                 <div className="flex items-center gap-2">
                   <Activity className="w-3.5 h-3.5 text-telegram-subtext" />
-                  <p className="text-xs font-medium">Status</p>
+                  <p className="text-xs font-medium">{t('common.status')}</p>
                 </div>
                 <div className="flex items-center gap-1.5">
                   <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
                   <span className={`text-xs font-semibold ${isConnected ? 'text-green-400' : 'text-red-400'}`}>
-                    {isConnected ? 'Connected' : 'Offline'}
+                    {isConnected ? t('common.connected_telegram') : t('settings.offline')}
                   </span>
                 </div>
               </div>
@@ -555,13 +579,13 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
               {/* Ping test */}
               <div className="flex items-center justify-between py-2 border-b border-telegram-border/20">
                 <div>
-                  <p className="text-xs font-medium">Ping to Telegram</p>
+                  <p className="text-xs font-medium">{t('common.ping')}</p>
                   <p className="text-[10px] text-telegram-subtext">
                     {latencyMs !== null
                       ? latencyMs >= 0
                         ? `${latencyMs}ms`
-                        : 'Unreachable'
-                      : 'Not tested'}
+                        : t('settings.offline')
+                      : t('settings.not_tested')}
                   </p>
                 </div>
                 <button
@@ -572,12 +596,12 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
                   {checkingLatency ? (
                     <>
                       <div className="w-3 h-3 border-2 border-telegram-primary/30 border-t-telegram-primary rounded-full animate-spin" />
-                      Testing
+                      {t('settings.testing')}
                     </>
                   ) : (
                     <>
                       <Zap className="w-3 h-3" />
-                      Check Ping
+                      {t('settings.check_ping')}
                     </>
                   )}
                 </button>
@@ -593,7 +617,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
                     />
                   </div>
                   <span className={`text-[10px] font-semibold ${latencyMs < 100 ? 'text-green-400' : latencyMs < 250 ? 'text-yellow-400' : 'text-red-400'}`}>
-                    {latencyMs < 100 ? 'Excellent' : latencyMs < 250 ? 'Good' : 'Slow'}
+                    {latencyMs < 100 ? t('settings.excellent') : latencyMs < 250 ? t('settings.good') : t('settings.slow')}
                   </span>
                 </div>
               )}
@@ -602,8 +626,8 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
               {bandwidth && (
                 <div className="flex items-center justify-between py-2">
                   <div>
-                    <p className="text-xs font-medium">Data Usage (Session)</p>
-                    <p className="text-[10px] text-telegram-subtext">Up / Down since connected</p>
+                    <p className="text-xs font-medium">{t('common.usage')}</p>
+                    <p className="text-[10px] text-telegram-subtext">{t('settings.up_down_since_connected')}</p>
                   </div>
                   <div className="text-right">
                     <p className="text-[11px] font-mono font-semibold text-telegram-text">
@@ -620,14 +644,14 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
             <div className="p-4 rounded-2xl bg-telegram-hover/20 border border-telegram-border/30 space-y-4">
               <h3 className="text-sm font-bold text-telegram-primary tracking-wide uppercase text-[10px] flex items-center gap-1.5">
                 <Shield className="w-3 h-3" />
-                Proxy
+                {t('common.proxy')}
               </h3>
 
               {/* Enable Proxy Toggle */}
               <div className="flex items-center justify-between py-2 border-b border-telegram-border/20">
                 <div>
-                  <p className="text-xs font-medium">Enable Proxy</p>
-                  <p className="text-[10px] text-telegram-subtext">Route traffic through a proxy server</p>
+                  <p className="text-xs font-medium">{t('common.enable_proxy')}</p>
+                  <p className="text-[10px] text-telegram-subtext">{t('settings.enable_proxy_desc')}</p>
                 </div>
                 <button
                   onClick={() => updateSetting('proxyEnabled', !settings.proxyEnabled)}
@@ -640,8 +664,8 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
               {/* Proxy Type */}
               <div className="flex items-center justify-between py-2 border-b border-telegram-border/20">
                 <div>
-                  <p className="text-xs font-medium">Proxy Type</p>
-                  <p className="text-[10px] text-telegram-subtext">SOCKS5 (MTProto not supported)</p>
+                  <p className="text-xs font-medium">{t('common.proxy_type')}</p>
+                  <p className="text-[10px] text-telegram-subtext">{t('settings.socks5_desc_mobile')}</p>
                 </div>
                 <div className="relative">
                   <select
@@ -658,8 +682,8 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
               {/* Host */}
               <div className="flex items-center justify-between py-2 border-b border-telegram-border/20">
                 <div>
-                  <p className="text-xs font-medium">Host</p>
-                  <p className="text-[10px] text-telegram-subtext">Proxy server address</p>
+                  <p className="text-xs font-medium">{t('common.host')}</p>
+                  <p className="text-[10px] text-telegram-subtext">{t('settings.host_desc')}</p>
                 </div>
                 <input
                   type="text"
@@ -673,8 +697,8 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
               {/* Port */}
               <div className="flex items-center justify-between py-2 border-b border-telegram-border/20">
                 <div>
-                  <p className="text-xs font-medium">Port</p>
-                  <p className="text-[10px] text-telegram-subtext">1–65535</p>
+                  <p className="text-xs font-medium">{t('common.port')}</p>
+                  <p className="text-[10px] text-telegram-subtext">{t('settings.port_desc')}</p>
                 </div>
                 <input
                   type="number"
@@ -691,12 +715,12 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
                 <>
                   <div className="flex items-center justify-between py-2 border-b border-telegram-border/20">
                     <div>
-                      <p className="text-xs font-medium">Username</p>
-                      <p className="text-[10px] text-telegram-subtext">Optional</p>
+                      <p className="text-xs font-medium">{t('common.username')}</p>
+                      <p className="text-[10px] text-telegram-subtext">{t('settings.optional')}</p>
                     </div>
                     <input
                       type="text"
-                      placeholder="Optional"
+                      placeholder={t('settings.optional')}
                       value={settings.proxyUsername}
                       onChange={e => updateSetting('proxyUsername', e.target.value)}
                       className="w-32 bg-telegram-bg border border-telegram-border rounded-lg px-2 py-1.5 text-xs text-telegram-text text-right focus:outline-none focus:border-telegram-primary/50 transition placeholder:text-telegram-subtext/40"
@@ -704,12 +728,12 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
                   </div>
                   <div className="flex items-center justify-between py-2">
                     <div>
-                      <p className="text-xs font-medium">Password</p>
-                      <p className="text-[10px] text-telegram-subtext">Optional</p>
+                      <p className="text-xs font-medium">{t('common.password')}</p>
+                      <p className="text-[10px] text-telegram-subtext">{t('settings.optional')}</p>
                     </div>
                     <input
                       type="password"
-                      placeholder="Optional"
+                      placeholder={t('settings.optional')}
                       value={settings.proxyPassword}
                       onChange={e => updateSetting('proxyPassword', e.target.value)}
                       className="w-32 bg-telegram-bg border border-telegram-border rounded-lg px-2 py-1.5 text-xs text-telegram-text text-right focus:outline-none focus:border-telegram-primary/50 transition placeholder:text-telegram-subtext/40"
@@ -721,7 +745,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
               {/* Info note */}
               <div className="p-2.5 rounded-lg bg-yellow-500/5 border border-yellow-500/10">
                 <p className="text-[10px] text-yellow-400/70 leading-relaxed">
-                  ⚠️ Proxy changes require reconnecting.
+                  {t('settings.proxy_reconnect_note')}
                 </p>
               </div>
             </div>
@@ -731,7 +755,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
               <div className="p-4 rounded-2xl bg-telegram-hover/20 border border-telegram-border/30 space-y-4">
                 <h3 className="text-sm font-bold text-telegram-primary tracking-wide uppercase text-[10px] flex items-center gap-1.5">
                   <Share2 className="w-3 h-3" />
-                  Shared Files ({cachedFiles.length})
+                  {t('settings.shared_files', { count: cachedFiles.length })}
                 </h3>
                 <div className="space-y-2">
                   {cachedFiles.map((entry) => {
@@ -753,12 +777,12 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
                           {isUploading ? (
                             <>
                               <div className="w-3 h-3 border-2 border-black/30 border-t-black rounded-full animate-spin" />
-                              Uploading
+                              {t('settings.uploading')}
                             </>
                           ) : (
                             <>
                               <UploadCloud className="w-3 h-3" />
-                              Upload
+                              {t('common.upload')}
                             </>
                           )}
                         </button>
@@ -770,13 +794,13 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
                   onClick={handleClearCachedFiles}
                   className="w-full text-center text-[10px] text-red-400/60 hover:text-red-400 transition-colors py-1"
                 >
-                  Clear all shared files
+                  {t('settings.clear_shared_files')}
                 </button>
               </div>
             )}
 
             <div className="p-4 rounded-2xl bg-telegram-hover/20 border border-telegram-border/30 space-y-4">
-              <h3 className="text-sm font-bold text-telegram-primary tracking-wide uppercase text-[10px]">About</h3>
+              <h3 className="text-sm font-bold text-telegram-primary tracking-wide uppercase text-[10px]">{t('common.about')}</h3>
               <div className="flex flex-col items-center py-3 space-y-4">
                 <img src="/logo.svg" className="w-14 h-14 drop-shadow-lg" alt="Telegram Drive Logo" />
                 <div className="text-center">
@@ -809,15 +833,14 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
                 </div>
 
                 <p className="text-[10px] text-telegram-subtext/60 leading-relaxed text-center px-2">
-                  Turn your Telegram account into unlimited, secure cloud storage.
-                  Open-source and free forever.
+                  {t('settings.tagline')}
                 </p>
               </div>
             </div>
 
             <button onClick={handleLogout} className="w-full flex items-center justify-center gap-2 py-3 rounded-2xl bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 font-semibold text-xs active:scale-98 transition-all duration-200">
               <LogOut className="w-4 h-4" />
-              Log Out
+              {t('common.logout')}
             </button>
           </div>
         )}

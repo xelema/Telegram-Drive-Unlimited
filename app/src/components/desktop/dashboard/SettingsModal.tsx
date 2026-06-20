@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, RotateCcw, Download, Upload, Trash2, HardDrive, Globe, Key, Copy, Check, RefreshCw, FolderArchive, Shield, Zap, Activity, Gauge, Wifi, ChevronDown, Link, Sparkles, Info, Clipboard, Monitor, Loader2 } from 'lucide-react';
+import { X, RotateCcw, Download, Upload, Trash2, HardDrive, Globe, Key, Copy, Check, RefreshCw, FolderArchive, Shield, Zap, Activity, Gauge, Wifi, ChevronDown, Link, Sparkles, Info, Clipboard, Monitor, Loader2, Languages } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-shell';
 import { toast } from 'sonner';
@@ -8,6 +8,8 @@ import { check, Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { useSettings } from '../../../context/SettingsContext';
 import { useConfirm } from '../../../context/ConfirmContext';
+import { useTranslation } from 'react-i18next';
+import { LANGUAGES } from '../../../i18n/languages';
 import { ShareInfo, CacheEntry, DetailedCacheInfo } from '../../../types';
 import { version as appVersion } from '../../../../package.json';
 
@@ -28,6 +30,7 @@ type SettingsTab = 'general' | 'proxy' | 'vpn' | 'sharing' | 'about';
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const { settings, updateSetting, resetSettings } = useSettings();
     const { confirm } = useConfirm();
+    const { t } = useTranslation();
     const [clearing, setClearing] = useState(false);
 
     // Transcode cache state
@@ -58,23 +61,23 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             if (updateInfo) {
                 setUpdateAvailable(updateInfo);
                 setUpdateVersion(updateInfo.version);
-                toast.success(`Update v${updateInfo.version} available!`);
+                toast.success(t('settings.update_available_toast', { version: updateInfo.version }));
             } else {
                 setUpdateAvailable(null);
                 setUpdateVersion(null);
-                toast.success("You're on the latest version");
+                toast.success(t('settings.latest_version_toast'));
             }
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             if (msg.includes('dev') || msg.includes('no current version')) {
-                toast.info('Update check is only available in production builds');
+                toast.info(t('settings.update_prod_only_toast'));
             } else {
-                toast.error(`Update check failed: ${msg}`);
+                toast.error(t('settings.update_check_failed_toast', { error: msg }));
             }
         } finally {
             setUpdateChecking(false);
         }
-    }, []);
+    }, [t]);
 
     const handleInstallUpdate = useCallback(async () => {
         if (!updateAvailable) return;
@@ -98,10 +101,10 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             await relaunch();
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
-            toast.error(`Update failed: ${msg}`);
+            toast.error(t('settings.update_failed_toast', { error: msg }));
             setUpdateDownloading(false);
         }
-    }, [updateAvailable]);
+    }, [updateAvailable, t]);
 
     // Sharing settings state
     const [shares, setShares] = useState<ShareInfo[]>([]);
@@ -115,11 +118,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             const list = await invoke<ShareInfo[]>('cmd_list_shares');
             setShares(list);
         } catch (e) {
-            toast.error(`Failed to load shares: ${e}`);
+            toast.error(t('settings.load_shares_failed', { error: e }));
         } finally {
             setRefreshing(false);
         }
-    }, []);
+    }, [t]);
 
     useEffect(() => {
         if (isOpen && activeTab === 'sharing') {
@@ -129,19 +132,19 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
     const handleRevokeShare = async (id: string) => {
         const ok = await confirm({
-            title: 'Revoke Shareable Link',
-            message: 'Are you sure you want to revoke this link? Anyone using it will no longer be able to download the file.',
-            confirmText: 'Revoke',
+            title: t('settings.revoke_link_title'),
+            message: t('settings.revoke_link_desc'),
+            confirmText: t('settings.revoke'),
             variant: 'danger',
         });
         if (!ok) return;
 
         try {
             await invoke('cmd_revoke_share', { id });
-            toast.success('Shareable link revoked');
+            toast.success(t('settings.link_revoked'));
             fetchShares();
         } catch (e) {
-            toast.error(`Failed to revoke link: ${e}`);
+            toast.error(t('settings.link_revoke_failed', { error: e }));
         }
     };
 
@@ -303,7 +306,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         try {
             const port = parseInt(apiPort, 10);
             if (isNaN(port) || port < 1024 || port > 65535) {
-                toast.error('Port must be between 1024 and 65535');
+                toast.error(t('settings.port_range_error'));
                 setApiLoading(false);
                 return;
             }
@@ -312,9 +315,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                 port,
             });
             setApiSettings(result);
-            toast.success(result.enabled ? 'API server started' : 'API server stopped');
+            toast.success(result.enabled ? t('settings.api_server_started') : t('settings.api_server_stopped'));
         } catch (e) {
-            toast.error(`Failed to update API: ${e}`);
+            toast.error(t('settings.api_update_failed', { error: e }));
         } finally {
             setApiLoading(false);
         }
@@ -323,7 +326,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const handlePortApply = async () => {
         const port = parseInt(apiPort, 10);
         if (isNaN(port) || port < 1024 || port > 65535) {
-            toast.error('Port must be between 1024 and 65535');
+            toast.error(t('settings.port_range_error'));
             return;
         }
         if (port === apiSettings.port) return;
@@ -334,9 +337,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                 port,
             });
             setApiSettings(result);
-            toast.success(`API port updated to ${port}`);
+            toast.success(t('settings.api_port_updated', { port }));
         } catch (e) {
-            toast.error(`Failed to update port: ${e}`);
+            toast.error(t('settings.api_port_update_failed', { error: e }));
         } finally {
             setApiLoading(false);
         }
@@ -344,11 +347,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
     const handleGenerateKey = async () => {
         const ok = await confirm({
-            title: 'Generate API Key',
+            title: t('settings.generate_api_key_title'),
             message: apiSettings.key_set
-                ? 'This will revoke your current API key and generate a new one. Any existing integrations will stop working.'
-                : 'Generate a new API key for authenticating REST API requests.',
-            confirmText: apiSettings.key_set ? 'Regenerate' : 'Generate',
+                ? t('settings.regenerate_api_key_desc')
+                : t('settings.generate_api_key_desc'),
+            confirmText: apiSettings.key_set ? t('settings.regenerate') : t('settings.generate'),
             variant: apiSettings.key_set ? 'danger' : 'info',
         });
         if (!ok) return;
@@ -357,9 +360,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             setGeneratedKey(key);
             setKeyCopied(false);
             setApiSettings(prev => ({ ...prev, key_set: true }));
-            toast.success('API key generated');
+            toast.success(t('settings.api_key_generated'));
         } catch (e) {
-            toast.error(`Failed to generate key: ${e}`);
+            toast.error(t('settings.api_key_generate_failed', { error: e }));
         }
     };
 
@@ -370,7 +373,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             setKeyCopied(true);
             setTimeout(() => setKeyCopied(false), 2000);
         } catch {
-            toast.error('Failed to copy to clipboard');
+            toast.error(t('settings.copy_clipboard_failed'));
         }
     };
 
@@ -395,7 +398,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                     >
                         {/* Header */}
                         <div className="px-5 py-4 border-b border-telegram-border flex justify-between items-center">
-                            <h2 className="text-telegram-text font-semibold text-base">Settings</h2>
+                            <h2 className="text-telegram-text font-semibold text-base">{t('settings.title')}</h2>
                             <button
                                 onClick={onClose}
                                 className="p-1.5 hover:bg-telegram-hover rounded-lg text-telegram-subtext hover:text-telegram-text transition"
@@ -406,7 +409,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
                         {/* Tab Bar */}
                         <div className="px-5 pt-3 pb-0 flex gap-1 justify-center border-b border-telegram-border">
-                            {([['general', 'General', Globe], ['proxy', 'Proxy', Shield], ['vpn', 'VPN', Zap], ['sharing', 'Sharing', Link], ['about', 'About', Info]] as const).map(([key, label, Icon]) => (
+                            {([['general', Globe], ['proxy', Shield], ['vpn', Zap], ['sharing', Link], ['about', Info]] as const).map(([key, Icon]) => (
                                 <button
                                     key={key}
                                     onClick={() => setActiveTab(key as SettingsTab)}
@@ -417,7 +420,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     }`}
                                 >
                                     <Icon className="w-3.5 h-3.5" />
-                                    {label}
+                                    {t(`settings.tab_${key}`)}
                                 </button>
                             ))}
                         </div>
@@ -440,7 +443,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                             <section className="space-y-3">
                                 <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
                                     <Upload className="w-3.5 h-3.5" />
-                                    Transfers
+                                    {t('settings.transfers')}
                                 </h3>
 
                                 {/* Max Concurrent Uploads */}
@@ -448,8 +451,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     <div className="flex items-center gap-2">
                                         <Upload className="w-4 h-4 text-telegram-subtext" />
                                         <div>
-                                            <p className="text-sm text-telegram-text font-medium">Concurrent Uploads</p>
-                                            <p className="text-xs text-telegram-subtext">Max parallel uploads</p>
+                                            <p className="text-sm text-telegram-text font-medium">{t('settings.concurrent_uploads')}</p>
+                                            <p className="text-xs text-telegram-subtext">{t('settings.max_uploads_desc')}</p>
                                         </div>
                                     </div>
                                     <div className="flex items-center gap-2">
@@ -476,8 +479,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     <div className="flex items-center gap-2">
                                         <Download className="w-4 h-4 text-telegram-subtext" />
                                         <div>
-                                            <p className="text-sm text-telegram-text font-medium">Concurrent Downloads</p>
-                                            <p className="text-xs text-telegram-subtext">Max parallel downloads</p>
+                                            <p className="text-sm text-telegram-text font-medium">{t('settings.concurrent_downloads')}</p>
+                                            <p className="text-xs text-telegram-subtext">{t('settings.max_downloads_desc')}</p>
                                         </div>
                                     </div>
                                     <div className="flex items-center gap-2">
@@ -504,8 +507,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     <div className="flex items-center gap-2">
                                         <FolderArchive className="w-4 h-4 text-telegram-subtext" />
                                         <div>
-                                            <p className="text-sm text-telegram-text font-medium">Zip Folders Before Upload</p>
-                                            <p className="text-xs text-telegram-subtext">Compress folders into .zip before uploading</p>
+                                            <p className="text-sm text-telegram-text font-medium">{t('settings.zip_before_upload')}</p>
+                                            <p className="text-xs text-telegram-subtext">{t('settings.zip_folders_desc')}</p>
                                         </div>
                                     </div>
                                     <button
@@ -521,8 +524,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     <div className="flex items-center gap-2">
                                         <Zap className="w-4 h-4 text-telegram-subtext" />
                                         <div>
-                                            <p className="text-sm text-telegram-text font-medium">Performance Mode</p>
-                                            <p className="text-xs text-telegram-subtext">Disable blur, heavy shadows &amp; animations</p>
+                                            <p className="text-sm text-telegram-text font-medium">{t('settings.performance_mode')}</p>
+                                            <p className="text-xs text-telegram-subtext">{t('settings.performance_mode_desc')}</p>
                                         </div>
                                     </div>
                                     <button
@@ -538,14 +541,14 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     <div className="flex items-center gap-2">
                                         <Monitor className="w-4 h-4 text-telegram-subtext" />
                                         <div>
-                                            <p className="text-sm text-telegram-text font-medium">Linux Rendering Fix</p>
-                                            <p className="text-xs text-telegram-subtext">Disable DMA-BUF renderer (fixes GPU crashes, requires restart)</p>
+                                            <p className="text-sm text-telegram-text font-medium">{t('settings.linux_rendering_fix')}</p>
+                                            <p className="text-xs text-telegram-subtext">{t('settings.linux_rendering_desc')}</p>
                                         </div>
                                     </div>
                                     <button
                                         onClick={() => {
                                             updateSetting('linuxRenderingFix', !settings.linuxRenderingFix);
-                                            toast.info('Restart the app for this change to take effect', { duration: 5000 });
+                                            toast.info(t('settings.restart_app_toast'), { duration: 5000 });
                                         }}
                                         className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${settings.linuxRenderingFix ? 'bg-telegram-primary' : 'bg-telegram-border'}`}
                                     >
@@ -554,11 +557,43 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                 </div>
                             </section>
 
+                            {/* Language & Region Section */}
+                            <section className="space-y-3">
+                                <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
+                                    <Languages className="w-3.5 h-3.5" />
+                                    {t('settings.language_region')}
+                                </h3>
+
+                                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
+                                    <div className="flex items-center gap-2">
+                                        <Globe className="w-4 h-4 text-telegram-subtext" />
+                                        <div>
+                                            <p className="text-sm text-telegram-text font-medium">{t('settings.app_language')}</p>
+                                            <p className="text-xs text-telegram-subtext">{t('settings.choose_language')}</p>
+                                        </div>
+                                    </div>
+                                    <div className="relative">
+                                        <select
+                                            value={settings.language}
+                                            onChange={e => updateSetting('language', e.target.value as any)}
+                                            className="appearance-none bg-telegram-bg border border-telegram-border rounded-md pl-3 pr-8 py-1.5 text-sm text-telegram-text focus:outline-none focus:border-telegram-primary/50 transition cursor-pointer"
+                                        >
+                                            {LANGUAGES.map(lang => (
+                                                <option key={lang.code} value={lang.code}>
+                                                    {lang.nativeLabel}
+                                                </option>
+                                            ))}
+                                        </select>
+                                        <ChevronDown className="w-4 h-4 text-telegram-subtext absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                                    </div>
+                                </div>
+                            </section>
+
                             {/* REST API Section */}
                             <section className="space-y-3">
                                 <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
                                     <Globe className="w-3.5 h-3.5" />
-                                    REST API
+                                    {t('settings.rest_api')}
                                 </h3>
 
                                 {/* Enable Toggle */}
@@ -566,9 +601,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     <div className="flex items-center gap-2">
                                         <div className={`w-2 h-2 rounded-full ${apiSettings.running ? 'bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.5)]' : 'bg-gray-500'}`} />
                                         <div>
-                                            <p className="text-sm text-telegram-text font-medium">Enable API Server</p>
+                                            <p className="text-sm text-telegram-text font-medium">{t('settings.enable_api_server')}</p>
                                             <p className="text-xs text-telegram-subtext">
-                                                {apiSettings.running ? `Running on port ${apiSettings.port}` : 'Localhost only (127.0.0.1)'}
+                                                {apiSettings.running ? t('settings.api_running', { port: apiSettings.port }) : t('settings.api_stopped')}
                                             </p>
                                         </div>
                                     </div>
@@ -584,7 +619,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                 {/* Port */}
                                 <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
                                     <div>
-                                        <p className="text-sm text-telegram-text font-medium">Port</p>
+                                        <p className="text-sm text-telegram-text font-medium">{t('common.port')}</p>
                                         <p className="text-xs text-telegram-subtext">1024 - 65535</p>
                                     </div>
                                     <div className="flex items-center gap-2">
@@ -607,9 +642,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         <div className="flex items-center gap-2">
                                             <Key className="w-4 h-4 text-telegram-subtext" />
                                             <div>
-                                                <p className="text-sm text-telegram-text font-medium">API Key</p>
+                                                <p className="text-sm text-telegram-text font-medium">{t('settings.api_key')}</p>
                                                 <p className="text-xs text-telegram-subtext">
-                                                    {apiSettings.key_set ? 'Key configured' : 'No key set'}
+                                                    {apiSettings.key_set ? t('settings.api_key_configured') : t('settings.api_key_unset')}
                                                 </p>
                                             </div>
                                         </div>
@@ -618,7 +653,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-telegram-primary/10 text-telegram-primary hover:bg-telegram-primary/20 transition"
                                         >
                                             <RefreshCw className="w-3 h-3" />
-                                            {apiSettings.key_set ? 'Regenerate' : 'Generate'}
+                                            {apiSettings.key_set ? t('settings.regenerate') : t('settings.generate')}
                                         </button>
                                     </div>
 
@@ -626,7 +661,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     {generatedKey && (
                                         <div className="mt-2 p-2.5 bg-telegram-bg rounded-lg border border-yellow-500/20">
                                             <p className="text-[10px] text-yellow-400/80 uppercase tracking-wider font-semibold mb-1.5">
-                                                Copy now — this key will not be shown again
+                                                {t('settings.api_copy_alert')}
                                             </p>
                                             <div className="flex items-center gap-2">
                                                 <code className="flex-1 text-xs text-telegram-text font-mono bg-telegram-hover rounded px-2 py-1.5 overflow-x-auto select-all">
@@ -649,7 +684,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                             <section className="space-y-3">
                                 <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
                                     <HardDrive className="w-3.5 h-3.5" />
-                                    Storage
+                                    {t('settings.storage')}
                                 </h3>
 
                                 {/* Transcode Cache Size */}
@@ -658,8 +693,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         <div className="flex items-center gap-2">
                                             <HardDrive className="w-4 h-4 text-telegram-subtext" />
                                             <div>
-                                                <p className="text-sm text-telegram-text font-medium">Transcode Cache Limit</p>
-                                                <p className="text-xs text-telegram-subtext">Max disk space for HLS variants</p>
+                                                <p className="text-sm text-telegram-text font-medium">{t('settings.transcode_cache_limit')}</p>
+                                                <p className="text-xs text-telegram-subtext">{t('settings.transcode_cache_desc')}</p>
                                             </div>
                                         </div>
                                         <span className="text-sm text-telegram-primary font-mono font-medium">{settings.transcodeCacheMaxGb} GB</span>
@@ -677,33 +712,33 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     <div className="flex items-center gap-2">
                                         <Trash2 className="w-4 h-4 text-telegram-subtext" />
                                         <div>
-                                            <p className="text-sm text-telegram-text font-medium">Clear Local Cache</p>
-                                            <p className="text-xs text-telegram-subtext">Remove cached previews and temp files</p>
+                                            <p className="text-sm text-telegram-text font-medium">{t('settings.clear_local_cache')}</p>
+                                            <p className="text-xs text-telegram-subtext">{t('settings.clear_local_cache_desc')}</p>
                                         </div>
                                     </div>
                                     <button
                                         disabled={clearing}
                                         onClick={async () => {
                                             const ok = await confirm({
-                                                title: 'Clear Cache',
-                                                message: 'This will remove all cached previews and temporary files. Your uploaded files on Telegram are not affected.',
-                                                confirmText: 'Clear',
+                                                title: t('settings.clear_cache_title'),
+                                                message: t('settings.clear_cache_desc'),
+                                                confirmText: t('settings.clear'),
                                                 variant: 'danger',
                                             });
                                             if (!ok) return;
                                             setClearing(true);
                                             try {
                                                 await invoke('cmd_clean_cache');
-                                                toast.success('Cache cleared successfully');
+                                                toast.success(t('settings.cache_cleared'));
                                             } catch {
-                                                toast.error('Failed to clear cache');
+                                                toast.error(t('settings.cache_clear_failed'));
                                             } finally {
                                                 setClearing(false);
                                             }
                                         }}
                                         className="px-3 py-1.5 rounded-lg text-xs font-medium bg-red-500/10 text-red-400 hover:bg-red-500/20 transition disabled:opacity-50 disabled:cursor-not-allowed"
                                     >
-                                        {clearing ? 'Clearing...' : 'Clear'}
+                                        {clearing ? t('settings.clearing') : t('settings.clear')}
                                     </button>
                                 </div>
 
@@ -713,11 +748,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         <div className="flex items-center gap-2">
                                             <HardDrive className="w-4 h-4 text-telegram-subtext" />
                                             <div>
-                                                <p className="text-sm text-telegram-text font-medium">Transcode Cache</p>
+                                                <p className="text-sm text-telegram-text font-medium">{t('settings.transcode_cache')}</p>
                                                 <p className="text-xs text-telegram-subtext">
                                                     {transcodeCache
                                                         ? `${(transcodeCache.total_bytes / 1048576).toFixed(1)} MB / ${(transcodeCache.max_bytes / 1073741824).toFixed(1)} GB`
-                                                        : 'Loading...'}
+                                                        : t('common.loading')}
                                                 </p>
                                             </div>
                                         </div>
@@ -726,7 +761,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                 onClick={fetchTranscodeCache}
                                                 disabled={cacheLoading}
                                                 className="p-1.5 rounded-md hover:bg-telegram-hover text-telegram-subtext hover:text-telegram-text transition"
-                                                title="Refresh"
+                                                title={t('settings.refresh_links')}
                                             >
                                                 <RefreshCw className={`w-3 h-3 ${cacheLoading ? 'animate-spin' : ''}`} />
                                             </button>
@@ -734,9 +769,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                 disabled={!transcodeCache || transcodeCache.entries.length === 0}
                                                 onClick={async () => {
                                                     const ok = await confirm({
-                                                        title: 'Clear All Transcoded Cache',
-                                                        message: 'This will delete all transcoded HLS variants and cached originals. Files will need to be re-transcoded for HLS playback.',
-                                                        confirmText: 'Clear All',
+                                                        title: t('settings.clear_transcode_title'),
+                                                        message: t('settings.clear_transcode_message'),
+                                                        confirmText: t('settings.clear_all'),
                                                         variant: 'danger',
                                                     });
                                                     if (!ok) return;
@@ -746,14 +781,14 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                         toast.success(msg);
                                                         fetchTranscodeCache();
                                                     } catch (e) {
-                                                        toast.error(`Failed: ${e}`);
+                                                        toast.error(t('settings.failed_prefix', { error: e }));
                                                     } finally {
                                                         setClearingVariant(null);
                                                     }
                                                 }}
                                                 className="px-2.5 py-1 rounded-md text-[10px] font-medium bg-red-500/10 text-red-400 hover:bg-red-500/20 transition disabled:opacity-50 disabled:cursor-not-allowed"
                                             >
-                                                {clearingVariant === '__all__' ? 'Clearing...' : 'Clear All'}
+                                                {clearingVariant === '__all__' ? t('settings.clearing') : t('settings.clear_all')}
                                             </button>
                                         </div>
                                     </div>
@@ -785,15 +820,15 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                                         toast.success(msg);
                                                                         fetchTranscodeCache();
                                                                     } catch (e) {
-                                                                        toast.error(`Failed: ${e}`);
+                                                                        toast.error(t('settings.failed_prefix', { error: e }));
                                                                     } finally {
                                                                         setClearingVariant(null);
                                                                     }
                                                                 }}
                                                                 className="text-[9px] text-red-400/60 hover:text-red-400 transition px-1 py-0.5 rounded hover:bg-red-500/10 disabled:opacity-30"
-                                                                title={`Clear all variants for ${fileKey}`}
+                                                                title={t('settings.clear_variants_for', { key: fileKey })}
                                                             >
-                                                                {clearingVariant === fileKey ? '...' : 'Clear'}
+                                                                {clearingVariant === fileKey ? '...' : t('settings.clear')}
                                                             </button>
                                                         </div>
                                                         <div className="flex flex-wrap gap-1">
@@ -809,7 +844,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                                             toast.success(msg);
                                                                             fetchTranscodeCache();
                                                                         } catch (err) {
-                                                                            toast.error(`Failed: ${err}`);
+                                                                            toast.error(t('settings.failed_prefix', { error: err }));
                                                                         } finally {
                                                                             setClearingVariant(null);
                                                                         }
@@ -821,7 +856,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                                     } disabled:opacity-30`}
                                                                     title={`${e.quality} — ${(e.size_bytes / 1048576).toFixed(2)} MB${e.playlist_exists ? ' (ready)' : ' (partial)'}`}
                                                                 >
-                                                                    {e.quality === 'original' ? 'Original' : e.quality}
+                                     {e.quality === 'original' ? t('settings.original') : e.quality}
                                                                     <span className="text-[8px] opacity-60">{e.playlist_exists ? '✓' : '~'}</span>
                                                                 </button>
                                                             ))}
@@ -831,7 +866,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                             })()}
                                         </div>
                                     ) : transcodeCache && transcodeCache.entries.length === 0 ? (
-                                        <p className="text-[11px] text-telegram-subtext/50 text-center py-2">No transcoded files cached</p>
+                                        <p className="text-[11px] text-telegram-subtext/50 text-center py-2">{t('settings.no_transcoded_cached')}</p>
                                     ) : (
                                         <div className="flex items-center justify-center py-2">
                                             <RefreshCw className="w-3 h-3 text-telegram-subtext animate-spin" />
@@ -844,7 +879,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                             <section className="space-y-3">
                                 <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
                                     <Sparkles className="w-3.5 h-3.5" />
-                                    Updates
+                                    {t('settings.updates')}
                                 </h3>
 
                                 <div className="p-3 rounded-lg bg-telegram-hover/50 space-y-3">
@@ -852,9 +887,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         <div className="flex items-center gap-2">
                                             <Download className="w-4 h-4 text-telegram-subtext" />
                                             <div>
-                                                <p className="text-sm text-telegram-text font-medium">Check for Updates</p>
+                                                <p className="text-sm text-telegram-text font-medium">{t('settings.check_for_updates')}</p>
                                                 <p className="text-xs text-telegram-subtext">
-                                                    {updateVersion ? `v${updateVersion} available` : 'Check if a newer version exists'}
+                                                    {updateVersion ? t('settings.update_available', { version: updateVersion }) : t('settings.check_updates_desc')}
                                                 </p>
                                             </div>
                                         </div>
@@ -864,7 +899,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-telegram-primary text-white hover:bg-telegram-primary/90 transition"
                                             >
                                                 <Download className="w-3 h-3" />
-                                                Update & Restart
+                                                {t('settings.update_restart')}
                                             </button>
                                         ) : updateDownloading ? (
                                             <div className="flex items-center gap-2">
@@ -878,7 +913,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-telegram-primary/10 text-telegram-primary hover:bg-telegram-primary/20 transition disabled:opacity-50"
                                             >
                                                 <RefreshCw className={`w-3 h-3 ${updateChecking ? 'animate-spin' : ''}`} />
-                                                {updateChecking ? 'Checking...' : 'Check Now'}
+                                                {updateChecking ? t('settings.checking') : t('settings.check_now')}
                                             </button>
                                         )}
                                     </div>
@@ -907,7 +942,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     >
                                 <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
                                     <Shield className="w-3.5 h-3.5" />
-                                    Proxy Configuration
+                                    {t('settings.proxy_config')}
                                 </h3>
 
                                 {/* Enable Proxy */}
@@ -915,8 +950,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     <div className="flex items-center gap-2">
                                         <div className={`w-2 h-2 rounded-full ${settings.proxyEnabled ? 'bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.5)]' : 'bg-gray-500'}`} />
                                         <div>
-                                            <p className="text-sm text-telegram-text font-medium">Enable Proxy</p>
-                                            <p className="text-xs text-telegram-subtext">Route traffic through a proxy server</p>
+                                            <p className="text-sm text-telegram-text font-medium">{t('common.enable_proxy')}</p>
+                                            <p className="text-xs text-telegram-subtext">{t('settings.enable_proxy_desc')}</p>
                                         </div>
                                     </div>
                                     <button
@@ -930,8 +965,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                 {/* Proxy Type */}
                                 <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
                                     <div>
-                                        <p className="text-sm text-telegram-text font-medium">Proxy Type</p>
-                                        <p className="text-xs text-telegram-subtext">SOCKS5 proxy (MTProto not supported by grammers)</p>
+                                        <p className="text-sm text-telegram-text font-medium">{t('common.proxy_type')}</p>
+                                        <p className="text-xs text-telegram-subtext">{t('settings.socks5_desc')}</p>
                                     </div>
                                     <div className="relative">
                                         <select
@@ -948,8 +983,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                 {/* Host */}
                                 <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
                                     <div>
-                                        <p className="text-sm text-telegram-text font-medium">Host</p>
-                                        <p className="text-xs text-telegram-subtext">Proxy server address</p>
+                                        <p className="text-sm text-telegram-text font-medium">{t('common.host')}</p>
+                                        <p className="text-xs text-telegram-subtext">{t('settings.host_desc')}</p>
                                     </div>
                                     <input
                                         type="text"
@@ -963,8 +998,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                 {/* Port */}
                                 <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
                                     <div>
-                                        <p className="text-sm text-telegram-text font-medium">Port</p>
-                                        <p className="text-xs text-telegram-subtext">1–65535</p>
+                                        <p className="text-sm text-telegram-text font-medium">{t('common.port')}</p>
+                                        <p className="text-xs text-telegram-subtext">{t('settings.port_desc')}</p>
                                     </div>
                                     <input
                                         type="number"
@@ -981,12 +1016,12 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     <>
                                         <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
                                             <div>
-                                                <p className="text-sm text-telegram-text font-medium">Username</p>
-                                                <p className="text-xs text-telegram-subtext">Optional</p>
+                                                <p className="text-sm text-telegram-text font-medium">{t('common.username')}</p>
+                                                <p className="text-xs text-telegram-subtext">{t('settings.optional')}</p>
                                             </div>
                                             <input
                                                 type="text"
-                                                placeholder="Optional"
+                                                placeholder={t('settings.optional')}
                                                 value={settings.proxyUsername}
                                                 onChange={e => updateSetting('proxyUsername', e.target.value)}
                                                 className="w-40 bg-telegram-bg border border-telegram-border rounded-md px-2 py-1 text-sm text-telegram-text text-right focus:outline-none focus:border-telegram-primary/50 transition placeholder:text-telegram-subtext/40"
@@ -994,12 +1029,12 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         </div>
                                         <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
                                             <div>
-                                                <p className="text-sm text-telegram-text font-medium">Password</p>
-                                                <p className="text-xs text-telegram-subtext">Optional</p>
+                                                <p className="text-sm text-telegram-text font-medium">{t('common.password')}</p>
+                                                <p className="text-xs text-telegram-subtext">{t('settings.optional')}</p>
                                             </div>
                                             <input
                                                 type="password"
-                                                placeholder="Optional"
+                                                placeholder={t('settings.optional')}
                                                 value={settings.proxyPassword}
                                                 onChange={e => updateSetting('proxyPassword', e.target.value)}
                                                 className="w-40 bg-telegram-bg border border-telegram-border rounded-md px-2 py-1 text-sm text-telegram-text text-right focus:outline-none focus:border-telegram-primary/50 transition placeholder:text-telegram-subtext/40"
@@ -1011,7 +1046,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                 {/* Info note */}
                                 <div className="p-3 rounded-lg bg-yellow-500/5 border border-yellow-500/10 space-y-2">
                                     <p className="text-[11px] text-yellow-400/70 leading-relaxed">
-                                        ⚠️ Proxy changes require reconnecting to take effect.
+                                        {t('settings.proxy_reconnect_note')}
                                     </p>
                                     <button
                                         onClick={async () => {
@@ -1019,12 +1054,12 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                             try {
                                                 const ok = await invoke<boolean>('cmd_reconnect_with_network_settings');
                                                 if (ok) {
-                                                    toast.success('Reconnected successfully with new proxy settings');
+                                                    toast.success(t('settings.reconnect_success_toast'));
                                                 } else {
-                                                    toast.error('Reconnect failed — check proxy credentials');
+                                                    toast.error(t('settings.reconnect_failed_toast'));
                                                 }
                                             } catch (e) {
-                                                toast.error(`Reconnect failed: ${e}`);
+                                                toast.error(t('settings.reconnect_failed_err_toast', { error: e }));
                                             } finally {
                                                 setReconnecting(false);
                                             }
@@ -1035,12 +1070,12 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         {reconnecting ? (
                                             <>
                                                 <Loader2 className="w-3 h-3 animate-spin" />
-                                                Reconnecting...
+                                                {t('settings.reconnecting')}
                                             </>
                                         ) : (
                                             <>
                                                 <RefreshCw className="w-3 h-3" />
-                                                Reconnect Now
+                                                {t('settings.reconnect_now')}
                                             </>
                                         )}
                                     </button>
@@ -1059,7 +1094,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     >
                                 <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
                                     <Zap className="w-3.5 h-3.5" />
-                                    VPN Optimizer
+                                    {t('settings.vpn_optimizer')}
                                     {latencyMs !== null && (
                                         <span className={`ml-auto text-[10px] font-mono px-1.5 py-0.5 rounded-full ${
                                             latencyMs < 0 ? 'bg-red-500/10 text-red-400' :
@@ -1078,8 +1113,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     <div className="flex items-center gap-2">
                                         <div className={`w-2 h-2 rounded-full ${settings.vpnMode ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.5)]' : 'bg-gray-500'}`} />
                                         <div>
-                                            <p className="text-sm text-telegram-text font-medium">VPN Mode</p>
-                                            <p className="text-xs text-telegram-subtext">Optimize for high-latency / VPN connections</p>
+                                            <p className="text-sm text-telegram-text font-medium">{t('settings.vpn_mode')}</p>
+                                            <p className="text-xs text-telegram-subtext">{t('settings.vpn_mode_desc')}</p>
                                         </div>
                                     </div>
                                     <button
@@ -1095,8 +1130,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     <div className="p-3 rounded-lg bg-telegram-hover/50 space-y-2">
                                         <div className="flex items-center justify-between">
                                             <div>
-                                                <p className="text-sm text-telegram-text font-medium">Timeout Multiplier</p>
-                                                <p className="text-xs text-telegram-subtext">Increase connection timeouts</p>
+                                                <p className="text-sm text-telegram-text font-medium">{t('settings.timeout_multiplier')}</p>
+                                                <p className="text-xs text-telegram-subtext">{t('settings.timeout_multiplier_desc')}</p>
                                             </div>
                                             <span className="text-sm text-telegram-primary font-mono font-medium">{settings.timeoutMultiplier}×</span>
                                         </div>
@@ -1109,8 +1144,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     <div className="p-3 rounded-lg bg-telegram-hover/50 space-y-2">
                                         <div className="flex items-center justify-between">
                                             <div>
-                                                <p className="text-sm text-telegram-text font-medium">Retry Attempts</p>
-                                                <p className="text-xs text-telegram-subtext">Retries on failed API calls</p>
+                                                <p className="text-sm text-telegram-text font-medium">{t('settings.retry_attempts')}</p>
+                                                <p className="text-xs text-telegram-subtext">{t('settings.retry_attempts_desc')}</p>
                                             </div>
                                             <span className="text-sm text-telegram-primary font-mono font-medium">{settings.retryAttempts}</span>
                                         </div>
@@ -1121,16 +1156,16 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
                                     {/* Backoff Settings */}
                                     <div className="p-3 rounded-lg bg-telegram-hover/50 space-y-2">
-                                        <p className="text-sm text-telegram-text font-medium">Retry Backoff</p>
+                                        <p className="text-sm text-telegram-text font-medium">{t('settings.retry_backoff')}</p>
                                         <div className="flex items-center justify-between">
-                                            <p className="text-xs text-telegram-subtext">Base delay</p>
+                                            <p className="text-xs text-telegram-subtext">{t('settings.base_delay')}</p>
                                             <span className="text-xs text-telegram-primary font-mono">{settings.retryBaseBackoffSec}s</span>
                                         </div>
                                         <input type="range" min="0.5" max="5" step="0.5" value={settings.retryBaseBackoffSec}
                                             onChange={e => updateSetting('retryBaseBackoffSec', parseFloat(e.target.value))}
                                             className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
                                         <div className="flex items-center justify-between">
-                                            <p className="text-xs text-telegram-subtext">Max delay</p>
+                                            <p className="text-xs text-telegram-subtext">{t('settings.max_delay')}</p>
                                             <span className="text-xs text-telegram-primary font-mono">{settings.retryMaxBackoffSec}s</span>
                                         </div>
                                         <input type="range" min="8" max="60" step="2" value={settings.retryMaxBackoffSec}
@@ -1142,8 +1177,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     <div className="p-3 rounded-lg bg-telegram-hover/50 space-y-2">
                                         <div className="flex items-center justify-between">
                                             <div>
-                                                <p className="text-sm text-telegram-text font-medium">Adaptive Polling</p>
-                                                <p className="text-xs text-telegram-subtext">Auto-adjust update check interval</p>
+                                                <p className="text-sm text-telegram-text font-medium">{t('settings.adaptive_polling')}</p>
+                                                <p className="text-xs text-telegram-subtext">{t('settings.adaptive_polling_desc')}</p>
                                             </div>
                                             <button
                                                 onClick={() => updateSetting('adaptivePolling', !settings.adaptivePolling)}
@@ -1154,14 +1189,14 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         </div>
                                         {settings.adaptivePolling && (<>
                                             <div className="flex items-center justify-between">
-                                                <p className="text-xs text-telegram-subtext">Min interval</p>
+                                                <p className="text-xs text-telegram-subtext">{t('settings.min_interval')}</p>
                                                 <span className="text-xs text-telegram-primary font-mono">{settings.pollingMinSec}s</span>
                                             </div>
                                             <input type="range" min="10" max="30" step="5" value={settings.pollingMinSec}
                                                 onChange={e => updateSetting('pollingMinSec', parseInt(e.target.value))}
                                                 className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
                                             <div className="flex items-center justify-between">
-                                                <p className="text-xs text-telegram-subtext">Max interval</p>
+                                                <p className="text-xs text-telegram-subtext">{t('settings.max_interval')}</p>
                                                 <span className="text-xs text-telegram-primary font-mono">{settings.pollingMaxSec}s</span>
                                             </div>
                                             <input type="range" min="45" max="120" step="15" value={settings.pollingMaxSec}
@@ -1173,8 +1208,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     {/* Preferred DC */}
                                     <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
                                         <div>
-                                            <p className="text-sm text-telegram-text font-medium">Preferred Data Centre</p>
-                                            <p className="text-xs text-telegram-subtext">Start connections from this DC</p>
+                                            <p className="text-sm text-telegram-text font-medium">{t('settings.preferred_dc')}</p>
+                                            <p className="text-xs text-telegram-subtext">{t('settings.preferred_dc_desc')}</p>
                                         </div>
                                         <div className="relative">
                                             <select
@@ -1182,7 +1217,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                 onChange={e => updateSetting('preferredDC', e.target.value as typeof settings.preferredDC)}
                                                 className="appearance-none bg-telegram-bg border border-telegram-border rounded-md pl-3 pr-8 py-1.5 text-sm text-telegram-text focus:outline-none focus:border-telegram-primary/50 transition cursor-pointer"
                                             >
-                                                <option value="auto">Auto</option>
+                                                <option value="auto">{t('settings.auto')}</option>
                                                 <option value="dc1">DC 1</option>
                                                 <option value="dc2">DC 2</option>
                                                 <option value="dc3">DC 3</option>
@@ -1197,8 +1232,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     <div className="p-3 rounded-lg bg-telegram-hover/50 space-y-2">
                                         <div className="flex items-center justify-between">
                                             <div>
-                                                <p className="text-sm text-telegram-text font-medium">DC Fallback Attempts</p>
-                                                <p className="text-xs text-telegram-subtext">DCs to try on connection failure</p>
+                                                <p className="text-sm text-telegram-text font-medium">{t('settings.dc_fallback_attempts')}</p>
+                                                <p className="text-xs text-telegram-subtext">{t('settings.dc_fallback_desc')}</p>
                                             </div>
                                             <span className="text-sm text-telegram-primary font-mono font-medium">{settings.dcFallbackAttempts}</span>
                                         </div>
@@ -1210,8 +1245,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     {/* Flood Wait */}
                                     <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
                                         <div>
-                                            <p className="text-sm text-telegram-text font-medium">Respect Flood Wait</p>
-                                            <p className="text-xs text-telegram-subtext">Auto-sleep on FLOOD_WAIT errors</p>
+                                            <p className="text-sm text-telegram-text font-medium">{t('settings.respect_flood')}</p>
+                                            <p className="text-xs text-telegram-subtext">{t('settings.respect_flood_desc')}</p>
                                         </div>
                                         <button
                                             onClick={() => updateSetting('floodWaitRespect', !settings.floodWaitRespect)}
@@ -1225,8 +1260,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     <div className="p-3 rounded-lg bg-telegram-hover/50 space-y-2">
                                         <div className="flex items-center justify-between">
                                             <div>
-                                                <p className="text-sm text-telegram-text font-medium">Peer Cache Size</p>
-                                                <p className="text-xs text-telegram-subtext">Cached peer resolutions</p>
+                                                <p className="text-sm text-telegram-text font-medium">{t('settings.peer_cache_size')}</p>
+                                                <p className="text-xs text-telegram-subtext">{t('settings.peer_cache_desc')}</p>
                                             </div>
                                             <span className="text-sm text-telegram-primary font-mono font-medium">{settings.peerCacheSize}</span>
                                         </div>
@@ -1239,21 +1274,21 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     <div className="p-3 rounded-lg bg-telegram-hover/50 space-y-2">
                                         <p className="text-sm text-telegram-text font-medium flex items-center gap-1.5">
                                             <Gauge className="w-3.5 h-3.5 text-telegram-subtext" />
-                                            Bandwidth Throttle
+                                            {t('settings.bandwidth_throttle')}
                                         </p>
                                         <div className="flex items-center justify-between">
-                                            <p className="text-xs text-telegram-subtext">Upload limit</p>
+                                            <p className="text-xs text-telegram-subtext">{t('settings.upload_limit')}</p>
                                             <span className="text-xs text-telegram-primary font-mono">
-                                                {settings.bandwidthLimitUpKBs === 0 ? 'Unlimited' : `${settings.bandwidthLimitUpKBs} KB/s`}
+                                                {settings.bandwidthLimitUpKBs === 0 ? t('settings.unlimited') : `${settings.bandwidthLimitUpKBs} KB/s`}
                                             </span>
                                         </div>
                                         <input type="range" min="0" max="5120" step="128" value={settings.bandwidthLimitUpKBs}
                                             onChange={e => updateSetting('bandwidthLimitUpKBs', parseInt(e.target.value))}
                                             className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
                                         <div className="flex items-center justify-between">
-                                            <p className="text-xs text-telegram-subtext">Download limit</p>
+                                            <p className="text-xs text-telegram-subtext">{t('settings.download_limit')}</p>
                                             <span className="text-xs text-telegram-primary font-mono">
-                                                {settings.bandwidthLimitDownKBs === 0 ? 'Unlimited' : `${settings.bandwidthLimitDownKBs} KB/s`}
+                                                {settings.bandwidthLimitDownKBs === 0 ? t('settings.unlimited') : `${settings.bandwidthLimitDownKBs} KB/s`}
                                             </span>
                                         </div>
                                         <input type="range" min="0" max="5120" step="128" value={settings.bandwidthLimitDownKBs}
@@ -1264,8 +1299,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     {/* Chunk Size */}
                                     <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
                                         <div>
-                                            <p className="text-sm text-telegram-text font-medium">Transfer Chunk Size</p>
-                                            <p className="text-xs text-telegram-subtext">Smaller = better for unstable connections</p>
+                                            <p className="text-sm text-telegram-text font-medium">{t('settings.transfer_chunk_size')}</p>
+                                            <p className="text-xs text-telegram-subtext">{t('settings.chunk_size_desc')}</p>
                                         </div>
                                         <div className="relative">
                                             <select
@@ -1285,11 +1320,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     <div className="p-3 rounded-lg bg-telegram-hover/50 space-y-2">
                                         <div className="flex items-center justify-between">
                                             <div>
-                                                <p className="text-sm text-telegram-text font-medium">Keep-Alive Ping</p>
-                                                <p className="text-xs text-telegram-subtext">Prevent VPN idle disconnects</p>
+                                                <p className="text-sm text-telegram-text font-medium">{t('settings.keep_alive')}</p>
+                                                <p className="text-xs text-telegram-subtext">{t('settings.keep_alive_desc')}</p>
                                             </div>
                                             <span className="text-sm text-telegram-primary font-mono font-medium">
-                                                {settings.keepAliveIntervalSec === 0 ? 'Off' : `${settings.keepAliveIntervalSec}s`}
+                                                {settings.keepAliveIntervalSec === 0 ? t('settings.off') : `${settings.keepAliveIntervalSec}s`}
                                             </span>
                                         </div>
                                         <input type="range" min="0" max="120" step="15" value={settings.keepAliveIntervalSec}
@@ -1301,11 +1336,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     <div className="p-3 rounded-lg bg-telegram-hover/50 space-y-2">
                                         <div className="flex items-center justify-between">
                                             <div>
-                                                <p className="text-sm text-telegram-text font-medium">Bulk Archive Size Limit</p>
-                                                <p className="text-xs text-telegram-subtext">Max RAM for API archive downloads</p>
+                                                <p className="text-sm text-telegram-text font-medium">{t('settings.bulk_archive_limit')}</p>
+                                                <p className="text-xs text-telegram-subtext">{t('settings.bulk_archive_desc')}</p>
                                             </div>
                                             <span className="text-sm text-telegram-primary font-mono font-medium">
-                                                {settings.archiveMaxBytes === 0 ? 'Unlimited' : `${settings.archiveMaxBytes} MiB`}
+                                                {settings.archiveMaxBytes === 0 ? t('settings.unlimited') : `${settings.archiveMaxBytes} MiB`}
                                             </span>
                                         </div>
                                         <input type="range" min="0" max="2048" step="64" value={settings.archiveMaxBytes}
@@ -1318,9 +1353,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         <div className="flex items-center gap-2">
                                             <Wifi className="w-4 h-4 text-telegram-subtext" />
                                             <div>
-                                                <p className="text-sm text-telegram-text font-medium">Auto-Detect VPN</p>
+                                                <p className="text-sm text-telegram-text font-medium">{t('settings.auto_detect_vpn')}</p>
                                                 <p className="text-xs text-telegram-subtext">
-                                                    {vpnDetected === true ? 'VPN interface detected' : vpnDetected === false ? 'No VPN detected' : 'Checking...'}
+                                                    {vpnDetected === true ? t('settings.vpn_detected') : vpnDetected === false ? t('settings.no_vpn_detected') : t('settings.checking')}
                                                 </p>
                                             </div>
                                         </div>
@@ -1347,19 +1382,19 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         <div className="flex items-center justify-between">
                                             <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
                                                 <Link className="w-3.5 h-3.5 text-telegram-primary" />
-                                                Shared Links ({shares.length})
+                                                {t('settings.shared_links', { count: shares.length })}
                                             </h3>
                                             <button 
                                                 onClick={fetchShares} 
                                                 className="text-telegram-subtext hover:text-telegram-text p-1 rounded hover:bg-telegram-hover transition"
-                                                title="Refresh links"
+                                                title={t('settings.refresh_links')}
                                             >
                                                 <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
                                             </button>
                                         </div>
 
                                         <div className="bg-telegram-hover/30 border border-telegram-border/50 rounded-lg p-3 space-y-2">
-                                            <div className="text-[11px] font-semibold text-telegram-text flex items-center gap-1">🌐 Tailscale/LAN IP Override</div>
+                                            <div className="text-[11px] font-semibold text-telegram-text flex items-center gap-1">🌐 {t('settings.ip_override')}</div>
                                             <input
                                                 type="text"
                                                 placeholder="e.g. 100.115.22.45 or my-pc:14201"
@@ -1368,15 +1403,15 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                 className="w-full bg-telegram-surface border border-telegram-border rounded-md px-2.5 py-1.5 text-xs text-telegram-text focus:outline-none focus:border-telegram-primary/50 placeholder:text-telegram-subtext/40"
                                             />
                                             <p className="text-[10px] text-telegram-subtext">
-                                                Automatically replaces '127.0.0.1:14201' with this IP/domain when copying.
+                                                {t('settings.ip_override_desc')}
                                             </p>
                                         </div>
 
                                         {shares.length === 0 ? (
                                             <div className="py-8 text-center space-y-2">
                                                 <Link className="w-8 h-8 text-telegram-subtext/40 mx-auto" />
-                                                <p className="text-sm font-medium text-telegram-text">No active share links</p>
-                                                <p className="text-xs text-telegram-subtext">Right-click any file and select "Share Link" to create one.</p>
+                                                <p className="text-sm font-medium text-telegram-text">{t('settings.no_active_links')}</p>
+                                                <p className="text-xs text-telegram-subtext">{t('settings.no_active_links_desc')}</p>
                                             </div>
                                         ) : (
                                             <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1 custom-scrollbar">
@@ -1384,7 +1419,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                     const isExpired = share.expires_at ? (share.expires_at < Math.floor(Date.now() / 1000)) : false;
                                                     return (
                                                         <div key={share.id} className="p-3 rounded-lg bg-telegram-hover/40 border border-telegram-border/50 flex flex-col gap-2 relative">
-                                                            <div className="flex justify-between items-start gap-4">
+                                                              <div className="flex justify-between items-start gap-4">
                                                                 <div className="min-w-0 flex-1">
                                                                     <div className="text-xs font-semibold text-telegram-text truncate" title={share.file_name}>
                                                                         {share.file_name}
@@ -1396,22 +1431,22 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                                         <span className="w-1 h-1 rounded-full bg-telegram-border" />
                                                                         {share.has_password ? (
                                                                             <span className="text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded flex items-center gap-0.5 font-medium">
-                                                                                <Key className="w-2.5 h-2.5" /> Protected
+                                                                                <Key className="w-2.5 h-2.5" /> {t('settings.protected')}
                                                                             </span>
                                                                         ) : (
-                                                                            <span className="text-blue-400 bg-blue-500/10 px-1.5 py-0.5 rounded font-medium">Public</span>
+                                                                            <span className="text-blue-400 bg-blue-500/10 px-1.5 py-0.5 rounded font-medium">{t('settings.public')}</span>
                                                                         )}
                                                                         <span className="w-1 h-1 rounded-full bg-telegram-border" />
                                                                         {share.expires_at ? (
                                                                             isExpired ? (
-                                                                                <span className="text-red-400 bg-red-500/10 px-1.5 py-0.5 rounded font-medium">Expired</span>
+                                                                                <span className="text-red-400 bg-red-500/10 px-1.5 py-0.5 rounded font-medium">{t('settings.expired')}</span>
                                                                             ) : (
                                                                                 <span className="text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded font-medium">
-                                                                                    Expires: {new Date(share.expires_at * 1000).toLocaleDateString()}
+                                                                                    {t('settings.expires_at', { date: new Date(share.expires_at * 1000).toLocaleDateString() })}
                                                                                 </span>
                                                                             )
                                                                         ) : (
-                                                                            <span className="text-teal-400 bg-teal-500/10 px-1.5 py-0.5 rounded font-medium">Never Expires</span>
+                                                                            <span className="text-teal-400 bg-teal-500/10 px-1.5 py-0.5 rounded font-medium">{t('settings.never_expires')}</span>
                                                                         )}
                                                                     </div>
                                                                 </div>
@@ -1422,14 +1457,14 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                                         className={`p-1.5 rounded bg-telegram-surface border border-telegram-border text-telegram-text hover:bg-telegram-hover transition ${
                                                                             copiedId === share.id ? 'text-emerald-400 border-emerald-500/30 bg-emerald-500/5' : ''
                                                                         }`}
-                                                                        title="Copy share link"
+                                                                        title={t('settings.copy_share_link')}
                                                                     >
                                                                         {copiedId === share.id ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
                                                                     </button>
                                                                     <button
                                                                         onClick={() => handleRevokeShare(share.id)}
                                                                         className="p-1.5 rounded bg-telegram-surface border border-telegram-border text-red-400 hover:bg-red-500/10 hover:border-red-500/30 transition"
-                                                                        title="Revoke link"
+                                                                        title={t('settings.revoke_link')}
                                                                     >
                                                                         <Trash2 className="w-3.5 h-3.5" />
                                                                     </button>
@@ -1471,9 +1506,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                     try {
                                                         const info = await invoke<string>('cmd_get_system_diagnostics');
                                                         await navigator.clipboard.writeText(info);
-                                                        toast.success('Diagnostics copied to clipboard');
+                                                        toast.success(t('settings.diagnostics_copied'));
                                                     } catch (e) {
-                                                        toast.error(`Failed: ${e}`);
+                                                        toast.error(t('settings.diagnostics_copy_failed', { error: e }));
                                                     } finally {
                                                         setDiagLoading(false);
                                                     }
@@ -1486,7 +1521,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                 ) : (
                                                     <Clipboard className="w-3 h-3" />
                                                 )}
-                                                Copy Diagnostics
+                                                {t('settings.copy_diagnostics')}
                                             </button>
 
                                             {/* Creator Info */}
@@ -1518,8 +1553,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
                                             {/* Tagline */}
                                             <p className="text-[11px] text-telegram-subtext/60 leading-relaxed max-w-[280px] text-center">
-                                                Turn your Telegram account into unlimited, secure cloud storage.
-                                                Open-source and free forever.
+                                                {t('settings.tagline')}
                                             </p>
                                         </div>
                                     </motion.section>
@@ -1534,13 +1568,13 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-telegram-subtext hover:text-red-400 hover:bg-red-500/10 transition font-medium"
                             >
                                 <RotateCcw className="w-3.5 h-3.5" />
-                                Reset to Defaults
+                                {t('settings.reset_defaults')}
                             </button>
                             <button
                                 onClick={onClose}
                                 className="px-4 py-1.5 rounded-lg text-xs font-medium bg-telegram-primary text-white hover:bg-telegram-primary/90 transition"
                             >
-                                Done
+                                {t('settings.done')}
                             </button>
                         </div>
                     </motion.div>

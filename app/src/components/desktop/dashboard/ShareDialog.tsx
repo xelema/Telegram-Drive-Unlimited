@@ -4,6 +4,7 @@ import { TelegramFile, ShareInfo } from '../../../types';
 import { invoke } from '@tauri-apps/api/core';
 import { motion, AnimatePresence } from 'framer-motion';
 import { nativeShareOrCopy } from '../../../utils';
+import { useTranslation } from 'react-i18next';
 
 interface ShareDialogProps {
     file: TelegramFile;
@@ -11,6 +12,7 @@ interface ShareDialogProps {
 }
 
 export function ShareDialog({ file, onClose }: ShareDialogProps) {
+    const { t } = useTranslation();
     const [password, setPassword] = useState('');
     const [requirePassword, setRequirePassword] = useState(false);
     const [expiryType, setExpiryType] = useState<'never' | '1h' | '1d' | '7d' | 'custom'>('1d');
@@ -96,7 +98,7 @@ export function ShareDialog({ file, onClose }: ShareDialogProps) {
                 <div className="p-4 border-b border-telegram-border flex justify-between items-center">
                     <h3 className="text-telegram-text font-medium flex items-center gap-2">
                         <Link className="w-5 h-5 text-telegram-primary" />
-                        Share File
+                        {t('share.title')}
                     </h3>
                     <button onClick={onClose} className="text-telegram-subtext hover:text-telegram-text">
                         <Plus className="w-5 h-5 rotate-45" />
@@ -105,7 +107,7 @@ export function ShareDialog({ file, onClose }: ShareDialogProps) {
 
                 <div className="p-5 flex-1 overflow-y-auto space-y-4 max-h-[75vh]">
                     <div className="bg-telegram-hover/40 border border-telegram-border/50 rounded-lg p-3">
-                        <div className="text-xs text-telegram-subtext uppercase font-semibold tracking-wider mb-1">Sharing File</div>
+                        <div className="text-xs text-telegram-subtext uppercase font-semibold tracking-wider mb-1">{t('share.sharing_file')}</div>
                         <div className="text-sm font-medium text-telegram-text truncate">{file.name}</div>
                         <div className="text-xs text-telegram-subtext mt-0.5">{file.sizeStr}</div>
                     </div>
@@ -117,7 +119,7 @@ export function ShareDialog({ file, onClose }: ShareDialogProps) {
                                 <div className="flex items-center justify-between py-1">
                                     <span className="text-sm font-medium text-telegram-text flex items-center gap-2 select-none">
                                         <Shield className="w-4 h-4 text-emerald-400" />
-                                        Password Protection
+                                        {t('share.password_protection')}
                                     </span>
                                     <button
                                         type="button"
@@ -145,7 +147,7 @@ export function ShareDialog({ file, onClose }: ShareDialogProps) {
                                         >
                                             <input
                                                 type="password"
-                                                placeholder="Enter link password"
+                                                placeholder={t('share.enter_password')}
                                                 value={password}
                                                 onChange={(e) => setPassword(e.target.value)}
                                                 className="w-full bg-telegram-surface/50 border border-telegram-border rounded-lg px-3 py-2 text-sm text-telegram-text focus:outline-none focus:border-telegram-primary placeholder:text-telegram-subtext/60"
@@ -160,7 +162,7 @@ export function ShareDialog({ file, onClose }: ShareDialogProps) {
                             <div className="space-y-2">
                                 <span className="text-sm font-medium text-telegram-text flex items-center gap-2">
                                     <Clock className="w-4 h-4 text-amber-400" />
-                                    Expiration
+                                    {t('share.expiration')}
                                 </span>
                                 <div className="grid grid-cols-3 gap-2">
                                     {(['1h', '1d', '7d'] as const).map((type) => (
@@ -174,7 +176,7 @@ export function ShareDialog({ file, onClose }: ShareDialogProps) {
                                                     : 'bg-telegram-surface border-telegram-border text-telegram-text hover:bg-telegram-hover'
                                             }`}
                                         >
-                                            {type === '1h' ? '1 Hour' : type === '1d' ? '1 Day' : '7 Days'}
+                                            {type === '1h' ? t('share.one_hour') : type === '1d' ? t('share.one_day') : t('share.seven_days')}
                                         </button>
                                     ))}
                                     <button
@@ -186,7 +188,7 @@ export function ShareDialog({ file, onClose }: ShareDialogProps) {
                                                 : 'bg-telegram-surface border-telegram-border text-telegram-text hover:bg-telegram-hover'
                                         }`}
                                     >
-                                        Never
+                                        {t('share.never')}
                                     </button>
                                     <button
                                         type="button"
@@ -197,7 +199,7 @@ export function ShareDialog({ file, onClose }: ShareDialogProps) {
                                                 : 'bg-telegram-surface border-telegram-border text-telegram-text hover:bg-telegram-hover'
                                         }`}
                                     >
-                                        Custom Hours
+                                        {t('share.custom_hours')}
                                     </button>
                                 </div>
 
@@ -210,7 +212,7 @@ export function ShareDialog({ file, onClose }: ShareDialogProps) {
                                             onChange={(e) => setCustomHours(e.target.value)}
                                             className="w-24 bg-telegram-surface/50 border border-telegram-border rounded-lg px-3 py-2 text-sm text-telegram-text focus:outline-none focus:border-telegram-primary"
                                         />
-                                        <span className="text-xs text-telegram-subtext">hours from now</span>
+                                        <span className="text-xs text-telegram-subtext">{t('share.hours_from_now')}</span>
                                     </div>
                                 )}
                             </div>
@@ -229,19 +231,19 @@ export function ShareDialog({ file, onClose }: ShareDialogProps) {
                             >
                                 {loading ? (
                                     <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                                ) : 'Generate Shareable Link'}
+                                ) : t('share.generate_link')}
                             </button>
                         </>
                     ) : (
                         <div className="space-y-4 animate-in fade-in duration-200">
                             <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs rounded-lg p-3 flex gap-2 items-center">
                                 <Check className="w-4 h-4 shrink-0" />
-                                <span>Link created successfully!</span>
+                                <span>{t('share.link_created')}</span>
                             </div>
 
                             {/* Shareable Link Display */}
                             <div className="space-y-1.5">
-                                <label className="text-xs font-semibold text-telegram-subtext">Share Link</label>
+                                <label className="text-xs font-semibold text-telegram-subtext">{t('files.share_link')}</label>
                                 <div className="flex gap-2">
                                     <input
                                         type="text"
@@ -269,17 +271,17 @@ export function ShareDialog({ file, onClose }: ShareDialogProps) {
                                     className="w-full bg-telegram-primary/20 hover:bg-telegram-primary/30 text-telegram-primary text-sm font-medium py-2.5 rounded-lg border border-telegram-primary/30 transition-all flex items-center justify-center gap-2"
                                 >
                                     <Share2 className="w-4 h-4" />
-                                    Share via...
+                                    {t('share.share_via')}
                                 </button>
                             )}
 
                             {/* Tailscale / Network Share Customizer */}
                             <div className="bg-telegram-hover/30 border border-telegram-border/50 rounded-lg p-3 space-y-2">
                                 <div className="text-xs font-semibold text-telegram-text flex items-center gap-1.5">
-                                    <span>🌐</span> Share Externally (Tailscale / LAN)
+                                    <span>🌐</span> {t('share.share_externally')}
                                 </div>
                                 <p className="text-xs text-telegram-subtext leading-relaxed">
-                                    To share with someone else on your Tailscale network or local WiFi, enter your machine's IP address or hostname below:
+                                    {t('share.tailscale_help')}
                                 </p>
                                 <div className="flex gap-2 items-center">
                                     <input
@@ -296,7 +298,7 @@ export function ShareDialog({ file, onClose }: ShareDialogProps) {
                                 onClick={onClose}
                                 className="w-full bg-telegram-hover hover:bg-white/10 text-telegram-text text-sm font-medium py-2 rounded-lg transition-colors border border-telegram-border"
                             >
-                                Done
+                                {t('share.done')}
                             </button>
                         </div>
                     )}

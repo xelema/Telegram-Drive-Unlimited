@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.9.1] - 2026-06-20
+
+### Localization & Internationalisation
+
+- **Comprehensive Multi-Language Support**
+  - Extended full translation coverage to all modal titles, tab headers, button labels, and input placeholders across both Desktop and Mobile interfaces.
+  - Localized the Settings modal title and all five tab headers (General, Proxy, VPN, Sharing, About) across all thirteen supported languages: English, Spanish, Russian, Simplified Chinese, French, Arabic, Brazilian Portuguese, German, Hindi, Indonesian, Turkish, Japanese, and Korean.
+  - Translated modal titles and interactive elements for the Rename Folder, Rename File, Move to Folder, and Remote Upload dialogs on Desktop.
+  - Translated the mobile Rename Folder bottom sheet title, description prompt, input placeholder, and action buttons.
+  - Translated the mobile bottom navigation bar tab labels (Files, Transfers, Settings) dynamically via the active language setting.
+  - All translated strings correctly respond to language selection changes at runtime without requiring an application restart.
+
+---
+
 ## [1.9.0] - 2026-06-16
 
 ### Features & Bug Fixes

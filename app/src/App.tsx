@@ -21,6 +21,7 @@ import { ConfirmProvider } from "./context/ConfirmContext";
 import { ThemeProvider, useTheme } from "./context/ThemeContext";
 import { SettingsProvider } from "./context/SettingsContext";
 import { useSettings } from "./context/SettingsContext";
+import { useTranslation } from "react-i18next";
 
 const queryClient = new QueryClient();
 
@@ -32,6 +33,15 @@ function AppContent() {
   const { available, version, downloading, progress, downloadAndInstall, dismissUpdate } = useUpdateCheck();
   const { isMobile } = usePlatform();
   const { settings, updateSetting, isLoaded } = useSettings();
+  const { i18n } = useTranslation();
+
+  // Handle active language and RTL direction changes
+  useEffect(() => {
+    if (!isLoaded) return;
+    i18n.changeLanguage(settings.language);
+    document.documentElement.lang = settings.language;
+    document.documentElement.dir = settings.language === 'ar' ? 'rtl' : 'ltr';
+  }, [settings.language, isLoaded, i18n]);
 
   // Performance mode: auto-enable when user has prefers-reduced-motion
   useEffect(() => {
