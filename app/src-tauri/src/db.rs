@@ -61,7 +61,22 @@ pub fn init_db(app: &AppHandle) -> Result<DbConnection, String> {
                     expires_at INTEGER,
                     revoked INTEGER NOT NULL DEFAULT 0,
                     created_at INTEGER NOT NULL
-                )"
+                );
+                CREATE TABLE IF NOT EXISTS groups (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    color_hex TEXT DEFAULT '#3B82F6',
+                    display_order INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS folder_metadata (
+                    channel_id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    username TEXT,
+                    is_public INTEGER NOT NULL DEFAULT 0,
+                    display_order INTEGER NOT NULL DEFAULT 0,
+                    group_id INTEGER,
+                    FOREIGN KEY(group_id) REFERENCES groups(id) ON DELETE SET NULL
+                );"
             ) {
                 Ok(_) => {
                     last_err.clear();

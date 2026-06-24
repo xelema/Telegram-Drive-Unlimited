@@ -12,11 +12,16 @@ export interface Settings {
 
     // ── Proxy ──────────────────────────────────────────────
     proxyEnabled: boolean;
-    proxyType: 'socks5';  // Only SOCKS5 is supported by grammers
+    proxyType: 'socks5' | 'http' | 'https';  // SOCKS5 or HTTP/HTTPS via local SOCKS5 bridge
     proxyHost: string;
     proxyPort: number;
     proxyUsername: string;
     proxyPassword: string;   // SOCKS5
+    proxyLiveStateEnabled: boolean;
+
+    // ── Sidebar ─────────────────────────────────────────────
+    sidebarCollapsed: boolean;
+    hideGroups: boolean;
 
     // ── VPN Optimizer (master toggle) ─────────────────────
     vpnMode: boolean;
@@ -63,6 +68,11 @@ const defaultSettings: Settings = {
     proxyPort: 1080,
     proxyUsername: '',
     proxyPassword: '',
+    proxyLiveStateEnabled: true,
+
+    // Sidebar
+    sidebarCollapsed: false,
+    hideGroups: false,
 
     // VPN Optimizer — off by default (preserves existing behaviour)
     vpnMode: false,

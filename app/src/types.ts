@@ -16,6 +16,15 @@ export interface TelegramFolder {
     username?: string;
     /** Whether the channel has a public username set */
     is_public?: boolean;
+    group_id?: number | null;
+    display_order?: number;
+}
+
+export interface FolderGroup {
+    id: number;
+    name: string;
+    color_hex: string;
+    display_order: number;
 }
 
 export interface FolderInviteInfo {

@@ -7,33 +7,67 @@ use crate::vpn_optimizer::NetworkConfig;
 /// Unlike cmd_is_network_available (which only TCP-pings the proxy host:port),
 /// this creates a temporary grammers session and attempts a real API call.
 /// Returns true only if the Telegram API responds successfully through the proxy.
+#[derive(Debug, serde::Serialize)]
+pub struct ProxyStatus {
+    pub reachable: bool,
+    pub latency_ms: i64,
+}
+
+#[tauri::command]
+pub async fn cmd_get_proxy_status(
+    net_config: State<'_, std::sync::Arc<NetworkConfig>>,
+) -> Result<ProxyStatus, String> {
+    let proxy = net_config.proxy.read().map_err(|e| e.to_string())?.clone();
+    if !proxy.enabled || proxy.host.is_empty() {
+        return Ok(ProxyStatus {
+            reachable: false,
+            latency_ms: -1,
+        });
+    }
+
+    let addr_str = format!("{}:{}", proxy.host, proxy.port);
+    tokio::task::spawn_blocking(move || {
+        let timeout = Duration::from_secs(3);
+        let start = std::time::Instant::now();
+        
+        let addrs = match std::net::ToSocketAddrs::to_socket_addrs(&addr_str) {
+            Ok(iter) => iter.collect::<Vec<_>>(),
+            Err(_) => return Ok(ProxyStatus { reachable: false, latency_ms: -1 }),
+        };
+
+        for addr in addrs {
+            if TcpStream::connect_timeout(&addr, timeout).is_ok() {
+                let latency = start.elapsed().as_millis() as i64;
+                return Ok(ProxyStatus {
+                    reachable: true,
+                    latency_ms: latency,
+                });
+            }
+        }
+
+        Ok(ProxyStatus {
+            reachable: false,
+            latency_ms: -1,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Test whether Telegram MTProto traffic can pass through the configured proxy.
+/// Unlike cmd_is_network_available (which only TCP-pings the proxy host:port),
+/// this creates a temporary grammers session and attempts a real API call.
+/// Returns true only if the Telegram API responds successfully through the proxy.
 #[tauri::command]
 pub async fn cmd_test_proxy_traffic(
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
 ) -> Result<bool, String> {
-    // Only test if proxy is actually configured and enabled
-    let proxy = net_config.proxy.read().map_err(|e| e.to_string())?.clone();
-    if !proxy.enabled || proxy.host.is_empty() {
-        return Ok(false);
-    }
-
-    if proxy.proxy_type != "socks5" {
-        return Ok(false); // Only SOCKS5 is supported for proxy auth
-    }
-
-    // Build proxy URL
-    let proxy_url = if !proxy.username.is_empty() {
-        let encoded_user = urlencoding::encode(&proxy.username);
-        let encoded_pass = urlencoding::encode(&proxy.password);
-        format!(
-            "socks5://{}:{}@{}:{}",
-            encoded_user, encoded_pass, proxy.host, proxy.port
-        )
-    } else {
-        format!("socks5://{}:{}", proxy.host, proxy.port)
+    let proxy_url = match net_config.effective_proxy_url() {
+        Some(url) => url,
+        None => return Ok(false),
     };
 
-    log::info!("Testing proxy traffic through: socks5://{}:{}", proxy.host, proxy.port);
+    log::info!("Testing proxy traffic through: {}", proxy_url);
 
     // Create a temporary session in a temp directory
     let temp_dir = std::env::temp_dir().join("telegram_drive_proxy_test");

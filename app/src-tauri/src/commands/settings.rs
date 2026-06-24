@@ -36,7 +36,17 @@ pub async fn cmd_apply_proxy_settings(
         config.enabled, config.proxy_type, config.host, config.port
     );
 
-    *net_config.proxy.write().map_err(|e| e.to_string())? = config;
+    *net_config.proxy.write().map_err(|e| e.to_string())? = config.clone();
+
+    // Start or stop local SOCKS5 bridge as needed
+    if config.enabled && (config.proxy_type == "http" || config.proxy_type == "https") {
+        if let Err(e) = net_config.start_http_bridge().await {
+            log::error!("Failed to start SOCKS5 bridge for HTTP/HTTPS proxy: {}", e);
+            return Err(format!("Failed to start SOCKS5 bridge: {}", e));
+        }
+    } else {
+        net_config.stop_http_bridge();
+    }
 
     let snapshot = net_config.snapshot();
     if let Err(e) = crate::vpn_optimizer::save_network_config(&app, &snapshot) {

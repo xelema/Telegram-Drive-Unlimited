@@ -68,21 +68,13 @@ export function PreviewModal({ file, onClose, onNext, onPrev, currentIndex, tota
     const [src, setSrc] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
-    const [reloadNonce, setReloadNonce] = useState(0);
-    const [retryCount, setRetryCount] = useState(0);
     const latestRequestRef = useRef(0);
-
-    useEffect(() => {
-        setRetryCount(0);
-        setReloadNonce(0);
-    }, [file.id, activeFolderId]);
 
     useEffect(() => {
         const load = async () => {
             const key = getPreviewCacheKey(file.id, activeFolderId);
-            const shouldBypassCache = reloadNonce > 0;
             const requestId = ++latestRequestRef.current;
-            const cachedSrc = shouldBypassCache ? null : getCachedPreview(key);
+            const cachedSrc = getCachedPreview(key);
 
             if (cachedSrc) {
                 if (requestId !== latestRequestRef.current) return;
@@ -122,7 +114,7 @@ export function PreviewModal({ file, onClose, onNext, onPrev, currentIndex, tota
             }
         };
         load();
-    }, [file, activeFolderId, reloadNonce]);
+    }, [file, activeFolderId]);
 
     useEffect(() => {
         const candidates = [nextFile, prevFile].filter((f): f is TelegramFile => !!f && isSafeToPrefetch(f.name));
@@ -232,13 +224,6 @@ export function PreviewModal({ file, onClose, onNext, onPrev, currentIndex, tota
                                 onError={() => {
                                     const key = getPreviewCacheKey(file.id, activeFolderId);
                                     forgetPreview(key);
-
-                                    if (retryCount < 1) {
-                                        setRetryCount((prev) => prev + 1);
-                                        setReloadNonce((prev) => prev + 1);
-                                        return;
-                                    }
-
                                     setError('Failed to render image preview');
                                 }}
                             />

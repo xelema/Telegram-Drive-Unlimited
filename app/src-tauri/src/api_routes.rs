@@ -1310,6 +1310,8 @@ async fn api_list_folders(
                     parent_id: None,
                     username,
                     is_public,
+                    group_id: None,
+                    display_order: 0,
                 });
             }
         }
@@ -1624,6 +1626,8 @@ async fn api_empty_folders(
                 parent_id: None,
                 username: None,
                 is_public: false,
+                group_id: None,
+                display_order: 0,
             });
         }
     }

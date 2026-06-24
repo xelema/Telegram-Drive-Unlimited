@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.9.5] - 2026-06-24
+
+### Features & Grouping Polish
+
+- **Local-First Folder Grouping & Management**
+  - Integrated a local SQLite database to track custom folder groups and user-defined sort order for Telegram channels.
+  - Added horizontal scrollable group tabs at the top of the sidebar with dnd-kit drag-and-drop sorting support.
+  - Added inline name editing and a custom color picker for folder groups.
+  - Added a "Move to Group" submenu within the sidebar item context menu to quickly assign folders to groups.
+  - Added a "Hide Groups" setting to toggle the visibility of the group tabs.
+
+- **Theme Engine & Custom Styling**
+  - Built a comprehensive React Context theme engine with support for custom themes and theme persistence.
+  - Included a preset Cyber Teal theme.
+  - Implemented a dedicated "Themes" tab in Settings to manage, configure, and delete custom user themes.
+
+- **Proxy Connection Status Indicator**
+  - Added real-time proxy connection checking and status indicator display in the sidebar.
+
+- **Localization & Theme System Cleanups**
+  - Added translated i18n keys for group management controls across all 13 supported languages.
+  - Cleaned up custom theme contrast, scrollbar visibility, and light mode class toggles.
+
+---
+
 ## [1.9.1] - 2026-06-20
 
 ### Localization & Internationalisation

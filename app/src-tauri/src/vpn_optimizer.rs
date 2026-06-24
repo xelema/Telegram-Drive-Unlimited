@@ -91,6 +91,7 @@ pub struct NetworkConfigSnapshot {
 pub struct NetworkConfig {
     pub proxy: RwLock<ProxyConfig>,
     pub vpn: RwLock<VpnConfig>,
+    pub bridge_handle: std::sync::Mutex<Option<(u16, tokio::task::JoinHandle<()>)>>,
 }
 
 impl NetworkConfig {
@@ -98,6 +99,7 @@ impl NetworkConfig {
         Self {
             proxy: RwLock::new(ProxyConfig::default()),
             vpn: RwLock::new(VpnConfig::default()),
+            bridge_handle: std::sync::Mutex::new(None),
         }
     }
 
@@ -105,6 +107,7 @@ impl NetworkConfig {
         Self {
             proxy: RwLock::new(config.proxy),
             vpn: RwLock::new(config.vpn),
+            bridge_handle: std::sync::Mutex::new(None),
         }
     }
 
@@ -112,6 +115,72 @@ impl NetworkConfig {
         NetworkConfigSnapshot {
             proxy: self.proxy.read().unwrap().clone(),
             vpn: self.vpn.read().unwrap().clone(),
+        }
+    }
+
+    pub fn effective_proxy_url(&self) -> Option<String> {
+        let proxy = self.proxy.read().unwrap();
+        if !proxy.enabled || proxy.host.is_empty() {
+            return None;
+        }
+        if proxy.proxy_type == "socks5" {
+            if !proxy.username.is_empty() {
+                let encoded_user = urlencoding::encode(&proxy.username);
+                let encoded_pass = urlencoding::encode(&proxy.password);
+                Some(format!(
+                    "socks5://{}:{}@{}:{}",
+                    encoded_user, encoded_pass, proxy.host, proxy.port
+                ))
+            } else {
+                Some(format!("socks5://{}:{}", proxy.host, proxy.port))
+            }
+        } else if proxy.proxy_type == "http" || proxy.proxy_type == "https" {
+            let guard = self.bridge_handle.lock().unwrap();
+            if let Some((port, _)) = &*guard {
+                Some(format!("socks5://127.0.0.1:{}", port))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    pub async fn start_http_bridge(&self) -> Result<(), String> {
+        self.stop_http_bridge();
+
+        let (enabled, proxy_type, host, port, scheme, user, pass) = {
+            let proxy = self.proxy.read().unwrap();
+            (
+                proxy.enabled,
+                proxy.proxy_type.clone(),
+                proxy.host.clone(),
+                proxy.port,
+                proxy.proxy_type.clone(),
+                proxy.username.clone(),
+                proxy.password.clone(),
+            )
+        };
+
+        if !enabled || host.is_empty() || (proxy_type != "http" && proxy_type != "https") {
+            return Ok(());
+        }
+
+        match crate::socks5_bridge::start_bridge(host, port, scheme, user, pass).await {
+            Ok((local_port, handle)) => {
+                let mut guard = self.bridge_handle.lock().unwrap();
+                *guard = Some((local_port, handle));
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    pub fn stop_http_bridge(&self) {
+        let mut guard = self.bridge_handle.lock().unwrap();
+        if let Some((_, handle)) = guard.take() {
+            handle.abort();
+            log::info!("SOCKS5 bridge stopped.");
         }
     }
 

@@ -3,6 +3,8 @@ use tauri::Manager;
 use std::sync::Arc;
 use grammers_client::types::Media;
 use base64::{Engine as _, engine::general_purpose};
+use rand::Rng;
+use tokio::io::AsyncWriteExt;
 use crate::TelegramState;
 use crate::bandwidth::BandwidthManager;
 use crate::commands::utils::resolve_peer;
@@ -16,6 +18,27 @@ const PREVIEW_CACHE_MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 
 async fn prune_preview_cache(cache_dir: std::path::PathBuf, preserve_path: Option<std::path::PathBuf>) {
     let _ = tokio::task::spawn_blocking(move || {
+        let mut read_dir = match std::fs::read_dir(&cache_dir) {
+            Ok(entries) => entries,
+            Err(_) => return,
+        };
+
+        // First pass: delete any orphaned .part files left behind by
+        // interrupted downloads. These are always stale and never preserved.
+        for entry in read_dir.by_ref().flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if fname.ends_with(".part") {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+
+        // Second pass: gather remaining files for size-based pruning.
+        // Re-read the directory to get a fresh iterator after the first pass
+        // may have modified it.
         let read_dir = match std::fs::read_dir(&cache_dir) {
             Ok(entries) => entries,
             Err(_) => return,
@@ -46,6 +69,54 @@ async fn prune_preview_cache(cache_dir: std::path::PathBuf, preserve_path: Optio
             }
         }
     }).await;
+}
+
+/// Download media to a file using `iter_download` with manual chunk writing.
+/// Returns the number of bytes written.
+///
+/// Unlike `grammers_client::Client::download_media`, this returns an explicit
+/// error when the download produces zero bytes (e.g. stale file references or
+/// Telegram CDN stream drops).
+async fn download_to_file<D: grammers_client::types::Downloadable>(
+    client: &grammers_client::Client,
+    media: &D,
+    part_path: &std::path::Path,
+) -> Result<u64, String> {
+    let mut file = tokio::fs::File::create(part_path)
+        .await
+        .map_err(|e| format!("Failed to create .part file: {}", e))?;
+
+    let mut download_iter = client.iter_download(media);
+    download_iter = download_iter.chunk_size(65536);
+    let mut written: u64 = 0;
+
+    loop {
+        match download_iter.next().await {
+            Ok(Some(chunk)) => {
+                file.write_all(&chunk)
+                    .await
+                    .map_err(|e| format!("Write error: {}", e))?;
+                written += chunk.len() as u64;
+            }
+            Ok(None) => break,
+            Err(e) => {
+                let _ = tokio::fs::remove_file(part_path).await;
+                return Err(format!("Download error: {}", e));
+            }
+        }
+    }
+
+    file.flush()
+        .await
+        .map_err(|e| format!("Flush error: {}", e))?;
+    drop(file);
+
+    if written == 0 {
+        let _ = tokio::fs::remove_file(part_path).await;
+        return Err("Download produced zero bytes (stale file reference or stream drop)".to_string());
+    }
+
+    Ok(written)
 }
 
 #[tauri::command]
@@ -132,28 +203,100 @@ pub async fn cmd_get_preview(
                     log::warn!("Bandwidth limit hit for preview: {}", e);
                     false
                 } else {
-                    match client.download_media(&media, &save_path_str).await {
-                        Ok(_) => {
-                            let written = tokio::fs::metadata(&save_path)
-                                .await
-                                .map(|meta| meta.len())
-                                .unwrap_or(0);
-                            if written == 0 {
-                                log::error!("Preview download wrote an empty file: {}", save_path_str);
-                                let _ = tokio::fs::remove_file(&save_path).await;
-                                false
-                            } else {
+                    // Download to a temporary .part file to avoid race conditions
+                    // when concurrent requests try to download the same file.
+                    // After successful download, atomically rename to the final path.
+                    //
+                    // Use a random u64 suffix so concurrent requests for the
+                    // same file write to separate .part files — preventing the inter-request
+                    // delete/write race that previously produced empty files.
+                    let unique_id = rand::rng().random::<u64>();
+                    let part_path = save_path.with_extension(format!("{}_{}.part", ext, unique_id));
+                    // part_path_str is no longer needed — download_to_file takes &Path directly
+
+                    let mut download_ok = false;
+
+                    // Early-exit: another concurrent request may have already completed
+                    // the download and renamed its .part file to the final path.
+                    if tokio::fs::metadata(&save_path).await.map_or(false, |m| m.len() > 0) {
+                        log::info!("Preview already downloaded by concurrent request (final file exists)");
+                        bw_state.release_down(size);
+                        download_ok = true;
+                    }
+
+                    // Attempt 1: download with original media (may have stale file reference)
+                    if !download_ok {
+                        let _ = tokio::fs::remove_file(&part_path).await;
+                        match download_to_file(&client, &media, &part_path).await {
+                            Ok(written) => {
                                 log::info!("Preview download complete: {} bytes.", written);
-                                prune_preview_cache(cache_dir.clone(), Some(save_path.clone())).await;
-                                true
+                                match tokio::fs::rename(&part_path, &save_path).await {
+                                    Ok(_) => {
+                                        download_ok = true;
+                                        prune_preview_cache(cache_dir.clone(), Some(save_path.clone())).await;
+                                    },
+                                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                                        if tokio::fs::metadata(&save_path).await.map_or(false, |m| m.len() > 0) {
+                                            log::info!("Preview already downloaded by concurrent request");
+                                            download_ok = true;
+                                        }
+                                    },
+                                    Err(e) => {
+                                        log::error!("Failed to rename part file to final path: {}", e);
+                                        let _ = tokio::fs::remove_file(&part_path).await;
+                                    }
+                                }
+                            },
+                            Err(e) => {
+                                log::error!("Preview Download Error (attempt 1/2): {}", e);
                             }
-                        },
-                        Err(e) => {
-                            log::error!("Preview Download Error: {}", e);
-                            bw_state.release_down(size);
-                            false
+                        }
+                    } // end attempt 1
+
+                    // Attempt 2: re-fetch the message to get fresh file references, then retry
+                    if !download_ok {
+                        // Brief backoff before re-fetching
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+                        // Re-fetch the message to obtain a Media object with a fresh file reference.
+                        // Telegram file references expire; iter_download returns 0 bytes (caught
+                        // by download_to_file) when the reference is stale.
+                        if let Ok(fresh_messages) = client.get_messages_by_id(&peer, &[message_id]).await {
+                            if let Some(fresh_msg) = fresh_messages.into_iter().flatten().next() {
+                                if let Some(fresh_media) = fresh_msg.media() {
+                                    let _ = tokio::fs::remove_file(&part_path).await;
+                                    match download_to_file(&client, &fresh_media, &part_path).await {
+                                        Ok(written) => {
+                                            log::info!("Preview download complete after re-fetch: {} bytes.", written);
+                                            match tokio::fs::rename(&part_path, &save_path).await {
+                                                Ok(_) => {
+                                                    download_ok = true;
+                                                    prune_preview_cache(cache_dir.clone(), Some(save_path.clone())).await;
+                                                },
+                                                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                                                    if tokio::fs::metadata(&save_path).await.map_or(false, |m| m.len() > 0) {
+                                                        log::info!("Preview already downloaded by concurrent request");
+                                                        download_ok = true;
+                                                    }
+                                                },
+                                                Err(e) => {
+                                                    log::error!("Failed to rename part file to final path: {}", e);
+                                                    let _ = tokio::fs::remove_file(&part_path).await;
+                                                }
+                                            }
+                                        },
+                                        Err(e) => {
+                                            log::error!("Preview Download Error (attempt 2/2): {}", e);
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
+                    if !download_ok {
+                        bw_state.release_down(size);
+                    }
+                    download_ok
                 }
             };
             if file_ready {
@@ -317,7 +460,6 @@ pub async fn cmd_get_thumbnail(
             if is_image {
                 // Get photo thumbnail (largest available for best quality)
                 let save_path = cache_dir.join(format!("{}_{}.{}", folder_key, message_id, ext));
-                let save_path_str = save_path.to_string_lossy().to_string();
 
                 let thumbs = match &media {
                     Media::Photo(p) => p.thumbs(),
@@ -325,22 +467,92 @@ pub async fn cmd_get_thumbnail(
                     _ => vec![],
                 };
 
-                let download_success = if let Some(thumb) = thumbs.iter().filter(|t| t.size() > 0).max_by_key(|t| t.size()) {
-                    client.download_media(thumb, &save_path_str).await.is_ok()
-                } else {
-                    client.download_media(&media, &save_path_str).await.is_ok()
-                };
+                // Download to a temporary .part file to avoid race conditions
+                // with concurrent thumbnail requests for the same file.
+                //
+                // Use a random u64 suffix so concurrent requests for the
+                // same file write to separate .part files — preventing the inter-request
+                // delete/write race that previously produced empty files.
+                let unique_id = rand::rng().random::<u64>();
+                let part_path = save_path.with_extension(format!("{}_{}.part", ext, unique_id));
 
-                if download_success {
-                    if let Ok(bytes) = tokio::fs::read(&save_path).await {
-                        let mime = match ext.as_str() {
-                            "png" => "image/png",
-                            "gif" => "image/gif",
-                            "webp" => "image/webp",
-                            _ => "image/jpeg",
-                        };
-                        let b64 = general_purpose::STANDARD.encode(&bytes);
-                        return Ok(format!("data:{};base64,{}", mime, b64));
+                let mut download_ok = false;
+
+                // Early-exit: another concurrent request may have already completed
+                // the download and renamed its .part file to the final path.
+                if tokio::fs::metadata(&save_path).await.map_or(false, |m| m.len() > 0) {
+                    download_ok = true;
+                }
+
+                // Attempt 1: download with original media/thumbs (may have stale file reference)
+                if !download_ok {
+                    let _ = tokio::fs::remove_file(&part_path).await;
+                    let ok = if let Some(thumb) = thumbs.iter().filter(|t| t.size() > 0).max_by_key(|t| t.size()) {
+                        download_to_file(&client, thumb, &part_path).await.is_ok()
+                    } else {
+                        download_to_file(&client, &media, &part_path).await.is_ok()
+                    };
+                    if ok {
+                        download_ok = true;
+                    }
+                }
+
+                // Attempt 2: re-fetch the message to get fresh file references, then retry
+                if !download_ok {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    if let Ok(fresh_messages) = client.get_messages_by_id(&peer, &[message_id]).await {
+                        if let Some(fresh_msg) = fresh_messages.into_iter().flatten().next() {
+                            if let Some(fresh_media) = fresh_msg.media() {
+                                let fresh_thumbs = match &fresh_media {
+                                    Media::Photo(p) => p.thumbs(),
+                                    Media::Document(d) => d.thumbs(),
+                                    _ => vec![],
+                                };
+                                let _ = tokio::fs::remove_file(&part_path).await;
+                                let ok = if let Some(fresh_thumb) = fresh_thumbs.iter().filter(|t| t.size() > 0).max_by_key(|t| t.size()) {
+                                    download_to_file(&client, fresh_thumb, &part_path).await.is_ok()
+                                } else {
+                                    download_to_file(&client, &fresh_media, &part_path).await.is_ok()
+                                };
+                                if ok {
+                                    download_ok = true;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if download_ok {
+                    // Atomically rename part file to final path
+                    match tokio::fs::rename(&part_path, &save_path).await {
+                        Ok(_) => {
+                            if let Ok(bytes) = tokio::fs::read(&save_path).await {
+                                let mime = match ext.as_str() {
+                                    "png" => "image/png",
+                                    "gif" => "image/gif",
+                                    "webp" => "image/webp",
+                                    _ => "image/jpeg",
+                                };
+                                let b64 = general_purpose::STANDARD.encode(&bytes);
+                                return Ok(format!("data:{};base64,{}", mime, b64));
+                            }
+                        },
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                            // Another concurrent request already renamed our part file.
+                            if let Ok(bytes) = tokio::fs::read(&save_path).await {
+                                let mime = match ext.as_str() {
+                                    "png" => "image/png",
+                                    "gif" => "image/gif",
+                                    "webp" => "image/webp",
+                                    _ => "image/jpeg",
+                                };
+                                let b64 = general_purpose::STANDARD.encode(&bytes);
+                                return Ok(format!("data:{};base64,{}", mime, b64));
+                            }
+                        },
+                        Err(_) => {
+                            let _ = tokio::fs::remove_file(&part_path).await;
+                        }
                     }
                 }
             }

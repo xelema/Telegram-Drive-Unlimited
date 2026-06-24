@@ -41,6 +41,7 @@ fn init_com_on_worker_thread() {
 pub mod commands;
 pub mod bandwidth;
 pub mod vpn_optimizer;
+pub mod socks5_bridge;
 
 use tauri::Manager;
 
@@ -567,6 +568,22 @@ pub fn run() {
             let loaded_config = vpn_optimizer::load_network_config(app.handle());
             let net_config = Arc::new(vpn_optimizer::NetworkConfig::new_with_config(loaded_config));
             app.manage(net_config.clone());
+
+            // Auto-start SOCKS5 bridge on startup if HTTP/HTTPS proxy is configured
+            {
+                let start_config = net_config.clone();
+                tauri::async_runtime::spawn(async move {
+                    let (enabled, is_http_or_https) = {
+                        let proxy = start_config.proxy.read().unwrap();
+                        (proxy.enabled, proxy.proxy_type == "http" || proxy.proxy_type == "https")
+                    };
+                    if enabled && is_http_or_https {
+                        if let Err(e) = start_config.start_http_bridge().await {
+                            log::error!("Failed to auto-start SOCKS5 bridge on startup: {}", e);
+                        }
+                    }
+                });
+            }
             
             // Initialize SQLite Database
             let db_pool = db::init_db(app.handle()).map_err(|e| {
@@ -691,6 +708,7 @@ pub fn run() {
             commands::cmd_zip_folder,
             commands::cmd_delete_temp_zip,
             commands::cmd_apply_proxy_settings,
+            commands::cmd_get_proxy_status,
             commands::cmd_apply_vpn_settings,
             commands::cmd_get_network_config,
             commands::cmd_check_latency,
@@ -720,6 +738,14 @@ pub fn run() {
             fmp4_remux::cmd_get_fmp4_status,
             commands::cmd_list_archive_contents,
             commands::cmd_extract_archive_entry,
+            commands::cmd_get_enriched_folders,
+            commands::cmd_update_folder_order,
+            commands::cmd_create_group,
+            commands::cmd_update_group,
+            commands::cmd_delete_group,
+            commands::cmd_assign_folder_to_group,
+            commands::cmd_update_group_order,
+            commands::cmd_get_groups,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -750,6 +776,12 @@ pub fn run() {
             if let Some(handle) = api_handle {
                 log::info!("Stopping API server...");
                 drop(handle.stop(true));
+            }
+
+            // 4. Stop local SOCKS5 proxy bridge (if running)
+            if let Some(net_config) = app_handle.try_state::<Arc<vpn_optimizer::NetworkConfig>>() {
+                log::info!("Stopping SOCKS5 bridge...");
+                net_config.stop_http_bridge();
             }
         }
     });

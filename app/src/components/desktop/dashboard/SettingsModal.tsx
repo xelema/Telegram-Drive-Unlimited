@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, RotateCcw, Download, Upload, Trash2, HardDrive, Globe, Key, Copy, Check, RefreshCw, FolderArchive, Shield, Zap, Activity, Gauge, Wifi, ChevronDown, Link, Sparkles, Info, Clipboard, Monitor, Loader2, Languages } from 'lucide-react';
+import { X, RotateCcw, Download, Upload, Trash2, HardDrive, Globe, Key, Copy, Check, RefreshCw, FolderArchive, Shield, Zap, Activity, Gauge, Wifi, ChevronDown, Link, Sparkles, Info, Clipboard, Monitor, Loader2, Languages, Play, Palette, Plus, Tag } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-shell';
 import { toast } from 'sonner';
@@ -12,6 +12,9 @@ import { useTranslation } from 'react-i18next';
 import { LANGUAGES } from '../../../i18n/languages';
 import { ShareInfo, CacheEntry, DetailedCacheInfo } from '../../../types';
 import { version as appVersion } from '../../../../package.json';
+import { useTheme } from '../../../context/ThemeContext';
+import { CustomTheme, ThemeColorPalette, generateThemeId } from '../../../theme/themeEngine';
+import { getDefaultPalette } from '../../../theme/presets';
 
 interface SettingsModalProps {
     isOpen: boolean;
@@ -25,7 +28,7 @@ interface ApiSettings {
     running: boolean;
 }
 
-type SettingsTab = 'general' | 'proxy' | 'vpn' | 'sharing' | 'about';
+type SettingsTab = 'general' | 'themes' | 'proxy' | 'vpn' | 'sharing' | 'about';
 
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const { settings, updateSetting, resetSettings } = useSettings();
@@ -40,6 +43,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const [activeTab, setActiveTab] = useState<SettingsTab>('general');
     const [latencyMs, setLatencyMs] = useState<number | null>(null);
     const [vpnDetected, setVpnDetected] = useState<boolean | null>(null);
+    const [proxyStatus, setProxyStatus] = useState<{ reachable: boolean; latency_ms: number } | null>(null);
+    const [isTestingProxy, setIsTestingProxy] = useState(false);
 
     // Update check state
     const [updateChecking, setUpdateChecking] = useState(false);
@@ -289,6 +294,26 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         return () => clearInterval(interval);
     }, [isOpen, activeTab]);
 
+    // Poll proxy status when Proxy tab is active
+    useEffect(() => {
+        if (!isOpen || activeTab !== 'proxy') return;
+        const checkProxy = async () => {
+            if (!settings.proxyEnabled || !settings.proxyLiveStateEnabled) {
+                setProxyStatus(null);
+                return;
+            }
+            try {
+                const status = await invoke<{ reachable: boolean; latency_ms: number }>('cmd_get_proxy_status');
+                setProxyStatus(status);
+            } catch {
+                setProxyStatus({ reachable: false, latency_ms: -1 });
+            }
+        };
+        checkProxy();
+        const interval = setInterval(checkProxy, 5000);
+        return () => clearInterval(interval);
+    }, [isOpen, activeTab, settings.proxyEnabled, settings.proxyLiveStateEnabled]);
+
     // Detect VPN interfaces when VPN tab opens
     useEffect(() => {
         if (!isOpen || activeTab !== 'vpn') return;
@@ -408,12 +433,12 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                         </div>
 
                         {/* Tab Bar */}
-                        <div className="px-5 pt-3 pb-0 flex gap-1 justify-center border-b border-telegram-border">
-                            {([['general', Globe], ['proxy', Shield], ['vpn', Zap], ['sharing', Link], ['about', Info]] as const).map(([key, Icon]) => (
+                        <div className="px-5 pt-3 pb-0 flex gap-1 justify-start overflow-x-auto border-b border-telegram-border scrollbar-none">
+                            {([['general', Globe], ['themes', Palette], ['proxy', Shield], ['vpn', Zap], ['sharing', Link], ['about', Info]] as const).map(([key, Icon]) => (
                                 <button
                                     key={key}
                                     onClick={() => setActiveTab(key as SettingsTab)}
-                                    className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-t-lg transition-colors ${
+                                    className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-t-lg transition-colors shrink-0 ${
                                         activeTab === key
                                             ? 'text-telegram-primary border-b-2 border-telegram-primary bg-telegram-primary/5'
                                             : 'text-telegram-subtext hover:text-telegram-text hover:bg-telegram-hover/50'
@@ -516,6 +541,23 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${settings.zipFolders ? 'bg-telegram-primary' : 'bg-telegram-border'}`}
                                     >
                                         <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.zipFolders ? 'translate-x-5' : 'translate-x-0'}`} />
+                                    </button>
+                                </div>
+
+                                {/* Hide Folder Groups */}
+                                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
+                                    <div className="flex items-center gap-2">
+                                        <Tag className="w-4 h-4 text-telegram-subtext" />
+                                        <div>
+                                            <p className="text-sm text-telegram-text font-medium">{t('common.hide_groups')}</p>
+                                            <p className="text-xs text-telegram-subtext">{t('common.hide_groups_desc')}</p>
+                                        </div>
+                                    </div>
+                                    <button
+                                        onClick={() => updateSetting('hideGroups', !settings.hideGroups)}
+                                        className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${settings.hideGroups ? 'bg-telegram-primary' : 'bg-telegram-border'}`}
+                                    >
+                                        <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.hideGroups ? 'translate-x-5' : 'translate-x-0'}`} />
                                     </button>
                                 </div>
 
@@ -948,9 +990,30 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                 {/* Enable Proxy */}
                                 <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
                                     <div className="flex items-center gap-2">
-                                        <div className={`w-2 h-2 rounded-full ${settings.proxyEnabled ? 'bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.5)]' : 'bg-gray-500'}`} />
+                                        <div className={`w-2.5 h-2.5 rounded-full ${
+                                            !settings.proxyEnabled || !settings.proxyLiveStateEnabled
+                                                ? 'bg-gray-500' 
+                                                : !proxyStatus 
+                                                    ? 'bg-amber-400 animate-pulse shadow-[0_0_6px_rgba(251,191,36,0.5)]' 
+                                                    : proxyStatus.reachable 
+                                                        ? 'bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.5)]' 
+                                                        : 'bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.5)]'
+                                        }`} />
                                         <div>
-                                            <p className="text-sm text-telegram-text font-medium">{t('common.enable_proxy')}</p>
+                                            <div className="flex items-center gap-2">
+                                                <p className="text-sm text-telegram-text font-medium">{t('common.enable_proxy')}</p>
+                                                {settings.proxyEnabled && (
+                                                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-telegram-subtext font-mono">
+                                                        {!settings.proxyLiveStateEnabled
+                                                            ? t('settings.proxy_status_off') || 'Off'
+                                                            : !proxyStatus 
+                                                                ? t('settings.proxy_status_checking') || 'Checking…' 
+                                                                : proxyStatus.reachable 
+                                                                    ? `${t('settings.proxy_status_connected') || 'Connected'} (${proxyStatus.latency_ms}ms)` 
+                                                                    : t('settings.proxy_status_unreachable') || 'Unreachable'}
+                                                    </span>
+                                                )}
+                                            </div>
                                             <p className="text-xs text-telegram-subtext">{t('settings.enable_proxy_desc')}</p>
                                         </div>
                                     </div>
@@ -962,19 +1025,41 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     </button>
                                 </div>
 
+                                {/* Live Connection Monitoring */}
+                                {settings.proxyEnabled && (
+                                    <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
+                                        <div>
+                                            <p className="text-sm text-telegram-text font-medium">{t('settings.live_state') || 'Live Connection Monitoring'}</p>
+                                            <p className="text-xs text-telegram-subtext">{t('settings.live_state_desc') || 'Periodically check connectivity and display latency'}</p>
+                                        </div>
+                                        <button
+                                            onClick={() => updateSetting('proxyLiveStateEnabled', !settings.proxyLiveStateEnabled)}
+                                            className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${settings.proxyLiveStateEnabled ? 'bg-telegram-primary' : 'bg-telegram-border'}`}
+                                        >
+                                            <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.proxyLiveStateEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                                        </button>
+                                    </div>
+                                )}
+
                                 {/* Proxy Type */}
                                 <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
                                     <div>
                                         <p className="text-sm text-telegram-text font-medium">{t('common.proxy_type')}</p>
-                                        <p className="text-xs text-telegram-subtext">{t('settings.socks5_desc')}</p>
+                                        <p className="text-xs text-telegram-subtext">
+                                            {settings.proxyType === 'socks5' 
+                                                ? t('settings.socks5_desc') 
+                                                : t('settings.http_bridge_desc') || 'HTTP/HTTPS proxy tunneling via local SOCKS5 bridge.'}
+                                        </p>
                                     </div>
                                     <div className="relative">
                                         <select
                                             value={settings.proxyType}
-                                            onChange={e => updateSetting('proxyType', e.target.value as 'socks5')}
+                                            onChange={e => updateSetting('proxyType', e.target.value as 'socks5' | 'http' | 'https')}
                                             className="appearance-none bg-telegram-bg border border-telegram-border rounded-md pl-3 pr-8 py-1.5 text-sm text-telegram-text focus:outline-none focus:border-telegram-primary/50 transition cursor-pointer"
                                         >
                                             <option value="socks5">SOCKS5</option>
+                                            <option value="http">HTTP</option>
+                                            <option value="https">HTTPS</option>
                                         </select>
                                         <ChevronDown className="w-4 h-4 text-telegram-subtext absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                                     </div>
@@ -1011,74 +1096,103 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     />
                                 </div>
 
-                                {/* SOCKS5 auth fields */}
-                                {settings.proxyType === 'socks5' && (
-                                    <>
-                                        <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                                            <div>
-                                                <p className="text-sm text-telegram-text font-medium">{t('common.username')}</p>
-                                                <p className="text-xs text-telegram-subtext">{t('settings.optional')}</p>
-                                            </div>
-                                            <input
-                                                type="text"
-                                                placeholder={t('settings.optional')}
-                                                value={settings.proxyUsername}
-                                                onChange={e => updateSetting('proxyUsername', e.target.value)}
-                                                className="w-40 bg-telegram-bg border border-telegram-border rounded-md px-2 py-1 text-sm text-telegram-text text-right focus:outline-none focus:border-telegram-primary/50 transition placeholder:text-telegram-subtext/40"
-                                            />
-                                        </div>
-                                        <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                                            <div>
-                                                <p className="text-sm text-telegram-text font-medium">{t('common.password')}</p>
-                                                <p className="text-xs text-telegram-subtext">{t('settings.optional')}</p>
-                                            </div>
-                                            <input
-                                                type="password"
-                                                placeholder={t('settings.optional')}
-                                                value={settings.proxyPassword}
-                                                onChange={e => updateSetting('proxyPassword', e.target.value)}
-                                                className="w-40 bg-telegram-bg border border-telegram-border rounded-md px-2 py-1 text-sm text-telegram-text text-right focus:outline-none focus:border-telegram-primary/50 transition placeholder:text-telegram-subtext/40"
-                                            />
-                                        </div>
-                                    </>
-                                )}
+                                {/* SOCKS5/HTTP auth fields */}
+                                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
+                                    <div>
+                                        <p className="text-sm text-telegram-text font-medium">{t('common.username')}</p>
+                                        <p className="text-xs text-telegram-subtext">{t('settings.optional')}</p>
+                                    </div>
+                                    <input
+                                        type="text"
+                                        placeholder={t('settings.optional')}
+                                        value={settings.proxyUsername}
+                                        onChange={e => updateSetting('proxyUsername', e.target.value)}
+                                        className="w-40 bg-telegram-bg border border-telegram-border rounded-md px-2 py-1 text-sm text-telegram-text text-right focus:outline-none focus:border-telegram-primary/50 transition placeholder:text-telegram-subtext/40"
+                                    />
+                                </div>
+                                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
+                                    <div>
+                                        <p className="text-sm text-telegram-text font-medium">{t('common.password')}</p>
+                                        <p className="text-xs text-telegram-subtext">{t('settings.optional')}</p>
+                                    </div>
+                                    <input
+                                        type="password"
+                                        placeholder={t('settings.optional')}
+                                        value={settings.proxyPassword}
+                                        onChange={e => updateSetting('proxyPassword', e.target.value)}
+                                        className="w-40 bg-telegram-bg border border-telegram-border rounded-md px-2 py-1 text-sm text-telegram-text text-right focus:outline-none focus:border-telegram-primary/50 transition placeholder:text-telegram-subtext/40"
+                                    />
+                                </div>
 
                                 {/* Info note */}
-                                <div className="p-3 rounded-lg bg-yellow-500/5 border border-yellow-500/10 space-y-2">
+                                <div className="p-3 rounded-lg bg-yellow-500/5 border border-yellow-500/10 space-y-3">
                                     <p className="text-[11px] text-yellow-400/70 leading-relaxed">
                                         {t('settings.proxy_reconnect_note')}
                                     </p>
-                                    <button
-                                        onClick={async () => {
-                                            setReconnecting(true);
-                                            try {
-                                                const ok = await invoke<boolean>('cmd_reconnect_with_network_settings');
-                                                if (ok) {
-                                                    toast.success(t('settings.reconnect_success_toast'));
-                                                } else {
-                                                    toast.error(t('settings.reconnect_failed_toast'));
+                                    <div className="flex items-center gap-2">
+                                        <button
+                                            onClick={async () => {
+                                                setReconnecting(true);
+                                                try {
+                                                    const ok = await invoke<boolean>('cmd_reconnect_with_network_settings');
+                                                    if (ok) {
+                                                        toast.success(t('settings.reconnect_success_toast'));
+                                                    } else {
+                                                        toast.error(t('settings.reconnect_failed_toast'));
+                                                    }
+                                                } catch (e) {
+                                                    toast.error(t('settings.reconnect_failed_err_toast', { error: e }));
+                                                } finally {
+                                                    setReconnecting(false);
                                                 }
-                                            } catch (e) {
-                                                toast.error(t('settings.reconnect_failed_err_toast', { error: e }));
-                                            } finally {
-                                                setReconnecting(false);
-                                            }
-                                        }}
-                                        disabled={reconnecting}
-                                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-telegram-primary/10 text-telegram-primary hover:bg-telegram-primary/20 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                                    >
-                                        {reconnecting ? (
-                                            <>
-                                                <Loader2 className="w-3 h-3 animate-spin" />
-                                                {t('settings.reconnecting')}
-                                            </>
-                                        ) : (
-                                            <>
-                                                <RefreshCw className="w-3 h-3" />
-                                                {t('settings.reconnect_now')}
-                                            </>
-                                        )}
-                                    </button>
+                                            }}
+                                            disabled={reconnecting}
+                                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-telegram-primary/10 text-telegram-primary hover:bg-telegram-primary/20 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                                        >
+                                            {reconnecting ? (
+                                                <>
+                                                    <Loader2 className="w-3 h-3 animate-spin" />
+                                                    {t('settings.reconnecting')}
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <RefreshCw className="w-3 h-3" />
+                                                    {t('settings.reconnect_now')}
+                                                </>
+                                            )}
+                                        </button>
+                                        <button
+                                            onClick={async () => {
+                                                setIsTestingProxy(true);
+                                                try {
+                                                    const success = await invoke<boolean>('cmd_test_proxy_traffic');
+                                                    if (success) {
+                                                        toast.success(t('settings.proxy_test_success') || 'Proxy connection working!');
+                                                    } else {
+                                                        toast.error(t('settings.proxy_test_failed') || 'Proxy traffic test failed.');
+                                                    }
+                                                } catch (e) {
+                                                    toast.error(`Error testing proxy: ${e}`);
+                                                } finally {
+                                                    setIsTestingProxy(false);
+                                                }
+                                            }}
+                                            disabled={isTestingProxy || reconnecting || !settings.proxyEnabled}
+                                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-white/5 text-telegram-text hover:bg-white/10 transition disabled:opacity-30 disabled:cursor-not-allowed"
+                                        >
+                                            {isTestingProxy ? (
+                                                <>
+                                                    <Loader2 className="w-3 h-3 animate-spin" />
+                                                    {t('settings.proxy_testing') || 'Testing…'}
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <Play className="w-3.5 h-3.5" />
+                                                    {t('settings.test_connection') || 'Test Connection'}
+                                                </>
+                                            )}
+                                        </button>
+                                    </div>
                                 </div>
                             </motion.section>
                         )}
@@ -1477,6 +1591,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         )}
                                     </motion.section>
                                 )}
+                                {activeTab === 'themes' && (
+                                    <ThemesTab />
+                                )}
                                 {activeTab === 'about' && (
                                     <motion.section
                                         key="about"
@@ -1581,5 +1698,282 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                 </motion.div>
             )}
         </AnimatePresence>
+    );
+}
+
+// ── Themes Tab ──────────────────────────────────────────────────────
+// Inline component (follows the pattern of the other tabs in this file).
+
+const PALETTE_KEYS: { key: keyof ThemeColorPalette; labelKey: string }[] = [
+    { key: 'bg', labelKey: 'settings.color_bg' },
+    { key: 'surface', labelKey: 'settings.color_surface' },
+    { key: 'primary', labelKey: 'settings.color_primary' },
+    { key: 'secondary', labelKey: 'settings.color_secondary' },
+    { key: 'text', labelKey: 'settings.color_text' },
+    { key: 'subtext', labelKey: 'settings.color_subtext' },
+];
+
+function ThemesTab() {
+    const { t } = useTranslation();
+    const {
+        customThemes,
+        activeCustomThemeId,
+        setActiveCustomTheme,
+        addCustomTheme,
+        deleteCustomTheme,
+        updateCustomTheme,
+    } = useTheme();
+    const { confirm } = useConfirm();
+
+    const [editingId, setEditingId] = useState<string | null>(null);
+
+    const builtinThemes = customThemes.filter(t => t.isBuiltin);
+    const userThemes = customThemes.filter(t => !t.isBuiltin);
+    const editingTheme = editingId ? customThemes.find(t => t.id === editingId) : null;
+
+    const handleCreateTheme = () => {
+        const id = generateThemeId();
+        const newTheme: CustomTheme = {
+            id,
+            name: 'My Theme',
+            isDark: true,
+            palette: getDefaultPalette(true),
+        };
+        addCustomTheme(newTheme);
+        setEditingId(id);
+        setActiveCustomTheme(id);
+    };
+
+    const handleSelectTheme = (theme: CustomTheme) => {
+        if (activeCustomThemeId === theme.id) {
+            // Deselect → reset to default
+            setActiveCustomTheme(null);
+            setEditingId(null);
+        } else {
+            setActiveCustomTheme(theme.id);
+            if (!theme.isBuiltin) {
+                setEditingId(theme.id);
+            } else {
+                setEditingId(null);
+            }
+        }
+    };
+
+    const handleDeleteTheme = async (id: string) => {
+        const ok = await confirm({
+            title: t('settings.delete_theme'),
+            message: t('settings.delete_theme_confirm'),
+            confirmText: t('common.delete'),
+            variant: 'danger',
+        });
+        if (!ok) return;
+        deleteCustomTheme(id);
+        if (editingId === id) setEditingId(null);
+    };
+
+    const handlePaletteChange = (key: keyof ThemeColorPalette, value: string) => {
+        if (!editingTheme || editingTheme.isBuiltin) return;
+        const newPalette = { ...editingTheme.palette, [key]: value };
+        updateCustomTheme(editingTheme.id, { palette: newPalette });
+    };
+
+    const handleBaseToggle = (isDark: boolean) => {
+        if (!editingTheme || editingTheme.isBuiltin) return;
+        updateCustomTheme(editingTheme.id, { isDark });
+    };
+
+    const handleNameChange = (name: string) => {
+        if (!editingTheme || editingTheme.isBuiltin) return;
+        updateCustomTheme(editingTheme.id, { name });
+    };
+
+    return (
+        <motion.section
+            key="themes"
+            initial={{ opacity: 0, x: -20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: 20 }}
+            transition={{ type: 'spring', damping: 25, stiffness: 220, opacity: { duration: 0.15 } }}
+            className="space-y-5 w-full"
+        >
+            {/* Presets */}
+            <div className="space-y-2">
+                <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
+                    <Palette className="w-3.5 h-3.5" />
+                    {t('settings.presets')}
+                </h3>
+                <div className="grid grid-cols-4 gap-2">
+                    {builtinThemes.map(theme => (
+                        <button
+                            key={theme.id}
+                            onClick={() => handleSelectTheme(theme)}
+                            className={`relative rounded-lg p-0.5 transition-all duration-200 ${
+                                activeCustomThemeId === theme.id
+                                    ? 'ring-2 ring-telegram-primary ring-offset-1 ring-offset-telegram-surface'
+                                    : 'hover:ring-1 hover:ring-telegram-subtext/30'
+                            }`}
+                            title={theme.name}
+                        >
+                            {/* Color preview swatch */}
+                            <div className="rounded-md overflow-hidden h-10 flex">
+                                <div className="flex-1" style={{ background: theme.palette.bg }} />
+                                <div className="flex-1" style={{ background: theme.palette.surface }} />
+                                <div className="flex-1" style={{ background: theme.palette.primary }} />
+                            </div>
+                            <p className="text-[10px] text-telegram-subtext mt-1 truncate text-center">
+                                {theme.name}
+                            </p>
+                            {activeCustomThemeId === theme.id && (
+                                <div className="absolute -top-1 -right-1 w-4 h-4 bg-telegram-primary rounded-full flex items-center justify-center">
+                                    <Check className="w-2.5 h-2.5 text-white" />
+                                </div>
+                            )}
+                        </button>
+                    ))}
+                </div>
+            </div>
+
+            {/* Custom Themes */}
+            <div className="space-y-2">
+                <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
+                    <Sparkles className="w-3.5 h-3.5" />
+                    {t('settings.custom_themes')}
+                </h3>
+
+                {userThemes.length > 0 && (
+                    <div className="grid grid-cols-4 gap-2">
+                        {userThemes.map(theme => (
+                            <button
+                                key={theme.id}
+                                onClick={() => handleSelectTheme(theme)}
+                                className={`relative rounded-lg p-0.5 transition-all duration-200 ${
+                                    activeCustomThemeId === theme.id
+                                        ? 'ring-2 ring-telegram-primary ring-offset-1 ring-offset-telegram-surface'
+                                        : 'hover:ring-1 hover:ring-telegram-subtext/30'
+                                }`}
+                                title={theme.name}
+                            >
+                                <div className="rounded-md overflow-hidden h-10 flex">
+                                    <div className="flex-1" style={{ background: theme.palette.bg }} />
+                                    <div className="flex-1" style={{ background: theme.palette.surface }} />
+                                    <div className="flex-1" style={{ background: theme.palette.primary }} />
+                                </div>
+                                <p className="text-[10px] text-telegram-subtext mt-1 truncate text-center">
+                                    {theme.name}
+                                </p>
+                                {activeCustomThemeId === theme.id && (
+                                    <div className="absolute -top-1 -right-1 w-4 h-4 bg-telegram-primary rounded-full flex items-center justify-center">
+                                        <Check className="w-2.5 h-2.5 text-white" />
+                                    </div>
+                                )}
+                            </button>
+                        ))}
+                    </div>
+                )}
+
+                <button
+                    onClick={handleCreateTheme}
+                    className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg border border-dashed border-telegram-border text-telegram-subtext hover:text-telegram-primary hover:border-telegram-primary/50 transition-colors text-xs"
+                >
+                    <Plus className="w-3.5 h-3.5" />
+                    {t('settings.create_theme')}
+                </button>
+            </div>
+
+            {/* Editor (shown when a custom theme is selected) */}
+            {editingTheme && !editingTheme.isBuiltin && (
+                <div className="space-y-3 p-3 rounded-lg bg-telegram-hover/30 border border-telegram-border/50">
+                    <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider">
+                        {t('settings.edit_theme')}
+                    </h3>
+
+                    {/* Theme Name */}
+                    <div className="flex items-center gap-2">
+                        <label className="text-xs text-telegram-subtext w-16 shrink-0">{t('settings.theme_name')}</label>
+                        <input
+                            type="text"
+                            value={editingTheme.name}
+                            onChange={e => handleNameChange(e.target.value)}
+                            className="flex-1 px-2 py-1.5 rounded-md text-xs bg-telegram-surface border border-telegram-border text-telegram-text focus:border-telegram-primary outline-none transition"
+                            maxLength={32}
+                        />
+                    </div>
+
+                    {/* Base Mode Toggle */}
+                    <div className="flex items-center gap-2">
+                        <label className="text-xs text-telegram-subtext w-16 shrink-0">{t('settings.base_mode')}</label>
+                        <div className="flex gap-1">
+                            <button
+                                onClick={() => handleBaseToggle(true)}
+                                className={`px-3 py-1 rounded-md text-xs font-medium transition ${
+                                    editingTheme.isDark
+                                        ? 'bg-telegram-primary text-white'
+                                        : 'bg-telegram-hover text-telegram-subtext hover:text-telegram-text'
+                                }`}
+                            >
+                                Dark
+                            </button>
+                            <button
+                                onClick={() => handleBaseToggle(false)}
+                                className={`px-3 py-1 rounded-md text-xs font-medium transition ${
+                                    !editingTheme.isDark
+                                        ? 'bg-telegram-primary text-white'
+                                        : 'bg-telegram-hover text-telegram-subtext hover:text-telegram-text'
+                                }`}
+                            >
+                                Light
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Color Pickers */}
+                    <div className="space-y-2">
+                        {PALETTE_KEYS.map(({ key, labelKey }) => (
+                            <div key={key} className="flex items-center gap-2">
+                                <label className="text-xs text-telegram-subtext w-16 shrink-0">{t(labelKey)}</label>
+                                <div className="flex items-center gap-1.5 flex-1">
+                                    <input
+                                        type="color"
+                                        value={editingTheme.palette[key].startsWith('rgba') ? '#888888' : editingTheme.palette[key]}
+                                        onChange={e => handlePaletteChange(key, e.target.value)}
+                                        className="w-7 h-7 rounded-md border border-telegram-border cursor-pointer p-0.5 bg-transparent"
+                                    />
+                                    <input
+                                        type="text"
+                                        value={editingTheme.palette[key]}
+                                        onChange={e => handlePaletteChange(key, e.target.value)}
+                                        className="flex-1 px-2 py-1 rounded-md text-xs bg-telegram-surface border border-telegram-border text-telegram-text focus:border-telegram-primary outline-none transition font-mono"
+                                        maxLength={30}
+                                    />
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+
+                    {/* Delete Button */}
+                    <button
+                        onClick={() => handleDeleteTheme(editingTheme.id)}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-red-400 hover:bg-red-500/10 transition"
+                    >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        {t('settings.delete_theme')}
+                    </button>
+                </div>
+            )}
+
+            {/* Reset to Default */}
+            {activeCustomThemeId && (
+                <button
+                    onClick={() => {
+                        setActiveCustomTheme(null);
+                        setEditingId(null);
+                    }}
+                    className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium text-telegram-subtext hover:text-telegram-text bg-telegram-hover/50 hover:bg-telegram-hover transition"
+                >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    {t('settings.reset_default')}
+                </button>
+            )}
+        </motion.section>
     );
 }

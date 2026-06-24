@@ -37,6 +37,17 @@ pub struct FolderMetadata {
     pub username: Option<String>,
     /// Whether the channel is public (has a username set).
     pub is_public: bool,
+    // Local-first grouping & ordering metadata
+    pub group_id: Option<i32>,
+    pub display_order: i32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FolderGroup {
+    pub id: i32,
+    pub name: String,
+    pub color_hex: String,
+    pub display_order: i32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

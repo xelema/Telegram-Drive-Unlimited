@@ -1,10 +1,10 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { load, type Store } from '@tauri-apps/plugin-store';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { useConfirm } from '../context/ConfirmContext';
-import { TelegramFolder, FolderInviteInfo } from '../types';
+import { TelegramFolder, FolderInviteInfo, FolderGroup } from '../types';
 import { useNetworkStatus } from './useNetworkStatus';
 
 export function useTelegramConnection(onLogoutParent: () => void) {
@@ -12,22 +12,26 @@ export function useTelegramConnection(onLogoutParent: () => void) {
     const { confirm } = useConfirm();
 
     const [folders, setFolders] = useState<TelegramFolder[]>([]);
+    const [groups, setGroups] = useState<FolderGroup[]>([]);
     const [activeFolderId, setActiveFolderId] = useState<number | null>(null);
     const [store, setStore] = useState<Store | null>(null);
     const [isSyncing, setIsSyncing] = useState(false);
     const [isConnected, setIsConnected] = useState(true);
 
-
     const networkIsOnline = useNetworkStatus();
-
-    // Ref to always point to the latest handleSyncFolders without triggering effect re-runs.
-    // Initialized as null then assigned after handleSyncFolders is declared below.
     const handleSyncFoldersRef = useRef<((silentParam?: boolean | unknown) => Promise<void>) | null>(null);
 
+    // Fetch groups list from DB
+    const fetchGroups = useCallback(async () => {
+        try {
+            const list = await invoke<FolderGroup[]>('cmd_get_groups');
+            setGroups(list);
+        } catch (e) {
+            console.error("Failed to fetch folder groups:", e);
+        }
+    }, []);
+
     // Load persisted store and restore saved folders.
-    // NOTE: The Telegram connection is already established by App.tsx before
-    // Dashboard mounts, so we do NOT call cmd_connect here. This prevents
-    // duplicate network runners and race conditions in the Rust backend.
     useEffect(() => {
         const initStore = async () => {
             try {
@@ -38,13 +42,31 @@ export function useTelegramConnection(onLogoutParent: () => void) {
                 }
                 setStore(_store);
 
-                const savedFolders = await _store.get<TelegramFolder[]>('folders');
-                if (savedFolders) setFolders(savedFolders);
+                // Fetch local-first SQLite enriched folders
+                try {
+                    const dbFolders = await invoke<TelegramFolder[]>('cmd_get_enriched_folders');
+                    if (dbFolders && dbFolders.length > 0) {
+                        setFolders(dbFolders);
+                    } else {
+                        const savedFolders = await _store.get<TelegramFolder[]>('folders');
+                        if (savedFolders) setFolders(savedFolders);
+                    }
+                } catch {
+                    const savedFolders = await _store.get<TelegramFolder[]>('folders');
+                    if (savedFolders) setFolders(savedFolders);
+                }
+
+                // Fetch local-first SQLite groups
+                try {
+                    const list = await invoke<FolderGroup[]>('cmd_get_groups');
+                    setGroups(list);
+                } catch (e) {
+                    console.error("Failed to load groups:", e);
+                }
 
                 const savedActiveFolderId = await _store.get<number | null>('activeFolderId');
                 if (savedActiveFolderId !== undefined) setActiveFolderId(savedActiveFolderId);
 
-                // Connection is already live — just mark connected and refresh files
                 setIsConnected(true);
                 queryClient.invalidateQueries({ queryKey: ['files'] });
             } catch {
@@ -54,9 +76,7 @@ export function useTelegramConnection(onLogoutParent: () => void) {
         initStore();
     }, [queryClient]);
 
-    // Consolidated mount-sync + visibility-change listener in a single effect.
-    // Previously two effects with identical [store, isConnected] deps both called
-    // handleSyncFolders + queryClient.invalidateQueries, causing doubled startup work.
+    // Consolidated mount-sync + visibility-change listener
     useEffect(() => {
         if (!store || !isConnected) return;
 
@@ -66,10 +86,8 @@ export function useTelegramConnection(onLogoutParent: () => void) {
             queryClient.invalidateQueries({ queryKey: ['files'] });
         };
 
-        // Initial sync on mount / when store becomes available
         syncAndRefresh();
 
-        // Sync again when the app returns to foreground
         const handleVisibilityChange = () => {
             if (document.visibilityState === 'visible') {
                 syncAndRefresh();
@@ -82,11 +100,9 @@ export function useTelegramConnection(onLogoutParent: () => void) {
         };
     }, [store, isConnected, queryClient]);
 
-
     useEffect(() => {
         setIsConnected(networkIsOnline);
     }, [networkIsOnline]);
-
 
     const handleLogout = async () => {
         if (!await confirm({ title: "Sign Out", message: "Are you sure you want to sign out? This will disconnect your active session.", confirmText: "Sign Out", variant: 'danger' })) return;
@@ -113,36 +129,23 @@ export function useTelegramConnection(onLogoutParent: () => void) {
         setIsSyncing(true);
         try {
             const foundFolders = await invoke<TelegramFolder[]>('cmd_scan_folders');
-            const merged = [...folders];
-            let added = 0;
-            for (const f of foundFolders) {
-                if (!merged.find(existing => existing.id === f.id)) {
-                    merged.push(f);
-                    added++;
-                }
-            }
-            if (added > 0) {
-                setFolders(merged);
-                await store.set('folders', merged);
-                await store.save();
-                if (!silent) {
-                    toast.success(`Scan complete. Found ${added} new folders.`);
-                }
-            } else {
-                if (!silent) {
-                    toast.info("Scan complete. No new folders found.");
-                }
-            }
-        } catch {
+            setFolders(foundFolders);
+            await store.set('folders', foundFolders);
+            await store.save();
+            await fetchGroups();
             if (!silent) {
-                toast.error("Sync failed");
+                toast.success("Folders and groups synchronized.");
+            }
+        } catch (e) {
+            if (!silent) {
+                toast.error("Sync failed: " + e);
             }
         } finally {
             setIsSyncing(false);
         }
     };
 
-    // Keep the ref in sync with the latest function on every render
+    // Keep the ref in sync
     handleSyncFoldersRef.current = handleSyncFolders;
 
     const handleCreateFolder = async (name: string) => {
@@ -200,7 +203,6 @@ export function useTelegramConnection(onLogoutParent: () => void) {
             }
         }
     };
-
 
     const handleFolderRename = async (folderId: number, oldName: string, newNameOverride?: string) => {
         const newName = newNameOverride?.trim();
@@ -272,9 +274,82 @@ export function useTelegramConnection(onLogoutParent: () => void) {
         }
     };
 
+    // Group Management Actions
+    const handleCreateGroup = async (name: string, colorHex: string = '#3B82F6') => {
+        try {
+            const id = await invoke<number>('cmd_create_group', { name, colorHex });
+            const newGroup: FolderGroup = { id, name, color_hex: colorHex, display_order: groups.length };
+            setGroups(prev => [...prev, newGroup]);
+            toast.success(`Group "${name}" created.`);
+        } catch (e) {
+            toast.error("Failed to create group: " + e);
+        }
+    };
+
+    const handleDeleteGroup = async (groupId: number) => {
+        try {
+            await invoke('cmd_delete_group', { groupId });
+            setGroups(prev => prev.filter(g => g.id !== groupId));
+            setFolders(prev => prev.map(f => f.group_id === groupId ? { ...f, group_id: null } : f));
+            toast.success("Group deleted.");
+        } catch (e) {
+            toast.error("Failed to delete group: " + e);
+        }
+    };
+
+    const handleUpdateGroup = async (groupId: number, name: string, colorHex: string) => {
+        try {
+            await invoke('cmd_update_group', { groupId, name, colorHex });
+            setGroups(prev => prev.map(g => g.id === groupId ? { ...g, name, color_hex: colorHex } : g));
+            toast.success("Group updated.");
+        } catch (e) {
+            toast.error("Failed to update group: " + e);
+        }
+    };
+
+    const handleAssignFolderToGroup = async (folderId: number, groupId: number | null) => {
+        try {
+            await invoke('cmd_assign_folder_to_group', { channelId: folderId, groupId });
+            setFolders(prev => prev.map(f => f.id === folderId ? { ...f, group_id: groupId } : f));
+        } catch (e) {
+            toast.error("Failed to assign folder to group: " + e);
+        }
+    };
+
+    const handleReorderFolders = async (reordered: TelegramFolder[]) => {
+        setFolders(reordered);
+        if (store) {
+            await store.set('folders', reordered);
+            await store.save();
+        }
+        try {
+            await Promise.all(
+                reordered.map((folder, index) =>
+                    invoke('cmd_update_folder_order', { channelId: folder.id, newOrder: index })
+                )
+            );
+        } catch (e) {
+            console.error("Failed to persist folder reordering:", e);
+        }
+    };
+
+    const handleUpdateGroupOrder = async (reorderedGroups: FolderGroup[]) => {
+        setGroups(reorderedGroups);
+        try {
+            await Promise.all(
+                reorderedGroups.map((g, index) =>
+                    invoke('cmd_update_group_order', { groupId: g.id, newOrder: index })
+                )
+            );
+        } catch (e) {
+            console.error("Failed to persist group order:", e);
+        }
+    };
+
     return {
         store,
         folders,
+        groups,
         activeFolderId,
         setActiveFolderId: handleSetActiveFolderId,
         isSyncing,
@@ -286,5 +361,13 @@ export function useTelegramConnection(onLogoutParent: () => void) {
         handleFolderRename,
         handleFolderToggleVisibility,
         handleExportFolderInvite,
+        // Group Actions
+        handleCreateGroup,
+        handleDeleteGroup,
+        handleUpdateGroup,
+        handleAssignFolderToGroup,
+        handleReorderFolders,
+        handleUpdateGroupOrder,
+        fetchGroups
     };
 }

@@ -41,9 +41,11 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
 
 
     const {
-        store, folders, activeFolderId, setActiveFolderId, isSyncing, isConnected,
+        store, folders, groups, activeFolderId, setActiveFolderId, isSyncing, isConnected,
         handleLogout, handleSyncFolders, handleCreateFolder, handleFolderDelete,
-        handleFolderRename, handleFolderToggleVisibility, handleExportFolderInvite
+        handleFolderRename, handleFolderToggleVisibility, handleExportFolderInvite,
+        handleCreateGroup, handleDeleteGroup, handleUpdateGroup, handleAssignFolderToGroup,
+        handleReorderFolders, handleUpdateGroupOrder
     } = useTelegramConnection(onLogout);
 
 
@@ -602,6 +604,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
 
             <Sidebar
                 folders={folders}
+                groups={groups}
                 activeFolderId={activeFolderId}
                 setActiveFolderId={setActiveFolderId}
                 onDrop={handleDropOnFolder}
@@ -630,6 +633,12 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                 onSync={handleSyncFolders}
                 onLogout={handleLogout}
                 bandwidth={bandwidth || null}
+                onAssignFolderToGroup={handleAssignFolderToGroup}
+                onReorderFolders={handleReorderFolders}
+                onUpdateGroupOrder={handleUpdateGroupOrder}
+                onCreateGroup={handleCreateGroup}
+                onUpdateGroup={handleUpdateGroup}
+                onDeleteGroup={handleDeleteGroup}
             />
 
             <main className="flex-1 flex flex-col">

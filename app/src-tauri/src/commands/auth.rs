@@ -122,27 +122,9 @@ pub async fn ensure_client_initialized(
     }
 
     let mut connection_params = grammers_mtsender::ConnectionParams::default();
-    let proxy = net_config.proxy.read().unwrap();
-    if proxy.enabled && !proxy.host.is_empty() {
-        if proxy.proxy_type == "socks5" {
-            let url = if !proxy.username.is_empty() {
-                let encoded_user = urlencoding::encode(&proxy.username);
-                let encoded_pass = urlencoding::encode(&proxy.password);
-                format!(
-                    "socks5://{}:{}@{}:{}",
-                    encoded_user, encoded_pass, proxy.host, proxy.port
-                )
-            } else {
-                format!("socks5://{}:{}", proxy.host, proxy.port)
-            };
-            log::info!("Using SOCKS5 proxy: socks5://{}:{}", proxy.host, proxy.port);
-            connection_params.proxy_url = Some(url);
-        } else {
-            log::warn!(
-                "Unsupported proxy type: {}. grammers only supports SOCKS5 proxy.",
-                proxy.proxy_type
-            );
-        }
+    if let Some(proxy_url) = net_config.effective_proxy_url() {
+        log::info!("Using proxy: {}", proxy_url);
+        connection_params.proxy_url = Some(proxy_url);
     }
 
     let session = Arc::new(session);

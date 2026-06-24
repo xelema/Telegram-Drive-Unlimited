@@ -1,6 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { MoreVertical, Globe, Pencil, Trash2, EyeOff, Eye, Link } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { useSortable } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
+
+import { FolderGroup } from '../../../types';
 
 interface SidebarItemProps {
     icon: React.ElementType;
@@ -14,6 +18,9 @@ interface SidebarItemProps {
     onRename?: () => void;
     onToggleVisibility?: () => void;
     onExportInvite?: () => void;
+    collapsed?: boolean;
+    groups?: FolderGroup[];
+    onAssignFolderToGroup?: (folderId: number, groupId: number | null) => void;
 }
 
 /**
@@ -23,13 +30,34 @@ interface SidebarItemProps {
  * This component handles internal file moves via standard React drag events.
  * Right-click shows a context menu for folder management.
  */
-export function SidebarItem({ icon: Icon, label, active = false, onClick, onDrop, onDelete, folderId, isPublic, onRename, onToggleVisibility, onExportInvite }: SidebarItemProps) {
+export function SidebarItem({
+    icon: Icon, label, active = false, onClick, onDrop, onDelete, folderId, isPublic, onRename, onToggleVisibility, onExportInvite, collapsed = false,
+    groups = [], onAssignFolderToGroup
+}: SidebarItemProps) {
     const [isOver, setIsOver] = useState(false);
     const [dragCount, setDragCount] = useState(0);
     const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
     const menuRef = useRef<HTMLDivElement>(null);
     const settingsBtnRef = useRef<HTMLDivElement>(null);
     const { t } = useTranslation();
+
+    const {
+        attributes,
+        listeners,
+        setNodeRef,
+        transform,
+        transition,
+        isDragging,
+    } = useSortable({
+        id: folderId !== null ? `folder-${folderId}` : 'saved-messages',
+        disabled: folderId === null,
+    });
+
+    const style = folderId !== null ? {
+        transform: CSS.Transform.toString(transform),
+        transition,
+        opacity: isDragging ? 0.4 : undefined,
+    } : undefined;
 
     const hasFolderActions = onDelete && folderId !== null;
 
@@ -88,7 +116,12 @@ export function SidebarItem({ icon: Icon, label, active = false, onClick, onDrop
 
     return (
         <div
+            ref={setNodeRef}
+            style={style}
+            {...attributes}
+            {...listeners}
             onClick={onClick}
+            title={collapsed ? label : undefined}
             onDragEnter={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -119,24 +152,24 @@ export function SidebarItem({ icon: Icon, label, active = false, onClick, onDrop
                 if (onDrop) onDrop(e);
             }}
             onContextMenu={openContextMenu}
-            className={`group w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150 cursor-pointer select-none ${active
+            className={`group w-full flex items-center transition-all duration-150 cursor-pointer select-none ${collapsed ? 'justify-center p-2.5' : 'gap-3 px-3 py-2'} ${active
                 ? 'bg-telegram-primary/10 text-telegram-primary'
                 : isOver
                     ? 'bg-telegram-primary/30 text-telegram-text ring-2 ring-telegram-primary scale-[1.02] shadow-lg'
                     : 'text-telegram-subtext hover:bg-telegram-hover hover:text-telegram-text'
                 }`}
         >
-            <Icon className={`w-4 h-4 ${isOver ? 'text-telegram-primary' : ''}`} />
-            <span className="flex-1 text-left truncate">{label}</span>
+            <Icon className={`w-4 h-4 flex-shrink-0 ${isOver ? 'text-telegram-primary' : ''}`} />
+            {!collapsed && <span className="flex-1 text-left truncate">{label}</span>}
             {isOver && dragCount > 1 && (
                 <span className="flex-shrink-0 px-1.5 py-0.5 bg-telegram-primary text-white text-[10px] font-bold rounded-full leading-none min-w-[18px] text-center">
                     {dragCount}
                 </span>
             )}
-            {isPublic && (
+            {isPublic && !collapsed && (
                 <Globe className="w-3 h-3 text-emerald-400 flex-shrink-0" />
             )}
-            {onDelete && (
+            {onDelete && !collapsed && (
                 <div
                     ref={settingsBtnRef}
                     onClick={openSettingsPopover}
@@ -197,6 +230,32 @@ export function SidebarItem({ icon: Icon, label, active = false, onClick, onDrop
                             <Link className="w-4 h-4 text-telegram-primary" />
                             {t('files.copy_link')}
                         </button>
+                    )}
+
+                    {onAssignFolderToGroup && folderId !== null && groups && groups.length > 0 && (
+                        <>
+                            <div className="h-px bg-telegram-border my-1" />
+                            <div className="px-2 py-1 text-[10px] font-semibold text-telegram-subtext uppercase tracking-wider">
+                                {t('files.move_to_group') || "Move to Group"}
+                            </div>
+                            <button
+                                onClick={() => { setContextMenu(null); onAssignFolderToGroup(folderId, null); }}
+                                className="flex items-center gap-2 px-3 py-1.5 text-xs text-telegram-text hover:bg-telegram-hover rounded transition-colors text-left w-full"
+                            >
+                                <span className="w-1.5 h-1.5 rounded-full bg-telegram-subtext" />
+                                {t('common.unassigned') || "None (Unassigned)"}
+                            </button>
+                            {groups.map(group => (
+                                <button
+                                    key={group.id}
+                                    onClick={() => { setContextMenu(null); onAssignFolderToGroup(folderId, group.id); }}
+                                    className="flex items-center gap-2 px-3 py-1.5 text-xs text-telegram-text hover:bg-telegram-hover rounded transition-colors text-left w-full"
+                                >
+                                    <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: group.color_hex }} />
+                                    {group.name}
+                                </button>
+                            ))}
+                        </>
                     )}
 
                     <div className="h-px bg-telegram-border my-1" />

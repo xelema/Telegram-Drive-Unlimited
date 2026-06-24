@@ -11,6 +11,8 @@
   --color-telegram-subtext: #8e9fb3;
   --color-telegram-border: rgba(255, 255, 255, 0.1);
   --color-telegram-hover: rgba(255, 255, 255, 0.05);
+  --color-telegram-glass-bg: #17212b;
+  --color-telegram-glass-border: #ffffff;
 }
 
 /* Light Theme Overrides */
@@ -23,6 +25,8 @@
   --color-telegram-subtext: #65676b;
   --color-telegram-border: rgba(0, 0, 0, 0.1);
   --color-telegram-hover: rgba(0, 0, 0, 0.03);
+  --color-telegram-glass-bg: #ffffff;
+  --color-telegram-glass-border: #000000;
 }
 
 body,
@@ -50,28 +54,28 @@ body,
 
 /* Glassmorphism Utilities - Dark */
 .glass {
-  background: rgba(23, 33, 43, 0.7);
+  background: color-mix(in srgb, var(--color-telegram-glass-bg) 70%, transparent);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid color-mix(in srgb, var(--color-telegram-glass-border) 8%, transparent);
 }
 
 :root.light .glass {
-  background: rgba(255, 255, 255, 0.85);
-  border: 1px solid rgba(0, 0, 0, 0.08);
+  background: color-mix(in srgb, var(--color-telegram-glass-bg) 85%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-telegram-glass-border) 8%, transparent);
 }
 
 /* Auth-specific glass - works on gradient backgrounds in both themes */
 .auth-glass {
-  background: rgba(23, 33, 43, 0.85);
+  background: color-mix(in srgb, var(--color-telegram-glass-bg) 85%, transparent);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid color-mix(in srgb, var(--color-telegram-glass-border) 10%, transparent);
 }
 
 :root.light .auth-glass {
-  background: rgba(255, 255, 255, 0.9);
-  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: color-mix(in srgb, var(--color-telegram-glass-bg) 90%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-telegram-glass-border) 30%, transparent);
   color: #1a1a1a;
 }
 
@@ -118,14 +122,14 @@ body,
 }
 
 .glass-input {
-  background: rgba(14, 22, 33, 0.6);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: color-mix(in srgb, var(--color-telegram-glass-bg) 60%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-telegram-glass-border) 10%, transparent);
   backdrop-filter: blur(10px);
 }
 
 :root.light .glass-input {
-  background: rgba(255, 255, 255, 0.9);
-  border: 1px solid rgba(0, 0, 0, 0.15);
+  background: color-mix(in srgb, var(--color-telegram-glass-bg) 90%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-telegram-glass-border) 15%, transparent);
 }
 
 /* Custom Scrollbar - Dark */
@@ -294,4 +298,13 @@ body,
 .performance-mode .animate-pulse,
 .performance-mode .animate-spin {
   animation: none !important;
+}
+
+/* Hide scrollbar utility */
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-none {
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;  /* Firefox */
 }

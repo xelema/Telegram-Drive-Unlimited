@@ -8,6 +8,8 @@ use crate::models::{FolderMetadata, FileMetadata};
 use crate::bandwidth::BandwidthManager;
 use crate::commands::utils::{resolve_peer, map_error};
 use crate::vpn_optimizer::{NetworkConfig, backoff_ms};
+use crate::db::DbConnection;
+use sqlite;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -482,13 +484,14 @@ pub async fn create_folder_inner(
         peer: tl::enums::InputPeer::Channel(tl::types::InputPeerChannel { channel_id: chat_id, access_hash }),
         period: 0, 
     }).await;
-
     Ok(FolderMetadata {
         id: chat_id,
         name: name.to_string(),
         parent_id: None,
         username: None,
         is_public: false,
+        group_id: None,
+        display_order: 0,
     })
 }
 
@@ -496,25 +499,51 @@ pub async fn create_folder_inner(
 pub async fn cmd_create_folder(
     name: String,
     state: State<'_, TelegramState>,
+    db_pool: State<'_, DbConnection>,
 ) -> Result<FolderMetadata, String> {
     let client_opt = {
         state.client.lock().await.clone()
     };
     
-    #[cfg(debug_assertions)]
-    if client_opt.is_none() {
+    let mut folder = if client_opt.is_none() {
         let mock_id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
         log::info!("[MOCK] Created folder '{}' with ID {}", name, mock_id);
-        return Ok(FolderMetadata {
+        FolderMetadata {
             id: mock_id,
             name,
             parent_id: None,
             username: None,
             is_public: false,
-        });
+            group_id: None,
+            display_order: 0,
+        }
+    } else {
+        let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
+        create_folder_inner(&name, &client, &state.peer_cache).await?
+    };
+    
+    // Save to SQLite
+    let conn = db_pool.lock().map_err(|_| "DB poisoned".to_string())?;
+    
+    // Calculate new display order
+    let mut max_stmt = conn.prepare("SELECT MAX(display_order) FROM folder_metadata").map_err(|e: sqlite::Error| e.to_string())?;
+    let mut display_order = 0;
+    if let sqlite::State::Row = max_stmt.next().map_err(|e: sqlite::Error| e.to_string())? {
+        display_order = max_stmt.read::<Option<i64>, _>(0).ok().flatten().unwrap_or(0) + 1;
     }
-    let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
-    create_folder_inner(&name, &client, &state.peer_cache).await
+    
+    let mut insert_stmt = conn
+        .prepare("INSERT INTO folder_metadata (channel_id, name, username, is_public, display_order, group_id) VALUES (?, ?, ?, ?, ?, NULL)")
+        .map_err(|e: sqlite::Error| e.to_string())?;
+    insert_stmt.bind((1, folder.id)).map_err(|e: sqlite::Error| e.to_string())?;
+    insert_stmt.bind((2, folder.name.as_str())).map_err(|e: sqlite::Error| e.to_string())?;
+    insert_stmt.bind((3, folder.username.as_deref())).map_err(|e: sqlite::Error| e.to_string())?;
+    insert_stmt.bind((4, if folder.is_public { 1 } else { 0 })).map_err(|e: sqlite::Error| e.to_string())?;
+    insert_stmt.bind((5, display_order)).map_err(|e: sqlite::Error| e.to_string())?;
+    insert_stmt.next().map_err(|e: sqlite::Error| e.to_string())?;
+    
+    folder.display_order = display_order as i32;
+    Ok(folder)
 }
 
 pub async fn delete_folder_inner(
@@ -548,18 +577,26 @@ pub async fn delete_folder_inner(
 pub async fn cmd_delete_folder(
     folder_id: i64,
     state: State<'_, TelegramState>,
+    db_pool: State<'_, DbConnection>,
 ) -> Result<bool, String> {
     let client_opt = {
         state.client.lock().await.clone()
     };
     
-    #[cfg(debug_assertions)]
     if client_opt.is_none() {
         log::info!("[MOCK] Deleted folder ID {}", folder_id);
-        return Ok(true);
+    } else {
+        let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
+        delete_folder_inner(folder_id, &client, &state.peer_cache).await?;
     }
-    let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
-    delete_folder_inner(folder_id, &client, &state.peer_cache).await
+    
+    // Delete from SQLite
+    let conn = db_pool.lock().map_err(|_| "DB poisoned".to_string())?;
+    let mut stmt = conn.prepare("DELETE FROM folder_metadata WHERE channel_id = ?").map_err(|e: sqlite::Error| e.to_string())?;
+    stmt.bind((1, folder_id)).map_err(|e: sqlite::Error| e.to_string())?;
+    stmt.next().map_err(|e: sqlite::Error| e.to_string())?;
+    
+    Ok(true)
 }
 
 pub async fn rename_folder_inner(
@@ -578,7 +615,7 @@ pub async fn rename_folder_inner(
              tl::enums::InputChannel::Channel(tl::types::InputChannel {
                  channel_id: chan.id,
                  access_hash: chan.access_hash.ok_or("No access hash for channel")?,
-             })
+              })
         },
         _ => return Err("Only channels (folders) can be renamed.".to_string()),
     };
@@ -596,18 +633,27 @@ pub async fn cmd_rename_folder(
     folder_id: i64,
     new_name: String,
     state: State<'_, TelegramState>,
+    db_pool: State<'_, DbConnection>,
 ) -> Result<bool, String> {
     let client_opt = {
         state.client.lock().await.clone()
     };
     
-    #[cfg(debug_assertions)]
     if client_opt.is_none() {
         log::info!("[MOCK] Renamed folder ID {} to {}", folder_id, new_name);
-        return Ok(true);
+    } else {
+        let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
+        rename_folder_inner(folder_id, &new_name, &client, &state.peer_cache).await?;
     }
-    let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
-    rename_folder_inner(folder_id, &new_name, &client, &state.peer_cache).await
+    
+    // Update SQLite
+    let conn = db_pool.lock().map_err(|_| "DB poisoned".to_string())?;
+    let mut stmt = conn.prepare("UPDATE folder_metadata SET name = ? WHERE channel_id = ?").map_err(|e: sqlite::Error| e.to_string())?;
+    stmt.bind((1, new_name.as_str())).map_err(|e: sqlite::Error| e.to_string())?;
+    stmt.bind((2, folder_id)).map_err(|e: sqlite::Error| e.to_string())?;
+    stmt.next().map_err(|e: sqlite::Error| e.to_string())?;
+    
+    Ok(true)
 }
 
 
@@ -1488,11 +1534,13 @@ pub async fn cmd_search_global(
 #[tauri::command]
 pub async fn cmd_scan_folders(
     state: State<'_, TelegramState>,
+    db_pool: State<'_, DbConnection>,
 ) -> Result<Vec<FolderMetadata>, String> {
     let client_opt = { state.client.lock().await.clone() };
     #[cfg(debug_assertions)]
     if client_opt.is_none() { 
-        return Ok(Vec::new());
+        // If not connected, return whatever is already in the database
+        return crate::commands::folder_groups::cmd_get_enriched_folders(db_pool).await;
     }
     let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
     
@@ -1520,7 +1568,7 @@ pub async fn cmd_scan_folders(
                     let display_name = name.replace(" [TD]", "").replace(" [td]", "").replace("[TD]", "").replace("[td]", "").trim().to_string();
                     let username = c.raw.username.clone();
                     let is_public = username.is_some();
-                    folders.push(FolderMetadata { id, name: display_name, parent_id: None, username, is_public });
+                    folders.push(FolderMetadata { id, name: display_name, parent_id: None, username, is_public, group_id: None, display_order: 0 });
                     continue; 
                 }
 
@@ -1540,7 +1588,7 @@ pub async fn cmd_scan_folders(
                                      log::info!(" -> MATCH via About: {}", name);
                                      let username = c.raw.username.clone();
                                      let is_public = username.is_some();
-                                     folders.push(FolderMetadata { id, name: name.clone(), parent_id: None, username, is_public });
+                                     folders.push(FolderMetadata { id, name: name.clone(), parent_id: None, username, is_public, group_id: None, display_order: 0 });
                                  }
                             }
                         },
@@ -1565,7 +1613,11 @@ pub async fn cmd_scan_folders(
     
     let cache_len = state.peer_cache.read().await.len();
     log::info!("Scan complete. Found {} folders. Peer cache size: {}.", folders.len(), cache_len);
-    Ok(folders)
+    
+    // Enrich folders via the local DB
+    let conn = db_pool.lock().map_err(|_| "DB poisoned".to_string())?;
+    let enriched = crate::commands::folder_groups::get_enriched_folders_internal(&conn, folders)?;
+    Ok(enriched)
 }
 
 /// Zip a folder's contents into a temp file and return the path.
@@ -1669,155 +1721,184 @@ pub async fn cmd_toggle_folder_visibility(
     make_public: bool,
     desired_username: Option<String>,
     state: State<'_, TelegramState>,
+    db_pool: State<'_, DbConnection>,
 ) -> Result<FolderMetadata, String> {
     let client_opt = {
         state.client.lock().await.clone()
     };
 
-    #[cfg(debug_assertions)]
-    if client_opt.is_none() {
+    let mut folder = if client_opt.is_none() {
         log::info!("[MOCK] Toggle visibility for folder {}. Public: {}", folder_id, make_public);
-        return Ok(FolderMetadata {
+        FolderMetadata {
             id: folder_id,
             name: "Mock Folder".to_string(),
             parent_id: None,
             username: if make_public { desired_username } else { None },
             is_public: make_public,
-        });
-    }
-    let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
-
-    let peer = resolve_peer(&client, Some(folder_id), &state.peer_cache).await?;
-    let (channel_id, access_hash) = match &peer {
-        Peer::Channel(c) => (c.raw.id, c.raw.access_hash.ok_or("No access hash for channel")?),
-        _ => return Err("Only channels (folders) can be toggled.".to_string()),
-    };
-
-    let input_channel = tl::enums::InputChannel::Channel(tl::types::InputChannel {
-        channel_id,
-        access_hash,
-    });
-
-    // Extract channel name from the resolved peer for the return value
-    let channel_name = match &peer {
-        Peer::Channel(c) => {
-            c.raw.title
-                .replace(" [TD]", "")
-                .replace(" [td]", "")
-                .trim()
-                .to_string()
+            group_id: None,
+            display_order: 0,
         }
-        _ => "Folder".to_string(),
-    };
+    } else {
+        let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
 
-    if make_public {
-        // Generate a username from the desired_username or channel title.
-        // If desired_username is provided AND non-empty, use it directly;
-        // otherwise auto-generate from the channel title.
-        let username = if let Some(ref u) = desired_username {
-            if !u.is_empty() {
-                Some(u.clone())
-            } else {
-                None // empty string → fall through to auto-generation below
-            }
-        } else {
-            None
+        let peer = resolve_peer(&client, Some(folder_id), &state.peer_cache).await?;
+        let (channel_id, access_hash) = match &peer {
+            Peer::Channel(c) => (c.raw.id, c.raw.access_hash.ok_or("No access hash for channel")?),
+            _ => return Err("Only channels (folders) can be toggled.".to_string()),
         };
 
-        let username = match username {
-            Some(given) => {
-                // User-provided username: check availability first
-                let available = client
-                    .invoke(&tl::functions::channels::CheckUsername {
-                        channel: tl::enums::InputChannel::Channel(tl::types::InputChannel {
-                            channel_id,
-                            access_hash,
-                        }),
-                        username: given.clone(),
-                    })
-                    .await
-                    .map_err(|e| format!("Failed to check username availability: {}", map_error(e)))?;
-                if !available {
-                    return Err(format!("Username '{}' is not available. Try a different one.", given));
-                }
-                given
+        let input_channel = tl::enums::InputChannel::Channel(tl::types::InputChannel {
+            channel_id,
+            access_hash,
+        });
+
+        // Extract channel name from the resolved peer for the return value
+        let channel_name = match &peer {
+            Peer::Channel(c) => {
+                c.raw.title
+                    .replace(" [TD]", "")
+                    .replace(" [td]", "")
+                    .trim()
+                    .to_string()
             }
-            None => {
-                // Auto-generate username from channel title
-                // channel_name already has [TD] stripped above
-                let mut base = channel_name.clone()
-                    .to_lowercase()
-                    .chars()
-                    .filter(|c| c.is_alphanumeric() || *c == '_')
-                    .take(30)
-                    .collect::<String>();
-                if base.len() < 5 {
-                    let suffix: String = (0..6)
-                        .map(|_| char::from(b'a' + (rand::random::<u8>() % 26)))
-                        .collect();
-                    base = format!("{}_{}", base, suffix);
+            _ => "Folder".to_string(),
+        };
+
+        if make_public {
+            // Generate a username from the desired_username or channel title.
+            // If desired_username is provided AND non-empty, use it directly;
+            // otherwise auto-generate from the channel title.
+            let username = if let Some(ref u) = desired_username {
+                if !u.is_empty() {
+                    Some(u.clone())
+                } else {
+                    None // empty string → fall through to auto-generation below
                 }
-                // Try to find an available username
-                let mut candidate = base.clone();
-                for attempt in 1..=10 {
-                    match client
+            } else {
+                None
+            };
+
+            let username = match username {
+                Some(given) => {
+                    // User-provided username: check availability first
+                    let available = client
                         .invoke(&tl::functions::channels::CheckUsername {
                             channel: tl::enums::InputChannel::Channel(tl::types::InputChannel {
                                 channel_id,
                                 access_hash,
                             }),
-                            username: candidate.clone(),
+                            username: given.clone(),
                         })
                         .await
-                    {
-                        Ok(true) => break,
-                        _ => {
-                            candidate = format!("{}{}", base, attempt);
-                            if attempt == 10 {
-                                return Err("Could not find an available username after 10 attempts".to_string());
+                        .map_err(|e| format!("Failed to check username availability: {}", map_error(e)))?;
+                    if !available {
+                        return Err(format!("Username '{}' is not available. Try a different one.", given));
+                    }
+                    given
+                }
+                None => {
+                    // Auto-generate username from channel title
+                    // channel_name already has [TD] stripped above
+                    let mut base = channel_name.clone()
+                        .to_lowercase()
+                        .chars()
+                        .filter(|c| c.is_alphanumeric() || *c == '_')
+                        .take(30)
+                        .collect::<String>();
+                    if base.len() < 5 {
+                        let suffix: String = (0..6)
+                            .map(|_| char::from(b'a' + (rand::random::<u8>() % 26)))
+                            .collect();
+                        base = format!("{}_{}", base, suffix);
+                    }
+                    // Try to find an available username
+                    let mut candidate = base.clone();
+                    for attempt in 1..=10 {
+                        match client
+                            .invoke(&tl::functions::channels::CheckUsername {
+                                channel: tl::enums::InputChannel::Channel(tl::types::InputChannel {
+                                    channel_id,
+                                    access_hash,
+                                }),
+                                username: candidate.clone(),
+                            })
+                            .await
+                        {
+                            Ok(true) => break,
+                            _ => {
+                                candidate = format!("{}{}", base, attempt);
+                                if attempt == 10 {
+                                    return Err("Could not find an available username after 10 attempts".to_string());
+                                }
                             }
                         }
                     }
+                    candidate
                 }
-                candidate
+            };
+
+            log::info!("Setting channel {} username to '{}'", channel_id, username);
+            client
+                .invoke(&tl::functions::channels::UpdateUsername {
+                    channel: input_channel,
+                    username: username.clone(),
+                })
+                .await
+                .map_err(|e| format!("Failed to set username: {}", map_error(e)))?;
+
+            FolderMetadata {
+                id: channel_id,
+                name: channel_name,
+                parent_id: None,
+                username: Some(username),
+                is_public: true,
+                group_id: None,
+                display_order: 0,
             }
-        };
+        } else {
+            // Make private: remove username
+            log::info!("Removing username from channel {}", channel_id);
+            client
+                .invoke(&tl::functions::channels::UpdateUsername {
+                    channel: input_channel,
+                    username: String::new(),
+                })
+                .await
+                .map_err(|e| format!("Failed to remove username: {}", map_error(e)))?;
 
-        log::info!("Setting channel {} username to '{}'", channel_id, username);
-        client
-            .invoke(&tl::functions::channels::UpdateUsername {
-                channel: input_channel,
-                username: username.clone(),
-            })
-            .await
-            .map_err(|e| format!("Failed to set username: {}", map_error(e)))?;
+            FolderMetadata {
+                id: channel_id,
+                name: channel_name,
+                parent_id: None,
+                username: None,
+                is_public: false,
+                group_id: None,
+                display_order: 0,
+            }
+        }
+    };
 
-        Ok(FolderMetadata {
-            id: channel_id,
-            name: channel_name,
-            parent_id: None,
-            username: Some(username),
-            is_public: true,
-        })
-    } else {
-        // Make private: remove username
-        log::info!("Removing username from channel {}", channel_id);
-        client
-            .invoke(&tl::functions::channels::UpdateUsername {
-                channel: input_channel,
-                username: String::new(),
-            })
-            .await
-            .map_err(|e| format!("Failed to remove username: {}", map_error(e)))?;
+    // Update SQLite cache
+    let conn = db_pool.lock().map_err(|_| "DB poisoned".to_string())?;
+    let mut stmt = conn
+        .prepare("UPDATE folder_metadata SET username = ?, is_public = ? WHERE channel_id = ?")
+        .map_err(|e: sqlite::Error| e.to_string())?;
+    stmt.bind((1, folder.username.as_deref())).map_err(|e: sqlite::Error| e.to_string())?;
+    stmt.bind((2, if folder.is_public { 1 } else { 0 })).map_err(|e: sqlite::Error| e.to_string())?;
+    stmt.bind((3, folder.id)).map_err(|e: sqlite::Error| e.to_string())?;
+    stmt.next().map_err(|e: sqlite::Error| e.to_string())?;
 
-        Ok(FolderMetadata {
-            id: channel_id,
-            name: channel_name,
-            parent_id: None,
-            username: None,
-            is_public: false,
-        })
+    // Retrieve group_id and display_order from DB to ensure they are returned correctly
+    let mut fm_stmt = conn
+        .prepare("SELECT group_id, display_order FROM folder_metadata WHERE channel_id = ?")
+        .map_err(|e: sqlite::Error| e.to_string())?;
+    fm_stmt.bind((1, folder.id)).map_err(|e: sqlite::Error| e.to_string())?;
+    if let sqlite::State::Row = fm_stmt.next().map_err(|e: sqlite::Error| e.to_string())? {
+        folder.group_id = fm_stmt.read::<Option<i64>, _>("group_id").ok().flatten().map(|id| id as i32);
+        folder.display_order = fm_stmt.read::<i64, _>("display_order").map_err(|e: sqlite::Error| e.to_string())? as i32;
     }
+
+    Ok(folder)
 }
 
 /// Export a Telegram invite link for a folder (channel).
