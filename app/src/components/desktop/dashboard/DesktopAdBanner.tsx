@@ -6,37 +6,10 @@ const AD_INTERVAL_MS = 1000 * 60 * 45; // 45 minutes
 const AUTO_DISMISS_SECONDS = 10; // auto-close after 10s
 const DISMISSED_AT_KEY = 'desktopAdDismissedAt';
 
-// Ad network offerwall URL — opened in the external browser on click.
-// Matches the highperformanceformat.com provider used by the embedded ad.
-const AD_CLICK_URL = 'https://www.highperformanceformat.com/9cf449272b7e1c83054b82b7639c6029';
+const AD_CLICK_URL = 'https://www.effectivecpmnetwork.com/nk8qy01t0g?key=a6c132f628973ad13b326e57e4a92f40';
 
-// Inline ad HTML embedded via srcdoc — avoids file-loading origin issues.
-const AD_SRCDOC = `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      width: 300px; height: 250px; overflow: hidden;
-      background: #1a1a2e;
-    }
-  </style>
-</head>
-<body>
-  <script>
-    window.atOptions = {
-      'key': '9cf449272b7e1c83054b82b7639c6029',
-      'format': 'iframe',
-      'height': 250,
-      'width': 300,
-      'params': {}
-    };
-  <\/script>
-  <script src="https://www.highperformanceformat.com/9cf449272b7e1c83054b82b7639c6029/invoke.js" async><\/script>
-</body>
-</html>`;
+// Hosted ad page — loads the Adsterra script under its own origin/CSP
+const AD_IFRAME_URL = 'https://www.cameronamer.com/ad-banner.html';
 
 
 // Safe localStorage wrappers — prevent crashes in restricted webview environments
@@ -216,7 +189,7 @@ export function DesktopAdBanner() {
               onClick handler always fires. */}
           <iframe
             ref={iframeRef}
-            srcDoc={AD_SRCDOC}
+            src={AD_IFRAME_URL}
             sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
             title="Advertisement"
             width={300}

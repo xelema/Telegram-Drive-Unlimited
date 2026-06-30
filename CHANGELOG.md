@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.9.6] - 2026-06-30
+
+### Features & Ad System Refinement
+
+- **Ad system link updates**
+  - Updated the desktop ad banner to load the hosted HTML page directly in the sandboxed iframe.
+  - Set the clickable outer wrapper button to route to the actual Adsterra destination URL, ensuring correct navigation flow.
+  - Reverted to using inline srcDoc for the desktop ad banner to ensure ads render reliably across all platforms, while preserving the user's custom click destination.
+  - Updated the Mobile ad banner to route clicks to the custom ad landing page.
+
+---
+
 ## [1.9.5] - 2026-06-24
 
 ### Features & Grouping Polish
