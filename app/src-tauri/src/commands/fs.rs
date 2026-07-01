@@ -1072,6 +1072,65 @@ async fn upload_one_part(
     Err(format!("Upload failed after {} attempts: {}", max_retries + 1, last_err))
 }
 
+/// Display name of a message: caption if set (rename mechanism), else the
+/// document's filename attribute. Mirrors the listing logic in cmd_get_files.
+fn message_display_name(msg: &grammers_client::types::Message) -> String {
+    let caption = msg.text();
+    if !caption.is_empty() {
+        return caption.to_string();
+    }
+    match msg.media() {
+        Some(Media::Document(d)) => d.name().to_string(),
+        _ => String::new(),
+    }
+}
+
+/// Resolves a message id to the ordered message ids making up the file:
+/// [message_id] for regular files, all sibling ".tgdpart" messages (sorted by
+/// part index) for split files. With require_complete, errors if a part is
+/// missing; otherwise returns whatever parts exist (used by delete).
+async fn resolve_parts(
+    client: &grammers_client::Client,
+    peer: &Peer,
+    message_id: i32,
+    require_complete: bool,
+) -> Result<Vec<i32>, String> {
+    let messages = client.get_messages_by_id(peer, &[message_id]).await.map_err(|e| e.to_string())?;
+    let msg = messages.into_iter().flatten().next().ok_or_else(|| "Message not found".to_string())?;
+    let name = message_display_name(&msg);
+    let (base, _, total) = match parse_part_name(&name) {
+        Some(p) => p,
+        None => return Ok(vec![message_id]),
+    };
+    let base = base.to_string();
+
+    // Scan the chat for sibling parts (same O(n) cost as the folder listing)
+    let mut found: HashMap<u32, i32> = HashMap::new();
+    let mut msgs = client.iter_messages(peer);
+    while let Some(m) = msgs.next().await.map_err(|e| e.to_string())? {
+        if !matches!(m.media(), Some(Media::Document(_))) {
+            continue;
+        }
+        if let Some((b, i, t)) = parse_part_name(&message_display_name(&m)) {
+            if b == base && t == total {
+                found.entry(i).or_insert(m.id());
+            }
+        }
+    }
+
+    let mut ids = Vec::with_capacity(total as usize);
+    for i in 1..=total {
+        match found.get(&i) {
+            Some(id) => ids.push(*id),
+            None if require_complete => {
+                return Err(format!("Split file '{}': part {}/{} is missing", base, i, total));
+            }
+            None => {}
+        }
+    }
+    Ok(ids)
+}
+
 #[tauri::command]
 pub async fn initiate_upload(
     path: String,
@@ -1258,26 +1317,39 @@ pub async fn cmd_download_file(
     
     let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
 
-    // Use get_messages_by_id for efficient message lookup (same as server.rs)
-    let messages = client.get_messages_by_id(&peer, &[message_id]).await.map_err(|e| e.to_string())?;
-    
-    let msg = messages.into_iter()
-        .flatten()
-        .next()
-        .ok_or_else(|| "Message not found".to_string())?;
+    // Resolve split files to all their part messages ([message_id] for regular files)
+    let part_ids = resolve_parts(&client, &peer, message_id, true).await?;
+    let messages = client.get_messages_by_id(&peer, &part_ids).await.map_err(|e| e.to_string())?;
+    let part_msgs: Vec<_> = messages.into_iter().flatten().collect();
+    if part_msgs.is_empty() {
+        return Err("Message not found".to_string());
+    }
+    if part_msgs.len() != part_ids.len() {
+        return Err("Some parts of this file are missing. Please refresh the folder.".to_string());
+    }
 
-    let media = msg.media()
-        .ok_or_else(|| "No media in message".to_string())?;
+    // Media + expected size per part; the sum drives progress and integrity checks
+    let mut parts: Vec<(Media, Option<u64>)> = Vec::with_capacity(part_msgs.len());
+    let mut total_size: u64 = 0;
+    let mut expected_total: Option<u64> = Some(0);
+    for m in &part_msgs {
+        let media = m.media().ok_or_else(|| "No media in message".to_string())?;
+        let part_expected = match &media {
+            Media::Document(d) => Some(d.size() as u64),
+            _ => None,
+        };
+        total_size += part_expected.unwrap_or(match &media {
+            Media::Photo(_) => 1024 * 1024,
+            _ => 0,
+        });
+        expected_total = match (expected_total, part_expected) {
+            (Some(acc), Some(sz)) => Some(acc + sz),
+            _ => None,
+        };
+        parts.push((media, part_expected));
+    }
+    let expected_file_size = expected_total;
 
-    let expected_file_size = match &media {
-        Media::Document(d) => Some(d.size() as u64),
-        _ => None,
-    };
-    let total_size = expected_file_size.unwrap_or(match &media {
-        Media::Photo(_) => 1024 * 1024,
-        _ => 0,
-    });
-    
     bw_state.try_reserve_down(total_size)?;
 
     // Emit start
@@ -1287,8 +1359,7 @@ pub async fn cmd_download_file(
         });
     }
 
-    // Stream download with per-chunk progress
-    let mut download_iter = client.iter_download(&media);
+    // Stream all parts sequentially into one file, with per-chunk progress
     let mut file = tokio::fs::File::create(&actual_save_path).await.map_err(|e| {
         bw_state.release_down(total_size);
         e.to_string()
@@ -1298,7 +1369,11 @@ pub async fn cmd_download_file(
     let mut last_emit_bytes: u64 = 0;
     let mut chunk_retry_budget = net_config.retry_attempts();
 
-    while let Some(chunk) = download_iter.next().await.transpose() {
+    for (part_idx, (media, part_expected)) in parts.iter().enumerate() {
+        let mut download_iter = client.iter_download(media);
+        let mut part_downloaded: u64 = 0;
+
+        while let Some(chunk) = download_iter.next().await.transpose() {
         // Check cancellation
         if state.cancelled_transfers.read().await.contains(&tid) {
             state.cancelled_transfers.write().await.remove(&tid);
@@ -1330,7 +1405,8 @@ pub async fn cmd_download_file(
         };
         tokio::io::AsyncWriteExt::write_all(&mut file, &bytes).await.map_err(|e| e.to_string())?;
         downloaded += bytes.len() as u64;
-        
+        part_downloaded += bytes.len() as u64;
+
         // Time-based progress emission (every 250ms)
         if !tid.is_empty() {
             let now = std::time::Instant::now();
@@ -1356,6 +1432,20 @@ pub async fn cmd_download_file(
                 if sleep_ms > 0 && sleep_ms < 5000 {
                     tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
                 }
+            }
+        }
+        }
+
+        // Per-part integrity check: a short part would silently corrupt the merged file
+        if let Some(expected) = part_expected {
+            if *expected > 0 && part_downloaded != *expected {
+                drop(file);
+                cleanup_partial_file(&actual_save_path);
+                bw_state.release_down(total_size);
+                return Err(format!(
+                    "Incomplete download of part {}/{}: expected {} bytes, received {} bytes",
+                    part_idx + 1, parts.len(), expected, part_downloaded
+                ));
             }
         }
     }
