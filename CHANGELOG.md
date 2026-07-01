@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.9.7] - 2026-07-01
+
+- Hotfixes
+
 ## [1.9.6] - 2026-06-30
 
 ### Features & Ad System Refinement

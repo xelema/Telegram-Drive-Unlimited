@@ -12,7 +12,7 @@
     }
   },
   "productName": "Telegram Drive",
-  "version": "1.9.6",
+  "version": "1.9.7",
   "identifier": "com.cameronamer.telegramdrive",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -28,11 +28,12 @@
         "height": 800,
         "minWidth": 1000,
         "minHeight": 700,
-        "dragDropEnabled": false
+        "dragDropEnabled": false,
+        "devtools": true
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' https: http://localhost:* https://asset.localhost http://asset.localhost; media-src 'self' blob: http://localhost:*; img-src 'self' data: blob: asset: https: https://asset.localhost; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https:; frame-src 'self' blob: https:; worker-src 'self' blob:;",
+      "csp": "default-src 'self'; connect-src 'self' https: http://localhost:* https://asset.localhost http://asset.localhost; media-src 'self' blob: http://localhost:*; img-src 'self' data: blob: asset: https: https://asset.localhost; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https:; frame-src 'self' blob: https: https://www.cameronamer.com http://127.0.0.1:*; worker-src 'self' blob:;",
       "capabilities": [
         "default",
         "mobile-only"

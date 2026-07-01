@@ -8,8 +8,10 @@ const DISMISSED_AT_KEY = 'desktopAdDismissedAt';
 
 const AD_CLICK_URL = 'https://www.effectivecpmnetwork.com/nk8qy01t0g?key=a6c132f628973ad13b326e57e4a92f40';
 
-// Hosted ad page — loads the Adsterra script under its own origin/CSP
-const AD_IFRAME_URL = 'https://www.cameronamer.com/ad-banner.html';
+// Serve from the local streaming server (using standard loopback HTTP origin)
+// Adsterra accepts standard HTTP/HTTPS origins. invoke.js uses referrerpolicy="no-referrer"
+// to strip the Referer header so Adsterra cannot reject the custom Tauri origin.
+const AD_IFRAME_URL = 'http://127.0.0.1:14201/ad-banner';
 
 
 // Safe localStorage wrappers — prevent crashes in restricted webview environments
@@ -38,9 +40,10 @@ function safeTrySet(key: string, value: string): void {
  *
  * Sandbox permissions:
  *   allow-scripts              → ad script can execute
- *   allow-same-origin          → ad script runs on the parent origin
- *                              (localhost/tauri) — needed for cookies,
- *                              localStorage, and XHR/fetch to function.
+ *   allow-same-origin          → iframe keeps its real origin
+ *                              (cameronamer.com/127.0.0.1) instead of
+ *                              opaque origin — needed for cookies,
+ *                              localStorage, and XHR/fetch.
  *   allow-popups               → ad clicks can open popups
  *   allow-popups-to-escape-sandbox → popups open as full browser windows
  *
@@ -91,8 +94,6 @@ export function DesktopAdBanner() {
       if (interval) clearInterval(interval);
     };
   }, [visible]);
-
-
   // ── Internal dismiss ──
   const handleDismissInternal = useCallback(() => {
     // Clear the iframe src to stop scripts
@@ -108,12 +109,11 @@ export function DesktopAdBanner() {
     }, 300);
   }, []);
 
-  // ── Handle ad click — open in system browser ────────────────────────
+  // ── Handle ad click — open SmartLink in system browser ──────────────
   const handleAdClick = useCallback(async () => {
     try {
       await open(AD_CLICK_URL);
     } catch {
-      // Fallback: try window.open if shell plugin fails
       window.open(AD_CLICK_URL, '_blank');
     }
   }, []);
@@ -178,15 +178,15 @@ export function DesktopAdBanner() {
             : 'Advertisement closed'}
         </div>
 
-        {/* Clickable ad wrapper — opens ad URL in system browser on click */}
+        {/* Clickable ad wrapper — opens SmartLink in system browser on click.
+            pointer-events-none prevents ad script popunders while letting clicks
+            pass through to this wrapper. Fallback button is decorative — clicks
+            anywhere on the ad area open the SmartLink. */}
         <button
           onClick={handleAdClick}
           className="relative block cursor-pointer border-0 bg-transparent p-0 m-0 w-[300px] h-[250px]"
           aria-label="Click to open sponsored content in browser"
         >
-          {/* Sandboxed ad iframe — isolates external scripts from the main document.
-              pointer-events-none prevents the ad from intercepting clicks so our
-              onClick handler always fires. */}
           <iframe
             ref={iframeRef}
             src={AD_IFRAME_URL}
