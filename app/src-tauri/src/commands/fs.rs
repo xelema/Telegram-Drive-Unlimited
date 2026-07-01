@@ -666,24 +666,75 @@ struct ProgressPayload {
     speed_bytes_per_sec: u64,
 }
 
+// ── Split-file support ──────────────────────────────────────────────
+// Files larger than this are split into multiple Telegram documents named
+// "<name>.tgdpart<NNN>-<TTT>" (caption + document filename). Kept under
+// Telegram's 2 GiB per-document cap with headroom.
+const SPLIT_PART_SIZE: u64 = 2_000_000_000;
+const SPLIT_MARKER: &str = ".tgdpart";
+
+pub fn split_part_size() -> u64 {
+    // TGD_PART_SIZE env override is for testing split logic with small files
+    std::env::var("TGD_PART_SIZE").ok().and_then(|v| v.parse().ok()).unwrap_or(SPLIT_PART_SIZE)
+}
+
+pub fn split_part_name(base: &str, idx: u32, total: u32) -> String {
+    format!("{}{}{:03}-{:03}", base, SPLIT_MARKER, idx, total)
+}
+
+/// Parses "<base>.tgdpart<NNN>-<TTT>" into (base, idx, total).
+/// Strict: exactly 3 digits each side of '-', 1 <= idx <= total.
+pub fn parse_part_name(name: &str) -> Option<(&str, u32, u32)> {
+    let pos = name.rfind(SPLIT_MARKER)?;
+    let suffix = &name[pos + SPLIT_MARKER.len()..];
+    let bytes = suffix.as_bytes();
+    if bytes.len() != 7 || bytes[3] != b'-' {
+        return None;
+    }
+    if !suffix[..3].bytes().all(|b| b.is_ascii_digit()) || !suffix[4..].bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let idx: u32 = suffix[..3].parse().ok()?;
+    let total: u32 = suffix[4..].parse().ok()?;
+    if idx == 0 || total == 0 || idx > total || name[..pos].is_empty() {
+        return None;
+    }
+    Some((&name[..pos], idx, total))
+}
+
 /// Async reader wrapper that tracks bytes read for progress reporting.
-/// Wraps a tokio File and counts how many bytes have been consumed.
+/// Reads a byte range of a file and adds consumed bytes to a shared counter,
+/// so multiple sequential readers (split parts) report cumulative progress.
 struct ProgressReader {
-    inner: tokio::io::BufReader<tokio::fs::File>,
+    inner: tokio::io::Take<tokio::io::BufReader<tokio::fs::File>>,
     bytes_read: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl ProgressReader {
     async fn new(path: &str) -> Result<(Self, u64, std::sync::Arc<std::sync::atomic::AtomicU64>), String> {
-        let file = tokio::fs::File::open(path).await.map_err(|e| e.to_string())?;
-        let metadata = file.metadata().await.map_err(|e| e.to_string())?;
-        let size = metadata.len();
+        let size = tokio::fs::metadata(path).await.map_err(|e| e.to_string())?.len();
         let counter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let reader = Self {
-            inner: tokio::io::BufReader::new(file),
-            bytes_read: counter.clone(),
-        };
+        let reader = Self::new_range(path, 0, size, counter.clone()).await?;
         Ok((reader, size, counter))
+    }
+
+    /// Reader over bytes [offset, offset + len) of the file.
+    async fn new_range(
+        path: &str,
+        offset: u64,
+        len: u64,
+        counter: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    ) -> Result<Self, String> {
+        let mut file = tokio::fs::File::open(path).await.map_err(|e| e.to_string())?;
+        if offset > 0 {
+            tokio::io::AsyncSeekExt::seek(&mut file, std::io::SeekFrom::Start(offset))
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(Self {
+            inner: tokio::io::AsyncReadExt::take(tokio::io::BufReader::new(file), len),
+            bytes_read: counter,
+        })
     }
 }
 
@@ -819,15 +870,32 @@ async fn cmd_upload_file_inner(
         });
     }
 
-    // Create progress-tracking reader
-    let (mut reader, file_size, bytes_counter) = ProgressReader::new(&path).await.map_err(|e| {
-        bw_state.release_up(size);
-        e
-    })?;
     let file_name = std::path::Path::new(&path)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "file".to_string());
+
+    let peer = match resolve_peer(&client, folder_id, &state.peer_cache).await {
+        Ok(p) => p,
+        Err(e) => {
+            bw_state.release_up(size);
+            return Err(e);
+        }
+    };
+
+    // Files above the part size are split into multiple documents named
+    // "<name>.tgdpart<NNN>-<TTT>"; the listing collapses them back into one.
+    let part_size = split_part_size().max(1);
+    let total_parts = size.div_ceil(part_size).max(1);
+    if total_parts > 999 {
+        bw_state.release_up(size);
+        return Err(format!("File too large: would need {} parts (max 999)", total_parts));
+    }
+
+    // Cumulative byte counter shared by all part readers, so the progress
+    // task reports a single 0-100% over the whole file.
+    let file_size = size;
+    let bytes_counter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
 
     // Spawn a progress reporter task that emits events every 250ms
     let cancelled = state.cancelled_transfers.clone();
@@ -862,52 +930,109 @@ async fn cmd_upload_file_inner(
         None
     };
 
-    // Check cancellation before starting
-    if state.cancelled_transfers.read().await.contains(&tid) {
-        state.cancelled_transfers.write().await.remove(&tid);
-        if let Some(t) = progress_task { t.abort(); }
-        return Err("Transfer cancelled".to_string());
+    let mut sent_ids: Vec<i32> = Vec::new();
+    let mut upload_err: Option<String> = None;
+
+    for idx in 1..=total_parts {
+        // Check cancellation before each part
+        if state.cancelled_transfers.read().await.contains(&tid) {
+            state.cancelled_transfers.write().await.remove(&tid);
+            upload_err = Some("Transfer cancelled".to_string());
+            break;
+        }
+
+        let offset = (idx - 1) * part_size;
+        let len = part_size.min(size - offset);
+        let (doc_name, caption) = if total_parts == 1 {
+            (file_name.clone(), String::new())
+        } else {
+            let part_name = split_part_name(&file_name, idx as u32, total_parts as u32);
+            (part_name.clone(), part_name)
+        };
+
+        let reader = match ProgressReader::new_range(&path, offset, len, bytes_counter.clone()).await {
+            Ok(r) => r,
+            Err(e) => {
+                upload_err = Some(e);
+                break;
+            }
+        };
+
+        match upload_one_part(&client, &state, &net_config, &tid, reader, len, doc_name, caption, &peer).await {
+            Ok(msg_id) => sent_ids.push(msg_id),
+            Err(e) => {
+                upload_err = Some(e);
+                break;
+            }
+        }
     }
 
+    // Stop progress reporter
+    if let Some(t) = progress_task { t.abort(); }
+
+    if let Some(err) = upload_err {
+        // Best-effort cleanup so a failed/cancelled split upload leaves no orphan parts
+        if !sent_ids.is_empty() {
+            if let Err(e) = client.delete_messages(&peer, &sent_ids).await {
+                log::warn!("Failed to clean up {} uploaded part(s): {}", sent_ids.len(), e);
+            }
+        }
+        bw_state.release_up(size);
+        return Err(err);
+    }
+
+    // Bandwidth was already reserved by try_reserve_up at start
+    if !tid.is_empty() {
+        let _ = app_handle.emit("upload-progress", ProgressPayload {
+            id: tid, percent: 100, uploaded_bytes: size, total_bytes: size, speed_bytes_per_sec: 0,
+        });
+    }
+    Ok("File uploaded successfully".to_string())
+}
+
+/// Uploads one byte range as a Telegram document and sends it as a message.
+/// Returns the sent message id. Handles per-part cancellation and the
+/// VPN-aware send_message retry loop.
+async fn upload_one_part(
+    client: &grammers_client::Client,
+    state: &TelegramState,
+    net_config: &NetworkConfig,
+    tid: &str,
+    mut reader: ProgressReader,
+    part_len: u64,
+    doc_name: String,
+    caption: String,
+    peer: &Peer,
+) -> Result<i32, String> {
     let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
     if !tid.is_empty() {
-        get_upload_cancellations().lock().unwrap().insert(tid.clone(), cancel_tx);
+        get_upload_cancellations().lock().unwrap().insert(tid.to_string(), cancel_tx);
     }
 
     let client_clone = client.clone();
     let mut upload_task = tokio::spawn(async move {
-        client_clone.upload_stream(&mut reader, file_size as usize, file_name).await
+        client_clone.upload_stream(&mut reader, part_len as usize, doc_name).await
     });
 
     let upload_result = {
         tokio::select! {
             res = &mut upload_task => {
                 if !tid.is_empty() {
-                    get_upload_cancellations().lock().unwrap().remove(&tid);
+                    get_upload_cancellations().lock().unwrap().remove(tid);
                 }
-                res.map_err(|e| {
-                    bw_state.release_up(size);
-                    format!("Task join error: {}", e)
-                })?
+                res.map_err(|e| format!("Task join error: {}", e))?
             }
             _ = cancel_rx => {
                 log::info!("Aborting upload task for transfer ID: {}", tid);
                 upload_task.abort();
-                state.cancelled_transfers.write().await.remove(&tid);
-                if let Some(t) = progress_task { t.abort(); }
-                bw_state.release_up(size);
+                state.cancelled_transfers.write().await.remove(tid);
                 return Err("Transfer cancelled".to_string());
             }
         }
     };
 
-    // Stop progress reporter
-    if let Some(t) = progress_task { t.abort(); }
-
     let uploaded_file = upload_result.map_err(map_error)?;
-    let message = InputMessage::new().text("").file(uploaded_file);
-
-    let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
+    let message = InputMessage::new().text(caption.as_str()).file(uploaded_file);
 
     // VPN-aware retry logic for send_message
     let max_retries = net_config.retry_attempts();
@@ -917,16 +1042,8 @@ async fn cmd_upload_file_inner(
     let mut last_err = String::new();
 
     for attempt in 0..=max_retries {
-        match client.send_message(&peer, message.clone()).await {
-            Ok(_) => {
-                // Bandwidth was already reserved by try_reserve_up at start
-        if !tid.is_empty() {
-            let _ = app_handle.emit("upload-progress", ProgressPayload {
-                id: tid, percent: 100, uploaded_bytes: size, total_bytes: size, speed_bytes_per_sec: 0,
-            });
-        }
-        return Ok("File uploaded successfully".to_string());
-            }
+        match client.send_message(peer, message.clone()).await {
+            Ok(sent) => return Ok(sent.id()),
             Err(e) => {
                 let err = map_error(e);
                 log::warn!("send_message attempt {}/{}: {}", attempt + 1, max_retries + 1, err);
@@ -2521,5 +2638,28 @@ pub async fn cmd_upload_from_url(
     } else {
         bw_state.release_up(actual_size);
         Err(format!("Upload failed after {} attempts: {}", max_retries + 1, last_err))
+    }
+}
+
+#[cfg(test)]
+mod split_tests {
+    use super::{parse_part_name, split_part_name};
+
+    #[test]
+    fn part_name_round_trip() {
+        assert_eq!(split_part_name("movie.mkv", 2, 5), "movie.mkv.tgdpart002-005");
+        assert_eq!(parse_part_name("movie.mkv.tgdpart002-005"), Some(("movie.mkv", 2, 5)));
+        assert_eq!(parse_part_name(&split_part_name("a b (1).tar.gz", 999, 999)), Some(("a b (1).tar.gz", 999, 999)));
+    }
+
+    #[test]
+    fn part_name_rejects_invalid() {
+        assert_eq!(parse_part_name("movie.mkv"), None);
+        assert_eq!(parse_part_name("movie.mkv.tgdpart000-005"), None); // idx 0
+        assert_eq!(parse_part_name("movie.mkv.tgdpart006-005"), None); // idx > total
+        assert_eq!(parse_part_name("movie.mkv.tgdpart01-005"), None); // not 3 digits
+        assert_eq!(parse_part_name("movie.mkv.tgdpart001-0055"), None); // trailing junk
+        assert_eq!(parse_part_name("movie.mkv.tgdpartabc-005"), None);
+        assert_eq!(parse_part_name(".tgdpart001-005"), None); // empty base
     }
 }
