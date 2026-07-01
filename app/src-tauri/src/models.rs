@@ -24,8 +24,11 @@ pub struct FileMetadata {
     pub size: u64, // Updated to u64
     pub mime_type: Option<String>,
     pub file_ext: Option<String>, // Added field
-    pub created_at: String, 
-    pub icon_type: String, 
+    pub created_at: String,
+    pub icon_type: String,
+    /// True when this entry aggregates multiple ".tgdpart" messages (file > 2GB).
+    #[serde(default)]
+    pub is_split: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

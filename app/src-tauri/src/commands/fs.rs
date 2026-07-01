@@ -1549,6 +1549,10 @@ pub async fn cmd_get_files(
     
     let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
 
+    // Part messages of split files, keyed by (base name, total parts):
+    // (idx, message id, part size, mime, created_at)
+    let mut part_groups: HashMap<(String, u32), Vec<(u32, i64, u64, Option<String>, String)>> = HashMap::new();
+
     let mut msgs = client.iter_messages(&peer);
     while let Some(msg) = msgs.next().await.map_err(|e| e.to_string())? {
         if let Some(doc) = msg.media() {
@@ -1559,6 +1563,16 @@ pub async fn cmd_get_files(
                     // document's built-in filename attribute, so renames persist across refreshes.
                     let caption = msg.text();
                     let display_name = if caption.is_empty() { doc_name.clone() } else { caption.to_string() };
+                    if let Some((base, idx, total)) = parse_part_name(&display_name) {
+                        part_groups.entry((base.to_string(), total)).or_default().push((
+                            idx,
+                            msg.id() as i64,
+                            d.size() as u64,
+                            d.mime_type().map(|s| s.to_string()),
+                            msg.date().to_string(),
+                        ));
+                        continue;
+                    }
                     let s = d.size();
                     let m = d.mime_type().map(|s| s.to_string());
                     // Extension always from the original document name for correct file-type icon
@@ -1569,10 +1583,35 @@ pub async fn cmd_get_files(
                 _ => ("Unknown".to_string(), 0, None, None),
             };
             files.push(FileMetadata {
-                id: msg.id() as i64, folder_id, name, size: size as u64, mime_type: mime, file_ext: ext, created_at: msg.date().to_string(), icon_type: "file".into()
+                id: msg.id() as i64, folder_id, name, size: size as u64, mime_type: mime, file_ext: ext, created_at: msg.date().to_string(), icon_type: "file".into(), is_split: false
             });
         }
     }
+
+    // Collapse each part group into a single entry, id = part 1's message id.
+    // Incomplete groups (interrupted upload) are still shown; download reports
+    // the exact missing part.
+    for ((base, _total), mut parts) in part_groups {
+        parts.sort_by_key(|p| p.0);
+        let total_size: u64 = parts.iter().map(|p| p.2).sum();
+        let first = &parts[0];
+        let ext = std::path::Path::new(&base).extension().map(|os| os.to_str().unwrap_or("").to_string());
+        files.push(FileMetadata {
+            id: first.1,
+            folder_id,
+            name: base,
+            size: total_size,
+            mime_type: first.3.clone(),
+            file_ext: ext,
+            created_at: first.4.clone(),
+            icon_type: "file".into(),
+            is_split: true,
+        });
+    }
+
+    // iter_messages yields newest first (descending message id); keep that
+    // order with collapsed entries positioned by their first part.
+    files.sort_by(|a, b| b.id.cmp(&a.id));
 
     Ok(files)
 }
@@ -1590,9 +1629,17 @@ fn extract_search_files(msgs: &[tl::enums::Message]) -> Vec<FileMetadata> {
                     }).unwrap_or("Unknown".to_string());
                     // Prefer the message caption over the built-in document filename
                     let name = if m.message.is_empty() { doc_name.clone() } else { m.message.clone() };
+                    // Split files: represent the whole file by its first part, hide the rest.
+                    // (Size shown is part 1's size only; the folder listing has the full sum.)
+                    let (name, is_split) = match parse_part_name(&name) {
+                        Some((base, 1, _)) => (base.to_string(), true),
+                        Some(_) => continue,
+                        None => (name, false),
+                    };
                     let size = doc.size as u64;
                     let mime = doc.mime_type.clone();
-                    let ext = std::path::Path::new(&doc_name).extension().map(|os| os.to_str().unwrap_or("").to_string());
+                    let ext_source = if is_split { &name } else { &doc_name };
+                    let ext = std::path::Path::new(ext_source).extension().map(|os| os.to_str().unwrap_or("").to_string());
                     let folder_id = match &m.peer_id {
                         tl::enums::Peer::Channel(c) => Some(c.channel_id),
                         tl::enums::Peer::User(u) => Some(u.user_id),
@@ -1601,7 +1648,7 @@ fn extract_search_files(msgs: &[tl::enums::Message]) -> Vec<FileMetadata> {
                     files.push(FileMetadata {
                         id: m.id as i64, folder_id, name, size,
                         mime_type: Some(mime), file_ext: ext,
-                        created_at: m.date.to_string(), icon_type: "file".into()
+                        created_at: m.date.to_string(), icon_type: "file".into(), is_split
                     });
                 }
             }
