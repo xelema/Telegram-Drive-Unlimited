@@ -6,6 +6,8 @@ export interface TelegramFile {
     created_at?: string;
     type?: 'folder' | 'file'; // implied icon_type
     folder_id?: number | null;
+    /** File stored as multiple 2GB Telegram messages; download-only (no preview/stream/share) */
+    is_split?: boolean;
     // Add other fields if backend sends them
 }
 

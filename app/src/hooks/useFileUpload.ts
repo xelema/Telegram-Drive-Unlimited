@@ -148,9 +148,10 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
                 const errMsg = String(e);
                 if (errMsg.includes('Transfer cancelled')) {
                     setUploadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'cancelled' } : i));
-                } else if (errMsg.includes('FILE_TOO_BIG') || errMsg.includes('too large') || errMsg.includes('2 GB')) {
+                } else if (errMsg.includes('FILE_TOO_BIG') || errMsg.includes('too large') || errMsg.includes('2 GB') || errMsg.includes('2GB')) {
+                    // Local files are split automatically; only URL uploads still have the 2 GB cap
                     setUploadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'error', error: errMsg } : i));
-                    toast.error(`Upload failed: Telegram has a 2 GB file size limit. Try splitting large folders.`);
+                    toast.error(`Upload failed: URL uploads are limited to 2 GB.`);
                 } else {
                     const displayPath = item.url || item.path;
                     setUploadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'error', error: errMsg } : i));

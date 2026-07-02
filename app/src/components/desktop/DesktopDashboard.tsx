@@ -83,7 +83,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
 
     const { data: allFiles = [], isLoading, error } = useQuery({
         queryKey: ['files', activeFolderId],
-        queryFn: () => invoke<Array<{ id: number; name: string; size: number; icon_type: string; folder_id: number | null; created_at: string; mime_type?: string; file_ext?: string }>>('cmd_get_files', { folderId: activeFolderId }).then(res => res.map(f => ({
+        queryFn: () => invoke<Array<{ id: number; name: string; size: number; icon_type: string; folder_id: number | null; created_at: string; mime_type?: string; file_ext?: string; is_split?: boolean }>>('cmd_get_files', { folderId: activeFolderId }).then(res => res.map(f => ({
             ...f,
             sizeStr: formatBytes(f.size),
             type: (f.icon_type as TelegramFile['type']) || 'file'
@@ -114,7 +114,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
 
     // Bulk share: generate links for all selected non-folder files
     const handleBulkShare = useCallback(async () => {
-        const shareFiles = displayedFiles.filter(f => selectedIds.includes(f.id) && f.type !== 'folder');
+        const shareFiles = displayedFiles.filter(f => selectedIds.includes(f.id) && f.type !== 'folder' && !f.is_split);
         if (shareFiles.length === 0) {
             toast.info('No shareable files selected (folders cannot be shared)');
             return;
@@ -332,6 +332,11 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     });
 
     const handlePreview = (file: TelegramFile, orderedFiles?: TelegramFile[]) => {
+        if (file.is_split) {
+            // Split files span multiple Telegram messages; preview/streaming work on a single one
+            toast.info('This file is stored in multiple parts. Download it to open it.');
+            return;
+        }
         const contextFiles = (orderedFiles || displayedFiles).filter((f) => f.type !== 'folder');
         const contextIndex = contextFiles.findIndex((f) => f.id === file.id);
 
@@ -684,7 +689,13 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                     onDrop={handleDropOnFolder}
                     onDragStart={(ids) => setInternalDragIds(ids)}
                     onDragEnd={() => setTimeout(() => setInternalDragIds(null), 50)}
-                    onShare={setShareFile}
+                    onShare={(f) => {
+                        if (f.is_split) {
+                            toast.info('Split files cannot be shared. Download to get the full file.');
+                            return;
+                        }
+                        setShareFile(f);
+                    }}
                     onRename={handleRename}
                     onFileMove={handleFileMove}
                     cardScale={cardScale}
