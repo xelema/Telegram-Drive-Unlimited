@@ -2836,4 +2836,46 @@ mod split_tests {
         assert_eq!(parse_part_name("movie.mkv.tgdpartabc-005"), None);
         assert_eq!(parse_part_name(".tgdpart001-005"), None); // empty base
     }
+
+    /// Split a file into range readers (the upload path) and concatenate what
+    /// they yield (the download path): must reproduce the file byte-for-byte.
+    #[tokio::test]
+    async fn range_readers_reassemble_file() {
+        use tokio::io::AsyncReadExt;
+
+        let path = std::env::temp_dir().join("tgd_split_roundtrip_test.bin");
+        let path_str = path.to_string_lossy().to_string();
+
+        // 35_003 bytes of deterministic data, 10_000-byte parts -> 4 parts,
+        // last one short (5_003 bytes)
+        let original: Vec<u8> = (0..35_003u64)
+            .map(|i| (i.wrapping_mul(31).wrapping_add(i >> 8)) as u8)
+            .collect();
+        tokio::fs::write(&path, &original).await.unwrap();
+
+        let size = original.len() as u64;
+        let part_size: u64 = 10_000;
+        let total_parts = size.div_ceil(part_size);
+        assert_eq!(total_parts, 4);
+
+        let counter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let mut merged: Vec<u8> = Vec::with_capacity(original.len());
+        for idx in 1..=total_parts {
+            let offset = (idx - 1) * part_size;
+            let len = part_size.min(size - offset);
+            let mut reader = super::ProgressReader::new_range(&path_str, offset, len, counter.clone())
+                .await
+                .unwrap();
+            let mut buf = Vec::new();
+            reader.read_to_end(&mut buf).await.unwrap();
+            assert_eq!(buf.len() as u64, len, "part {} length", idx);
+            merged.extend_from_slice(&buf);
+        }
+
+        assert_eq!(merged, original);
+        // Shared counter must report the whole file (drives the progress bar)
+        assert_eq!(counter.load(std::sync::atomic::Ordering::Relaxed), size);
+
+        let _ = tokio::fs::remove_file(&path).await;
+    }
 }
