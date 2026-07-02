@@ -1176,12 +1176,25 @@ pub async fn cmd_rename_file(
     let messages = client.get_messages_by_id(&peer, &[message_id])
         .await
         .map_err(|e| format!("Failed to fetch message for rename: {}", e))?;
-    if messages.iter().flatten().next().is_none() {
-        return Err(format!(
+    let msg = match messages.iter().flatten().next() {
+        Some(m) => m,
+        None => return Err(format!(
             "Message {} not found in folder {:?}. The file may have been moved or deleted. Please refresh the folder.",
             message_id, folder_id
-        ));
-    }
+        )),
+    };
+
+    // Split files: rewrite every part's caption, preserving the part suffix
+    let edits: Vec<(i32, String)> = if parse_part_name(&message_display_name(msg)).is_some() {
+        let ids = resolve_parts(&client, &peer, message_id, true).await?;
+        let total = ids.len() as u32;
+        ids.into_iter()
+            .enumerate()
+            .map(|(i, id)| (id, split_part_name(&new_name, i as u32 + 1, total)))
+            .collect()
+    } else {
+        vec![(message_id, new_name)]
+    };
 
     let input_peer = match &peer {
         Peer::User(u) => {
@@ -1203,19 +1216,21 @@ pub async fn cmd_rename_file(
         _ => return Err("Unsupported peer type".to_string()),
     };
 
-    client.invoke(&tl::functions::messages::EditMessage {
-        peer: input_peer,
-        id: message_id,
-        no_webpage: false,
-        invert_media: false,
-        message: Some(new_name),
-        media: None,
-        reply_markup: None,
-        entities: None,
-        schedule_date: None,
-        quick_reply_shortcut_id: None,
-        schedule_repeat_period: None,
-    }).await.map_err(|e| format!("Failed to rename file: {}", e))?;
+    for (id, caption) in edits {
+        client.invoke(&tl::functions::messages::EditMessage {
+            peer: input_peer.clone(),
+            id,
+            no_webpage: false,
+            invert_media: false,
+            message: Some(caption),
+            media: None,
+            reply_markup: None,
+            entities: None,
+            schedule_date: None,
+            quick_reply_shortcut_id: None,
+            schedule_repeat_period: None,
+        }).await.map_err(|e| format!("Failed to rename file: {}", e))?;
+    }
 
     Ok(true)
 }
@@ -1249,7 +1264,9 @@ pub async fn cmd_delete_file(
         ));
     }
 
-    client.delete_messages(&peer, &[message_id]).await.map_err(|e| e.to_string())?;
+    // Split files: delete every part (tolerating already-missing ones)
+    let part_ids = resolve_parts(&client, &peer, message_id, false).await?;
+    client.delete_messages(&peer, &part_ids).await.map_err(|e| e.to_string())?;
     Ok(true)
 }
 
@@ -1609,6 +1626,26 @@ pub async fn cmd_move_files(
 
     let source_peer = resolve_peer(&client, source_folder_id, &state.peer_cache).await?;
     let target_peer = resolve_peer(&client, target_folder_id, &state.peer_cache).await?;
+
+    // Split files: expand each selected id to all its parts (forwarding keeps
+    // captions, so the group stays intact in the target folder)
+    let mut message_ids = message_ids;
+    let seed_msgs = client.get_messages_by_id(&source_peer, &message_ids).await.map_err(|e| e.to_string())?;
+    let seeds: Vec<(String, u32)> = seed_msgs
+        .iter()
+        .flatten()
+        .filter_map(|m| parse_part_name(&message_display_name(m)).map(|(b, _, t)| (b.to_string(), t)))
+        .collect();
+    if !seeds.is_empty() {
+        let mut msgs = client.iter_messages(&source_peer);
+        while let Some(m) = msgs.next().await.map_err(|e| e.to_string())? {
+            if let Some((b, _, t)) = parse_part_name(&message_display_name(&m)) {
+                if seeds.iter().any(|(sb, st)| *sb == b && *st == t) && !message_ids.contains(&m.id()) {
+                    message_ids.push(m.id());
+                }
+            }
+        }
+    }
 
     match client.forward_messages(&target_peer, &message_ids, &source_peer).await {
         Ok(_) => {},
