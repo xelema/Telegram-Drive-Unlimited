@@ -8,46 +8,6 @@ use crate::transcode::TranscodeManager;
 use std::net::TcpListener;
 use std::sync::Arc;
 
-/// Ad banner HTML matching the working cameronamer.com/ad-banner.html structure.
-/// Served from the streaming server so the iframe gets a real http://127.0.0.1 origin.
-/// Key detail: referrerpolicy="no-referrer" on the invoke.js script tag prevents the
-/// browser from sending a Referer header that Adsterra would reject.
-/// No 'async' attribute — prevents race conditions where the script tries to inject
-/// the ad iframe before the DOM is ready.
-const AD_BANNER_HTML: &str = r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Ad Banner</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body {
-      width: 100%;
-      height: 100%;
-      overflow: hidden;
-      background: #1a1a2e;
-    }
-  </style>
-</head>
-<body>
-  <script type="text/javascript">
-    window.atOptions = {
-      'key' : '9cf449272b7e1c83054b82b7639c6029',
-      'format' : 'iframe',
-      'height' : 250,
-      'width' : 300,
-      'params' : {}
-    };
-  </script>
-  <script 
-    type="text/javascript" 
-    src="https://www.highperformanceformat.com/9cf449272b7e1c83054b82b7639c6029/invoke.js"
-    referrerpolicy="no-referrer">
-  </script>
-</body>
-</html>"#;
-
 /// Holds the per-session streaming token for Actix validation
 pub struct StreamTokenData {
     pub token: String,
@@ -255,16 +215,6 @@ pub fn build_media_response(
     resp.streaming(stream)
 }
 
-/// Serves the inline ad HTML so the iframe runs on a real http://127.0.0.1 origin.
-/// Ad networks reject custom origins like tauri://localhost and https://tauri.localhost.
-#[get("/ad-banner")]
-async fn ad_banner() -> impl Responder {
-    HttpResponse::Ok()
-        .content_type("text/html; charset=utf-8")
-        .insert_header(("Cache-Control", "no-cache"))
-        .body(AD_BANNER_HTML)
-}
-
 #[get("/stream/{folder_id}/{message_id}")]
 async fn stream_media(
     req: actix_web::HttpRequest,
@@ -415,7 +365,6 @@ pub async fn start_server(
             .app_data(token_data.clone())
             .app_data(db_data.clone())
             .app_data(transcode_data.clone())
-            .service(ad_banner)
             .service(stream_media)
             .configure(crate::share_routes::configure_share_routes)
             .configure(crate::transcode::configure_hls_routes)
