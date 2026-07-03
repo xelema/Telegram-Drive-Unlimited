@@ -4,6 +4,11 @@
 your Telegram account into an unlimited, secure cloud storage drive. Built with
 **Tauri**, **Rust**, and **React**.
 
+This repo is a fork of [caamer20/Telegram-Drive](https://github.com/caamer20/Telegram-Drive)
+that removes the 2 GB per-file limit: bigger files are split into 2 GB parts on upload and
+put back together on download, while showing up as a single file in the app. See
+[How files over 2 GB are stored](#how-files-over-2-gb-are-stored) for details.
+
 <div align="center">
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -24,6 +29,7 @@ Telegram Drive leverages the Telegram API to allow you to upload, organize, and 
 ###  Key Features
 
 *   **Unlimited Cloud Storage**: Utilizing Telegram's generous cloud infrastructure.
+*   **No 2 GB File Limit**: Files of any size are uploaded in 2 GB parts and rebuilt into the original file on download.
 *   **High Performance Grid**: Virtual scrolling handles folders with thousands of files instantly.
 *   **Auto-Updates**: Seamless updates for Windows, macOS, and Linux.
 *   **Media Streaming**: Stream video and audio files directly without downloading.
@@ -37,6 +43,20 @@ Telegram Drive leverages the Telegram API to allow you to upload, organize, and 
 *   **VPN Optimizer**: Aggressive network tuning including bandwidth throttling, adjustable transfer chunk sizing, and adaptive keep-alives to ensure maximum stability on high-latency connections.
 *   **Privacy Focused**: API keys and data stay local. No third-party servers.
 *   **Cross-Platform**: Native apps for macOS (Intel/ARM), Windows, Linux and Android.
+
+## How files over 2 GB are stored
+
+Telegram caps documents at 2 GB, so anything bigger gets split into parts of just under
+2 GB. Each part is a normal Telegram message named after the original file (for example
+`movie.mkv.tgdpart001-004`), so your data stays reachable even from the official Telegram
+apps. In Telegram Drive the parts appear as one file with its real name and size;
+downloading it writes every part back into a single file, checking each part's size along
+the way. No temporary files are involved in either direction, and rename, delete and move
+all apply to the whole set of parts.
+
+A few limits to be aware of: split files are download-only (no streaming, preview or share
+links), uploads from a URL are still capped at 2 GB, and only the desktop app handles
+split files for now.
 
 ## Android (Pre‑built, Unsigned APK)
 
@@ -132,8 +152,8 @@ A pre-built **unsigned APK** is available for Android sideloading via the [v2.1.
 
 1.  **Clone the repository**
     ```bash
-    git clone https://github.com/caamer20/Telegram-Drive.git
-    cd Telegram-Drive
+    git clone https://github.com/xelema/Telegram-Drive-Split-Part.git
+    cd Telegram-Drive-Split-Part
     ```
 
 2.  **Install Dependencies**
