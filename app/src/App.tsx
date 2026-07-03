@@ -4,8 +4,6 @@ import { load } from "@tauri-apps/plugin-store";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AuthWizard } from "./components/shared/AuthWizard";
 import { ErrorBoundary } from "./components/shared/ErrorBoundary";
-import { UpdateBanner } from "./components/shared/UpdateBanner";
-import { useUpdateCheck } from "./hooks/useUpdateCheck";
 import { usePlatform } from "./hooks/usePlatform";
 import "./App.css";
 
@@ -29,7 +27,6 @@ type AuthStatus = "loading" | "authenticated" | "unauthenticated";
 function AppContent() {
   const [authStatus, setAuthStatus] = useState<AuthStatus>("loading");
   const { theme } = useTheme();
-  const { available, version, downloading, progress, downloadAndInstall, dismissUpdate } = useUpdateCheck();
   const { isMobile } = usePlatform();
   const { settings, updateSetting, isLoaded } = useSettings();
   const { i18n } = useTranslation();
@@ -141,14 +138,6 @@ function AppContent() {
 
   return (
     <main className="absolute inset-0 text-telegram-text overflow-hidden selection:bg-telegram-primary/30">
-      <UpdateBanner
-        available={available}
-        version={version}
-        downloading={downloading}
-        progress={progress}
-        onUpdate={downloadAndInstall}
-        onDismiss={dismissUpdate}
-      />
       <Toaster theme={theme} position="bottom-center" />
       {authStatus === "authenticated" && (
         <Suspense fallback={

@@ -4,8 +4,6 @@ import { X, RotateCcw, Download, Upload, Trash2, HardDrive, Globe, Key, Copy, Ch
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-shell';
 import { toast } from 'sonner';
-import { check, Update } from '@tauri-apps/plugin-updater';
-import { relaunch } from '@tauri-apps/plugin-process';
 import { useSettings } from '../../../context/SettingsContext';
 import { useConfirm } from '../../../context/ConfirmContext';
 import { useTranslation } from 'react-i18next';
@@ -47,69 +45,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const [isTestingProxy, setIsTestingProxy] = useState(false);
 
     // Update check state
-    const [updateChecking, setUpdateChecking] = useState(false);
-    const [updateAvailable, setUpdateAvailable] = useState<Update | null>(null);
-    const [updateVersion, setUpdateVersion] = useState<string | null>(null);
-    const [updateDownloading, setUpdateDownloading] = useState(false);
-    const [updateProgress, setUpdateProgress] = useState(0);
-
     // Reconnect state
     const [reconnecting, setReconnecting] = useState(false);
 
     // Diagnostics state
     const [diagLoading, setDiagLoading] = useState(false);
-
-    const handleCheckForUpdates = useCallback(async () => {
-        setUpdateChecking(true);
-        try {
-            const updateInfo = await check();
-            if (updateInfo) {
-                setUpdateAvailable(updateInfo);
-                setUpdateVersion(updateInfo.version);
-                toast.success(t('settings.update_available_toast', { version: updateInfo.version }));
-            } else {
-                setUpdateAvailable(null);
-                setUpdateVersion(null);
-                toast.success(t('settings.latest_version_toast'));
-            }
-        } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            if (msg.includes('dev') || msg.includes('no current version')) {
-                toast.info(t('settings.update_prod_only_toast'));
-            } else {
-                toast.error(t('settings.update_check_failed_toast', { error: msg }));
-            }
-        } finally {
-            setUpdateChecking(false);
-        }
-    }, [t]);
-
-    const handleInstallUpdate = useCallback(async () => {
-        if (!updateAvailable) return;
-        setUpdateDownloading(true);
-        setUpdateProgress(0);
-        let downloaded = 0;
-        let contentLength = 0;
-        try {
-            await updateAvailable.downloadAndInstall((event) => {
-                if (event.event === 'Started') {
-                    const data = event.data as { contentLength?: number };
-                    contentLength = data.contentLength || 0;
-                } else if (event.event === 'Progress') {
-                    const data = event.data as { chunkLength?: number };
-                    downloaded += data.chunkLength || 0;
-                    if (contentLength > 0) {
-                        setUpdateProgress(Math.min(Math.round((downloaded / contentLength) * 100), 100));
-                    }
-                }
-            });
-            await relaunch();
-        } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            toast.error(t('settings.update_failed_toast', { error: msg }));
-            setUpdateDownloading(false);
-        }
-    }, [updateAvailable, t]);
 
     // Sharing settings state
     const [shares, setShares] = useState<ShareInfo[]>([]);
@@ -912,59 +852,6 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     ) : (
                                         <div className="flex items-center justify-center py-2">
                                             <RefreshCw className="w-3 h-3 text-telegram-subtext animate-spin" />
-                                        </div>
-                                    )}
-                                </div>
-                            </section>
-
-                            {/* Updates Section */}
-                            <section className="space-y-3">
-                                <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
-                                    <Sparkles className="w-3.5 h-3.5" />
-                                    {t('settings.updates')}
-                                </h3>
-
-                                <div className="p-3 rounded-lg bg-telegram-hover/50 space-y-3">
-                                    <div className="flex items-center justify-between">
-                                        <div className="flex items-center gap-2">
-                                            <Download className="w-4 h-4 text-telegram-subtext" />
-                                            <div>
-                                                <p className="text-sm text-telegram-text font-medium">{t('settings.check_for_updates')}</p>
-                                                <p className="text-xs text-telegram-subtext">
-                                                    {updateVersion ? t('settings.update_available', { version: updateVersion }) : t('settings.check_updates_desc')}
-                                                </p>
-                                            </div>
-                                        </div>
-                                        {updateAvailable && !updateDownloading ? (
-                                            <button
-                                                onClick={handleInstallUpdate}
-                                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-telegram-primary text-white hover:bg-telegram-primary/90 transition"
-                                            >
-                                                <Download className="w-3 h-3" />
-                                                {t('settings.update_restart')}
-                                            </button>
-                                        ) : updateDownloading ? (
-                                            <div className="flex items-center gap-2">
-                                                <RefreshCw className="w-3.5 h-3.5 text-telegram-primary animate-spin" />
-                                                <span className="text-xs text-telegram-primary font-mono">{updateProgress}%</span>
-                                            </div>
-                                        ) : (
-                                            <button
-                                                onClick={handleCheckForUpdates}
-                                                disabled={updateChecking}
-                                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-telegram-primary/10 text-telegram-primary hover:bg-telegram-primary/20 transition disabled:opacity-50"
-                                            >
-                                                <RefreshCw className={`w-3 h-3 ${updateChecking ? 'animate-spin' : ''}`} />
-                                                {updateChecking ? t('settings.checking') : t('settings.check_now')}
-                                            </button>
-                                        )}
-                                    </div>
-                                    {updateDownloading && (
-                                        <div className="w-full h-1.5 bg-telegram-border rounded-full overflow-hidden">
-                                            <div
-                                                className="h-full bg-telegram-primary rounded-full transition-all duration-300"
-                                                style={{ width: `${updateProgress}%` }}
-                                            />
                                         </div>
                                     )}
                                 </div>
