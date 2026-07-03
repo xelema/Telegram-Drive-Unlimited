@@ -25,7 +25,6 @@ impl Default for BandwidthStats {
 pub struct BandwidthManager {
     pub file_path: PathBuf,
     pub stats: Mutex<BandwidthStats>,
-    pub limit: u64, // Daily limit in bytes
 }
 
 impl BandwidthManager {
@@ -48,7 +47,6 @@ impl BandwidthManager {
         Self {
             file_path,
             stats: Mutex::new(stats),
-            limit: 250 * 1024 * 1024 * 1024, // 250 GB
         }
     }
 
@@ -65,39 +63,21 @@ impl BandwidthManager {
         }
     }
 
-    pub fn can_transfer(&self, bytes: u64) -> Result<(), String> {
-        self.check_and_reset();
-        let stats = self.stats.lock().unwrap();
-        let total = stats.up_bytes + stats.down_bytes + bytes;
-        if total > self.limit {
-            return Err(format!("Daily bandwidth limit ({}) exceeded! Used: {}", self.format_bytes(self.limit), self.format_bytes(total)));
-        }
-        Ok(())
-    }
-
-    /// Atomically check the limit AND reserve bandwidth for an upload.
-    /// Call release_up() if the transfer fails to avoid permanently consuming quota.
+    /// Record an upload in the daily stats.
+    /// Call release_up() if the transfer fails so the stats stay accurate.
     pub fn try_reserve_up(&self, bytes: u64) -> Result<(), String> {
         self.check_and_reset();
         let mut stats = self.stats.lock().unwrap();
-        let total = stats.up_bytes + stats.down_bytes + bytes;
-        if total > self.limit {
-            return Err(format!("Daily bandwidth limit ({}) exceeded! Used: {}", self.format_bytes(self.limit), self.format_bytes(total)));
-        }
         stats.up_bytes += bytes;
         self.save_locked(&stats);
         Ok(())
     }
 
-    /// Atomically check the limit AND reserve bandwidth for a download.
-    /// Call release_down() if the transfer fails to avoid permanently consuming quota.
+    /// Record a download in the daily stats.
+    /// Call release_down() if the transfer fails so the stats stay accurate.
     pub fn try_reserve_down(&self, bytes: u64) -> Result<(), String> {
         self.check_and_reset();
         let mut stats = self.stats.lock().unwrap();
-        let total = stats.up_bytes + stats.down_bytes + bytes;
-        if total > self.limit {
-            return Err(format!("Daily bandwidth limit ({}) exceeded! Used: {}", self.format_bytes(self.limit), self.format_bytes(total)));
-        }
         stats.down_bytes += bytes;
         self.save_locked(&stats);
         Ok(())
@@ -140,16 +120,5 @@ impl BandwidthManager {
     pub fn get_stats(&self) -> BandwidthStats {
         self.check_and_reset();
         self.stats.lock().unwrap().clone()
-    }
-
-    fn format_bytes(&self, bytes: u64) -> String {
-        const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-        let mut v = bytes as f64;
-        let mut i = 0;
-        while v >= 1024.0 && i < UNITS.len() - 1 {
-            v /= 1024.0;
-            i += 1;
-        }
-        format!("{:.2} {}", v, UNITS[i])
     }
 }
