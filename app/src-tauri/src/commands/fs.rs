@@ -697,39 +697,62 @@ pub fn split_part_name(base: &str, idx: u32, total: u32) -> String {
     format!("{}{}{:03}-{:03}", base, SPLIT_MARKER, idx, total)
 }
 
-/// Parses "<base>.tgdpart<NNN>-<TTT>" into (base, idx, total).
-/// Strict: exactly 3 digits each side of '-', 1 <= idx <= total.
-pub fn parse_part_name(name: &str) -> Option<(&str, u32, u32)> {
+/// Part caption, optionally carrying the part's SHA-256 for download-time
+/// verification: "<base>.tgdpart<NNN>-<TTT>[#<sha256 hex>]".
+pub fn split_part_caption(base: &str, idx: u32, total: u32, hash: Option<&str>) -> String {
+    match hash {
+        Some(h) => format!("{}#{}", split_part_name(base, idx, total), h),
+        None => split_part_name(base, idx, total),
+    }
+}
+
+/// Parses "<base>.tgdpart<NNN>-<TTT>[#<sha256 hex>]" into (base, idx, total, hash).
+/// Strict: exactly 3 digits each side of '-', 1 <= idx <= total; hash, when
+/// present, is exactly 64 lowercase hex chars. Parts uploaded before checksums
+/// existed have no hash and stay valid.
+pub fn parse_part_name(name: &str) -> Option<(&str, u32, u32, Option<&str>)> {
     let pos = name.rfind(SPLIT_MARKER)?;
     let suffix = &name[pos + SPLIT_MARKER.len()..];
-    let bytes = suffix.as_bytes();
+    let (nums, hash) = match suffix.find('#') {
+        Some(h_pos) => {
+            let h = &suffix[h_pos + 1..];
+            if h.len() != 64 || !h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+                return None;
+            }
+            (&suffix[..h_pos], Some(h))
+        }
+        None => (suffix, None),
+    };
+    let bytes = nums.as_bytes();
     if bytes.len() != 7 || bytes[3] != b'-' {
         return None;
     }
-    if !suffix[..3].bytes().all(|b| b.is_ascii_digit()) || !suffix[4..].bytes().all(|b| b.is_ascii_digit()) {
+    if !nums[..3].bytes().all(|b| b.is_ascii_digit()) || !nums[4..].bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    let idx: u32 = suffix[..3].parse().ok()?;
-    let total: u32 = suffix[4..].parse().ok()?;
+    let idx: u32 = nums[..3].parse().ok()?;
+    let total: u32 = nums[4..].parse().ok()?;
     if idx == 0 || total == 0 || idx > total || name[..pos].is_empty() {
         return None;
     }
-    Some((&name[..pos], idx, total))
+    Some((&name[..pos], idx, total, hash))
 }
 
 /// Async reader wrapper that tracks bytes read for progress reporting.
 /// Reads a byte range of a file and adds consumed bytes to a shared counter,
-/// so multiple sequential readers (split parts) report cumulative progress.
+/// so multiple readers (split parts) report cumulative progress. Optionally
+/// hashes everything it yields, for the part checksum in the caption.
 struct ProgressReader {
     inner: tokio::io::Take<tokio::io::BufReader<tokio::fs::File>>,
     bytes_read: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    hasher: Option<sha2::Sha256>,
 }
 
 impl ProgressReader {
     async fn new(path: &str) -> Result<(Self, u64, std::sync::Arc<std::sync::atomic::AtomicU64>), String> {
         let size = tokio::fs::metadata(path).await.map_err(|e| e.to_string())?.len();
         let counter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let reader = Self::new_range(path, 0, size, counter.clone()).await?;
+        let reader = Self::new_range(path, 0, size, counter.clone(), false).await?;
         Ok((reader, size, counter))
     }
 
@@ -739,6 +762,7 @@ impl ProgressReader {
         offset: u64,
         len: u64,
         counter: std::sync::Arc<std::sync::atomic::AtomicU64>,
+        hash: bool,
     ) -> Result<Self, String> {
         let mut file = tokio::fs::File::open(path).await.map_err(|e| e.to_string())?;
         if offset > 0 {
@@ -749,7 +773,14 @@ impl ProgressReader {
         Ok(Self {
             inner: tokio::io::AsyncReadExt::take(tokio::io::BufReader::new(file), len),
             bytes_read: counter,
+            hasher: hash.then(sha2::Sha256::default),
         })
+    }
+
+    /// SHA-256 hex of everything read so far; None when hashing was off.
+    fn finalize_hash(&mut self) -> Option<String> {
+        use sha2::Digest;
+        self.hasher.take().map(|h| format!("{:x}", h.finalize()))
     }
 }
 
@@ -765,6 +796,12 @@ impl tokio::io::AsyncRead for ProgressReader {
             let after = buf.filled().len();
             let delta = (after - before) as u64;
             self.bytes_read.fetch_add(delta, std::sync::atomic::Ordering::Relaxed);
+            if delta > 0 {
+                if let Some(h) = self.hasher.as_mut() {
+                    use sha2::Digest;
+                    h.update(&buf.filled()[before..after]);
+                }
+            }
         }
         result
     }
@@ -1028,7 +1065,9 @@ async fn cmd_upload_file_inner(
                     let part_name = split_part_name(file_name, idx, total_parts as u32);
                     (part_name.clone(), part_name)
                 };
-                let reader = ProgressReader::new_range(path, offset, len, bytes_counter).await?;
+                // Hash multi-part uploads only: a single part has an empty
+                // caption, and a hash there would become its display name
+                let reader = ProgressReader::new_range(path, offset, len, bytes_counter, total_parts > 1).await?;
                 upload_one_part(client, net_config, cancel_rx, reader, len, doc_name, caption, peer)
                     .await
                     .map(|_| ())
@@ -1086,6 +1125,12 @@ async fn upload_one_part(
     };
 
     let uploaded_file = upload_result.map_err(map_error)?;
+
+    // Append the part's checksum so downloads can verify integrity
+    let caption = match reader.finalize_hash() {
+        Some(h) => format!("{}#{}", caption, h),
+        None => caption,
+    };
     let message = InputMessage::new().text(caption.as_str()).file(uploaded_file);
 
     // VPN-aware retry logic for send_message
@@ -1155,7 +1200,7 @@ async fn find_parts(
             Some(Media::Document(d)) => d.size() as u64,
             _ => continue,
         };
-        if let Some((b, i, t)) = parse_part_name(&message_display_name(&m)) {
+        if let Some((b, i, t, _)) = parse_part_name(&message_display_name(&m)) {
             if b == base && t == total {
                 found.entry(i).or_insert((m.id(), doc_size));
             }
@@ -1206,7 +1251,7 @@ async fn resolve_parts(
     let messages = client.get_messages_by_id(peer, &[message_id]).await.map_err(|e| e.to_string())?;
     let msg = messages.into_iter().flatten().next().ok_or_else(|| "Message not found".to_string())?;
     let name = message_display_name(&msg);
-    let (base, _, total) = match parse_part_name(&name) {
+    let (base, _, total, _) = match parse_part_name(&name) {
         Some(p) => p,
         None => return Ok(vec![message_id]),
     };
@@ -1280,13 +1325,18 @@ pub async fn cmd_rename_file(
     };
 
     // Split files: rewrite every part's caption, preserving the part suffix
+    // and its checksum
     let edits: Vec<(i32, String)> = if parse_part_name(&message_display_name(msg)).is_some() {
         let ids = resolve_parts(&client, &peer, message_id, true).await?;
-        let total = ids.len() as u32;
-        ids.into_iter()
-            .enumerate()
-            .map(|(i, id)| (id, split_part_name(&new_name, i as u32 + 1, total)))
-            .collect()
+        let part_msgs = client.get_messages_by_id(&peer, &ids).await.map_err(|e| e.to_string())?;
+        let mut edits = Vec::with_capacity(ids.len());
+        for m in part_msgs.iter().flatten() {
+            let name = message_display_name(m);
+            let (_, idx, total, hash) = parse_part_name(&name)
+                .ok_or_else(|| "A part of this file lost its name. Please refresh the folder.".to_string())?;
+            edits.push((m.id(), split_part_caption(&new_name, idx, total, hash)));
+        }
+        edits
     } else {
         vec![(message_id, new_name)]
     };
@@ -1373,6 +1423,7 @@ async fn download_part_to_region(
     save_path: &str,
     region_start: u64,
     expected_len: u64,
+    expected_hash: Option<&str>,
     part_no: usize,
     part_count: usize,
     counter: &std::sync::Arc<std::sync::atomic::AtomicU64>,
@@ -1381,6 +1432,8 @@ async fn download_part_to_region(
     net_config: &NetworkConfig,
     started: std::time::Instant,
 ) -> Result<(), String> {
+    use sha2::Digest;
+
     let mut file = tokio::fs::OpenOptions::new()
         .write(true)
         .open(save_path)
@@ -1393,6 +1446,8 @@ async fn download_part_to_region(
     let mut download_iter = client.iter_download(media);
     let mut written: u64 = 0;
     let mut retry_budget = net_config.retry_attempts();
+    // Only hash when the caption carries a checksum to compare against
+    let mut hasher = expected_hash.map(|_| sha2::Sha256::new());
 
     while let Some(chunk) = download_iter.next().await.transpose() {
         if cancelled.read().await.contains(tid) {
@@ -1419,6 +1474,9 @@ async fn download_part_to_region(
             }
         };
         tokio::io::AsyncWriteExt::write_all(&mut file, &bytes).await.map_err(|e| e.to_string())?;
+        if let Some(h) = hasher.as_mut() {
+            h.update(&bytes);
+        }
         written += bytes.len() as u64;
         let total_so_far = counter.fetch_add(bytes.len() as u64, std::sync::atomic::Ordering::Relaxed)
             + bytes.len() as u64;
@@ -1448,6 +1506,17 @@ async fn download_part_to_region(
         ));
     }
 
+    // Verify the checksum stored in the part's caption at upload time
+    if let (Some(expected), Some(h)) = (expected_hash, hasher) {
+        let actual = format!("{:x}", h.finalize());
+        if actual != expected {
+            return Err(format!(
+                "Corrupted part {}/{}: checksum mismatch (the stored data does not match what was uploaded)",
+                part_no, part_count
+            ));
+        }
+    }
+
     // Persist this region before reporting success
     tokio::io::AsyncWriteExt::flush(&mut file).await.map_err(|e| e.to_string())?;
     file.sync_all().await.map_err(|e| e.to_string())?;
@@ -1465,15 +1534,15 @@ async fn download_parts_parallel(
     app_handle: &tauri::AppHandle,
     tid: &str,
     save_path: &str,
-    parts: &[(Media, Option<u64>)],
+    parts: &[(Media, Option<u64>, Option<String>)],
     total_size: u64,
 ) -> Result<u64, String> {
     // Byte regions per part; every split part is a document with a known size
-    let mut jobs: Vec<(usize, &Media, u64, u64)> = Vec::with_capacity(parts.len());
+    let mut jobs: Vec<(usize, &Media, u64, u64, Option<&str>)> = Vec::with_capacity(parts.len());
     let mut region_start: u64 = 0;
-    for (i, (media, expected)) in parts.iter().enumerate() {
+    for (i, (media, expected, hash)) in parts.iter().enumerate() {
         let len = expected.ok_or_else(|| "Split part without a known size".to_string())?;
-        jobs.push((i, media, region_start, len));
+        jobs.push((i, media, region_start, len, hash.as_deref()));
         region_start += len;
     }
 
@@ -1514,12 +1583,12 @@ async fn download_parts_parallel(
     use futures::TryStreamExt;
     let part_count = parts.len();
     let result: Result<(), String> = futures::stream::iter(jobs.into_iter().map(Ok::<_, String>))
-        .try_for_each_concurrent(parallel_parts(), |(i, media, start, len)| {
+        .try_for_each_concurrent(parallel_parts(), |(i, media, start, len, hash)| {
             let counter = counter.clone();
             let cancelled = cancelled.clone();
             async move {
                 download_part_to_region(
-                    client, media, save_path, start, len, i + 1, part_count,
+                    client, media, save_path, start, len, hash, i + 1, part_count,
                     &counter, &cancelled, tid, net_config, started,
                 ).await
             }
@@ -1607,8 +1676,9 @@ pub async fn cmd_download_file(
         return Err("Some parts of this file are missing. Please refresh the folder.".to_string());
     }
 
-    // Media + expected size per part; the sum drives progress and integrity checks
-    let mut parts: Vec<(Media, Option<u64>)> = Vec::with_capacity(part_msgs.len());
+    // Media + expected size + caption checksum per part; the size sum drives
+    // progress and integrity checks
+    let mut parts: Vec<(Media, Option<u64>, Option<String>)> = Vec::with_capacity(part_msgs.len());
     let mut total_size: u64 = 0;
     let mut expected_total: Option<u64> = Some(0);
     for m in &part_msgs {
@@ -1625,7 +1695,9 @@ pub async fn cmd_download_file(
             (Some(acc), Some(sz)) => Some(acc + sz),
             _ => None,
         };
-        parts.push((media, part_expected));
+        let part_hash = parse_part_name(&message_display_name(m))
+            .and_then(|(_, _, _, h)| h.map(String::from));
+        parts.push((media, part_expected, part_hash));
     }
     let expected_file_size = expected_total;
 
@@ -1657,7 +1729,7 @@ pub async fn cmd_download_file(
     } else {
         // Single document/photo: stream sequentially with inline progress
         // (photos have no exact expected size, so no preallocation here)
-        let (media, part_expected) = &parts[0];
+        let (media, part_expected, _) = &parts[0];
         let mut file = tokio::fs::File::create(&actual_save_path).await.map_err(|e| {
             bw_state.release_down(total_size);
             e.to_string()
@@ -1912,12 +1984,12 @@ pub async fn cmd_move_files(
     let seeds: Vec<(String, u32)> = seed_msgs
         .iter()
         .flatten()
-        .filter_map(|m| parse_part_name(&message_display_name(m)).map(|(b, _, t)| (b.to_string(), t)))
+        .filter_map(|m| parse_part_name(&message_display_name(m)).map(|(b, _, t, _)| (b.to_string(), t)))
         .collect();
     if !seeds.is_empty() {
         let mut msgs = client.iter_messages(&source_peer);
         while let Some(m) = msgs.next().await.map_err(|e| e.to_string())? {
-            if let Some((b, _, t)) = parse_part_name(&message_display_name(&m)) {
+            if let Some((b, _, t, _)) = parse_part_name(&message_display_name(&m)) {
                 if seeds.iter().any(|(sb, st)| *sb == b && *st == t) && !message_ids.contains(&m.id()) {
                     message_ids.push(m.id());
                 }
@@ -1968,7 +2040,7 @@ pub async fn cmd_get_files(
                     // document's built-in filename attribute, so renames persist across refreshes.
                     let caption = msg.text();
                     let display_name = if caption.is_empty() { doc_name.clone() } else { caption.to_string() };
-                    if let Some((base, idx, total)) = parse_part_name(&display_name) {
+                    if let Some((base, idx, total, _)) = parse_part_name(&display_name) {
                         part_groups.entry((base.to_string(), total)).or_default().push((
                             idx,
                             msg.id() as i64,
@@ -2037,7 +2109,7 @@ fn extract_search_files(msgs: &[tl::enums::Message]) -> Vec<FileMetadata> {
                     // Split files: represent the whole file by its first part, hide the rest.
                     // (Size shown is part 1's size only; the folder listing has the full sum.)
                     let (name, is_split) = match parse_part_name(&name) {
-                        Some((base, 1, _)) => (base.to_string(), true),
+                        Some((base, 1, _, _)) => (base.to_string(), true),
                         Some(_) => continue,
                         None => (name, false),
                     };
@@ -3095,13 +3167,13 @@ pub async fn cmd_upload_from_url(
 
 #[cfg(test)]
 mod split_tests {
-    use super::{parse_part_name, split_part_name};
+    use super::{parse_part_name, split_part_caption, split_part_name};
 
     #[test]
     fn part_name_round_trip() {
         assert_eq!(split_part_name("movie.mkv", 2, 5), "movie.mkv.tgdpart002-005");
-        assert_eq!(parse_part_name("movie.mkv.tgdpart002-005"), Some(("movie.mkv", 2, 5)));
-        assert_eq!(parse_part_name(&split_part_name("a b (1).tar.gz", 999, 999)), Some(("a b (1).tar.gz", 999, 999)));
+        assert_eq!(parse_part_name("movie.mkv.tgdpart002-005"), Some(("movie.mkv", 2, 5, None)));
+        assert_eq!(parse_part_name(&split_part_name("a b (1).tar.gz", 999, 999)), Some(("a b (1).tar.gz", 999, 999, None)));
     }
 
     #[test]
@@ -3113,6 +3185,22 @@ mod split_tests {
         assert_eq!(parse_part_name("movie.mkv.tgdpart001-0055"), None); // trailing junk
         assert_eq!(parse_part_name("movie.mkv.tgdpartabc-005"), None);
         assert_eq!(parse_part_name(".tgdpart001-005"), None); // empty base
+    }
+
+    #[test]
+    fn part_name_with_checksum() {
+        let hash = "a".repeat(64);
+        let caption = split_part_caption("movie.mkv", 2, 5, Some(&hash));
+        assert_eq!(caption, format!("movie.mkv.tgdpart002-005#{}", hash));
+        assert_eq!(parse_part_name(&caption), Some(("movie.mkv", 2, 5, Some(hash.as_str()))));
+        // Without hash, split_part_caption == split_part_name
+        assert_eq!(split_part_caption("movie.mkv", 2, 5, None), split_part_name("movie.mkv", 2, 5));
+
+        // Malformed hashes invalidate the whole part name
+        assert_eq!(parse_part_name(&format!("movie.mkv.tgdpart002-005#{}", "a".repeat(63))), None); // too short
+        assert_eq!(parse_part_name(&format!("movie.mkv.tgdpart002-005#{}", "A".repeat(64))), None); // uppercase
+        assert_eq!(parse_part_name(&format!("movie.mkv.tgdpart002-005#{}", "g".repeat(64))), None); // not hex
+        assert_eq!(parse_part_name("movie.mkv.tgdpart002-005#"), None); // empty hash
     }
 
     #[test]
@@ -3181,12 +3269,18 @@ mod split_tests {
         for idx in 1..=total_parts {
             let offset = (idx - 1) * part_size;
             let len = part_size.min(size - offset);
-            let mut reader = super::ProgressReader::new_range(&path_str, offset, len, counter.clone())
+            let mut reader = super::ProgressReader::new_range(&path_str, offset, len, counter.clone(), true)
                 .await
                 .unwrap();
             let mut buf = Vec::new();
             reader.read_to_end(&mut buf).await.unwrap();
             assert_eq!(buf.len() as u64, len, "part {} length", idx);
+
+            // The reader's checksum must match hashing the range directly
+            use sha2::Digest;
+            let expected = format!("{:x}", sha2::Sha256::digest(&buf));
+            assert_eq!(reader.finalize_hash().as_deref(), Some(expected.as_str()), "part {} hash", idx);
+
             merged.extend_from_slice(&buf);
         }
 
