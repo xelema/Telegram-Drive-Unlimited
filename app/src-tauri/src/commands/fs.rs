@@ -892,10 +892,44 @@ async fn cmd_upload_file_inner(
         return Err(format!("File too large: would need {} parts (max 999)", total_parts));
     }
 
+    // Upload resume: reuse parts already on Telegram from a previous
+    // interrupted upload of the same file (matched by name + part layout,
+    // validated by exact part size). Mismatched parts are replaced.
+    let (upload_indices, done_bytes) = if total_parts > 1 {
+        let resume_result: Result<(Vec<u32>, u64), String> = async {
+            let existing = find_parts(&client, &peer, &file_name, total_parts as u32).await?;
+            let (to_upload, to_delete, done) = parts_to_upload(size, part_size, total_parts as u32, &existing);
+            if !to_delete.is_empty() {
+                log::info!("Resume: replacing {} mismatched part(s) of {}", to_delete.len(), file_name);
+                client.delete_messages(&peer, &to_delete).await.map_err(|e| e.to_string())?;
+            }
+            Ok((to_upload, done))
+        }.await;
+        let (to_upload, done) = match resume_result {
+            Ok(r) => r,
+            Err(e) => {
+                bw_state.release_up(size);
+                return Err(e);
+            }
+        };
+        if done > 0 {
+            log::info!(
+                "Resume: {}/{} parts of {} already uploaded ({} bytes)",
+                total_parts - to_upload.len() as u64, total_parts, file_name, done
+            );
+            // Only the remaining bytes will actually transfer
+            bw_state.release_up(done);
+        }
+        (to_upload, done)
+    } else {
+        (vec![1u32], 0u64)
+    };
+
     // Cumulative byte counter shared by all part readers, so the progress
-    // task reports a single 0-100% over the whole file.
+    // task reports a single 0-100% over the whole file. Starts at the bytes
+    // already uploaded by a previous attempt.
     let file_size = size;
-    let bytes_counter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let bytes_counter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(done_bytes));
 
     // Spawn a progress reporter task that emits events every 250ms
     let cancelled = state.cancelled_transfers.clone();
@@ -904,7 +938,9 @@ async fn cmd_upload_file_inner(
     let progress_counter = bytes_counter.clone();
     let progress_task = if !tid.is_empty() {
         Some(tokio::spawn(async move {
-            let mut last_bytes: u64 = 0;
+            // Start the speed baseline at the resumed byte count so the first
+            // tick doesn't report a bogus multi-GB/s spike
+            let mut last_bytes: u64 = progress_counter.load(std::sync::atomic::Ordering::Relaxed);
             let mut last_time = std::time::Instant::now();
             loop {
                 tokio::time::sleep(std::time::Duration::from_millis(250)).await;
@@ -930,10 +966,9 @@ async fn cmd_upload_file_inner(
         None
     };
 
-    let mut sent_ids: Vec<i32> = Vec::new();
     let mut upload_err: Option<String> = None;
 
-    for idx in 1..=total_parts {
+    for idx in upload_indices {
         // Check cancellation before each part
         if state.cancelled_transfers.read().await.contains(&tid) {
             state.cancelled_transfers.write().await.remove(&tid);
@@ -941,12 +976,12 @@ async fn cmd_upload_file_inner(
             break;
         }
 
-        let offset = (idx - 1) * part_size;
+        let offset = (idx as u64 - 1) * part_size;
         let len = part_size.min(size - offset);
         let (doc_name, caption) = if total_parts == 1 {
             (file_name.clone(), String::new())
         } else {
-            let part_name = split_part_name(&file_name, idx as u32, total_parts as u32);
+            let part_name = split_part_name(&file_name, idx, total_parts as u32);
             (part_name.clone(), part_name)
         };
 
@@ -958,12 +993,9 @@ async fn cmd_upload_file_inner(
             }
         };
 
-        match upload_one_part(&client, &state, &net_config, &tid, reader, len, doc_name, caption, &peer).await {
-            Ok(msg_id) => sent_ids.push(msg_id),
-            Err(e) => {
-                upload_err = Some(e);
-                break;
-            }
+        if let Err(e) = upload_one_part(&client, &state, &net_config, &tid, reader, len, doc_name, caption, &peer).await {
+            upload_err = Some(e);
+            break;
         }
     }
 
@@ -971,13 +1003,9 @@ async fn cmd_upload_file_inner(
     if let Some(t) = progress_task { t.abort(); }
 
     if let Some(err) = upload_err {
-        // Best-effort cleanup so a failed/cancelled split upload leaves no orphan parts
-        if !sent_ids.is_empty() {
-            if let Err(e) = client.delete_messages(&peer, &sent_ids).await {
-                log::warn!("Failed to clean up {} uploaded part(s): {}", sent_ids.len(), e);
-            }
-        }
-        bw_state.release_up(size);
+        // Uploaded parts are intentionally kept: re-uploading the same file
+        // resumes from them instead of starting over
+        bw_state.release_up(size.saturating_sub(done_bytes));
         return Err(err);
     }
 
@@ -1085,6 +1113,60 @@ fn message_display_name(msg: &grammers_client::types::Message) -> String {
     }
 }
 
+/// Scans the chat for part messages matching (base, total).
+/// Returns part index -> (message id, document size).
+/// Same O(n) cost as the folder listing.
+async fn find_parts(
+    client: &grammers_client::Client,
+    peer: &Peer,
+    base: &str,
+    total: u32,
+) -> Result<HashMap<u32, (i32, u64)>, String> {
+    let mut found: HashMap<u32, (i32, u64)> = HashMap::new();
+    let mut msgs = client.iter_messages(peer);
+    while let Some(m) = msgs.next().await.map_err(|e| e.to_string())? {
+        let doc_size = match m.media() {
+            Some(Media::Document(d)) => d.size() as u64,
+            _ => continue,
+        };
+        if let Some((b, i, t)) = parse_part_name(&message_display_name(&m)) {
+            if b == base && t == total {
+                found.entry(i).or_insert((m.id(), doc_size));
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// Decides which parts still need uploading given what already exists on
+/// Telegram (upload resume). A part is reusable when its size matches the
+/// expected size exactly; wrong-size parts are deleted and re-uploaded.
+/// Returns (part indices to upload, message ids to delete, bytes already done).
+/// ponytail: same name + same part layout => same file; a remote part can't
+/// be re-hashed without downloading it, so size is the resume criterion.
+fn parts_to_upload(
+    size: u64,
+    part_size: u64,
+    total: u32,
+    existing: &HashMap<u32, (i32, u64)>,
+) -> (Vec<u32>, Vec<i32>, u64) {
+    let mut to_upload = Vec::new();
+    let mut to_delete = Vec::new();
+    let mut done_bytes: u64 = 0;
+    for idx in 1..=total {
+        let expected = part_size.min(size - (idx as u64 - 1) * part_size);
+        match existing.get(&idx) {
+            Some((_, sz)) if *sz == expected => done_bytes += expected,
+            Some((id, _)) => {
+                to_delete.push(*id);
+                to_upload.push(idx);
+            }
+            None => to_upload.push(idx),
+        }
+    }
+    (to_upload, to_delete, done_bytes)
+}
+
 /// Resolves a message id to the ordered message ids making up the file:
 /// [message_id] for regular files, all sibling ".tgdpart" messages (sorted by
 /// part index) for split files. With require_complete, errors if a part is
@@ -1102,26 +1184,13 @@ async fn resolve_parts(
         Some(p) => p,
         None => return Ok(vec![message_id]),
     };
-    let base = base.to_string();
 
-    // Scan the chat for sibling parts (same O(n) cost as the folder listing)
-    let mut found: HashMap<u32, i32> = HashMap::new();
-    let mut msgs = client.iter_messages(peer);
-    while let Some(m) = msgs.next().await.map_err(|e| e.to_string())? {
-        if !matches!(m.media(), Some(Media::Document(_))) {
-            continue;
-        }
-        if let Some((b, i, t)) = parse_part_name(&message_display_name(&m)) {
-            if b == base && t == total {
-                found.entry(i).or_insert(m.id());
-            }
-        }
-    }
+    let found = find_parts(client, peer, base, total).await?;
 
     let mut ids = Vec::with_capacity(total as usize);
     for i in 1..=total {
         match found.get(&i) {
-            Some(id) => ids.push(*id),
+            Some((id, _)) => ids.push(*id),
             None if require_complete => {
                 return Err(format!("Split file '{}': part {}/{} is missing", base, i, total));
             }
@@ -2835,6 +2904,46 @@ mod split_tests {
         assert_eq!(parse_part_name("movie.mkv.tgdpart001-0055"), None); // trailing junk
         assert_eq!(parse_part_name("movie.mkv.tgdpartabc-005"), None);
         assert_eq!(parse_part_name(".tgdpart001-005"), None); // empty base
+    }
+
+    #[test]
+    fn resume_skips_valid_parts() {
+        use std::collections::HashMap;
+        // 35 bytes, parts of 10 -> expected sizes 10,10,10,5
+        let (size, part_size, total) = (35u64, 10u64, 4u32);
+
+        // Nothing on Telegram yet: upload everything
+        let empty = HashMap::new();
+        assert_eq!(
+            super::parts_to_upload(size, part_size, total, &empty),
+            (vec![1, 2, 3, 4], vec![], 0)
+        );
+
+        // Parts 1 and 4 already uploaded with correct sizes: skip them
+        let mut existing = HashMap::new();
+        existing.insert(1u32, (101i32, 10u64));
+        existing.insert(4u32, (104i32, 5u64));
+        assert_eq!(
+            super::parts_to_upload(size, part_size, total, &existing),
+            (vec![2, 3], vec![], 15)
+        );
+
+        // Part 2 exists but with a wrong size: delete and re-upload it
+        existing.insert(2u32, (102i32, 7u64));
+        assert_eq!(
+            super::parts_to_upload(size, part_size, total, &existing),
+            (vec![2, 3], vec![102], 15)
+        );
+
+        // Everything valid: nothing to upload
+        let mut all = HashMap::new();
+        for (i, sz) in [(1u32, 10u64), (2, 10), (3, 10), (4, 5)] {
+            all.insert(i, (100 + i as i32, sz));
+        }
+        assert_eq!(
+            super::parts_to_upload(size, part_size, total, &all),
+            (vec![], vec![], 35)
+        );
     }
 
     /// Split a file into range readers (the upload path) and concatenate what
