@@ -14,11 +14,13 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::sync::Mutex;
-use tokio::sync::oneshot;
+use tokio::sync::watch;
 
-static UPLOAD_CANCELLATIONS: OnceLock<Mutex<HashMap<String, oneshot::Sender<()>>>> = OnceLock::new();
+// One watch channel per transfer id; flipping it to true cancels every
+// concurrently running part of that transfer.
+static UPLOAD_CANCELLATIONS: OnceLock<Mutex<HashMap<String, watch::Sender<bool>>>> = OnceLock::new();
 
-fn get_upload_cancellations() -> &'static Mutex<HashMap<String, oneshot::Sender<()>>> {
+fn get_upload_cancellations() -> &'static Mutex<HashMap<String, watch::Sender<bool>>> {
     UPLOAD_CANCELLATIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -678,6 +680,19 @@ pub fn split_part_size() -> u64 {
     std::env::var("TGD_PART_SIZE").ok().and_then(|v| v.parse().ok()).unwrap_or(SPLIT_PART_SIZE)
 }
 
+// How many parts of one file transfer concurrently. Deliberately modest:
+// it multiplies with the upload/download queue concurrency.
+const PARALLEL_PARTS: usize = 3;
+
+fn parallel_parts() -> usize {
+    // TGD_PARALLEL_PARTS env override is for testing/tuning
+    std::env::var("TGD_PARALLEL_PARTS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|n: &usize| *n >= 1)
+        .unwrap_or(PARALLEL_PARTS)
+}
+
 pub fn split_part_name(base: &str, idx: u32, total: u32) -> String {
     format!("{}{}{:03}-{:03}", base, SPLIT_MARKER, idx, total)
 }
@@ -783,7 +798,7 @@ pub async fn cmd_cancel_transfer(
     log::info!("Cancelling transfer: {}", transfer_id);
     state.cancelled_transfers.write().await.insert(transfer_id.clone());
     if let Some(tx) = get_upload_cancellations().lock().unwrap().remove(&transfer_id) {
-        let _ = tx.send(());
+        let _ = tx.send(true);
     }
     Ok(true)
 }
@@ -966,43 +981,71 @@ async fn cmd_upload_file_inner(
         None
     };
 
-    let mut upload_err: Option<String> = None;
-
-    for idx in upload_indices {
-        // Check cancellation before each part
-        if state.cancelled_transfers.read().await.contains(&tid) {
-            state.cancelled_transfers.write().await.remove(&tid);
-            upload_err = Some("Transfer cancelled".to_string());
-            break;
-        }
-
-        let offset = (idx as u64 - 1) * part_size;
-        let len = part_size.min(size - offset);
-        let (doc_name, caption) = if total_parts == 1 {
-            (file_name.clone(), String::new())
-        } else {
-            let part_name = split_part_name(&file_name, idx, total_parts as u32);
-            (part_name.clone(), part_name)
-        };
-
-        let reader = match ProgressReader::new_range(&path, offset, len, bytes_counter.clone()).await {
-            Ok(r) => r,
-            Err(e) => {
-                upload_err = Some(e);
-                break;
-            }
-        };
-
-        if let Err(e) = upload_one_part(&client, &state, &net_config, &tid, reader, len, doc_name, caption, &peer).await {
-            upload_err = Some(e);
-            break;
-        }
+    // One cancellation channel for the whole transfer; every part task
+    // subscribes and cmd_cancel_transfer flips it to true.
+    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let mut _local_cancel_tx = None;
+    if !tid.is_empty() {
+        get_upload_cancellations().lock().unwrap().insert(tid.clone(), cancel_tx);
+    } else {
+        // Keep the sender alive for the whole transfer, otherwise receivers
+        // would observe the drop and cancel immediately
+        _local_cancel_tx = Some(cancel_tx);
     }
 
-    // Stop progress reporter
-    if let Some(t) = progress_task { t.abort(); }
+    // Cancel requested before the watch channel was registered
+    if state.cancelled_transfers.read().await.contains(&tid) {
+        state.cancelled_transfers.write().await.remove(&tid);
+        if let Some(t) = progress_task { t.abort(); }
+        if !tid.is_empty() {
+            get_upload_cancellations().lock().unwrap().remove(&tid);
+        }
+        bw_state.release_up(size.saturating_sub(done_bytes));
+        return Err("Transfer cancelled".to_string());
+    }
 
-    if let Some(err) = upload_err {
+    // Upload up to PARALLEL_PARTS parts concurrently. Progress and speed stay
+    // accurate because every reader adds to the same cumulative byte counter,
+    // read by the single 250ms reporter task. On the first error, in-flight
+    // sibling parts are dropped (clean async cancellation) and pending ones
+    // never start.
+    use futures::TryStreamExt;
+    let upload_result: Result<(), String> = futures::stream::iter(upload_indices.into_iter().map(Ok::<u32, String>))
+        .try_for_each_concurrent(parallel_parts(), |idx| {
+            let cancel_rx = cancel_rx.clone();
+            let bytes_counter = bytes_counter.clone();
+            let client = &client;
+            let peer = &peer;
+            let path = &path;
+            let file_name = &file_name;
+            let net_config = &net_config;
+            async move {
+                let offset = (idx as u64 - 1) * part_size;
+                let len = part_size.min(size - offset);
+                let (doc_name, caption) = if total_parts == 1 {
+                    (file_name.clone(), String::new())
+                } else {
+                    let part_name = split_part_name(file_name, idx, total_parts as u32);
+                    (part_name.clone(), part_name)
+                };
+                let reader = ProgressReader::new_range(path, offset, len, bytes_counter).await?;
+                upload_one_part(client, net_config, cancel_rx, reader, len, doc_name, caption, peer)
+                    .await
+                    .map(|_| ())
+            }
+        })
+        .await;
+
+    // Stop progress reporter and drop the cancellation entry
+    if let Some(t) = progress_task { t.abort(); }
+    if !tid.is_empty() {
+        get_upload_cancellations().lock().unwrap().remove(&tid);
+    }
+
+    if let Err(err) = upload_result {
+        if err == "Transfer cancelled" {
+            state.cancelled_transfers.write().await.remove(&tid);
+        }
         // Uploaded parts are intentionally kept: re-uploading the same file
         // resumes from them instead of starting over
         bw_state.release_up(size.saturating_sub(done_bytes));
@@ -1019,43 +1062,26 @@ async fn cmd_upload_file_inner(
 }
 
 /// Uploads one byte range as a Telegram document and sends it as a message.
-/// Returns the sent message id. Handles per-part cancellation and the
-/// VPN-aware send_message retry loop.
+/// Returns the sent message id. Cancellation comes from the transfer-wide
+/// watch channel shared by all concurrently uploading parts.
 async fn upload_one_part(
     client: &grammers_client::Client,
-    state: &TelegramState,
     net_config: &NetworkConfig,
-    tid: &str,
+    mut cancel_rx: watch::Receiver<bool>,
     mut reader: ProgressReader,
     part_len: u64,
     doc_name: String,
     caption: String,
     peer: &Peer,
 ) -> Result<i32, String> {
-    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
-    if !tid.is_empty() {
-        get_upload_cancellations().lock().unwrap().insert(tid.to_string(), cancel_tx);
+    if *cancel_rx.borrow() {
+        return Err("Transfer cancelled".to_string());
     }
 
-    let client_clone = client.clone();
-    let mut upload_task = tokio::spawn(async move {
-        client_clone.upload_stream(&mut reader, part_len as usize, doc_name).await
-    });
-
-    let upload_result = {
-        tokio::select! {
-            res = &mut upload_task => {
-                if !tid.is_empty() {
-                    get_upload_cancellations().lock().unwrap().remove(tid);
-                }
-                res.map_err(|e| format!("Task join error: {}", e))?
-            }
-            _ = cancel_rx => {
-                log::info!("Aborting upload task for transfer ID: {}", tid);
-                upload_task.abort();
-                state.cancelled_transfers.write().await.remove(tid);
-                return Err("Transfer cancelled".to_string());
-            }
+    let upload_result = tokio::select! {
+        res = client.upload_stream(&mut reader, part_len as usize, doc_name) => res,
+        _ = cancel_rx.changed() => {
+            return Err("Transfer cancelled".to_string());
         }
     };
 
@@ -2766,7 +2792,7 @@ pub async fn cmd_upload_from_url(
         return Err("Transfer cancelled".to_string());
     }
 
-    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+    let (cancel_tx, mut cancel_rx) = watch::channel(false);
     get_upload_cancellations().lock().unwrap().insert(transfer_id.clone(), cancel_tx);
 
     let client_clone = client.clone();
@@ -2806,7 +2832,7 @@ pub async fn cmd_upload_from_url(
                     }
                 }
             }
-            _ = cancel_rx => {
+            _ = cancel_rx.changed() => {
                 log::info!("Aborting remote upload task for transfer ID: {}", transfer_id);
                 upload_task.abort();
                 state.cancelled_transfers.write().await.remove(&transfer_id);
