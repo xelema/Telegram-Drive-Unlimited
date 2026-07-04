@@ -1365,6 +1365,173 @@ pub async fn cmd_delete_file(
     Ok(true)
 }
 
+/// Downloads one part into its byte region [region_start, region_start + expected_len)
+/// of the destination file, with per-chunk cancellation, retry and throttling.
+async fn download_part_to_region(
+    client: &grammers_client::Client,
+    media: &Media,
+    save_path: &str,
+    region_start: u64,
+    expected_len: u64,
+    part_no: usize,
+    part_count: usize,
+    counter: &std::sync::Arc<std::sync::atomic::AtomicU64>,
+    cancelled: &std::sync::Arc<tokio::sync::RwLock<std::collections::HashSet<String>>>,
+    tid: &str,
+    net_config: &NetworkConfig,
+    started: std::time::Instant,
+) -> Result<(), String> {
+    let mut file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .open(save_path)
+        .await
+        .map_err(|e| e.to_string())?;
+    tokio::io::AsyncSeekExt::seek(&mut file, std::io::SeekFrom::Start(region_start))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut download_iter = client.iter_download(media);
+    let mut written: u64 = 0;
+    let mut retry_budget = net_config.retry_attempts();
+
+    while let Some(chunk) = download_iter.next().await.transpose() {
+        if cancelled.read().await.contains(tid) {
+            return Err("Transfer cancelled".to_string());
+        }
+        let bytes = match chunk {
+            Ok(b) => {
+                retry_budget = net_config.retry_attempts(); // reset on success
+                b
+            }
+            Err(e) => {
+                let err = map_error(&e);
+                if retry_budget > 0 {
+                    retry_budget -= 1;
+                    log::warn!(
+                        "Download chunk error part {}/{} (retries left: {}): {}",
+                        part_no, part_count, retry_budget, err
+                    );
+                    let delay = backoff_ms(0, net_config.retry_base_backoff_ms(), net_config.retry_max_backoff_ms());
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                    continue;
+                }
+                return Err(format!("Download chunk error: {}", err));
+            }
+        };
+        tokio::io::AsyncWriteExt::write_all(&mut file, &bytes).await.map_err(|e| e.to_string())?;
+        written += bytes.len() as u64;
+        let total_so_far = counter.fetch_add(bytes.len() as u64, std::sync::atomic::Ordering::Relaxed)
+            + bytes.len() as u64;
+
+        // Global throttle across all concurrent parts, based on the shared
+        // counter. ponytail: long-run average rather than a sliding window;
+        // good enough to hold the configured limit.
+        let dl_limit = net_config.download_limit_bytes_per_sec();
+        if dl_limit > 0 {
+            let elapsed = started.elapsed().as_secs_f64().max(0.001);
+            let rate = total_so_far as f64 / elapsed;
+            if rate > dl_limit as f64 {
+                let ideal_elapsed = total_so_far as f64 / dl_limit as f64;
+                let sleep_ms = ((ideal_elapsed - elapsed) * 1000.0) as u64;
+                if sleep_ms > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(sleep_ms.min(5000))).await;
+                }
+            }
+        }
+    }
+
+    // A short part would silently corrupt the merged file
+    if expected_len > 0 && written != expected_len {
+        return Err(format!(
+            "Incomplete download of part {}/{}: expected {} bytes, received {} bytes",
+            part_no, part_count, expected_len, written
+        ));
+    }
+
+    // Persist this region before reporting success
+    tokio::io::AsyncWriteExt::flush(&mut file).await.map_err(|e| e.to_string())?;
+    file.sync_all().await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Downloads all parts of a split file concurrently into a preallocated
+/// destination file. Progress and speed are reported by a single 250ms task
+/// reading the shared byte counter, so they stay accurate regardless of how
+/// the parts interleave. Returns the total bytes downloaded.
+async fn download_parts_parallel(
+    client: &grammers_client::Client,
+    cancelled: &std::sync::Arc<tokio::sync::RwLock<std::collections::HashSet<String>>>,
+    net_config: &NetworkConfig,
+    app_handle: &tauri::AppHandle,
+    tid: &str,
+    save_path: &str,
+    parts: &[(Media, Option<u64>)],
+    total_size: u64,
+) -> Result<u64, String> {
+    // Byte regions per part; every split part is a document with a known size
+    let mut jobs: Vec<(usize, &Media, u64, u64)> = Vec::with_capacity(parts.len());
+    let mut region_start: u64 = 0;
+    for (i, (media, expected)) in parts.iter().enumerate() {
+        let len = expected.ok_or_else(|| "Split part without a known size".to_string())?;
+        jobs.push((i, media, region_start, len));
+        region_start += len;
+    }
+
+    // Preallocate so each part can write straight into its region
+    let file = tokio::fs::File::create(save_path).await.map_err(|e| e.to_string())?;
+    file.set_len(total_size).await.map_err(|e| e.to_string())?;
+    drop(file);
+
+    let counter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let started = std::time::Instant::now();
+
+    let emitter = if !tid.is_empty() {
+        let emit_counter = counter.clone();
+        let emit_tid = tid.to_string();
+        let emit_handle = app_handle.clone();
+        Some(tokio::spawn(async move {
+            let mut last_bytes: u64 = 0;
+            let mut last_time = std::time::Instant::now();
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                let current = emit_counter.load(std::sync::atomic::Ordering::Relaxed);
+                let now = std::time::Instant::now();
+                let dt = now.duration_since(last_time).as_secs_f64();
+                let speed = if dt > 0.0 { ((current - last_bytes) as f64 / dt) as u64 } else { 0 };
+                let percent = if total_size > 0 { ((current as f64 / total_size as f64) * 100.0).min(99.0) as u8 } else { 0 };
+                let _ = emit_handle.emit("download-progress", ProgressPayload {
+                    id: emit_tid.clone(), percent, uploaded_bytes: current, total_bytes: total_size, speed_bytes_per_sec: speed,
+                });
+                last_bytes = current;
+                last_time = now;
+                if current >= total_size { break; }
+            }
+        }))
+    } else {
+        None
+    };
+
+    use futures::TryStreamExt;
+    let part_count = parts.len();
+    let result: Result<(), String> = futures::stream::iter(jobs.into_iter().map(Ok::<_, String>))
+        .try_for_each_concurrent(parallel_parts(), |(i, media, start, len)| {
+            let counter = counter.clone();
+            let cancelled = cancelled.clone();
+            async move {
+                download_part_to_region(
+                    client, media, save_path, start, len, i + 1, part_count,
+                    &counter, &cancelled, tid, net_config, started,
+                ).await
+            }
+        })
+        .await;
+
+    if let Some(t) = emitter { t.abort(); }
+    result?;
+
+    Ok(counter.load(std::sync::atomic::Ordering::Relaxed))
+}
+
 #[derive(Debug, serde::Deserialize)]
 pub struct DownloadFileRequest {
     message_id: i32,
@@ -1471,111 +1638,127 @@ pub async fn cmd_download_file(
         });
     }
 
-    // Stream all parts sequentially into one file, with per-chunk progress
-    let mut file = tokio::fs::File::create(&actual_save_path).await.map_err(|e| {
-        bw_state.release_down(total_size);
-        e.to_string()
-    })?;
-    let mut downloaded: u64 = 0;
-    let mut last_emit_time = std::time::Instant::now();
-    let mut last_emit_bytes: u64 = 0;
-    let mut chunk_retry_budget = net_config.retry_attempts();
+    let downloaded: u64 = if parts.len() > 1 {
+        // Split file: download parts concurrently into a preallocated file
+        match download_parts_parallel(
+            &client, &state.cancelled_transfers, &net_config, &app_handle,
+            &tid, &actual_save_path, &parts, total_size,
+        ).await {
+            Ok(d) => d,
+            Err(e) => {
+                if e == "Transfer cancelled" {
+                    state.cancelled_transfers.write().await.remove(&tid);
+                }
+                cleanup_partial_file(&actual_save_path);
+                bw_state.release_down(total_size);
+                return Err(e);
+            }
+        }
+    } else {
+        // Single document/photo: stream sequentially with inline progress
+        // (photos have no exact expected size, so no preallocation here)
+        let (media, part_expected) = &parts[0];
+        let mut file = tokio::fs::File::create(&actual_save_path).await.map_err(|e| {
+            bw_state.release_down(total_size);
+            e.to_string()
+        })?;
+        let mut downloaded: u64 = 0;
+        let mut last_emit_time = std::time::Instant::now();
+        let mut last_emit_bytes: u64 = 0;
+        let mut chunk_retry_budget = net_config.retry_attempts();
 
-    for (part_idx, (media, part_expected)) in parts.iter().enumerate() {
         let mut download_iter = client.iter_download(media);
-        let mut part_downloaded: u64 = 0;
 
         while let Some(chunk) = download_iter.next().await.transpose() {
-        // Check cancellation
-        if state.cancelled_transfers.read().await.contains(&tid) {
-            state.cancelled_transfers.write().await.remove(&tid);
-            drop(file);
-            cleanup_partial_file(&actual_save_path);
-            bw_state.release_down(total_size);
-            return Err("Transfer cancelled".to_string());
-        }
-
-        let bytes = match chunk {
-            Ok(b) => {
-                chunk_retry_budget = net_config.retry_attempts(); // reset on success
-                b
-            },
-            Err(e) => {
-                let err = map_error(&e);
-                if chunk_retry_budget > 0 {
-                    chunk_retry_budget -= 1;
-                    log::warn!("Download chunk error (retries left: {}): {}", chunk_retry_budget, err);
-                    let delay = backoff_ms(0, net_config.retry_base_backoff_ms(), net_config.retry_max_backoff_ms());
-                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-                    continue;
-                }
+            // Check cancellation
+            if state.cancelled_transfers.read().await.contains(&tid) {
+                state.cancelled_transfers.write().await.remove(&tid);
                 drop(file);
                 cleanup_partial_file(&actual_save_path);
                 bw_state.release_down(total_size);
-                return Err(format!("Download chunk error: {}", err));
+                return Err("Transfer cancelled".to_string());
             }
-        };
-        tokio::io::AsyncWriteExt::write_all(&mut file, &bytes).await.map_err(|e| e.to_string())?;
-        downloaded += bytes.len() as u64;
-        part_downloaded += bytes.len() as u64;
 
-        // Time-based progress emission (every 250ms)
-        if !tid.is_empty() {
-            let now = std::time::Instant::now();
-            let dt = now.duration_since(last_emit_time).as_secs_f64();
-            if dt >= 0.25 || downloaded >= total_size {
-                let speed = if dt > 0.0 { ((downloaded - last_emit_bytes) as f64 / dt) as u64 } else { 0 };
-                let percent = if total_size > 0 { ((downloaded as f64 / total_size as f64) * 100.0).min(100.0) as u8 } else { 0 };
-                let _ = app_handle.emit("download-progress", ProgressPayload {
-                    id: tid.clone(), percent, uploaded_bytes: downloaded, total_bytes: total_size, speed_bytes_per_sec: speed,
-                });
-                last_emit_time = now;
-                last_emit_bytes = downloaded;
+            let bytes = match chunk {
+                Ok(b) => {
+                    chunk_retry_budget = net_config.retry_attempts(); // reset on success
+                    b
+                },
+                Err(e) => {
+                    let err = map_error(&e);
+                    if chunk_retry_budget > 0 {
+                        chunk_retry_budget -= 1;
+                        log::warn!("Download chunk error (retries left: {}): {}", chunk_retry_budget, err);
+                        let delay = backoff_ms(0, net_config.retry_base_backoff_ms(), net_config.retry_max_backoff_ms());
+                        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                        continue;
+                    }
+                    drop(file);
+                    cleanup_partial_file(&actual_save_path);
+                    bw_state.release_down(total_size);
+                    return Err(format!("Download chunk error: {}", err));
+                }
+            };
+            tokio::io::AsyncWriteExt::write_all(&mut file, &bytes).await.map_err(|e| e.to_string())?;
+            downloaded += bytes.len() as u64;
+
+            // Time-based progress emission (every 250ms)
+            if !tid.is_empty() {
+                let now = std::time::Instant::now();
+                let dt = now.duration_since(last_emit_time).as_secs_f64();
+                if dt >= 0.25 || downloaded >= total_size {
+                    let speed = if dt > 0.0 { ((downloaded - last_emit_bytes) as f64 / dt) as u64 } else { 0 };
+                    let percent = if total_size > 0 { ((downloaded as f64 / total_size as f64) * 100.0).min(100.0) as u8 } else { 0 };
+                    let _ = app_handle.emit("download-progress", ProgressPayload {
+                        id: tid.clone(), percent, uploaded_bytes: downloaded, total_bytes: total_size, speed_bytes_per_sec: speed,
+                    });
+                    last_emit_time = now;
+                    last_emit_bytes = downloaded;
+                }
             }
-        }
 
-        // Bandwidth throttle: if download limit is set, sleep to maintain rate
-        let dl_limit = net_config.download_limit_bytes_per_sec();
-        if dl_limit > 0 {
-            let elapsed = last_emit_time.elapsed().as_secs_f64().max(0.001);
-            let current_rate = (downloaded - last_emit_bytes) as f64 / elapsed;
-            if current_rate > dl_limit as f64 {
-                let sleep_ms = ((current_rate / dl_limit as f64 - 1.0) * elapsed * 1000.0) as u64;
-                if sleep_ms > 0 && sleep_ms < 5000 {
-                    tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
+            // Bandwidth throttle: if download limit is set, sleep to maintain rate
+            let dl_limit = net_config.download_limit_bytes_per_sec();
+            if dl_limit > 0 {
+                let elapsed = last_emit_time.elapsed().as_secs_f64().max(0.001);
+                let current_rate = (downloaded - last_emit_bytes) as f64 / elapsed;
+                if current_rate > dl_limit as f64 {
+                    let sleep_ms = ((current_rate / dl_limit as f64 - 1.0) * elapsed * 1000.0) as u64;
+                    if sleep_ms > 0 && sleep_ms < 5000 {
+                        tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
+                    }
                 }
             }
         }
-        }
 
-        // Per-part integrity check: a short part would silently corrupt the merged file
         if let Some(expected) = part_expected {
-            if *expected > 0 && part_downloaded != *expected {
+            if *expected > 0 && downloaded != *expected {
                 drop(file);
                 cleanup_partial_file(&actual_save_path);
                 bw_state.release_down(total_size);
                 return Err(format!(
-                    "Incomplete download of part {}/{}: expected {} bytes, received {} bytes",
-                    part_idx + 1, parts.len(), expected, part_downloaded
+                    "Incomplete download before saving: expected {} bytes, received {} bytes",
+                    expected, downloaded
                 ));
             }
         }
-    }
 
-    // Explicitly flush, sync, and close the file before JNI/MediaStore copies it.
-    if let Err(e) = tokio::io::AsyncWriteExt::flush(&mut file).await {
+        // Explicitly flush, sync, and close the file before JNI/MediaStore copies it.
+        if let Err(e) = tokio::io::AsyncWriteExt::flush(&mut file).await {
+            drop(file);
+            cleanup_partial_file(&actual_save_path);
+            bw_state.release_down(total_size);
+            return Err(format!("Failed to flush downloaded file: {}", e));
+        }
+        if let Err(e) = file.sync_all().await {
+            drop(file);
+            cleanup_partial_file(&actual_save_path);
+            bw_state.release_down(total_size);
+            return Err(format!("Failed to sync downloaded file: {}", e));
+        }
         drop(file);
-        cleanup_partial_file(&actual_save_path);
-        bw_state.release_down(total_size);
-        return Err(format!("Failed to flush downloaded file: {}", e));
-    }
-    if let Err(e) = file.sync_all().await {
-        drop(file);
-        cleanup_partial_file(&actual_save_path);
-        bw_state.release_down(total_size);
-        return Err(format!("Failed to sync downloaded file: {}", e));
-    }
-    drop(file);
+        downloaded
+    };
 
     let actual_written = tokio::fs::metadata(&actual_save_path)
         .await
