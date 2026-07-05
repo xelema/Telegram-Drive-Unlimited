@@ -122,6 +122,9 @@ pub async fn ensure_client_initialized(
     }
 
     let mut connection_params = grammers_mtsender::ConnectionParams::default();
+    // Telegram caps per-connection throughput; spread file transfers over
+    // several connections per datacenter like Telegram Desktop (up to 8)
+    connection_params.connections_per_dc = 8;
     if let Some(proxy_url) = net_config.effective_proxy_url() {
         log::info!("Using proxy: {}", proxy_url);
         connection_params.proxy_url = Some(proxy_url);
