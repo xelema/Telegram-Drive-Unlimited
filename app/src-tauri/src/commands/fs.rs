@@ -680,9 +680,10 @@ pub fn split_part_size() -> u64 {
     std::env::var("TGD_PART_SIZE").ok().and_then(|v| v.parse().ok()).unwrap_or(SPLIT_PART_SIZE)
 }
 
-// How many parts of one file transfer concurrently. Deliberately modest:
-// it multiplies with the upload/download queue concurrency.
-const PARALLEL_PARTS: usize = 3;
+// How many parts of one file transfer concurrently. 1 (sequential): free
+// Telegram accounts get FLOOD_PREMIUM_WAIT errors when pushing uploads
+// harder; raise via TGD_PARALLEL_PARTS to experiment (e.g. premium accounts).
+const PARALLEL_PARTS: usize = 1;
 
 fn parallel_parts() -> usize {
     // TGD_PARALLEL_PARTS env override is for testing/tuning
