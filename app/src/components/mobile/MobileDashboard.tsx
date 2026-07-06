@@ -322,6 +322,10 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
   }, [handleDeleteOp]);
 
   const handlePreview = useCallback((file: TelegramFile) => {
+    if (file.is_split) {
+      toast.info('This file is stored in multiple parts. Download it to open it.');
+      return;
+    }
     if (isMediaFile(file.name)) {
       setPlayingFile(file);
     } else if (isPdfFile(file.name)) {
@@ -347,9 +351,9 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
 
   // Bulk share: generate links for all selected non-folder files
   const handleBulkShare = useCallback(async () => {
-    const shareFiles = allFiles.filter(f => selectedIds.includes(f.id) && f.type !== 'folder');
+    const shareFiles = allFiles.filter(f => selectedIds.includes(f.id) && f.type !== 'folder' && !f.is_split);
     if (shareFiles.length === 0) {
-      toast.info('No shareable files selected (folders cannot be shared)');
+      toast.info('No shareable files selected (folders and split files cannot be shared)');
       return;
     }
     // Open modal immediately with spinner
@@ -485,7 +489,13 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
               onDelete={handleDeleteFile}
               onPreview={handlePreview}
               onRename={handleRenameFile}
-              onShare={setShareFile}
+              onShare={(f) => {
+                if (f.is_split) {
+                  toast.info('Split files cannot be shared. Download to get the full file.');
+                  return;
+                }
+                setShareFile(f);
+              }}
               onCopyTelegramLink={handleCopyTelegramLink}
               onBulkShare={handleBulkShare}
               selectedIds={selectedIds}
