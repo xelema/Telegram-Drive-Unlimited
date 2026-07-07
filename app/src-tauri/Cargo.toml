@@ -62,7 +62,7 @@ walkdir = "2"
 sqlite = { version = "0.37.0", features = ["bundled"] }
 mp4parse = "0.17"
 urlencoding = "2"
-reqwest = { version = "0.12", features = ["stream", "rustls-tls", "socks"] }
+reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls", "socks", "http2", "charset"] }
 sysinfo = "0.30"
 tokio-rustls = "0.26"
 rustls = "0.23"
