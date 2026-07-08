@@ -172,10 +172,15 @@ pub fn copy_to_android_cache(raw_path: &str) -> Result<String, String> {
         log::info!("JNI: Pre-cache and getLocalFileFromUri both failed or returned empty. Falling through to raw InputStream copy.");
     }
 
-    // 3. Parse URI (fallback for non-content:// paths or pre-cache misses)
+    // 3. Parse URI (fallback for non-content:// paths or pre-cache misses).
+    // content:// URIs must be parsed from the RAW (still percent-encoded) string
+    // so the parsed Uri matches the one the system granted read access to.
+    // clean_android_path URL-decodes (e.g. "video%3A24521" -> "video:24521"),
+    // producing a different Uri whose grant lookup fails with SecurityException.
     let uri_class = env.find_class("android/net/Uri")
         .map_err(|e| format!("Failed to find android/net/Uri: {}", e))?;
-    let j_cleaned = env.new_string(&cleaned)
+    let parse_target = if raw_path.contains("content://") { raw_path } else { cleaned.as_str() };
+    let j_cleaned = env.new_string(parse_target)
         .map_err(|e| format!("Failed to create Java string: {}", e))?;
     let uri_val = env.call_static_method(
         &uri_class,
@@ -225,15 +230,21 @@ pub fn copy_to_android_cache(raw_path: &str) -> Result<String, String> {
         }
     }
 
-    // 6. Open Input Stream
-    let input_stream = env.call_method(
+    // 6. Open Input Stream. On failure, clear the pending Java exception before
+    // returning: otherwise the thread detaches with an exception still set,
+    // which Android turns into a fatal crash instead of a recoverable error.
+    let input_stream = match env.call_method(
         &content_resolver,
         "openInputStream",
         "(Landroid/net/Uri;)Ljava/io/InputStream;",
         &[jni::objects::JValue::from(&uri)],
-    ).map_err(|e| format!("Failed to openInputStream: {}", e))?
-    .l()
-    .map_err(|e| format!("InputStream is not an object: {}", e))?;
+    ) {
+        Ok(v) => v.l().map_err(|e| format!("InputStream is not an object: {}", e))?,
+        Err(e) => {
+            let _ = env.exception_clear();
+            return Err(format!("Failed to openInputStream: {}", e));
+        }
+    };
 
     if input_stream.is_null() {
         return Err("InputStream is null".to_string());
