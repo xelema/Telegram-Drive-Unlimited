@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
 import { listen } from '@tauri-apps/api/event';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { BottomNavBar } from './BottomNavBar';
 import { TouchFileList } from './TouchFileList';
@@ -31,6 +31,7 @@ import { useTranslation } from 'react-i18next';
 
 export default function MobileDashboard({ onLogout }: { onLogout?: () => void }) {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<'files' | 'downloads' | 'settings'>('files');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const { isAndroid } = usePlatform();
@@ -222,11 +223,30 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
   // Real files loader
   const { data: allFiles = [], isLoading } = useQuery({
     queryKey: ['files', activeFolderId],
-    queryFn: () => invoke<any[]>('cmd_get_files', { folderId: activeFolderId }).then(res => res.map(f => ({
-      ...f,
-      sizeStr: formatBytes(f.size),
-      type: f.icon_type || (f.name.endsWith('/') ? 'folder' : 'file')
-    }))),
+    queryFn: async () => {
+      let accumulatedFiles: any[] = [];
+      queryClient.setQueryData(['files', activeFolderId], []);
+
+      const unlisten = await listen<any>('folder-load-chunk', (event) => {
+        const payload = event.payload;
+        if (payload.folderId === activeFolderId) {
+          const newChunk = payload.files.map((f: any) => ({
+            ...f,
+            sizeStr: formatBytes(f.size),
+            type: f.icon_type || (f.name.endsWith('/') ? 'folder' : 'file')
+          }));
+          accumulatedFiles = [...accumulatedFiles, ...newChunk];
+          queryClient.setQueryData(['files', activeFolderId], accumulatedFiles);
+        }
+      });
+
+      try {
+        await invoke('cmd_get_files', { folderId: activeFolderId });
+        return accumulatedFiles;
+      } finally {
+        unlisten();
+      }
+    },
     enabled: !!store,
   });
 
@@ -483,7 +503,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
             {/* Dynamic Real File List */}
             <TouchFileList
               files={displayFiles}
-              isLoading={isLoading}
+              isLoading={isLoading && allFiles.length === 0}
               onDownload={handleDownload}
               onDelete={handleDeleteFile}
               onPreview={handlePreview}

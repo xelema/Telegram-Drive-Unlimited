@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { AnimatePresence } from 'framer-motion';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
 
 import { TelegramFile, BandwidthStats, ShareInfo } from '../../types';
@@ -83,11 +84,30 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
 
     const { data: allFiles = [], isLoading, error } = useQuery({
         queryKey: ['files', activeFolderId],
-        queryFn: () => invoke<Array<{ id: number; name: string; size: number; icon_type: string; folder_id: number | null; created_at: string; mime_type?: string; file_ext?: string }>>('cmd_get_files', { folderId: activeFolderId }).then(res => res.map(f => ({
-            ...f,
-            sizeStr: formatBytes(f.size),
-            type: (f.icon_type as TelegramFile['type']) || 'file'
-        }))),
+        queryFn: async () => {
+            let accumulatedFiles: any[] = [];
+            queryClient.setQueryData(['files', activeFolderId], []);
+
+            const unlisten = await listen<any>('folder-load-chunk', (event) => {
+                const payload = event.payload;
+                if (payload.folderId === activeFolderId) {
+                    const newChunk = payload.files.map((f: any) => ({
+                        ...f,
+                        sizeStr: formatBytes(f.size),
+                        type: (f.icon_type as TelegramFile['type']) || 'file'
+                    }));
+                    accumulatedFiles = [...accumulatedFiles, ...newChunk];
+                    queryClient.setQueryData(['files', activeFolderId], accumulatedFiles);
+                }
+            });
+
+            try {
+                await invoke('cmd_get_files', { folderId: activeFolderId });
+                return accumulatedFiles;
+            } finally {
+                unlisten();
+            }
+        },
         enabled: !!store,
     });
 
@@ -668,7 +688,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                 <FileExplorer
                     folders={folders}
                     files={displayedFiles}
-                    loading={isLoading || isSearching}
+                    loading={(isLoading && allFiles.length === 0) || isSearching}
                     error={error}
                     viewMode={viewMode}
                     selectedIds={selectedIds}

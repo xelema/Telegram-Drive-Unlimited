@@ -1419,6 +1419,7 @@ pub async fn cmd_move_files(
 #[tauri::command]
 pub async fn cmd_get_files(
     folder_id: Option<i64>,
+    app_handle: tauri::AppHandle,
     state: State<'_, TelegramState>,
 ) -> Result<Vec<FileMetadata>, String> {
     let client_opt = { state.client.lock().await.clone() };
@@ -1428,12 +1429,26 @@ pub async fn cmd_get_files(
         return Ok(Vec::new()); // No mock files for now
     }
     let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
-    let mut files = Vec::new();
     
     let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
 
     let mut msgs = client.iter_messages(&peer);
+    let mut last_msg_id: Option<i32> = None;
+    let mut safety_counter = 0;
+    const MAX_FILES_LIMIT: usize = 50000; // Hard safety cap to prevent infinite loops (50,000 files)
+    
+    let mut chunk = Vec::new();
+
     while let Some(msg) = msgs.next().await.map_err(|e| e.to_string())? {
+        // Prevent infinite loop if API returns same message ID
+        let current_msg_id = msg.id();
+        if let Some(last_id) = last_msg_id {
+            if current_msg_id == last_id {
+                break;
+            }
+        }
+        last_msg_id = Some(current_msg_id);
+
         if let Some(doc) = msg.media() {
             let (name, size, mime, ext) = match doc {
                 Media::Document(d) => {
@@ -1451,13 +1466,46 @@ pub async fn cmd_get_files(
                 Media::Photo(_) => ("Photo.jpg".to_string(), 0, Some("image/jpeg".into()), Some("jpg".into())),
                 _ => ("Unknown".to_string(), 0, None, None),
             };
-            files.push(FileMetadata {
+            chunk.push(FileMetadata {
                 id: msg.id() as i64, folder_id, name, size: size as u64, mime_type: mime, file_ext: ext, created_at: msg.date().to_string(), icon_type: "file".into()
             });
+
+            if chunk.len() >= 500 {
+                #[derive(Clone, serde::Serialize)]
+                struct FolderLoadPayload {
+                    #[serde(rename = "folderId")]
+                    folder_id: Option<i64>,
+                    files: Vec<FileMetadata>,
+                }
+                let _ = app_handle.emit("folder-load-chunk", FolderLoadPayload {
+                    folder_id,
+                    files: chunk.clone(),
+                });
+                
+                safety_counter += chunk.len();
+                chunk.clear();
+
+                if safety_counter >= MAX_FILES_LIMIT {
+                    break;
+                }
+            }
         }
     }
 
-    Ok(files)
+    if !chunk.is_empty() {
+        #[derive(Clone, serde::Serialize)]
+        struct FolderLoadPayload {
+            #[serde(rename = "folderId")]
+            folder_id: Option<i64>,
+            files: Vec<FileMetadata>,
+        }
+        let _ = app_handle.emit("folder-load-chunk", FolderLoadPayload {
+            folder_id,
+            files: chunk,
+        });
+    }
+
+    Ok(Vec::new())
 }
 
 /// Extract FileMetadata entries from a list of Telegram messages returned by SearchGlobal.

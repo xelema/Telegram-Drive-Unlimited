@@ -292,28 +292,28 @@ async fn list_rar_contents(
     let (archive_path, extract_dir) =
         download_to_temp_file(client, media, max_bytes, "RAR", "rar").await?;
     let rar_path = archive_path.clone();
-    let dir = extract_dir.clone();
 
+    // List-only mode: reads headers WITHOUT extracting (zero disk writes)
     let entries_result: Result<Vec<ArchiveEntry>, String> = tokio::task::spawn_blocking(move || {
-        let archive = rar::Archive::extract_all(
-            rar_path.to_str().unwrap_or(""),
-            dir.to_str().unwrap_or(""),
-            "",
-        )
-        .map_err(|e| format!("Failed to open RAR file: {}", e))?;
-        Ok(archive
-            .files
-            .iter()
-            .map(|fb| ArchiveEntry {
-                filename: fb.name.clone(),
-                size: fb.head.size,
-                compressed_size: fb.head.data_area_size,
-                is_dir: fb.name.ends_with('/') || fb.name.ends_with('\\'),
-            })
-            .collect::<Vec<_>>())
+        let archive = unrar::Archive::new(rar_path.to_str().unwrap_or(""))
+            .open_for_listing()
+            .map_err(|e| format!("Failed to open RAR file for listing: {}", e))?;
+
+        let mut entries = Vec::new();
+        for result in archive {
+            let header: unrar::FileHeader = result.map_err(|e| format!("Failed to read RAR header: {}", e))?;
+            let name = header.filename.to_string_lossy().to_string();
+            entries.push(ArchiveEntry {
+                filename: name,
+                size: header.unpacked_size,
+                compressed_size: header.unpacked_size,
+                is_dir: header.is_directory(),
+            });
+        }
+        Ok(entries)
     })
     .await
-    .map_err(|e| format!("RAR parsing task panicked: {:?}", e))?;
+    .map_err(|e| format!("RAR listing task panicked: {:?}", e))?;
 
     let _ = tokio::fs::remove_file(&archive_path).await;
     let _ = tokio::fs::remove_dir_all(&extract_dir).await;
@@ -332,50 +332,77 @@ async fn extract_rar_entry(
     let (archive_path, extract_dir) =
         download_to_temp_file(client, media, max_bytes, "RAR", "rar").await?;
     let rar_path = archive_path.clone();
-    let dir = extract_dir.clone();
-
+    let extract_dir_cleanup = extract_dir.clone();
     let extraction_result: Result<ExtractedFile, String> = tokio::task::spawn_blocking(move || {
-        let archive = rar::Archive::extract_all(
-            rar_path.to_str().unwrap_or(""),
-            dir.to_str().unwrap_or(""),
-            "",
-        )
-        .map_err(|e| format!("Failed to open RAR file: {}", e))?;
+        use path_clean::PathClean;
 
-        if entry_index >= archive.files.len() {
-            return Err(format!(
-                "Entry index {} out of range ({} entries)",
-                entry_index,
-                archive.files.len()
-            ));
+        let rar_str = rar_path.to_str().unwrap_or("").to_string();
+        let mut archive = unrar::Archive::new(&rar_str)
+            .open_for_processing()
+            .map_err(|e| format!("Failed to open RAR file for processing: {}", e))?;
+
+        let mut current_index: usize = 0;
+        while let Some(header) = archive.read_header()
+            .map_err(|e| format!("Failed to read RAR header: {}", e))?
+        {
+            let is_target = current_index == entry_index;
+            current_index += 1;
+
+            if !is_target {
+                archive = header.skip()
+                    .map_err(|e| format!("Failed to skip RAR entry: {}", e))?;
+                continue;
+            }
+
+            if header.entry().is_directory() {
+                return Err("Cannot extract a directory entry".to_string());
+            }
+
+            let entry_name = header.entry().filename.to_string_lossy().to_string();
+
+            // Path traversal check: validate the entry name would stay within extract_dir
+            let raw_dest = extract_dir.join(&entry_name);
+            let clean_dest = raw_dest.clean();
+            let clean_base = extract_dir.clean();
+            if !clean_dest.starts_with(&clean_base) {
+                log::error!(
+                    "Path traversal attempt blocked in RAR: {}",
+                    entry_name
+                );
+                return Err(format!(
+                    "Blocked path traversal in RAR entry: {}",
+                    entry_name
+                ));
+            }
+
+            // Read decompressed bytes into memory (no disk write in uncontrolled location)
+            let (data, _next_archive) = header.read()
+                .map_err(|e| format!("Failed to read RAR entry bytes: {}", e))?;
+
+            let safe_name = sanitise_entry_name(&entry_name, entry_index);
+            let temp_path = std::env::temp_dir()
+                .join(format!("{}_{}", generate_unique_temp_prefix("extract"), safe_name));
+            let data_len = data.len() as u64;
+            std::fs::write(&temp_path, data)
+                .map_err(|e| format!("Failed to write extracted RAR entry: {}", e))?;
+
+            return Ok(ExtractedFile {
+                temp_path: temp_path.to_string_lossy().to_string(),
+                filename: safe_name,
+                size: data_len,
+            });
         }
-        let fb = &archive.files[entry_index];
-        if fb.name.ends_with('/') || fb.name.ends_with('\\') {
-            return Err("Cannot extract a directory entry".to_string());
-        }
-        let source_path = dir.join(&fb.name);
-        if !source_path.exists() {
-            return Err(format!(
-                "Extracted file not found at: {}",
-                source_path.display()
-            ));
-        }
-        let safe_name = sanitise_entry_name(&fb.name, entry_index);
-        let temp_path = std::env::temp_dir()
-            .join(format!("{}_{}", generate_unique_temp_prefix("extract"), safe_name));
-        std::fs::copy(&source_path, &temp_path)
-            .map_err(|e| format!("Failed to copy RAR entry: {}", e))?;
-        Ok(ExtractedFile {
-            temp_path: temp_path.to_string_lossy().to_string(),
-            filename: safe_name,
-            size: fb.head.size,
-        })
+
+        Err(format!(
+            "Entry index {} not found in RAR archive ({} entries scanned)",
+            entry_index, current_index
+        ))
     })
     .await
     .map_err(|e| format!("RAR extraction task panicked: {:?}", e))?;
 
     let _ = tokio::fs::remove_file(&archive_path).await;
-    let _ = tokio::fs::remove_dir_all(&extract_dir).await;
+    let _ = tokio::fs::remove_dir_all(&extract_dir_cleanup).await;
 
     extraction_result
 }
