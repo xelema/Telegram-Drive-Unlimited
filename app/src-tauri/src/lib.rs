@@ -60,6 +60,8 @@ pub mod db;
 pub mod share_routes;
 pub mod upload_service;
 pub mod jni_cache;
+#[cfg(target_os = "android")]
+pub mod android_uri;
 pub mod transcode;
 pub mod fmp4_remux;
 pub mod mp4_utils;

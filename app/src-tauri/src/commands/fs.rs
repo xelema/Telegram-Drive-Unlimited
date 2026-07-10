@@ -796,6 +796,26 @@ impl ProgressReader {
     }
 }
 
+/// An upload source for one split part: an async reader that can also hand back
+/// the SHA-256 of the bytes it produced. Lets upload_one_part work with both the
+/// file-backed ProgressReader (desktop) and the streaming AndroidUriStream.
+trait PartReader: tokio::io::AsyncRead + Unpin + Send {
+    fn take_hash(&mut self) -> Option<String>;
+}
+
+impl PartReader for ProgressReader {
+    fn take_hash(&mut self) -> Option<String> {
+        self.finalize_hash()
+    }
+}
+
+#[cfg(target_os = "android")]
+impl PartReader for crate::android_uri::AndroidUriStream {
+    fn take_hash(&mut self) -> Option<String> {
+        self.finalize_hash()
+    }
+}
+
 impl tokio::io::AsyncRead for ProgressReader {
     fn poll_read(
         mut self: std::pin::Pin<&mut Self>,
@@ -863,22 +883,17 @@ pub async fn cmd_upload_file(
     bw_state: State<'_, Arc<BandwidthManager>>,
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
 ) -> Result<String, String> {
-    let mut temp_cache_path: Option<String> = None;
+    let temp_cache_path: Option<String> = None;
 
-    // Strict JNI Interception Guard for Android URI Schemes
+    // Android content:// URIs are streamed straight from the ContentResolver
+    // instead of copied whole into the cache first, so uploads work regardless
+    // of free space and for any file size. This does the full upload itself.
     #[cfg(target_os = "android")]
     {
         if path.contains("content://") || path.contains("msf:") || path.contains("msf%") {
-            match copy_to_android_cache(&path) {
-                Ok(cached_path) => {
-                    log::info!("JNI STRICT GUARD: Intercepted raw URI. Overwriting path: {} -> {}", path, cached_path);
-                    temp_cache_path = Some(cached_path.clone());
-                    path = cached_path;
-                }
-                Err(err) => {
-                    return Err(format!("JNI STRICT GUARD FAILURE: Failed to copy raw URI {} to android cache: {}", path, err));
-                }
-            }
+            return upload_android_stream_inner(
+                path, folder_id, transfer_id, app_handle, state, bw_state, net_config,
+            ).await;
         }
     }
 
@@ -898,6 +913,142 @@ pub async fn cmd_upload_file(
     }
 
     result
+}
+
+/// Android upload straight from a content:// URI, no whole-file cache copy.
+/// Streams the file, splitting into 2GB parts sequentially (a stream can't
+/// seek, so no parallel parts and no resume). Progress drives both the in-app
+/// bar and the foreground-service notification.
+#[cfg(target_os = "android")]
+async fn upload_android_stream_inner(
+    raw_uri: String,
+    folder_id: Option<i64>,
+    transfer_id: Option<String>,
+    app_handle: tauri::AppHandle,
+    state: State<'_, TelegramState>,
+    bw_state: State<'_, Arc<BandwidthManager>>,
+    net_config: State<'_, std::sync::Arc<NetworkConfig>>,
+) -> Result<String, String> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    let tid = transfer_id.unwrap_or_default();
+    let counter = std::sync::Arc::new(AtomicU64::new(0));
+    let (mut stream, size, file_name) =
+        crate::android_uri::open_android_uri_stream(&raw_uri, counter.clone())?;
+    if size == 0 {
+        return Err("Could not determine file size for the selected item".to_string());
+    }
+
+    bw_state.try_reserve_up(size)?;
+
+    let client = match { state.client.lock().await.clone() } {
+        Some(c) => c,
+        None => {
+            bw_state.release_up(size);
+            return Err("Client not connected".to_string());
+        }
+    };
+
+    let peer = match resolve_peer(&client, folder_id, &state.peer_cache).await {
+        Ok(p) => p,
+        Err(e) => {
+            bw_state.release_up(size);
+            return Err(e);
+        }
+    };
+
+    let part_size = split_part_size().max(1);
+    let total_parts = size.div_ceil(part_size).max(1);
+    if total_parts > 999 {
+        bw_state.release_up(size);
+        return Err(format!("File too large: would need {} parts (max 999)", total_parts));
+    }
+
+    // Progress reporter: single 250ms task over the shared counter, feeding both
+    // the frontend event and the notification.
+    let progress_task = if !tid.is_empty() {
+        let cancelled = state.cancelled_transfers.clone();
+        let progress_tid = tid.clone();
+        let progress_handle = app_handle.clone();
+        let progress_counter = counter.clone();
+        Some(tokio::spawn(async move {
+            let mut last_bytes = 0u64;
+            let mut last_time = std::time::Instant::now();
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                let current = progress_counter.load(Ordering::Relaxed);
+                let now = std::time::Instant::now();
+                let dt = now.duration_since(last_time).as_secs_f64();
+                let speed = if dt > 0.0 { ((current - last_bytes) as f64 / dt) as u64 } else { 0 };
+                let percent = if size > 0 { ((current as f64 / size as f64) * 100.0).min(99.0) as u8 } else { 0 };
+                let _ = progress_handle.emit("upload-progress", ProgressPayload {
+                    id: progress_tid.clone(), percent, uploaded_bytes: current, total_bytes: size, speed_bytes_per_sec: speed,
+                });
+                crate::upload_service::update_notification_progress(percent, &format!("Uploading {}%", percent));
+                last_bytes = current;
+                last_time = now;
+                if current >= size { break; }
+                if cancelled.read().await.contains(&progress_tid) { break; }
+            }
+        }))
+    } else {
+        None
+    };
+
+    // Single cancellation channel shared by the sequential parts.
+    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let mut _local_cancel_tx = None;
+    if !tid.is_empty() {
+        get_upload_cancellations().lock().unwrap().insert(tid.clone(), cancel_tx);
+    } else {
+        _local_cancel_tx = Some(cancel_tx);
+    }
+
+    let mut upload_err: Option<String> = None;
+    for idx in 1..=total_parts {
+        if state.cancelled_transfers.read().await.contains(&tid) {
+            state.cancelled_transfers.write().await.remove(&tid);
+            upload_err = Some("Transfer cancelled".to_string());
+            break;
+        }
+        let offset = (idx - 1) * part_size;
+        let len = part_size.min(size - offset);
+        let (doc_name, caption) = if total_parts == 1 {
+            (file_name.clone(), String::new())
+        } else {
+            let part_name = split_part_name(&file_name, idx as u32, total_parts as u32);
+            (part_name.clone(), part_name)
+        };
+        stream.begin_part(len, total_parts > 1);
+        if let Err(e) = upload_one_part(
+            &client, &net_config, cancel_rx.clone(), &mut stream, len, doc_name, caption, &peer,
+        ).await {
+            upload_err = Some(e);
+            break;
+        }
+    }
+
+    if let Some(t) = progress_task { t.abort(); }
+    if !tid.is_empty() {
+        get_upload_cancellations().lock().unwrap().remove(&tid);
+    }
+    crate::upload_service::update_notification_progress(100, "Finishing");
+
+    if let Some(err) = upload_err {
+        if err == "Transfer cancelled" {
+            state.cancelled_transfers.write().await.remove(&tid);
+        }
+        // Uploaded parts are kept so a retry resumes from Telegram's copy.
+        bw_state.release_up(size);
+        return Err(err);
+    }
+
+    if !tid.is_empty() {
+        let _ = app_handle.emit("upload-progress", ProgressPayload {
+            id: tid, percent: 100, uploaded_bytes: size, total_bytes: size, speed_bytes_per_sec: 0,
+        });
+    }
+    Ok("File uploaded successfully".to_string())
 }
 
 async fn cmd_upload_file_inner(
@@ -1017,6 +1168,10 @@ async fn cmd_upload_file_inner(
                 let _ = progress_handle.emit("upload-progress", ProgressPayload {
                     id: progress_tid.clone(), percent, uploaded_bytes: current, total_bytes: file_size, speed_bytes_per_sec: speed,
                 });
+                crate::upload_service::update_notification_progress(
+                    percent,
+                    &format!("Uploading {}%", percent),
+                );
 
                 last_bytes = current;
                 last_time = now;
@@ -1079,8 +1234,8 @@ async fn cmd_upload_file_inner(
                 };
                 // Hash multi-part uploads only: a single part has an empty
                 // caption, and a hash there would become its display name
-                let reader = ProgressReader::new_range(path, offset, len, bytes_counter, total_parts > 1).await?;
-                upload_one_part(client, net_config, cancel_rx, reader, len, doc_name, caption, peer)
+                let mut reader = ProgressReader::new_range(path, offset, len, bytes_counter, total_parts > 1).await?;
+                upload_one_part(client, net_config, cancel_rx, &mut reader, len, doc_name, caption, peer)
                     .await
                     .map(|_| ())
             }
@@ -1115,11 +1270,11 @@ async fn cmd_upload_file_inner(
 /// Uploads one byte range as a Telegram document and sends it as a message.
 /// Returns the sent message id. Cancellation comes from the transfer-wide
 /// watch channel shared by all concurrently uploading parts.
-async fn upload_one_part(
+async fn upload_one_part<R: PartReader>(
     client: &grammers_client::Client,
     net_config: &NetworkConfig,
     mut cancel_rx: watch::Receiver<bool>,
-    mut reader: ProgressReader,
+    reader: &mut R,
     part_len: u64,
     doc_name: String,
     caption: String,
@@ -1130,7 +1285,7 @@ async fn upload_one_part(
     }
 
     let upload_result = tokio::select! {
-        res = client.upload_stream(&mut reader, part_len as usize, doc_name) => res,
+        res = client.upload_stream(&mut *reader, part_len as usize, doc_name) => res,
         _ = cancel_rx.changed() => {
             return Err("Transfer cancelled".to_string());
         }
@@ -1139,7 +1294,7 @@ async fn upload_one_part(
     let uploaded_file = upload_result.map_err(map_error)?;
 
     // Append the part's checksum so downloads can verify integrity
-    let caption = match reader.finalize_hash() {
+    let caption = match reader.take_hash() {
         Some(h) => format!("{}#{}", caption, h),
         None => caption,
     };
