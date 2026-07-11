@@ -216,13 +216,15 @@ fn query_size_and_name(
             }
         }
         if let Some(v) = column_index(env, &cursor, "_display_name") {
-            if let Ok(s) = env.call_method(&cursor, "getString", "(I)Ljava/lang/String;", &[jni::objects::JValue::from(v)]) {
-                if let Ok(obj) = s.l() {
-                    if !obj.is_null() {
-                        let js: jni::objects::JString = obj.into();
-                        if let Ok(rust) = env.get_string(&js) {
-                            name = rust.into();
-                        }
+            if let Ok(Ok(obj)) = env
+                .call_method(&cursor, "getString", "(I)Ljava/lang/String;", &[jni::objects::JValue::from(v)])
+                .map(|s| s.l())
+            {
+                if !obj.is_null() {
+                    let js: jni::objects::JString = obj.into();
+                    let got = env.get_string(&js);
+                    if let Ok(rust) = got {
+                        name = String::from(rust);
                     }
                 }
             }
