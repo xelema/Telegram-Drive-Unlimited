@@ -17,4 +17,16 @@ fi
 mkdir -p "$PKG"
 cp "$SRC/UploadForegroundService.kt" "$PKG/UploadForegroundService.kt"
 python3 "$SRC/patch_manifest.py" "$MANIFEST"
+
+# The service's static methods are only ever called from Rust via JNI, so R8
+# (release minification) would strip them, breaking start/stop/updateProgress
+# with NoSuchMethodError. Keep the class and its members.
+PROGUARD="$GEN/app/proguard-rules.pro"
+if ! grep -q "UploadForegroundService" "$PROGUARD" 2>/dev/null; then
+  cat >> "$PROGUARD" <<'EOF'
+
+-keep class com.cameronamer.telegramdrive.UploadForegroundService { *; }
+-keep class com.cameronamer.telegramdrive.UploadForegroundService$* { *; }
+EOF
+fi
 echo "android injection done"

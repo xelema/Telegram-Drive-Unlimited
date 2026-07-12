@@ -963,6 +963,7 @@ async fn upload_android_stream_inner(
         bw_state.release_up(size);
         return Err(format!("File too large: would need {} parts (max 999)", total_parts));
     }
+    log::info!("android stream upload: size={} parts={} to folder {:?}", size, total_parts, folder_id);
 
     // Progress reporter: single 250ms task over the shared counter, feeding both
     // the frontend event and the notification.
@@ -1019,13 +1020,16 @@ async fn upload_android_stream_inner(
             let part_name = split_part_name(&file_name, idx as u32, total_parts as u32);
             (part_name.clone(), part_name)
         };
+        log::info!("android stream upload: part {}/{} len={}", idx, total_parts, len);
         stream.begin_part(len, total_parts > 1);
         if let Err(e) = upload_one_part(
             &client, &net_config, cancel_rx.clone(), &mut stream, len, doc_name, caption, &peer,
         ).await {
+            log::error!("android stream upload: part {} failed: {}", idx, e);
             upload_err = Some(e);
             break;
         }
+        log::info!("android stream upload: part {} done", idx);
     }
 
     if let Some(t) = progress_task { t.abort(); }

@@ -153,6 +153,8 @@ pub fn open_android_uri_stream(
         .new_global_ref(&input_stream)
         .map_err(|e| format!("global ref: {}", e))?;
 
+    log::info!("android_uri: opened stream, size={} name={}", size, name);
+
     let (tx, rx) = mpsc::channel::<io::Result<Vec<u8>>>(CHANNEL_DEPTH);
     let thread = std::thread::spawn(move || {
         read_stream_thread(stream_global, tx);
@@ -280,6 +282,8 @@ fn read_stream_thread(stream_global: jni::objects::GlobalRef, tx: mpsc::Sender<i
         }
     };
     let stream = stream_global.as_obj();
+    log::info!("android_uri: reader thread started");
+    let mut total: u64 = 0;
 
     loop {
         let n = match env.call_method(
@@ -297,6 +301,7 @@ fn read_stream_thread(stream_global: jni::objects::GlobalRef, tx: mpsc::Sender<i
         };
         if n < 0 {
             let _ = tx.blocking_send(Ok(Vec::new())); // EOF
+            log::info!("android_uri: reader thread EOF after {} bytes", total);
             break;
         }
         if n == 0 {
@@ -308,7 +313,9 @@ fn read_stream_thread(stream_global: jni::objects::GlobalRef, tx: mpsc::Sender<i
             break;
         }
         let bytes: Vec<u8> = buf.into_iter().map(|b| b as u8).collect();
+        total += bytes.len() as u64;
         if tx.blocking_send(Ok(bytes)).is_err() {
+            log::info!("android_uri: reader thread stopped (receiver gone) after {} bytes", total);
             break; // receiver dropped (cancelled)
         }
     }
