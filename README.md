@@ -161,9 +161,6 @@ Licensed under the **MIT License**.
 ---
 *Disclaimer: This application is not affiliated with Telegram FZ-LLC. Use responsibly and in accordance with Telegram's Terms of Service.*
 
-If you're looking for a version of this app that's optimized for VPNs check out this repo:
-https://github.com/caamer20/Telegram-Drive-ForVPNs
-
 <div align="center">
   <!-- PayPal -->
   <div style="margin: 15px 0;">
