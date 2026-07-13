@@ -268,15 +268,16 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
         setSelectedIds([]);
     }, []);
 
-    const handleFileClick = (e: React.MouseEvent, id: number) => {
+    const handleFileClick = (e: React.MouseEvent, id: number, orderedFiles: TelegramFile[] = []) => {
         e.stopPropagation();
-        const currentIndex = displayedFiles.findIndex(f => f.id === id);
+        const filesSource = orderedFiles.length > 0 ? orderedFiles : displayedFiles;
+        const currentIndex = filesSource.findIndex(f => f.id === id);
 
         if (e.shiftKey && lastClickedIndexRef.current >= 0) {
             // Shift+Click: range select from last clicked to current
             const start = Math.min(lastClickedIndexRef.current, currentIndex);
             const end = Math.max(lastClickedIndexRef.current, currentIndex);
-            const rangeIds = displayedFiles.slice(start, end + 1).map(f => f.id);
+            const rangeIds = filesSource.slice(start, end + 1).map(f => f.id);
             setSelectedIds(rangeIds);
         } else if (e.metaKey || e.ctrlKey) {
             // Ctrl/Cmd+Click: toggle individual file

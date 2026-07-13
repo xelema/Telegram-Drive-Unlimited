@@ -12,6 +12,8 @@
   - Corrected overlap issues between file names, metadata badges, and file type icons.
   - Restricted the icon container boundaries to avoid collision with the bottom info overlay on smaller or resized cards.
   - Added flex wrap and shrink constraints to file card metadata rows to handle narrow viewport dimensions.
+- **Shift-Click Range Selection**
+  - Fixed range selection index calculations to align with the visually sorted file list instead of the raw backend array.
 
 ---
 
