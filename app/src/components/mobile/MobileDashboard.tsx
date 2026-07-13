@@ -999,6 +999,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
       {playingFile && (
         <div className="fixed inset-0 z-[100] bg-black/90">
           <MediaPlayer
+            key={playingFile.id}
             file={playingFile}
             onClose={() => setPlayingFile(null)}
             activeFolderId={activeFolderId}

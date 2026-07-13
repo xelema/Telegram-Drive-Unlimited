@@ -289,13 +289,13 @@ export function useAdaptiveStreaming(
                 if (sb) {
                     try {
                         appendQueuesRef.current[trackId] = [];
+                        try { sb.abort(); } catch { /* ignore */ }
                         if (sb.updating) {
                             sb.addEventListener('updateend', () => {
                                 try { ms.removeSourceBuffer(sb); } catch { /* ignore */ }
                             }, { once: true });
-                            sb.abort();
                         } else {
-                            ms.removeSourceBuffer(sb);
+                            try { ms.removeSourceBuffer(sb); } catch { /* ignore */ }
                         }
                     } catch { /* already removed */ }
                 }
@@ -1111,9 +1111,16 @@ export function useAdaptiveStreaming(
             try { mp4boxfile.flush(); } catch { /* ignore */ }
             const ms = mediaSourceRef.current;
             if (ms) {
+                if (ms.readyState === 'open') {
+                    try { ms.endOfStream(); } catch { /* ignore */ }
+                }
                 try { clearSourceBuffer(); } catch { /* ignore */ }
+            }
+            if (videoRef.current) {
                 try {
-                    const url = videoRef.current?.src;
+                    const url = videoRef.current.src;
+                    videoRef.current.src = "";
+                    videoRef.current.load();
                     if (url?.startsWith('blob:')) URL.revokeObjectURL(url);
                 } catch { /* ignore */ }
             }

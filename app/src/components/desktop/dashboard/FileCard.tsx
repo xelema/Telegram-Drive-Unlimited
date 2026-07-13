@@ -139,13 +139,13 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
                         <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent" />
                     </div>
                 ) : (
-                    <div className="absolute inset-0 flex items-center justify-center p-4">
+                    <div className="absolute inset-x-0 top-0 bottom-14 flex items-center justify-center p-4">
                         {isFolder ? (
-                            <Folder className="w-12 h-12 text-telegram-primary" />
+                            <Folder className="w-12 h-12 text-telegram-primary max-h-full max-w-full shrink-0" />
                         ) : thumbnailLoading && isImageFile(file.name) ? (
-                            <div className="w-8 h-8 border-2 border-telegram-primary/30 border-t-telegram-primary rounded-full animate-spin" />
+                            <div className="w-8 h-8 border-2 border-telegram-primary/30 border-t-telegram-primary rounded-full animate-spin shrink-0" />
                         ) : (
-                            <FileTypeIcon filename={file.name} size="lg" />
+                            <FileTypeIcon filename={file.name} size="lg" className="w-12 h-12 max-h-full max-w-full shrink-0" />
                         )}
                     </div>
                 )}
@@ -163,12 +163,12 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
 
                 {/* File info overlay at bottom */}
                 <div className={`absolute bottom-0 left-0 right-0 p-3 ${thumbnail ? 'text-white' : 'text-telegram-text'}`}>
-                    <h3 className="text-sm font-medium truncate w-full" title={file.name}>{file.name}</h3>
-                    <div className="flex items-center gap-2 mt-0.5">
-                        <p className={`text-xs ${thumbnail ? 'text-white/70' : 'text-telegram-subtext'}`}>{file.sizeStr}</p>
+                    <h3 className="text-sm font-medium truncate w-full min-w-0" title={file.name}>{file.name}</h3>
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5 w-full min-w-0 overflow-hidden">
+                        <p className={`text-xs shrink-0 ${thumbnail ? 'text-white/70' : 'text-telegram-subtext'}`}>{file.sizeStr}</p>
                         <VideoMetaBadge metadata={videoMeta} isLoading={videoMetaLoading} />
                         {cachedQualities.length > 0 && (
-                            <span className="inline-flex items-center gap-0.5">
+                            <span className="inline-flex items-center gap-0.5 shrink-0">
                                 {cachedQualities.map(q => (
                                     <span key={q} className="inline-flex items-center gap-0.5 text-[9px] font-medium text-emerald-400 bg-emerald-500/10 px-1 py-0.5 rounded">
                                         <Check className="w-2.5 h-2.5" />

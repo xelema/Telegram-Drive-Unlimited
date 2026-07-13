@@ -596,7 +596,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                         currentIndex={previewContextIndex}
                         totalItems={previewContextFiles.length}
                         activeFolderId={activeFolderId}
-                        key="media-player"
+                        key={playingFile.id}
                     />
                 )}
                 {pdfFile && (
