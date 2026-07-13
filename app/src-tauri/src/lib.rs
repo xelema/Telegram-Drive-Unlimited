@@ -426,7 +426,11 @@ fn cmd_get_system_diagnostics(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    env_logger::init();
+    // Default env_logger level is ERROR; raise to INFO so upload/streaming
+    // diagnostics are visible (especially on Android via logcat).
+    env_logger::Builder::from_default_env()
+        .filter_level(log::LevelFilter::Info)
+        .init();
 
     let stream_token = generate_stream_token();
 
