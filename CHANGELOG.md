@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.9.9] - 2026-07-13
+
+### Bug Fixes & UI Enhancements
+
+- **Video Playback Stability**
+  - Resolved MediaSource buffer corruption error ("Invalid data found while parsing box") triggered during directory sorting.
+  - Implemented state isolation using unique file IDs as React keys on the media player, preventing React from recycling HTMLMediaElement nodes and mixing video data streams.
+  - Added explicit MediaSource stream termination and video element source reset during player unmount.
+- **File Card UI Layout Fixes**
+  - Corrected overlap issues between file names, metadata badges, and file type icons.
+  - Restricted the icon container boundaries to avoid collision with the bottom info overlay on smaller or resized cards.
+  - Added flex wrap and shrink constraints to file card metadata rows to handle narrow viewport dimensions.
+
+---
+
+## [1.9.8] - 2026-07-10
+
+### Features, Security & Performance
+
+- **Optimized Large Folder Handling**
+  - Fixed application freezing and infinite loading loops when browsing folders with large datasets (8,000+ files).
+  - Replaced bulk JSON payloads with incremental, event-driven chunk streaming from the Tauri backend.
+  - Configured safe boundaries in directory reading commands to stop redundant API polling cycles.
+- **Secure RAR Archive Extraction**
+  - Replaced the deprecated `rar` dependency with the maintained `unrar` crate.
+  - Added path normalization checks via the `path-clean` library to prevent directory traversal and arbitrary file write vulnerabilities during extraction.
+  - Switched from disk-bound extraction to direct memory stream processing for listing contents safely.
+
+---
+
 ## [1.9.7] - 2026-07-01
 
 - Hotfixes
