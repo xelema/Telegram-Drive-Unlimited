@@ -16,6 +16,9 @@ fi
 
 mkdir -p "$PKG"
 cp "$SRC/UploadForegroundService.kt" "$PKG/UploadForegroundService.kt"
+# Overwrite the generated MainActivity with one that requests POST_NOTIFICATIONS
+# (needed on Android 13+ for the upload notification to show).
+cp "$SRC/MainActivity.kt" "$PKG/MainActivity.kt"
 python3 "$SRC/patch_manifest.py" "$MANIFEST"
 
 # The service's static methods are only ever called from Rust via JNI, so R8

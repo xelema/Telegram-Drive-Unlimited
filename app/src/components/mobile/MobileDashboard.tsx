@@ -122,7 +122,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
     handleFolderRename, handleFolderToggleVisibility, handleExportFolderInvite
   } = useTelegramConnection(logoutHandler);
 
-  const { handleManualUpload } = useFileUpload(activeFolderId, store);
+  const { handleManualUpload, uploadQueue, cancelItem } = useFileUpload(activeFolderId, store);
   const { queueDownload, queueBulkDownload } = useFileDownload(store);
 
   const [playingFile, setPlayingFile] = useState<TelegramFile | null>(null);
@@ -512,15 +512,55 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
         )}
 
         {activeTab === 'downloads' && (
-          <div className="flex flex-col items-center justify-center h-[60vh] space-y-3 text-center px-6">
-            <div className="p-4 rounded-full bg-telegram-primary/10 text-telegram-primary border border-telegram-primary/20">
-              <Download className="w-8 h-8 animate-bounce" />
+          uploadQueue.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-[60vh] space-y-3 text-center px-6">
+              <div className="p-4 rounded-full bg-telegram-primary/10 text-telegram-primary border border-telegram-primary/20">
+                <Download className="w-8 h-8" />
+              </div>
+              <h3 className="text-base font-bold">Transfers Queue</h3>
+              <p className="text-xs text-telegram-subtext max-w-xs leading-relaxed">
+                Downloads and uploads are safely queued and managed in the background.
+              </p>
             </div>
-            <h3 className="text-base font-bold">Transfers Queue</h3>
-            <p className="text-xs text-telegram-subtext max-w-xs leading-relaxed">
-              Downloads and uploads are safely queued and managed in the background.
-            </p>
-          </div>
+          ) : (
+            <div className="space-y-2 px-3 py-2">
+              {uploadQueue.map((item) => {
+                const name = (item.path || item.url || 'file').split(/[\\/]/).pop() || 'file';
+                const pct = item.progress ?? 0;
+                const done = item.status === 'success';
+                const failed = item.status === 'error' || item.status === 'cancelled';
+                return (
+                  <div key={item.id} className="p-3 rounded-xl bg-telegram-hover/20 border border-telegram-border/30">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-medium truncate">{decodeURIComponent(name)}</span>
+                      <span className="text-[11px] text-telegram-subtext flex-shrink-0">
+                        {done ? 'Done' : failed ? item.status : `${pct}%`}
+                      </span>
+                    </div>
+                    <div className="w-full h-1.5 bg-telegram-border rounded-full mt-2 overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all duration-300 ${failed ? 'bg-red-500' : 'bg-telegram-primary'}`}
+                        style={{ width: `${done ? 100 : pct}%` }}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between mt-1.5">
+                      <span className="text-[10px] text-telegram-subtext">
+                        {item.speedBytesPerSec ? `${formatBytes(item.speedBytesPerSec)}/s` : item.status}
+                      </span>
+                      {!done && !failed && (
+                        <button
+                          onClick={() => cancelItem(item.id)}
+                          className="text-[10px] text-red-400 font-medium px-2 py-0.5 rounded hover:bg-red-500/10"
+                        >
+                          Cancel
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )
         )}
 
         {activeTab === 'settings' && (
