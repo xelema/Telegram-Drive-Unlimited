@@ -2315,7 +2315,7 @@ dependencies = [
 [[package]]
 name = "grammers-client"
 version = "0.8.1"
-source = "git+https://github.com/Lonami/grammers?rev=d07f96f#d07f96f6bee22a3a850a1f3067834686a08b396c"
+source = "git+https://github.com/xelema/grammers?branch=multi-connection#0da6612ef6f00d33a48be9462b6c085fd7362429"
 dependencies = [
  "chrono",
  "futures-util",
@@ -2333,7 +2333,7 @@ dependencies = [
 [[package]]
 name = "grammers-crypto"
 version = "0.8.0"
-source = "git+https://github.com/Lonami/grammers?rev=d07f96f#d07f96f6bee22a3a850a1f3067834686a08b396c"
+source = "git+https://github.com/xelema/grammers?branch=multi-connection#0da6612ef6f00d33a48be9462b6c085fd7362429"
 dependencies = [
  "aes",
  "ctr",
@@ -2350,7 +2350,7 @@ dependencies = [
 [[package]]
 name = "grammers-mtproto"
 version = "0.8.0"
-source = "git+https://github.com/Lonami/grammers?rev=d07f96f#d07f96f6bee22a3a850a1f3067834686a08b396c"
+source = "git+https://github.com/xelema/grammers?branch=multi-connection#0da6612ef6f00d33a48be9462b6c085fd7362429"
 dependencies = [
  "bytes",
  "crc32fast",
@@ -2366,7 +2366,7 @@ dependencies = [
 [[package]]
 name = "grammers-mtsender"
 version = "0.8.1"
-source = "git+https://github.com/Lonami/grammers?rev=d07f96f#d07f96f6bee22a3a850a1f3067834686a08b396c"
+source = "git+https://github.com/xelema/grammers?branch=multi-connection#0da6612ef6f00d33a48be9462b6c085fd7362429"
 dependencies = [
  "bytes",
  "grammers-crypto",
@@ -2385,7 +2385,7 @@ dependencies = [
 [[package]]
 name = "grammers-session"
 version = "0.8.0"
-source = "git+https://github.com/Lonami/grammers?rev=d07f96f#d07f96f6bee22a3a850a1f3067834686a08b396c"
+source = "git+https://github.com/xelema/grammers?branch=multi-connection#0da6612ef6f00d33a48be9462b6c085fd7362429"
 dependencies = [
  "grammers-tl-types",
  "log",
@@ -2395,7 +2395,7 @@ dependencies = [
 [[package]]
 name = "grammers-tl-gen"
 version = "0.8.0"
-source = "git+https://github.com/Lonami/grammers?rev=d07f96f#d07f96f6bee22a3a850a1f3067834686a08b396c"
+source = "git+https://github.com/xelema/grammers?branch=multi-connection#0da6612ef6f00d33a48be9462b6c085fd7362429"
 dependencies = [
  "grammers-tl-parser",
 ]
@@ -2403,7 +2403,7 @@ dependencies = [
 [[package]]
 name = "grammers-tl-parser"
 version = "1.2.0"
-source = "git+https://github.com/Lonami/grammers?rev=d07f96f#d07f96f6bee22a3a850a1f3067834686a08b396c"
+source = "git+https://github.com/xelema/grammers?branch=multi-connection#0da6612ef6f00d33a48be9462b6c085fd7362429"
 dependencies = [
  "crc32fast",
 ]
@@ -2411,7 +2411,7 @@ dependencies = [
 [[package]]
 name = "grammers-tl-types"
 version = "0.8.0"
-source = "git+https://github.com/Lonami/grammers?rev=d07f96f#d07f96f6bee22a3a850a1f3067834686a08b396c"
+source = "git+https://github.com/xelema/grammers?branch=multi-connection#0da6612ef6f00d33a48be9462b6c085fd7362429"
 dependencies = [
  "grammers-tl-gen",
  "grammers-tl-parser",
