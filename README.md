@@ -152,14 +152,14 @@ Localization is still being completed: some non-English entries currently fall b
 
 ## Android beta (pre-built unsigned APK)
 
-A pre-built **unsigned Android beta APK** is available from the [Telegram Drive v2.1.5 beta release](https://github.com/caamer20/Telegram-Drive/releases/tag/Androidv2.1.5beta).
+A pre-built **unsigned Android beta APK** is available from the [Telegram Drive v3.0.0 beta release](https://github.com/caamer20/Telegram-Drive/releases/tag/Androidv3.0.0beta).
 
 > [!WARNING]
 > The APK is not signed and is not distributed through Google Play. Installing an unsigned sideloaded build carries additional authenticity and update risks.
 
 ### Sideloading
 
-1. Download `Telegram-Drive-v2.1.5-beta.apk` from the [Android beta release](https://github.com/caamer20/Telegram-Drive/releases/tag/Androidv2.1.5beta).
+1. Download `Telegram-Drive-v3.0.0-beta.apk` from the [Android beta release](https://github.com/caamer20/Telegram-Drive/releases/tag/Androidv3.0.0beta).
 2. On Android, open **Settings → Apps → Special app access → Install unknown apps** and grant permission to the browser or file manager used for the APK.
 3. Open the APK and choose **Install**.
 4. Enter your own Telegram API ID and API hash on first launch.
