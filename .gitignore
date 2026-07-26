@@ -37,6 +37,8 @@ local.properties
 /app/src-tauri/gen/schemas/android-schema.json
 /app/src-tauri/icons/android/
 .freebuff/
+*_IMPLEMENTATION_PLAN.md
+*_EXECUTION_REPORT.md
 
 
 
