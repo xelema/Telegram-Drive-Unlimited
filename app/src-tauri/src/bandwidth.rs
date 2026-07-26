@@ -28,6 +28,59 @@ pub struct BandwidthManager {
     pub limit: u64, // Daily limit in bytes
 }
 
+#[derive(Clone, Copy)]
+enum ReservationDirection {
+    Upload,
+    Download,
+}
+
+/// Releases a bandwidth reservation automatically on every error/cancellation
+/// path. Successful transfers call `commit` so their bytes remain accounted.
+pub struct BandwidthReservation {
+    manager: std::sync::Arc<BandwidthManager>,
+    bytes: u64,
+    direction: ReservationDirection,
+    committed: bool,
+}
+
+impl BandwidthReservation {
+    pub fn upload(manager: std::sync::Arc<BandwidthManager>, bytes: u64) -> Result<Self, String> {
+        manager.try_reserve_up(bytes)?;
+        Ok(Self {
+            manager,
+            bytes,
+            direction: ReservationDirection::Upload,
+            committed: false,
+        })
+    }
+
+    pub fn download(manager: std::sync::Arc<BandwidthManager>, bytes: u64) -> Result<Self, String> {
+        manager.try_reserve_down(bytes)?;
+        Ok(Self {
+            manager,
+            bytes,
+            direction: ReservationDirection::Download,
+            committed: false,
+        })
+    }
+
+    pub fn commit(&mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for BandwidthReservation {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        match self.direction {
+            ReservationDirection::Upload => self.manager.release_up(self.bytes),
+            ReservationDirection::Download => self.manager.release_down(self.bytes),
+        }
+    }
+}
+
 impl BandwidthManager {
     pub fn new(app_handle: &tauri::AppHandle) -> Self {
         // Resolve app data directory

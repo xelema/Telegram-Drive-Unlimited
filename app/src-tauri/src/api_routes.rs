@@ -54,6 +54,23 @@ fn json_error(code: &str, message: &str, status: u16) -> HttpResponse {
         .json(body)
 }
 
+fn api_registered_encrypted(
+    db_pool: &crate::db::DbConnection,
+    folder_id: Option<i64>,
+    message_id: i32,
+) -> Result<bool, String> {
+    let connection = db_pool.lock().map_err(|_| "DB poisoned".to_string())?;
+    let folder_key = folder_id
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "home".to_string());
+    let mut statement = connection
+        .prepare("SELECT 1 FROM encrypted_files WHERE folder_key = ? AND message_id = ? AND record_state = 'active'")
+        .map_err(|error| error.to_string())?;
+    statement.bind((1, folder_key.as_str())).map_err(|error| error.to_string())?;
+    statement.bind((2, i64::from(message_id))).map_err(|error| error.to_string())?;
+    Ok(matches!(statement.next(), Ok(sqlite::State::Row)))
+}
+
 struct CleanupStream {
     file: tokio::fs::File,
     path: std::path::PathBuf,
@@ -529,12 +546,18 @@ async fn api_download_file(
     query: web::Query<FolderQuery>,
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
+    db_pool: web::Data<crate::db::DbConnection>,
 ) -> impl Responder {
     if let Err(e) = check_auth(&req, &api_state) {
         return e;
     }
 
     let message_id = path.into_inner() as i32;
+    match api_registered_encrypted(db_pool.get_ref(), query.folder_id, message_id) {
+        Ok(true) => return json_error("ENCRYPTED_ROUTE_UNAVAILABLE", "Encrypted API downloads require a scoped decryption credential and are disabled", 409),
+        Ok(false) => {}
+        Err(error) => return json_error("ENCRYPTION_STATE_UNKNOWN", &error, 503),
+    }
     let client_opt = { tg_state.client.lock().await.clone() };
     let client = match client_opt {
         Some(c) => c,
@@ -549,6 +572,19 @@ async fn api_download_file(
     match client.get_messages_by_id(peer, &[message_id]).await {
         Ok(messages) => {
             if let Some(Some(msg)) = messages.first() {
+                if msg.text() == "TDENC2"
+                    || matches!(
+                        msg.media(),
+                        Some(Media::Document(document))
+                            if document.name().to_ascii_lowercase().ends_with(".tdenc")
+                    )
+                {
+                    return json_error(
+                        "ENCRYPTED_ROUTE_UNAVAILABLE",
+                        "Encrypted API downloads require a scoped decryption credential and are disabled",
+                        409,
+                    );
+                }
                 if let Some(media) = msg.media() {
                     let mime = match &media {
                         Media::Document(d) => d.mime_type().unwrap_or("application/octet-stream").to_string(),
@@ -602,6 +638,7 @@ async fn api_bulk_files(
     api_state: web::Data<ApiState>,
     net_config: web::Data<Arc<NetworkConfig>>,
     cache_dirs: web::Data<CacheDirs>,
+    db_pool: web::Data<crate::db::DbConnection>,
 ) -> impl Responder {
     if let Err(e) = check_auth(&req, &api_state) {
         return e;
@@ -643,6 +680,17 @@ async fn api_bulk_files(
         }
     });
 
+    let contains_encrypted = ids.iter().any(|message_id| {
+        api_registered_encrypted(db_pool.get_ref(), source_folder, *message_id).unwrap_or(true)
+    });
+    if contains_encrypted && body.action != "delete" {
+        return json_error(
+            "ENCRYPTED_BULK_ACTION_UNAVAILABLE",
+            "This bulk action is disabled for encrypted files until registry-safe handling is available",
+            409,
+        );
+    }
+
     match body.action.as_str() {
         "delete" => {
             let peer = match resolve_peer(&client, source_folder, &tg_state.peer_cache).await {
@@ -651,6 +699,16 @@ async fn api_bulk_files(
             };
             if let Err(e) = client.delete_messages(&peer, &ids).await {
                 return json_error("DELETE_FAILED", &e.to_string(), 500);
+            }
+            if let Ok(connection) = db_pool.lock() {
+                let folder_key = source_folder.map(|id| id.to_string()).unwrap_or_else(|| "home".to_string());
+                for message_id in &ids {
+                    if let Ok(mut statement) = connection.prepare("DELETE FROM encrypted_files WHERE folder_key = ? AND message_id = ?") {
+                        let _ = statement.bind((1, folder_key.as_str()));
+                        let _ = statement.bind((2, i64::from(*message_id)));
+                        let _ = statement.next();
+                    }
+                }
             }
 
             // Clean up stale thumbnail and preview caches for deleted messages.
@@ -920,6 +978,7 @@ async fn api_delete_file(
     query: web::Query<FolderQuery>,
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
+    db_pool: web::Data<crate::db::DbConnection>,
 ) -> impl Responder {
     if let Err(e) = check_auth(&req, &api_state) {
         return e;
@@ -939,7 +998,17 @@ async fn api_delete_file(
     };
 
     match client.delete_messages(&peer, &[message_id]).await {
-        Ok(_) => HttpResponse::Ok().json(serde_json::json!({ "success": true })),
+        Ok(_) => {
+            if let Ok(connection) = db_pool.lock() {
+                let folder_key = folder_id.map(|id| id.to_string()).unwrap_or_else(|| "home".to_string());
+                if let Ok(mut statement) = connection.prepare("DELETE FROM encrypted_files WHERE folder_key = ? AND message_id = ?") {
+                    let _ = statement.bind((1, folder_key.as_str()));
+                    let _ = statement.bind((2, i64::from(message_id)));
+                    let _ = statement.next();
+                }
+            }
+            HttpResponse::Ok().json(serde_json::json!({ "success": true }))
+        },
         Err(e) => json_error("DELETE_FAILED", &e.to_string(), 500),
     }
 }
@@ -957,6 +1026,7 @@ async fn api_copy_file(
     body: web::Json<CopyRequest>,
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
+    db_pool: web::Data<crate::db::DbConnection>,
 ) -> impl Responder {
     if let Err(e) = check_auth(&req, &api_state) {
         return e;
@@ -980,8 +1050,56 @@ async fn api_copy_file(
         Err(e) => return json_error("TARGET_PEER_ERROR", &e, 400),
     };
 
+    // Resolve the registry state before changing Telegram. Treat an unavailable
+    // registry as a hard failure so an encrypted copy can never silently lose
+    // the metadata required to decrypt it.
+    let source_is_encrypted = match api_registered_encrypted(
+        db_pool.get_ref(),
+        source_folder_id,
+        message_id,
+    ) {
+        Ok(value) => value,
+        Err(e) => return json_error("ENCRYPTION_REGISTRY_UNAVAILABLE", &e, 503),
+    };
+
     match client.forward_messages(&target_peer, &[message_id], &source_peer).await {
-        Ok(_) => HttpResponse::Ok().json(serde_json::json!({ "success": true })),
+        Ok(forwarded) => {
+            if source_is_encrypted {
+                let new_id = forwarded.first().and_then(|message| message.as_ref()).map(|message| message.id());
+                let Some(new_id) = new_id else {
+                    return json_error("ENCRYPTED_COPY_RECONCILIATION_REQUIRED", "Telegram copied the file but did not return its new identifier", 500);
+                };
+
+                let registry_result = (|| -> Result<(), String> {
+                    let connection = db_pool.lock().map_err(|e| e.to_string())?;
+                    let source_key = source_folder_id.map(|id| id.to_string()).unwrap_or_else(|| "home".to_string());
+                    let target_key = target_folder_id.map(|id| id.to_string()).unwrap_or_else(|| "home".to_string());
+                    let mut statement = connection.prepare(
+                        "INSERT OR REPLACE INTO encrypted_files (folder_key, message_id, file_uuid, envelope_version, cipher_suite, ciphertext_size, plaintext_size, remote_name, key_profile_id, protection_mode, metadata_protected, header_blob, header_sha256, record_state, reconciliation_state, created_at, last_verified_at) SELECT ?, ?, file_uuid, envelope_version, cipher_suite, ciphertext_size, plaintext_size, remote_name, key_profile_id, protection_mode, metadata_protected, header_blob, header_sha256, record_state, 'ok', created_at, last_verified_at FROM encrypted_files WHERE folder_key = ? AND message_id = ?",
+                    ).map_err(|e| e.to_string())?;
+                    statement.bind((1, target_key.as_str())).map_err(|e| e.to_string())?;
+                    statement.bind((2, i64::from(new_id))).map_err(|e| e.to_string())?;
+                    statement.bind((3, source_key.as_str())).map_err(|e| e.to_string())?;
+                    statement.bind((4, i64::from(message_id))).map_err(|e| e.to_string())?;
+                    statement.next().map_err(|e| e.to_string())?;
+                    Ok(())
+                })();
+
+                if registry_result.is_err()
+                    || !matches!(
+                        api_registered_encrypted(db_pool.get_ref(), target_folder_id, new_id),
+                        Ok(true)
+                    )
+                {
+                    return json_error(
+                        "ENCRYPTED_COPY_RECONCILIATION_REQUIRED",
+                        "Remote copy succeeded but local encryption indexing failed",
+                        500,
+                    );
+                }
+            }
+            HttpResponse::Ok().json(serde_json::json!({ "success": true }))
+        },
         Err(e) => json_error("COPY_FAILED", &e.to_string(), 500),
     }
 }
@@ -1001,11 +1119,21 @@ async fn api_update_file(
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
     cache_dirs: web::Data<CacheDirs>,
+    db_pool: web::Data<crate::db::DbConnection>,
 ) -> impl Responder {
     if let Err(e) = check_auth(&req, &api_state) {
         return e;
     }
     let message_id = path.into_inner();
+    match api_registered_encrypted(db_pool.get_ref(), body.source_folder_id, message_id) {
+        Ok(true) => return json_error(
+            "ENCRYPTED_UPDATE_UNAVAILABLE",
+            "Encrypted rename/move through the local API is disabled until authenticated metadata and registry updates are supported",
+            409,
+        ),
+        Ok(false) => {}
+        Err(error) => return json_error("ENCRYPTION_STATE_UNKNOWN", &error, 503),
+    }
 
     let client_opt = { tg_state.client.lock().await.clone() };
     let client = match client_opt {
@@ -1642,12 +1770,18 @@ async fn api_get_file_thumbnail(
     query: web::Query<FolderQuery>,
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
+    db_pool: web::Data<crate::db::DbConnection>,
 ) -> impl Responder {
     if let Err(e) = check_auth(&req, &api_state) {
         return e;
     }
     let message_id = path.into_inner();
     let folder_id = query.folder_id;
+    match api_registered_encrypted(db_pool.get_ref(), folder_id, message_id) {
+        Ok(true) => return json_error("ENCRYPTED_ROUTE_UNAVAILABLE", "Encrypted thumbnails are not exposed by the local API", 409),
+        Ok(false) => {}
+        Err(error) => return json_error("ENCRYPTION_STATE_UNKNOWN", &error, 503),
+    }
 
     let client_opt = { tg_state.client.lock().await.clone() };
     let client = match client_opt {
@@ -1666,6 +1800,15 @@ async fn api_get_file_thumbnail(
     };
 
     if let Some(m) = messages.into_iter().flatten().next() {
+        if m.text() == "TDENC2"
+            || matches!(
+                m.media(),
+                Some(Media::Document(document))
+                    if document.name().to_ascii_lowercase().ends_with(".tdenc")
+            )
+        {
+            return json_error("ENCRYPTED_ROUTE_UNAVAILABLE", "Encrypted thumbnails are not exposed by the local API", 409);
+        }
         if let Some(media) = m.media() {
             let (is_image, ext) = match &media {
                 Media::Photo(_) => (true, "jpg"),
@@ -1735,12 +1878,18 @@ async fn api_media_info(
     query: web::Query<FolderQuery>,
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
+    db_pool: web::Data<crate::db::DbConnection>,
 ) -> impl Responder {
     if let Err(e) = check_auth(&req, &api_state) {
         return e;
     }
     let message_id = path.into_inner();
     let folder_id = query.folder_id;
+    match api_registered_encrypted(db_pool.get_ref(), folder_id, message_id) {
+        Ok(true) => return json_error("ENCRYPTED_ROUTE_UNAVAILABLE", "Encrypted media metadata is not exposed by the local API", 409),
+        Ok(false) => {}
+        Err(error) => return json_error("ENCRYPTION_STATE_UNKNOWN", &error, 503),
+    }
 
     let client_opt = { tg_state.client.lock().await.clone() };
     let client = match client_opt {
@@ -1762,6 +1911,16 @@ async fn api_media_info(
         Some(m) => m,
         None => return json_error("NOT_FOUND", "File message not found", 404),
     };
+
+    if msg.text() == "TDENC2"
+        || matches!(
+            msg.media(),
+            Some(Media::Document(document))
+                if document.name().to_ascii_lowercase().ends_with(".tdenc")
+        )
+    {
+        return json_error("ENCRYPTED_ROUTE_UNAVAILABLE", "Encrypted media metadata is not exposed by the local API", 409);
+    }
 
     let media = match msg.media() {
         Some(m) => m,

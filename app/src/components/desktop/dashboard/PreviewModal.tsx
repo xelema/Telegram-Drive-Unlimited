@@ -1,56 +1,27 @@
-import { useState, useEffect, useRef } from 'react';
-import { X, File, ChevronLeft, ChevronRight } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';
-import { convertFileSrc } from '@tauri-apps/api/core';
+import { useEffect, useRef, useState } from 'react';
+import { ChevronLeft, ChevronRight, File, X } from 'lucide-react';
+import { listen } from '@tauri-apps/api/event';
 import { TelegramFile } from '../../../types';
 import { isImageFile } from '../../../utils';
+import { useSettings } from '../../../context/SettingsContext';
+import {
+    forgetPreview,
+    forgetThumbnail,
+    getCachedPreview,
+    getCachedThumbnail,
+    loadPreview,
+    loadThumbnail,
+} from '../../../services/imagePreviewCache';
 
-const PREVIEW_CACHE_TTL_MS = 5 * 60 * 1000;
-const PREVIEW_CACHE_MAX_ITEMS = 8;
+const MAX_PREFETCH_BYTES = 25 * 1024 * 1024;
 
-type PreviewCacheValue = {
-    src: string;
-    cachedAt: number;
+type PreviewProgress = {
+    message_id: number;
+    folder_id: number | null;
+    downloaded_bytes: number;
+    total_bytes: number;
+    percent: number;
 };
-
-const previewCache = new Map<string, PreviewCacheValue>();
-const pendingPrefetch = new Set<string>();
-
-const getPreviewCacheKey = (fileId: number, folderId: number | null) => `${folderId ?? 'home'}:${fileId}`;
-
-const touchPreviewCache = (key: string, value: PreviewCacheValue) => {
-    if (previewCache.has(key)) previewCache.delete(key);
-    previewCache.set(key, value);
-
-    while (previewCache.size > PREVIEW_CACHE_MAX_ITEMS) {
-        const oldestKey = previewCache.keys().next().value;
-        if (!oldestKey) break;
-        previewCache.delete(oldestKey);
-    }
-};
-
-const getCachedPreview = (key: string): string | null => {
-    const value = previewCache.get(key);
-    if (!value) return null;
-
-    if (Date.now() - value.cachedAt > PREVIEW_CACHE_TTL_MS) {
-        previewCache.delete(key);
-        return null;
-    }
-
-    touchPreviewCache(key, value);
-    return value.src;
-};
-
-const rememberPreview = (key: string, src: string) => {
-    touchPreviewCache(key, { src, cachedAt: Date.now() });
-};
-
-const forgetPreview = (key: string) => {
-    previewCache.delete(key);
-};
-
-const isSafeToPrefetch = (name: string) => isImageFile(name);
 
 interface PreviewModalProps {
     file: TelegramFile;
@@ -64,104 +35,140 @@ interface PreviewModalProps {
     activeFolderId: number | null;
 }
 
-export function PreviewModal({ file, onClose, onNext, onPrev, currentIndex, totalItems, nextFile, prevFile, activeFolderId }: PreviewModalProps) {
-    const [src, setSrc] = useState<string | null>(null);
+export function PreviewModal({
+    file,
+    onClose,
+    onNext,
+    onPrev,
+    currentIndex,
+    totalItems,
+    nextFile,
+    activeFolderId,
+}: PreviewModalProps) {
+    const { settings } = useSettings();
+    const [thumbnailSrc, setThumbnailSrc] = useState<string | null>(null);
+    const [fullSrc, setFullSrc] = useState<string | null>(null);
+    const [fullReady, setFullReady] = useState(false);
     const [loading, setLoading] = useState(true);
+    const [progress, setProgress] = useState(0);
     const [error, setError] = useState<string | null>(null);
     const latestRequestRef = useRef(0);
+    const currentFileIdRef = useRef(file.id);
+    currentFileIdRef.current = file.id;
+    const imagePreview = isImageFile(file.name);
 
     useEffect(() => {
-        const load = async () => {
-            const key = getPreviewCacheKey(file.id, activeFolderId);
-            const requestId = ++latestRequestRef.current;
-            const cachedSrc = getCachedPreview(key);
+        let disposed = false;
+        let unlisten: (() => void) | undefined;
 
-            if (cachedSrc) {
-                if (requestId !== latestRequestRef.current) return;
-                setSrc(cachedSrc);
+        listen<PreviewProgress>('preview-progress', ({ payload }) => {
+            if (
+                payload.message_id === file.id
+                && (payload.folder_id ?? null) === activeFolderId
+            ) {
+                setProgress(payload.percent);
+            }
+        }).then((stopListening) => {
+            if (disposed) stopListening();
+            else unlisten = stopListening;
+        }).catch(() => {
+            // Progress is an enhancement; preview loading remains fully functional without it.
+        });
+
+        return () => {
+            disposed = true;
+            unlisten?.();
+        };
+    }, [file.id, activeFolderId]);
+
+    useEffect(() => {
+        const requestId = ++latestRequestRef.current;
+        const cachedPreview = getCachedPreview(file.id, activeFolderId);
+        const cachedThumbnail = imagePreview
+            ? getCachedThumbnail(file.id, activeFolderId)
+            : null;
+
+        setThumbnailSrc(cachedThumbnail);
+        setFullSrc(cachedPreview);
+        setFullReady(false);
+        setLoading(true);
+        setProgress(cachedPreview ? 100 : 0);
+        setError(null);
+
+        if (imagePreview && !cachedThumbnail) {
+            loadThumbnail(file.id, activeFolderId).then((src) => {
+                if (requestId === latestRequestRef.current && src) {
+                    setThumbnailSrc(src);
+                }
+            }).catch(() => {
+                // The full-resolution preview can still load without a thumbnail.
+            });
+        }
+
+        loadPreview(file.id, activeFolderId).then((src) => {
+            if (requestId !== latestRequestRef.current) return;
+            if (!src) {
+                setError('Preview not available');
                 setLoading(false);
-                setError(null);
                 return;
             }
-
-            setLoading(true);
-            setError(null);
-            try {
-                const path = await invoke<string>('cmd_get_preview', {
-                    messageId: file.id,
-                    folderId: activeFolderId
-                });
-                if (requestId !== latestRequestRef.current) return;
-
-                if (path) {
-                    if (path.startsWith('data:')) {
-                        setSrc(path);
-                        rememberPreview(key, path);
-                    } else {
-                        const converted = convertFileSrc(path);
-                        setSrc(converted);
-                        rememberPreview(key, converted);
-                    }
-                } else {
-                    setError("Preview not available");
-                }
-            } catch (e) {
-                if (requestId !== latestRequestRef.current) return;
-                setError(String(e));
-            } finally {
-                if (requestId !== latestRequestRef.current) return;
-                setLoading(false);
-            }
-        };
-        load();
-    }, [file, activeFolderId]);
-
-    useEffect(() => {
-        const candidates = [nextFile, prevFile].filter((f): f is TelegramFile => !!f && isSafeToPrefetch(f.name));
-
-        candidates.forEach((candidate) => {
-            const key = getPreviewCacheKey(candidate.id, activeFolderId);
-            if (getCachedPreview(key) || pendingPrefetch.has(key)) return;
-
-            pendingPrefetch.add(key);
-            invoke<string>('cmd_get_preview', {
-                messageId: candidate.id,
-                folderId: activeFolderId
-            }).then((path) => {
-                if (!path) return;
-                const normalized = path.startsWith('data:') ? path : convertFileSrc(path);
-                rememberPreview(key, normalized);
-            }).catch(() => {
-                // Ignore prefetch errors, main preview flow will handle user-visible failures.
-            }).finally(() => {
-                pendingPrefetch.delete(key);
-            });
+            setFullSrc(src);
+            if (!imagePreview) setLoading(false);
+        }).catch((loadError) => {
+            if (requestId !== latestRequestRef.current) return;
+            setError(String(loadError));
+            setLoading(false);
         });
-    }, [nextFile, prevFile, activeFolderId]);
+    }, [file.id, file.name, activeFolderId, imagePreview]);
+
+    // Prefetch only the likely next image, after the current one is fully decoded and
+    // the browser is idle. Avoid speculative downloads when a bandwidth cap is active.
+    useEffect(() => {
+        if (!fullReady || !nextFile || !isImageFile(nextFile.name)) return;
+        if (nextFile.size > MAX_PREFETCH_BYTES) return;
+        if (settings.vpnMode && settings.bandwidthLimitDownKBs > 0) return;
+        const connection = (navigator as Navigator & { connection?: { saveData?: boolean } }).connection;
+        if (connection?.saveData) return;
+
+        const idleWindow = window as Window & {
+            requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
+            cancelIdleCallback?: (id: number) => void;
+        };
+        let idleId: number | undefined;
+        const timerId = window.setTimeout(() => {
+            if (getCachedPreview(nextFile.id, activeFolderId)) return;
+            if (idleWindow.requestIdleCallback) {
+                idleId = idleWindow.requestIdleCallback(
+                    () => { void loadPreview(nextFile.id, activeFolderId).catch(() => {}); },
+                    { timeout: 1500 },
+                );
+            } else {
+                void loadPreview(nextFile.id, activeFolderId).catch(() => {});
+            }
+        }, 500);
+
+        return () => {
+            window.clearTimeout(timerId);
+            if (idleId !== undefined) idleWindow.cancelIdleCallback?.(idleId);
+        };
+    }, [fullReady, nextFile, activeFolderId, settings.vpnMode, settings.bandwidthLimitDownKBs]);
 
     useEffect(() => {
-        const handleKeyDown = (e: KeyboardEvent) => {
-            const target = e.target as HTMLElement;
+        const handleKeyDown = (event: KeyboardEvent) => {
+            const target = event.target as HTMLElement;
             if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
                 return;
             }
 
-            const key = e.key.toLowerCase();
-
-            if (e.key === 'ArrowRight' || key === 'l') {
-                e.preventDefault();
+            const key = event.key.toLowerCase();
+            if (event.key === 'ArrowRight' || key === 'l') {
+                event.preventDefault();
                 onNext?.();
-                return;
-            }
-
-            if (e.key === 'ArrowLeft' || key === 'j') {
-                e.preventDefault();
+            } else if (event.key === 'ArrowLeft' || key === 'j') {
+                event.preventDefault();
                 onPrev?.();
-                return;
-            }
-
-            if (e.key === 'Escape') {
-                e.preventDefault();
+            } else if (event.key === 'Escape') {
+                event.preventDefault();
                 onClose();
             }
         };
@@ -171,77 +178,116 @@ export function PreviewModal({ file, onClose, onNext, onPrev, currentIndex, tota
     }, [onClose, onNext, onPrev]);
 
     return (
-        <div className="fixed inset-0 z-[150] bg-black/90 flex items-center justify-center p-4 backdrop-blur-sm" onClick={onClose}>
-            <div className="relative max-w-5xl w-full max-h-screen flex flex-col items-center justify-center" onClick={e => e.stopPropagation()}>
+        <div className="viewer-overlay fixed inset-0 z-[150] flex items-center justify-center p-4" onClick={onClose}>
+            <div className="relative flex max-h-screen w-full max-w-5xl flex-col items-center justify-center" onClick={(event) => event.stopPropagation()}>
                 <button
                     onClick={onPrev}
-                    className="absolute left-2 top-1/2 -translate-y-1/2 p-2 bg-black/60 hover:bg-black/80 rounded-full transition-colors"
-                    style={{ color: '#ffffff' }}
+                    disabled={!onPrev}
+                    className="viewer-navigation absolute start-2 top-1/2 z-20 -translate-y-1/2 disabled:pointer-events-none disabled:opacity-0"
                     title="Previous (ArrowLeft / J)"
+                    aria-label="Previous file"
                 >
-                    <ChevronLeft className="w-6 h-6" />
+                    <ChevronLeft className="h-5 w-5 rtl:rotate-180" />
                 </button>
 
                 <button
                     onClick={onNext}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 p-2 bg-black/60 hover:bg-black/80 rounded-full transition-colors"
-                    style={{ color: '#ffffff' }}
+                    disabled={!onNext}
+                    className="viewer-navigation absolute end-2 top-1/2 z-20 -translate-y-1/2 disabled:pointer-events-none disabled:opacity-0"
                     title="Next (ArrowRight / L)"
+                    aria-label="Next file"
                 >
-                    <ChevronRight className="w-6 h-6" />
+                    <ChevronRight className="h-5 w-5 rtl:rotate-180" />
                 </button>
 
                 <button
                     onClick={onClose}
-                    className="absolute -top-12 right-0 p-2 bg-black/60 hover:bg-black/80 rounded-full transition-colors"
-                    style={{ color: '#ffffff' }}
+                    className="viewer-control absolute -top-10 end-0 z-20 border border-white/10 bg-black/55"
+                    title="Close"
+                    aria-label="Close preview"
                 >
-                    <X className="w-6 h-6" />
+                    <X className="h-4 w-4" />
                 </button>
 
-                {loading && (
-                    <div className="flex flex-col items-center gap-4 text-white">
-                        <div className="w-10 h-10 border-4 border-telegram-primary border-t-transparent rounded-full animate-spin"></div>
-                        <p>Loading preview...</p>
-                        <p className="text-xs text-white/50">Downloading from Telegram...</p>
-                    </div>
-                )}
-
                 {error && (
-                    <div className="text-red-400 bg-white/10 p-4 rounded-lg border border-red-500/20">
-                        <p className="font-bold">Preview Error</p>
-                        <p className="text-sm">{error}</p>
+                    <div className="viewer-panel max-w-md border-app-danger/25 bg-app-danger/10 p-4 text-app-danger">
+                        <p className="text-ui font-semibold">Preview Error</p>
+                        <p className="mt-1 text-metadata leading-relaxed">{error}</p>
                     </div>
                 )}
 
-                {!loading && !error && src && (
-                    <div className="flex flex-col items-center">
-                        {isImageFile(file.name) ? (
+                {!error && imagePreview && (
+                    <div className="viewer-panel relative flex h-[85vh] w-full items-center justify-center">
+                        {thumbnailSrc && !fullReady && (
                             <img
-                                src={src}
-                                className="max-w-full max-h-[85vh] object-contain rounded-lg shadow-2xl bg-black"
-                                alt="Preview"
+                                src={thumbnailSrc}
+                                decoding="async"
+                                className="max-h-full max-w-full scale-[1.01] bg-black object-contain blur-[2px]"
+                                alt=""
+                                aria-hidden="true"
                                 onError={() => {
-                                    const key = getPreviewCacheKey(file.id, activeFolderId);
-                                    forgetPreview(key);
-                                    setError('Failed to render image preview');
+                                    forgetThumbnail(file.id, activeFolderId);
+                                    setThumbnailSrc(null);
                                 }}
                             />
-                        ) : (
-                            <div className="bg-[#1c1c1c] p-8 rounded-xl text-center border border-white/10 shadow-2xl">
-                                <File className="w-16 h-16 text-telegram-primary mx-auto mb-4" />
-                                <h3 className="text-xl text-white font-medium mb-2">{file.name}</h3>
-                                <p className="text-gray-400 mb-6">Preview not supported in app.</p>
-                                <p className="text-xs text-gray-500">File type: {file.name.split('.').pop()}</p>
+                        )}
+
+                        {fullSrc && (
+                            <img
+                                src={fullSrc}
+                                decoding="async"
+                                className={`absolute inset-0 m-auto max-h-full max-w-full bg-black object-contain transition-opacity duration-200 ${fullReady ? 'opacity-100' : 'opacity-0'}`}
+                                alt={file.name}
+                                onLoad={(event) => {
+                                    const image = event.currentTarget;
+                                    const loadedFileId = file.id;
+                                    const reveal = () => {
+                                        if (currentFileIdRef.current !== loadedFileId) return;
+                                        setFullReady(true);
+                                        setLoading(false);
+                                        setProgress(100);
+                                    };
+                                    if (typeof image.decode === 'function') {
+                                        void image.decode().catch(() => {}).finally(reveal);
+                                    } else {
+                                        reveal();
+                                    }
+                                }}
+                                onError={() => {
+                                    forgetPreview(file.id, activeFolderId);
+                                    setError('Failed to render image preview');
+                                    setLoading(false);
+                                }}
+                            />
+                        )}
+
+                        {loading && (
+                            <div className={`viewer-toolbar absolute flex-col gap-2 px-4 py-3 text-white ${thumbnailSrc ? 'bottom-4' : 'start-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rtl:translate-x-1/2'}`}>
+                                <div className="h-5 w-5 animate-spin rounded-full border-2 border-white/25 border-t-app-accent" />
+                                <p className="text-metadata">Loading preview…</p>
+                                {progress > 0 && (
+                                    <div className="h-1 w-32 overflow-hidden rounded-full bg-white/15" aria-label={`${progress}%`}>
+                                        <div className="h-full rounded-full bg-telegram-primary transition-[width] duration-200" style={{ width: `${progress}%` }} />
+                                    </div>
+                                )}
                             </div>
                         )}
                     </div>
                 )}
 
-                <div className="absolute bottom-[-3rem] text-white text-sm opacity-50">
-                    {file.name}
+                {!error && !imagePreview && !loading && fullSrc && (
+                    <div className="viewer-panel max-w-md p-6 text-center text-white">
+                        <File className="mx-auto mb-3 h-10 w-10 text-app-accent" />
+                        <h3 className="truncate text-app-title font-medium" title={file.name}>{file.name}</h3>
+                        <p className="mt-2 text-ui text-white/60">Preview not supported in app.</p>
+                        <p className="mt-4 text-badge text-white/40">File type: {file.name.split('.').pop()}</p>
+                    </div>
+                )}
+
+                <div className="viewer-toolbar absolute -bottom-11 max-w-[min(80vw,40rem)] px-3 py-1.5 text-metadata text-white/70">
+                    <span className="min-w-0 truncate" title={file.name}>{file.name}</span>
                     {typeof currentIndex === 'number' && typeof totalItems === 'number' && totalItems > 0 && (
-                        <span className="ml-3">{currentIndex + 1}/{totalItems}</span>
+                        <span className="ms-2 shrink-0 tabular-nums text-white/45">{currentIndex + 1}/{totalItems}</span>
                     )}
                 </div>
             </div>

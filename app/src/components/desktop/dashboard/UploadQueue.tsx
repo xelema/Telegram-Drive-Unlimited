@@ -56,7 +56,7 @@ export function UploadQueue({ items, onClearFinished, onCancelAll, onCancelItem,
                                     <X className="w-3.5 h-3.5" />
                                 </button>
                             )}
-                            {(item.status === 'error' || item.status === 'cancelled') && (
+                            {(item.status === 'error' || item.status === 'cancelled' || item.status === 'waiting_for_unlock') && (
                                 <button onClick={() => onRetryItem(item.id)} className="text-gray-400 hover:text-blue-400 transition-colors flex-shrink-0" title="Retry">
                                     <RotateCcw className="w-3.5 h-3.5" />
                                 </button>
@@ -96,6 +96,7 @@ export function UploadQueue({ items, onClearFinished, onCancelAll, onCancelItem,
                             </div>
                         )}
                         {item.status === 'cancelled' && <div className="text-xs text-gray-400 mt-0.5">Cancelled</div>}
+                        {item.status === 'waiting_for_unlock' && <div className="text-xs text-amber-400 mt-0.5">Encryption credentials required</div>}
                     </div>
                 ))}
             </div>

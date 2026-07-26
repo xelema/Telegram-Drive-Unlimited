@@ -13,17 +13,17 @@ export function BandwidthWidget({ bandwidth }: BandwidthWidgetProps) {
     const percent = Math.min((totalBytes / limit) * 100, 100);
 
     return (
-        <div className="mt-3 text-xs text-telegram-subtext space-y-1">
+        <div className="mt-1.5 space-y-1 text-metadata text-app-text-secondary">
             <div className="flex justify-between">
                 <span>Used Today:</span>
             </div>
-            <div className="w-full bg-telegram-border rounded-full h-1.5 overflow-hidden">
+            <div className="h-1 w-full overflow-hidden rounded-full bg-app-border">
                 <div
-                    className="bg-telegram-primary h-full rounded-full transition-all duration-500"
+                    className="h-full rounded-full bg-app-accent transition-[width] duration-500"
                     style={{ width: `${percent}%` }}
                 ></div>
             </div>
-            <div className="flex justify-between text-[10px] opacity-70">
+            <div className="flex justify-between text-badge text-app-text-tertiary">
                 <span>{formatBytes(totalBytes)}</span>
                 <span>250 GB</span>
             </div>

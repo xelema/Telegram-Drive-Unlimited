@@ -3,11 +3,14 @@ import { CustomTheme, applyTheme as applyThemeToDOM, removeCustomTheme as remove
 import { BUILTIN_THEMES } from '../theme/presets';
 
 type Theme = 'light' | 'dark';
+type ThemePreference = Theme | 'system' | 'default';
 
 interface ThemeContextType {
     theme: Theme;
+    themePreference: ThemePreference;
     toggleTheme: () => void;
     setTheme: (theme: Theme) => void;
+    setThemePreference: (theme: ThemePreference) => void;
     // Custom theme engine
     customThemes: CustomTheme[];
     activeCustomThemeId: string | null;
@@ -38,15 +41,26 @@ function safeTrySet(key: string, value: string): void {
 }
 
 // Get initial theme synchronously to prevent flash
-function getInitialTheme(): Theme {
+function getSystemTheme(): Theme {
+    return typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: light)').matches
+        ? 'light'
+        : 'dark';
+}
+
+function getInitialPreference(): ThemePreference {
     if (typeof window !== 'undefined') {
+        const preference = safeTryGet('theme-preference') as ThemePreference | null;
+        if (preference === 'light' || preference === 'dark' || preference === 'system' || preference === 'default') return preference;
         const saved = safeTryGet('theme') as Theme | null;
         if (saved === 'light' || saved === 'dark') return saved;
-        if (window.matchMedia('(prefers-color-scheme: light)').matches) {
-            return 'light';
-        }
     }
-    return 'dark';
+    return 'default';
+}
+
+function resolveTheme(preference: ThemePreference, systemTheme: Theme): Theme {
+    if (preference === 'system') return systemTheme;
+    if (preference === 'default') return 'dark';
+    return preference;
 }
 
 // Apply theme to DOM immediately
@@ -78,11 +92,14 @@ function saveUserThemes(themes: CustomTheme[]): void {
 
 // Apply theme immediately on script load (before React hydration)
 if (typeof window !== 'undefined') {
-    applyBaseTheme(getInitialTheme());
+    const initialPreference = getInitialPreference();
+    applyBaseTheme(resolveTheme(initialPreference, getSystemTheme()));
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-    const [theme, setThemeState] = useState<Theme>(getInitialTheme);
+    const [themePreference, setThemePreferenceState] = useState<ThemePreference>(getInitialPreference);
+    const [systemTheme, setSystemTheme] = useState<Theme>(getSystemTheme);
+    const theme: Theme = resolveTheme(themePreference, systemTheme);
     const [userThemes, setUserThemes] = useState<CustomTheme[]>(() => loadUserThemes());
     const [activeCustomThemeId, setActiveCustomThemeIdState] = useState<string | null>(
         () => safeTryGet('active-custom-theme-id')
@@ -91,6 +108,13 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     // All available themes: builtins + user-created
     const allThemes = [...BUILTIN_THEMES, ...userThemes];
 
+    useLayoutEffect(() => {
+        const query = window.matchMedia('(prefers-color-scheme: light)');
+        const handleChange = (event: MediaQueryListEvent) => setSystemTheme(event.matches ? 'light' : 'dark');
+        query.addEventListener('change', handleChange);
+        return () => query.removeEventListener('change', handleChange);
+    }, []);
+
     // Apply base theme to DOM
     useLayoutEffect(() => {
         if (!activeCustomThemeId) {
@@ -98,7 +122,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
             applyBaseTheme(theme);
         }
         safeTrySet('theme', theme);
-    }, [theme, activeCustomThemeId]);
+        safeTrySet('theme-preference', themePreference);
+    }, [theme, themePreference, activeCustomThemeId]);
 
     // Apply custom theme to DOM
     useLayoutEffect(() => {
@@ -124,14 +149,24 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
             setActiveCustomThemeIdState(null);
             safeTrySet('active-custom-theme-id', '');
             removeCustomThemeFromDOM();
-            setThemeState(nextBase);
+            setThemePreferenceState(nextBase);
         } else {
-            setThemeState(t => t === 'dark' ? 'light' : 'dark');
+            setThemePreferenceState(theme === 'dark' ? 'light' : 'dark');
         }
-    }, [activeCustomThemeId, allThemes]);
+    }, [activeCustomThemeId, allThemes, theme]);
 
     const setTheme = useCallback((newTheme: Theme) => {
-        setThemeState(newTheme);
+        setActiveCustomThemeIdState(null);
+        safeTrySet('active-custom-theme-id', '');
+        removeCustomThemeFromDOM();
+        setThemePreferenceState(newTheme);
+    }, []);
+
+    const setThemePreference = useCallback((newTheme: ThemePreference) => {
+        setActiveCustomThemeIdState(null);
+        safeTrySet('active-custom-theme-id', '');
+        removeCustomThemeFromDOM();
+        setThemePreferenceState(newTheme);
     }, []);
 
     const setActiveCustomTheme = useCallback((id: string | null) => {
@@ -180,8 +215,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     return (
         <ThemeContext.Provider value={{
             theme,
+            themePreference,
             toggleTheme,
             setTheme,
+            setThemePreference,
             customThemes: allThemes,
             activeCustomThemeId,
             setActiveCustomTheme,

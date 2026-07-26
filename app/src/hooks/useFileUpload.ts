@@ -4,10 +4,11 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { QueueItem } from '../types';
+import { QueueItem, UploadProtectionIntent } from '../types';
 import { isAndroidPlatform, showFileDialogFallback, pickWithFallback } from '../utils';
 import { useSettings } from '../context/SettingsContext';
 import type { Store } from '@tauri-apps/plugin-store';
+import { useTranslation } from 'react-i18next';
 
 interface ProgressPayload {
     id: string;
@@ -27,6 +28,7 @@ interface RemoteProgressPayload {
 }
 
 export function useFileUpload(activeFolderId: number | null, store: Store | null) {
+    const { t } = useTranslation();
     const queryClient = useQueryClient();
     const { settings } = useSettings();
     const [uploadQueue, setUploadQueue] = useState<QueueItem[]>([]);
@@ -74,7 +76,15 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
         if (!store || initialized) return;
         store.get<QueueItem[]>('uploadQueue').then((saved) => {
             if (saved && saved.length > 0) {
-                const pending = saved.filter(i => i.status === 'pending');
+                const pending = saved
+                    .filter(i => i.status === 'pending' || i.status === 'waiting_for_unlock')
+                    .map(i => ({
+                        ...i,
+                        status: i.protection?.mode === 'passphrase' || i.protection?.mode === 'vault_and_passphrase'
+                            ? 'waiting_for_unlock' as const
+                            : i.status,
+                        protection: i.protection ? { ...i.protection, promptToken: undefined } : undefined,
+                    }));
                 if (pending.length > 0) {
                     setUploadQueue(pending);
                     toast.info(`Restored ${pending.length} pending uploads`);
@@ -86,7 +96,12 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
 
     useEffect(() => {
         if (!store || !initialized) return;
-        const pending = uploadQueue.filter(i => i.status === 'pending');
+        const pending = uploadQueue
+            .filter(i => i.status === 'pending' || i.status === 'waiting_for_unlock')
+            .map(i => ({
+                ...i,
+                protection: i.protection ? { ...i.protection, promptToken: undefined } : undefined,
+            }));
         store.set('uploadQueue', pending).then(() => store.save());
     }, [store, uploadQueue, initialized]);
 
@@ -125,14 +140,44 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
     };
 
     const processItem = async (item: QueueItem) => {
+        const protection: UploadProtectionIntent = item.protection ?? {
+            mode: settings.encryptionDefaultMode,
+            protectMetadata: settings.encryptionProtectMetadata,
+        };
+        if (
+            (protection.mode === 'passphrase' || protection.mode === 'vault_and_passphrase')
+            && !protection.promptToken
+        ) {
+            setUploadQueue(q => q.map(i => i.id === item.id ? {
+                ...i,
+                protection,
+                status: 'waiting_for_unlock',
+                error: 'File passphrase required',
+            } : i));
+            return;
+        }
         activeCountRef.current++;
         const initialStatus = item.url ? 'downloading' : 'uploading';
         setUploadQueue(q => q.map(i => i.id === item.id ? { ...i, status: initialStatus, progress: 0 } : i));
         try {
             if (item.url) {
-                await invoke('cmd_upload_from_url', { url: item.url, folderId: item.folderId, transferId: item.id });
+                await invoke('cmd_upload_from_url', {
+                    url: item.url,
+                    folderId: item.folderId,
+                    transferId: item.id,
+                    protectionMode: protection.mode,
+                    promptToken: protection.promptToken,
+                    protectMetadata: protection.protectMetadata ?? settings.encryptionProtectMetadata,
+                });
             } else {
-                await invoke('cmd_upload_file', { path: item.path, folderId: item.folderId, transferId: item.id });
+                await invoke('cmd_upload_file', {
+                    path: item.path,
+                    folderId: item.folderId,
+                    transferId: item.id,
+                    protectionMode: protection.mode,
+                    promptToken: protection.promptToken,
+                    protectMetadata: protection.protectMetadata ?? settings.encryptionProtectMetadata,
+                });
             }
             // Check if cancelled during upload
             if (cancelledRef.current.has(item.id)) {
@@ -148,6 +193,14 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
                 const errMsg = String(e);
                 if (errMsg.includes('Transfer cancelled')) {
                     setUploadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'cancelled' } : i));
+                } else if (errMsg.includes('VAULT_LOCKED') || errMsg.includes('KEY_REQUIRED')) {
+                    setUploadQueue(q => q.map(i => i.id === item.id ? {
+                        ...i,
+                        status: 'waiting_for_unlock',
+                        error: errMsg,
+                        protection: i.protection ? { ...i.protection, promptToken: undefined } : protection,
+                    } : i));
+                    toast.warning(t('settings.encryption_mode_passphrase'));
                 } else if (errMsg.includes('FILE_TOO_BIG') || errMsg.includes('too large') || errMsg.includes('2 GB')) {
                     setUploadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'error', error: errMsg } : i));
                     toast.error(`Upload failed: Telegram has a 2 GB file size limit. Try splitting large folders.`);
@@ -166,14 +219,56 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
         }
     };
 
-    /** Queues a set of file paths for upload */
-    const queueFiles = (paths: string[]) => {
+    const stageProtectionForFiles = async (
+        count: number,
+        requestedMode = settings.encryptionDefaultMode,
+    ): Promise<UploadProtectionIntent[] | null> => {
+        const mode = requestedMode;
+        const base: UploadProtectionIntent = {
+            mode,
+            protectMetadata: settings.encryptionProtectMetadata,
+        };
+        if (mode !== 'passphrase' && mode !== 'vault_and_passphrase') {
+            return Array.from({ length: count }, () => ({ ...base }));
+        }
+
+        const accepted = window.confirm(t('settings.encryption_disclaimer_body'));
+        if (!accepted) return null;
+        const passphrase = window.prompt(
+            `${t('settings.encryption_mode_passphrase')}\n${t('settings.min_passphrase_length')}`,
+        );
+        if (!passphrase) return null;
+        if (new TextEncoder().encode(passphrase).length < 8) {
+            toast.error(t('settings.min_passphrase_length'));
+            return null;
+        }
+        const confirmation = window.prompt(t('settings.confirm_passphrase'));
+        if (confirmation !== passphrase) {
+            toast.error(t('settings.passphrases_no_match'));
+            return null;
+        }
+        try {
+            const tokens = await Promise.all(
+                Array.from({ length: count }, () => invoke<number>('cmd_stage_file_passphrase', { passphrase })),
+            );
+            return tokens.map(promptToken => ({ ...base, promptToken }));
+        } catch (error) {
+            toast.error(`Could not prepare encrypted upload: ${String(error)}`);
+            return null;
+        }
+    };
+
+    /** Queues a set of file paths with an explicit, non-secret protection intent. */
+    const queueFiles = async (paths: string[]) => {
         if (!paths || paths.length === 0) return;
-        const newItems: QueueItem[] = paths.map((path: string) => ({
+        const protection = await stageProtectionForFiles(paths.length);
+        if (!protection) return;
+        const newItems: QueueItem[] = paths.map((path: string, index) => ({
             id: Math.random().toString(36).substr(2, 9),
             path,
             folderId: activeFolderId,
             status: 'pending' as const,
+            protection: protection[index],
         }));
         setUploadQueue(prev => [...prev, ...newItems]);
         toast.info(`Queued ${paths.length} file${paths.length !== 1 ? 's' : ''} for upload`);
@@ -196,14 +291,14 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
             },
         );
         if (paths && paths.length > 0) {
-            queueFiles(paths);
+            await queueFiles(paths);
         }
     };
 
     /** Queue files dropped from the OS file manager (drag-and-drop upload) */
     const handleDropUpload = (paths: string[]) => {
         if (!paths || paths.length === 0) return;
-        queueFiles(paths);
+        void queueFiles(paths);
     };
 
     const handleFolderUpload = async () => {
@@ -223,7 +318,7 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
                         // HTML folder picker returns individual file paths, not a folder path.
                         // We can't zip without a folder path, so files upload individually.
                         toast.info('Folder zipping unavailable with browser picker — uploading files individually.');
-                        queueFiles(fallbackPaths);
+                        await queueFiles(fallbackPaths);
                     }
                     return null; // Already handled via queueFiles — signal that the main flow should stop
                 },
@@ -237,12 +332,18 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
             toast.info(`Zipping "${folderName}"...`);
             try {
                 const zipPath = await invoke<string>('cmd_zip_folder', { folderPath });
+                const protection = await stageProtectionForFiles(1);
+                if (!protection) {
+                    await invoke('cmd_delete_temp_zip', { path: zipPath }).catch(() => {});
+                    return;
+                }
                 const item: QueueItem = {
                     id: Math.random().toString(36).substr(2, 9),
                     path: zipPath,
                     folderId: activeFolderId,
                     status: 'pending',
                     tempZipPath: zipPath,
+                    protection: protection[0],
                 };
                 setUploadQueue(prev => [...prev, item]);
                 toast.success(`Queued "${folderName}.zip" for upload`);
@@ -285,15 +386,23 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
         });
     };
 
-    const retryItem = (id: string) => {
+    const retryItem = async (id: string) => {
+        const item = uploadQueue.find(candidate => candidate.id === id);
+        if (!item || !['error', 'cancelled', 'waiting_for_unlock'].includes(item.status)) return;
+        let protection = item.protection;
+        if (protection?.mode === 'passphrase' || protection?.mode === 'vault_and_passphrase') {
+            const staged = await stageProtectionForFiles(1, protection.mode);
+            if (!staged) return;
+            protection = { ...staged[0], protectMetadata: protection.protectMetadata };
+        }
         setUploadQueue(q => q.map(i =>
-            i.id === id && (i.status === 'error' || i.status === 'cancelled')
-                ? { ...i, status: 'pending' as const, error: undefined, progress: undefined, uploadedBytes: undefined, totalBytes: undefined, speedBytesPerSec: undefined }
+            i.id === id
+                ? { ...i, protection, status: 'pending' as const, error: undefined, progress: undefined, uploadedBytes: undefined, totalBytes: undefined, speedBytesPerSec: undefined }
                 : i
         ));
     };
 
-    const handleUrlUpload = (url: string, folderId: number | null) => {
+    const handleUrlUpload = async (url: string, folderId: number | null) => {
         if (!url || !url.trim()) return;
         let filename: string;
         try {
@@ -301,12 +410,15 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
         } catch {
             filename = url.split('/').pop() || 'remote_file';
         }
+        const protection = await stageProtectionForFiles(1);
+        if (!protection) return;
         const item: QueueItem = {
             id: Math.random().toString(36).substr(2, 9),
             path: filename,
             url: url.trim(),
             folderId: folderId,
             status: 'pending' as const,
+            protection: protection[0],
         };
         setUploadQueue(prev => [...prev, item]);
         toast.info(`Queued remote upload from URL`);

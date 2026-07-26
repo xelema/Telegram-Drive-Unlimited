@@ -15,13 +15,20 @@ const DesktopDashboard = React.lazy(() => import("./components/desktop/DesktopDa
 // perform static analysis and code-splitting. Template literals with
 // variables prevent Vite from resolving the module at build time.
 const MobileDashboard = React.lazy(() => import("./components/mobile/MobileDashboard.tsx"));
+const DesignGallery = import.meta.env.DEV
+  ? React.lazy(() => import("./components/dev/DesignGallery"))
+  : null;
 
 import { Toaster, toast } from "sonner";
 import { ConfirmProvider } from "./context/ConfirmContext";
 import { ThemeProvider, useTheme } from "./context/ThemeContext";
 import { SettingsProvider } from "./context/SettingsContext";
+import { EncryptionProvider } from "./hooks/useEncryption.tsx";
 import { useSettings } from "./context/SettingsContext";
 import { useTranslation } from "react-i18next";
+
+import { getLanguageInfo } from "./i18n/languages";
+import { resolveLanguagePreference } from "./i18n/resolveLanguage";
 
 const queryClient = new QueryClient();
 
@@ -38,9 +45,11 @@ function AppContent() {
   // Handle active language and RTL direction changes
   useEffect(() => {
     if (!isLoaded) return;
-    i18n.changeLanguage(settings.language);
-    document.documentElement.lang = settings.language;
-    document.documentElement.dir = settings.language === 'ar' ? 'rtl' : 'ltr';
+    const activeLang = resolveLanguagePreference(settings.language);
+    const info = getLanguageInfo(activeLang);
+    i18n.changeLanguage(activeLang);
+    document.documentElement.lang = activeLang;
+    document.documentElement.dir = info.dir;
   }, [settings.language, isLoaded, i18n]);
 
   // Performance mode: auto-enable when user has prefers-reduced-motion
@@ -150,19 +159,6 @@ function AppContent() {
     return () => clearTimeout(timer);
   }, [authStatus]);
 
-  // Clean up PDF preview cache files on close/beforeunload
-  useEffect(() => {
-    const handleClose = () => {
-      invoke("cmd_clean_preview_cache").catch(() => {});
-    };
-
-    window.addEventListener("beforeunload", handleClose);
-    return () => {
-      window.removeEventListener("beforeunload", handleClose);
-      handleClose();
-    };
-  }, []);
-
   // Styled splash screen while verifying the session
   if (authStatus === "loading") {
     return (
@@ -215,13 +211,25 @@ function AppContent() {
 
 
 function App() {
+  const showDesignGallery = Boolean(
+    DesignGallery && typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('design-gallery')
+  );
+
   return (
     <ErrorBoundary>
       <ThemeProvider>
         <QueryClientProvider client={queryClient}>
           <ConfirmProvider>
             <SettingsProvider>
-              <AppContent />
+              <EncryptionProvider>
+              {showDesignGallery && DesignGallery ? (
+                <Suspense fallback={<div className="h-screen bg-app-canvas" />}>
+                  <DesignGallery />
+                </Suspense>
+              ) : (
+                <AppContent />
+              )}
+              </EncryptionProvider>
             </SettingsProvider>
           </ConfirmProvider>
         </QueryClientProvider>

@@ -36,6 +36,7 @@ local.properties
 /app/src-tauri/tests/android_uri_cache_tests.rs
 /app/src-tauri/gen/schemas/android-schema.json
 /app/src-tauri/icons/android/
+.freebuff/
 
 
 

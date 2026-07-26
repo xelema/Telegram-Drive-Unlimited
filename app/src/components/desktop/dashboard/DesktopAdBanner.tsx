@@ -139,25 +139,23 @@ export function DesktopAdBanner() {
     <>
       {/* Ad panel */}
       <div
-        role="dialog"
+        role="complementary"
         aria-label="Sponsored advertisement — closes automatically after 10 seconds"
         onMouseEnter={() => setIsHovering(true)}
         onMouseLeave={() => setIsHovering(false)}
         className={`
-          fixed bottom-20 right-5 z-[100]
-          bg-telegram-surface border border-telegram-border/60
-          rounded-xl shadow-2xl overflow-hidden
-          transition-all duration-300 ease-out
-          ${exiting ? 'opacity-0 scale-95 translate-y-2' : 'opacity-100 scale-100'}
+          fixed bottom-20 end-5 z-[100] flex w-[300px] flex-col overflow-hidden rounded-container border border-app-border bg-app-surface-raised shadow-[var(--shadow-floating)]
+          transition-all duration-200 ease-out
+          ${exiting ? 'translate-y-2 opacity-0' : 'opacity-100'}
         `}
       >
         {/* Countdown display — shows seconds remaining until auto-close */}
         <div
           className="
-            absolute top-1.5 right-1.5 z-20
-            p-1 rounded-md text-[10px] font-bold
+            absolute end-3 top-3 z-20
+            p-1 rounded-md text-[10px] font-medium
             flex items-center justify-center min-w-[24px] h-[20px]
-            bg-white/5 text-white/40 border border-white/10
+            bg-app-surface-sunken/70 text-app-text-secondary border border-app-border
           "
           aria-label={`Advertisement closes in ${countdown} seconds`}
         >
@@ -165,9 +163,9 @@ export function DesktopAdBanner() {
         </div>
 
         {/* Header bar with dismiss countdown text */}
-        <div className="flex items-center justify-center pl-4 pr-10 py-2 bg-telegram-hover/30 border-b border-telegram-border/30 select-none">
-          <span className="text-[11px] font-medium text-telegram-text/80">
-            Sponsored Ad — closes in <span className="font-bold text-telegram-primary tabular-nums">{countdown}</span>s
+        <div className="flex items-center border-b border-app-border-subtle px-3 py-2.5 pe-12 select-none">
+          <span className="sponsored-label border-0 px-0">
+            Sponsored · closes in <span className="ms-1 font-semibold tabular-nums text-app-accent">{countdown}</span>s
           </span>
         </div>
 
@@ -184,7 +182,7 @@ export function DesktopAdBanner() {
             anywhere on the ad area open the SmartLink. */}
         <button
           onClick={handleAdClick}
-          className="relative block cursor-pointer border-0 bg-transparent p-0 m-0 w-[300px] h-[250px]"
+          className="relative m-0 block h-[250px] w-[300px] cursor-pointer border-0 bg-transparent p-0"
           aria-label="Click to open sponsored content in browser"
         >
           <iframe
@@ -195,7 +193,7 @@ export function DesktopAdBanner() {
             width={300}
             height={250}
             style={{ border: 'none', overflow: 'hidden', pointerEvents: 'none' }}
-            className="bg-telegram-bg/50"
+            className="bg-app-surface-sunken/50"
           />
         </button>
       </div>

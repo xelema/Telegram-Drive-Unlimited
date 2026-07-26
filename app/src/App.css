@@ -1,32 +1,120 @@
 @import "tailwindcss";
 
 /* stylelint-disable at-rule-no-unknown */
-/* Dark Theme (Default) - Using Tailwind v4 @theme directive */
+/* Quiet Utility semantic theme. Legacy telegram-* tokens remain as aliases so
+   stored custom themes and incrementally migrated components keep working. */
 @theme {
-  --color-telegram-bg: #0e1621;
-  --color-telegram-surface: #17212b;
-  --color-telegram-primary: #ffae00;
-  --color-telegram-secondary: #2481cc;
-  --color-telegram-text: #ffffff;
-  --color-telegram-subtext: #8e9fb3;
-  --color-telegram-border: rgba(255, 255, 255, 0.1);
-  --color-telegram-hover: rgba(255, 255, 255, 0.05);
-  --color-telegram-glass-bg: #17212b;
-  --color-telegram-glass-border: #ffffff;
+  --radius-control: 0.5rem;
+  --radius-container: 0.75rem;
+  --radius-overlay: 1rem;
+  --text-ui: 0.8125rem;
+  --text-ui--line-height: 1.125rem;
+  --text-metadata: 0.75rem;
+  --text-metadata--line-height: 1rem;
+  --text-badge: 0.6875rem;
+  --text-badge--line-height: 0.875rem;
+  --text-app-title: 0.9375rem;
+  --text-app-title--line-height: 1.25rem;
+  --color-app-canvas: #101114;
+  --color-app-sidebar: #17181c;
+  --color-app-surface: #1b1c20;
+  --color-app-surface-raised: #222329;
+  --color-app-surface-sunken: #0c0d10;
+  --color-app-accent: #2aabee;
+  --color-app-accent-hover: #43b7f2;
+  --color-app-accent-soft: rgba(42, 171, 238, 0.14);
+  --color-app-accent-contrast: #07141b;
+  --color-app-text: #f7f7f5;
+  --color-app-text-secondary: #b2b3ba;
+  --color-app-text-tertiary: #7f818b;
+  --color-app-border-subtle: rgba(255, 255, 255, 0.06);
+  --color-app-border: rgba(255, 255, 255, 0.1);
+  --color-app-border-strong: rgba(255, 255, 255, 0.17);
+  --color-app-hover: rgba(255, 255, 255, 0.055);
+  --color-app-selected: rgba(42, 171, 238, 0.12);
+  --color-app-overlay: rgba(6, 7, 10, 0.66);
+  --color-app-success: #45c486;
+  --color-app-warning: #e6a64c;
+  --color-app-danger: #ef6a72;
+  --color-app-info: #63a9ff;
+
+  --color-telegram-bg: var(--color-app-canvas);
+  --color-telegram-surface: var(--color-app-surface);
+  --color-telegram-primary: var(--color-app-accent);
+  --color-telegram-secondary: var(--color-app-info);
+  --color-telegram-text: var(--color-app-text);
+  --color-telegram-subtext: var(--color-app-text-secondary);
+  --color-telegram-border: var(--color-app-border);
+  --color-telegram-hover: var(--color-app-hover);
+  --color-telegram-glass-bg: var(--color-app-surface);
+  --color-telegram-glass-border: var(--color-app-text);
 }
 
 /* Light Theme Overrides */
 :root.light {
-  --color-telegram-bg: #f0f2f5;
-  --color-telegram-surface: #ffffff;
-  --color-telegram-primary: #e69500;
-  --color-telegram-secondary: #2481cc;
-  --color-telegram-text: #1a1a1a;
-  --color-telegram-subtext: #65676b;
-  --color-telegram-border: rgba(0, 0, 0, 0.1);
-  --color-telegram-hover: rgba(0, 0, 0, 0.03);
-  --color-telegram-glass-bg: #ffffff;
-  --color-telegram-glass-border: #000000;
+  --color-app-canvas: #f5f5f2;
+  --color-app-sidebar: #efefeb;
+  --color-app-surface: #fbfbf9;
+  --color-app-surface-raised: #ffffff;
+  --color-app-surface-sunken: #e9e9e5;
+  --color-app-accent: #168ac3;
+  --color-app-accent-hover: #0e78ad;
+  --color-app-accent-soft: rgba(22, 138, 195, 0.12);
+  --color-app-accent-contrast: #ffffff;
+  --color-app-text: #1b1c1f;
+  --color-app-text-secondary: #5d6068;
+  --color-app-text-tertiary: #858891;
+  --color-app-border-subtle: rgba(27, 28, 31, 0.055);
+  --color-app-border: rgba(27, 28, 31, 0.1);
+  --color-app-border-strong: rgba(27, 28, 31, 0.18);
+  --color-app-hover: rgba(27, 28, 31, 0.05);
+  --color-app-selected: rgba(22, 138, 195, 0.1);
+  --color-app-overlay: rgba(18, 19, 22, 0.42);
+  --color-app-success: #178a55;
+  --color-app-warning: #a66b11;
+  --color-app-danger: #c8454e;
+  --color-app-info: #2479c8;
+
+  --color-telegram-bg: var(--color-app-canvas);
+  --color-telegram-surface: var(--color-app-surface);
+  --color-telegram-primary: var(--color-app-accent);
+  --color-telegram-secondary: var(--color-app-info);
+  --color-telegram-text: var(--color-app-text);
+  --color-telegram-subtext: var(--color-app-text-secondary);
+  --color-telegram-border: var(--color-app-border);
+  --color-telegram-hover: var(--color-app-hover);
+  --color-telegram-glass-bg: var(--color-app-surface);
+  --color-telegram-glass-border: var(--color-app-text);
+}
+
+:root {
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --metric-control-inline: 1.75rem;
+  --metric-control-compact: 1.875rem;
+  --metric-control-standard: 2rem;
+  --metric-control-prominent: 2.25rem;
+  --metric-control-touch: 2.75rem;
+  --metric-toolbar-desktop: 3rem;
+  --metric-sidebar-collapsed: 3.25rem;
+  --metric-sidebar-expanded: 15rem;
+  --metric-navigation-row: 2rem;
+  --metric-list-row: 2.5rem;
+  --metric-grid-gap: 0.75rem;
+  --radius-control: 0.5rem;
+  --radius-container: 0.75rem;
+  --radius-overlay: 1rem;
+  --shadow-raised: 0 1px 2px rgba(0, 0, 0, 0.12), 0 6px 18px rgba(0, 0, 0, 0.07);
+  --shadow-floating: 0 14px 42px rgba(0, 0, 0, 0.22);
+  --motion-fast: 120ms;
+  --motion-standard: 160ms;
+  --motion-slow: 220ms;
+  --ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 body,
@@ -36,20 +124,205 @@ body,
   width: 100vw;
   height: 100vh;
   overflow: hidden;
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
   background: var(--color-telegram-bg);
   color: var(--color-telegram-text);
-  transition: background-color 0.3s ease, color 0.3s ease;
+  transition: background-color var(--motion-slow) var(--ease-standard), color var(--motion-standard) var(--ease-standard);
 }
 
-/* Auth screen gradient background */
+.desktop-shell {
+  font-size: 0.8125rem;
+  line-height: 1.125rem;
+}
+
+.type-app-title,
+.text-app-title {
+  font-size: 0.9375rem;
+  line-height: 1.25rem;
+}
+
+.type-ui,
+.text-ui {
+  font-size: 0.8125rem;
+  line-height: 1.125rem;
+}
+
+.type-metadata,
+.text-metadata {
+  font-size: 0.75rem;
+  line-height: 1rem;
+}
+
+.type-badge,
+.text-badge {
+  font-size: 0.6875rem;
+  line-height: 0.875rem;
+}
+
+@layer base {
+  button,
+  input,
+  select,
+  textarea {
+    font: inherit;
+  }
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--color-app-accent);
+  outline-offset: 2px;
+}
+
+button:disabled,
+input:disabled,
+select:disabled,
+textarea:disabled {
+  cursor: not-allowed;
+}
+
+.quiet-surface {
+  background: var(--color-app-surface);
+  border: 1px solid var(--color-app-border-subtle);
+  border-radius: var(--radius-container);
+}
+
+.quiet-raised {
+  background: var(--color-app-surface-raised);
+  border: 1px solid var(--color-app-border);
+  border-radius: var(--radius-overlay);
+  box-shadow: var(--shadow-raised);
+}
+
+.quiet-toolbar {
+  background: color-mix(in srgb, var(--color-app-surface) 88%, transparent);
+  border-color: var(--color-app-border-subtle);
+  backdrop-filter: blur(18px) saturate(120%);
+  -webkit-backdrop-filter: blur(18px) saturate(120%);
+}
+
+.quiet-control {
+  border-radius: var(--radius-control);
+  transition: color var(--motion-fast) var(--ease-standard),
+    background-color var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard),
+    filter var(--motion-fast) var(--ease-standard),
+    opacity var(--motion-fast) var(--ease-standard);
+}
+
+.quiet-control:hover:not(:disabled) {
+  background: var(--color-app-hover);
+}
+
+.quiet-control:active:not(:disabled) {
+  filter: brightness(0.96);
+}
+
+.quiet-menu-item {
+  display: flex;
+  min-height: var(--metric-control-standard);
+  width: 100%;
+  align-items: center;
+  gap: 0.625rem;
+  border-radius: var(--radius-control);
+  padding-inline: 0.625rem;
+  color: var(--color-app-text);
+  font-size: 0.8125rem;
+  line-height: 1.125rem;
+  text-align: start;
+  transition: color var(--motion-fast) var(--ease-standard),
+    background-color var(--motion-fast) var(--ease-standard);
+}
+
+.quiet-menu-item:hover:not(:disabled) {
+  background: var(--color-app-hover);
+}
+
+.quiet-control.sidebar-sync-action {
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--color-app-accent) 14%, transparent),
+    color-mix(in srgb, var(--color-app-accent) 5%, transparent)
+  );
+  border: 1px solid color-mix(in srgb, var(--color-app-accent) 24%, var(--color-app-border));
+}
+
+.quiet-control.sidebar-sync-action:hover:not(:disabled) {
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--color-app-accent) 21%, transparent),
+    color-mix(in srgb, var(--color-app-accent) 8%, transparent)
+  );
+  border-color: color-mix(in srgb, var(--color-app-accent) 38%, var(--color-app-border));
+}
+
+.quiet-control.toolbar-upload-action {
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--color-app-accent-hover) 72%, var(--color-app-accent)),
+    var(--color-app-accent)
+  );
+  border-color: color-mix(in srgb, var(--color-app-accent) 76%, var(--color-app-border));
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--color-app-accent) 20%, transparent);
+}
+
+.quiet-control.toolbar-upload-action:hover:not(:disabled) {
+  background: linear-gradient(
+    135deg,
+    var(--color-app-accent-hover),
+    color-mix(in srgb, var(--color-app-accent-hover) 46%, var(--color-app-accent))
+  );
+  border-color: color-mix(in srgb, var(--color-app-accent-hover) 82%, var(--color-app-border));
+  box-shadow: 0 2px 5px color-mix(in srgb, var(--color-app-accent) 24%, transparent);
+}
+
+.quiet-control.sidebar-logout-action {
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--color-app-danger) 13%, transparent),
+    color-mix(in srgb, var(--color-app-danger) 4%, transparent)
+  );
+  border: 1px solid color-mix(in srgb, var(--color-app-danger) 22%, var(--color-app-border));
+}
+
+.quiet-control.sidebar-logout-action:hover:not(:disabled) {
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--color-app-danger) 20%, transparent),
+    color-mix(in srgb, var(--color-app-danger) 7%, transparent)
+  );
+  border-color: color-mix(in srgb, var(--color-app-danger) 36%, var(--color-app-border));
+}
+
+.quiet-menu {
+  background: color-mix(in srgb, var(--color-app-surface-raised) 94%, transparent);
+  border: 1px solid var(--color-app-border);
+  border-radius: var(--radius-container);
+  box-shadow: var(--shadow-floating);
+  backdrop-filter: blur(20px) saturate(120%);
+  -webkit-backdrop-filter: blur(20px) saturate(120%);
+}
+
+.text-balance {
+  text-wrap: balance;
+}
+
+/* Calm onboarding canvas shared by authentication and sponsored gateway. */
 .auth-gradient {
-  background: radial-gradient(120% 120% at 0% 0%, #3ca5ff 0%, #007aff 100%);
+  background:
+    radial-gradient(90% 70% at 50% -10%, color-mix(in srgb, var(--color-app-accent) 14%, transparent), transparent 68%),
+    var(--color-app-canvas);
 }
 
 :root.light .auth-gradient {
-  background: linear-gradient(135deg, #3b82f6 0%, #06b6d4 100%);
+  background:
+    radial-gradient(90% 70% at 50% -10%, color-mix(in srgb, var(--color-app-accent) 10%, transparent), transparent 68%),
+    var(--color-app-canvas);
 }
 
 /* Glassmorphism Utilities - Dark */
@@ -67,16 +340,17 @@ body,
 
 /* Auth-specific glass - works on gradient backgrounds in both themes */
 .auth-glass {
-  background: color-mix(in srgb, var(--color-telegram-glass-bg) 85%, transparent);
+  background: color-mix(in srgb, var(--color-app-surface-raised) 94%, transparent);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
-  border: 1px solid color-mix(in srgb, var(--color-telegram-glass-border) 10%, transparent);
+  border: 1px solid var(--color-app-border);
+  box-shadow: var(--shadow-floating);
 }
 
 :root.light .auth-glass {
-  background: color-mix(in srgb, var(--color-telegram-glass-bg) 90%, transparent);
-  border: 1px solid color-mix(in srgb, var(--color-telegram-glass-border) 30%, transparent);
-  color: #1a1a1a;
+  background: color-mix(in srgb, var(--color-app-surface-raised) 96%, transparent);
+  border-color: var(--color-app-border);
+  color: var(--color-app-text);
 }
 
 /* Force dark text inside auth-glass in light mode */
@@ -130,6 +404,219 @@ body,
 :root.light .glass-input {
   background: color-mix(in srgb, var(--color-telegram-glass-bg) 90%, transparent);
   border: 1px solid color-mix(in srgb, var(--color-telegram-glass-border) 15%, transparent);
+}
+
+/* Shared phase 5–7 surfaces. These classes keep auth, mobile sheets and
+   viewers on the same theme adapters without changing their controllers. */
+.auth-label {
+  display: block;
+  margin-bottom: 0.375rem;
+  color: var(--color-app-text-secondary);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 0.875rem;
+}
+
+.auth-input {
+  width: 100%;
+  height: 2.75rem;
+  padding-inline: 2.5rem 0.75rem;
+  border: 1px solid var(--color-app-border);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--color-app-surface-sunken) 48%, transparent);
+  color: var(--color-app-text);
+  font-size: 0.8125rem;
+  line-height: 1.125rem;
+  outline: none;
+  transition: border-color var(--motion-fast) var(--ease-standard),
+    background-color var(--motion-fast) var(--ease-standard);
+}
+
+.auth-input::placeholder {
+  color: var(--color-app-text-tertiary);
+}
+
+.auth-input:focus {
+  border-color: color-mix(in srgb, var(--color-app-accent) 65%, var(--color-app-border));
+  background: color-mix(in srgb, var(--color-app-surface-sunken) 62%, transparent);
+}
+
+.auth-input-icon {
+  position: absolute;
+  inset-inline-start: 0.75rem;
+  top: 50%;
+  z-index: 1;
+  width: 1rem;
+  height: 1rem;
+  transform: translateY(-50%);
+  color: var(--color-app-text-tertiary);
+  pointer-events: none;
+}
+
+.auth-primary-action {
+  display: inline-flex;
+  width: 100%;
+  min-height: 2.75rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding-inline: 1rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  background: linear-gradient(135deg, var(--color-app-accent-hover), var(--color-app-accent));
+  color: var(--color-app-accent-contrast);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.125rem;
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--color-app-accent) 22%, transparent);
+}
+
+.auth-primary-action:hover:not(:disabled) {
+  filter: brightness(1.04);
+}
+
+.auth-secondary-action {
+  display: inline-flex;
+  min-height: 2rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  border-radius: var(--radius-control);
+  color: var(--color-app-text-secondary);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1rem;
+}
+
+.auth-secondary-action:hover:not(:disabled) {
+  color: var(--color-app-text);
+  background: var(--color-app-hover);
+}
+
+.sponsored-label {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.25rem;
+  padding-inline: 0.5rem;
+  border: 1px solid var(--color-app-border);
+  border-radius: 999px;
+  color: var(--color-app-text-tertiary);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 0.875rem;
+}
+
+.mobile-sheet {
+  width: 100%;
+  max-width: 32rem;
+  max-height: min(78vh, 44rem);
+  padding: 1rem;
+  padding-bottom: calc(1rem + env(safe-area-inset-bottom));
+  border: 1px solid var(--color-app-border);
+  border-bottom: 0;
+  border-radius: var(--radius-overlay) var(--radius-overlay) 0 0;
+  background: var(--color-app-surface-raised);
+  color: var(--color-app-text);
+  box-shadow: var(--shadow-floating);
+}
+
+.mobile-sheet-handle {
+  width: 2rem;
+  height: 0.1875rem;
+  border-radius: 999px;
+  background: var(--color-app-border-strong);
+}
+
+.viewer-overlay {
+  background: color-mix(in srgb, #050608 90%, transparent);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.viewer-panel {
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, #ffffff 10%, transparent);
+  border-radius: var(--radius-container);
+  background: #050608;
+  box-shadow: var(--shadow-floating);
+}
+
+.viewer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem;
+  border: 1px solid color-mix(in srgb, #ffffff 11%, transparent);
+  border-radius: var(--radius-container);
+  background: color-mix(in srgb, #101114 78%, transparent);
+  color: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.viewer-control,
+.viewer-navigation {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  color: rgba(255, 255, 255, 0.72);
+  transition: color var(--motion-fast) var(--ease-standard),
+    background-color var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard);
+}
+
+.viewer-control {
+  width: 2rem;
+  height: 2rem;
+}
+
+.viewer-navigation {
+  width: 2.5rem;
+  height: 2.5rem;
+  border-color: color-mix(in srgb, #ffffff 9%, transparent);
+  background: color-mix(in srgb, #101114 68%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.viewer-control:hover:not(:disabled),
+.viewer-navigation:hover:not(:disabled) {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.file-card-container {
+  container-type: inline-size;
+}
+
+@container (max-width: 139px) {
+  .file-card-info {
+    min-height: 2.25rem;
+    padding: 0.5rem;
+  }
+
+  .file-card-metadata {
+    display: none;
+  }
+
+  .file-card-icon {
+    bottom: 2.25rem;
+    padding: 0.5rem;
+  }
+
+  .file-card-icon > svg,
+  .file-card-icon > div {
+    width: 2rem;
+    height: 2rem;
+  }
+
+  .file-card-actions {
+    max-width: calc(100% - 2.5rem);
+  }
 }
 
 /* Custom Scrollbar - Dark */
@@ -236,19 +723,24 @@ body,
 /* Input styling for light mode */
 :root.light input,
 :root.light textarea {
-  background-color: #ffffff;
-  border-color: rgba(0, 0, 0, 0.15);
-  color: #1a1a1a;
+  background-color: var(--color-app-surface-raised);
+  border-color: var(--color-app-border);
+  color: var(--color-app-text);
 }
 
 :root.light input::placeholder,
 :root.light textarea::placeholder {
-  color: #9ca3af;
+  color: var(--color-app-text-tertiary);
 }
 
 :root.light input:focus,
 :root.light textarea:focus {
-  border-color: var(--color-telegram-primary);
+  border-color: var(--color-app-accent);
+}
+
+:root.light input.bg-transparent {
+  background-color: transparent;
+  border-color: transparent;
 }
 
 /* ── Performance Mode ──────────────────────────────────────── */
@@ -280,7 +772,12 @@ body,
 
 .performance-mode .glass,
 .performance-mode .auth-glass,
-.performance-mode .glass-input {
+.performance-mode .glass-input,
+.performance-mode .quiet-toolbar,
+.performance-mode .quiet-menu,
+.performance-mode .viewer-overlay,
+.performance-mode .viewer-toolbar,
+.performance-mode .viewer-navigation {
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
 }

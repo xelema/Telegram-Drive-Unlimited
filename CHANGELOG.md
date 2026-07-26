@@ -1,4 +1,123 @@
-# Changelog
+## [2.0.0] - 2026-07-26
+
+### Major Release — Internationalization & Quiet Utility Redesign
+
+- **Internationalization & Localization Engine**
+  - Added multi-language architecture with 13 supported locales (English, Spanish, Russian, Simplified Chinese, French, Arabic, Brazilian Portuguese, German, Hindi, Indonesian, Turkish, Japanese, Korean).
+  - Added system language preference resolution, locale formatters for dates/sizes/rates, Bidi text isolation primitives, and Rust share route localization.
+  - Implemented automated localization validation scripts and CI workflow.
+
+### Quiet Utility Redesign
+
+- **New application-wide visual language**
+  - Implemented the Path B “Quiet Utility” redesign across the desktop shell, mobile shell, authentication, sponsored surfaces, file workspace, settings, transfers, dialogs, menus, viewers, and empty/loading states.
+  - Added semantic canvas, surface, border, text, accent, status, radius, elevation, typography, density, and motion tokens instead of relying on scattered component-specific styling.
+  - Rebalanced the interface toward neutral graphite and warm-light surfaces, restrained depth, thinner borders, reduced decorative blur, and content-first hierarchy.
+  - Reduced desktop typography and control dimensions to a denser modern scale inspired by current productivity applications while retaining 44–48px touch targets on mobile.
+  - Replaced excessive card-lift and button-scale animations with faster, quieter state transitions and reduced-motion-safe behavior.
+- **Shared UI primitives and development gallery**
+  - Added reusable buttons, icon buttons, fields, selects, switches, segmented controls, surfaces, menus, badges, status dots, progress indicators, dividers, and skeleton states.
+  - Added centralized Quiet Utility layout contracts for toolbar, navigation, row, sidebar, card, dialog, typography, and motion sizing.
+  - Added a development-only design gallery for light, dark, custom theme, compact-density, LTR, RTL, loading, authentication, mobile-sheet, and viewer-state review.
+- **Desktop shell and toolbar refinements**
+  - Reduced and aligned the sidebar identity bar and primary file toolbar to the same 48px height so their bottom borders remain pixel-aligned.
+  - Corrected the collapsed-sidebar layout so the logo and expand/collapse control remain within the application bounds.
+  - Consolidated search, sort, grid/list selection, thumbnail sizing, folder creation, settings, and upload actions into a more compact toolbar hierarchy.
+  - Added a unified transfer center for upload and download activity while preserving cancellation, retry, clear-finished, progress, speed, and concurrency behavior.
+- **Settings, authentication, and viewer polish**
+  - Rebuilt Settings as a larger, calmer category-based surface with denser controls, clearer section hierarchy, and updated tab/category switching motion.
+  - Restyled API setup, phone login, QR login, Telegram code, 2FA, help, donation, and session-restoration surfaces without changing their underlying authentication commands.
+  - Modernized image, PDF, audio/video, adaptive-streaming, and archive viewer chrome, navigation controls, loading states, and error presentation while retaining existing shortcuts and media behavior.
+- **Mobile experience**
+  - Updated the mobile toolbar, file rows, folder drawer, bottom navigation, action sheets, selection controls, transfer views, settings, and safe-area handling.
+  - Replaced overly card-heavy mobile presentation with quieter edge-to-edge rows and compact semantic surfaces.
+
+### Theme System
+
+- Preserved Default, System, Light, Dark, built-in preset, and user-created custom themes through the redesign.
+- Added semantic theme adapters so legacy presets and stored custom themes continue to drive the new design tokens.
+- Fixed theme switching so users can return to the redesigned Default theme after selecting Light, Dark, System, a preset, or a custom theme.
+- Improved custom-theme contrast mappings, theme persistence, scrollbar styling, and light/dark surface behavior.
+
+### File Workspace, Layout & Preview Performance
+
+- **Responsive file cards**
+  - Reworked file-card containment so long filenames, thumbnails, metadata, encryption state, media badges, cached-quality badges, selection controls, and hover actions cannot overlap adjacent cards.
+  - Added protected minimum card dimensions and virtualizer remeasurement while retaining responsive 4:3 sizing.
+  - Restored thumbnail scaling below 100%; users can now resize file cards from 50% through 200% in 25% increments.
+  - Replaced oversized file icons and controls with compact, consistently aligned variants.
+- **Faster image previews and thumbnails**
+  - Added bounded in-memory preview and thumbnail caches with one-hour expiry, least-recently-used refresh behavior, and duplicate in-flight request coalescing.
+  - Added backend preview/thumbnail caching, partial-download guards, file integrity checks, progress events, cache quotas, stale-part cleanup, and cache pruning.
+  - Added lazy image loading, asynchronous decoding, skeleton placeholders, fade-in presentation, cache invalidation on decode failure, and shared preview reuse between cards and the full viewer.
+  - Avoided clearing usable preview caches during ordinary component unmounts, making repeat opens substantially faster.
+- **Folder and query stability**
+  - Fixed duplicated files on the initially restored folder by deduplicating streamed folder chunks by message ID.
+  - Delayed file queries until the persisted startup folder is restored, preventing overlapping Saved Messages and startup-folder requests.
+  - Coalesced concurrent initial folder sync requests and cleared image memory caches on account/logout transitions.
+- Added skeleton layouts for grid/list loading states and refined empty, error, search, selection, and drag-target presentation.
+
+### Buttons, Actions & Sponsored Content
+
+- Added restrained color-matched gradients to Sync and Log Out actions.
+- Updated Upload buttons to use the same compact gradient treatment and Quiet Utility sizing.
+- Preserved the desktop 300×250 advertisement’s original in-flow placement so it no longer cuts into or displaces the top application banner/toolbar.
+- Retained desktop ad launch timing, recurrence, countdown, hover pause, auto-dismiss, sandboxing, and external click-through behavior.
+- Restyled the post-authentication sponsor gateway and Android sponsored banner with clearer disclosure, calmer presentation, safe-area handling, and preserved dismissal/click-through behavior.
+
+### Encryption — Opt-In Alpha
+
+- **TDENC2 encrypted Telegram transfers**
+  - Added optional Standard, Vault, File Passphrase, and Vault + File Passphrase upload modes; Standard remains the default.
+  - Added bounded-memory streaming encryption before Telegram upload and authenticated streaming decryption before final file publication.
+  - Added authenticated protected metadata for original filenames and MIME types.
+  - Applied explicit protection intent to manual uploads, drag-and-drop, folder ZIPs, retries, Android cached shares, and remote URL uploads.
+- **Vault and recovery**
+  - Added a persistent passphrase-protected vault, create/unlock/lock controls, inactivity auto-lock, background/sleep lock, logout lock, and exit lock.
+  - Added authenticated recovery-bundle export/import and safe vault replacement only after bundle verification and explicit confirmation.
+  - Added vault passphrase changes without rotating the vault key or re-encrypting every stored file.
+  - Added short-lived opaque single-use prompt tokens so raw per-file passphrases are not persisted in transfer queues.
+  - Added queue pause/retry states for credentials, decryption, and verification rather than silently falling back to plaintext.
+- **Format and security hardening**
+  - Replaced the quarantined TDENC1 prototype with the versioned TDENC2 envelope using XChaCha20-Poly1305, full 24-byte wrap nonces, keyed header authentication, authenticated metadata/chunks/final records, and exact ciphertext-length accounting.
+  - Added strict parser bounds for versions, algorithms, KDF parameters, chunk sizes, slot counts, lengths, truncation, trailing data, integer overflow, and Telegram’s post-encryption size limit.
+  - Added owner-only permissions for decrypted partial files and Unix remote-upload temporary files.
+  - Added transactional encryption registry migrations, RAII bandwidth reservations, registry reconstruction from strict remote TDENC2 header probes, and reconciliation handling for move/copy/delete operations.
+  - Added fail-closed detection for unindexed `.tdenc` and `TDENC2` objects so ciphertext is never treated as a normal preview, thumbnail, stream, REST download, or shared plaintext file.
+- **Encryption UI and mobile parity**
+  - Added encryption capability diagnostics, accurate loading/ready/blocked/error states, build identifiers, vault status, protected-file badges, and locked-name placeholders.
+  - Added the encryption settings surface to both desktop and mobile.
+  - Added a localized key-loss disclaimer explaining that forgotten passphrases, keys, and recovery material cannot be recovered by Telegram Drive, with acknowledgement required before vault creation.
+  - Preserved verified Android download publication through MediaStore.
+- **Intentionally unavailable for encrypted files**
+  - Encrypted in-app previews, thumbnails, PDF/archive/media playback, transcoding, HLS/range streaming, plaintext share links, REST plaintext access, remote rename, migration, and rekey workflows remain explicitly disabled until credential-scoped logical-media implementations are complete.
+  - Existing plaintext behavior for these features is unchanged.
+
+### Language & Internationalisation Infrastructure
+
+- Added System language preference and locale alias resolution while preserving all 13 supported language choices.
+- Added centralized locale metadata for text direction, number/date locale, aliases, and future font selection.
+- Added locale-aware number, byte-size, transfer-rate, date/time, relative-time, duration, percent, and list formatting helpers.
+- Added bidi-safe primitives for user filenames and technical strings such as URLs, paths, hashes, API keys, IP addresses, and ports.
+- Added generated typed translation keys, locale structure/type/interpolation validation, copied-English reporting, Arabic plural awareness, UI-literal scanning, pseudo-locales, and an i18n CI workflow.
+- Added translated encryption settings, recovery actions, status copy, passphrase warnings, and key-loss disclaimer across English, Spanish, Russian, Simplified Chinese, French, Arabic, Brazilian Portuguese, German, Hindi, Indonesian, Turkish, Japanese, and Korean.
+- Added a comprehensive language-support implementation plan covering remaining English extraction, native review, RTL, text expansion, accessibility, and release gates.
+
+### Reliability, Compatibility & Documentation
+
+- Added encryption-aware REST, local streaming, sharing, preview, and file-operation safety checks while preserving existing plaintext API behavior.
+- Added stable encryption registry records, protected metadata state, plaintext/ciphertext sizes, header hashes, protection modes, and reconciliation state to SQLite.
+- Preserved advertisements, Telegram authentication, folder/group navigation, sync, uploads/downloads, sharing, proxy/VPN settings, REST API, archives, viewers, updates, light/dark themes, and custom theme editing throughout the redesign.
+- Added the Quiet Utility design handoff and implementation plan, comprehensive language plan, encryption architecture/remediation plans, TDENC2 format ADR, and encryption execution report.
+- Verified the current work with a production frontend build, Rust compilation, 23 passing Rust library tests, localization validation/scanning, and whitespace validation.
+
+### Known Pre-Release Work
+
+- Complete the broader language plan’s remaining copied-English cleanup, hardcoded UI-string extraction, native linguistic review, RTL/long-string/CJK review, and accessibility testing.
+- Complete credential-scoped logical plaintext sources before enabling encrypted previews, media, archives, sharing, REST access, migration, or rekey workflows.
+- Run isolated Telegram integration tests, cross-platform recovery drills, fuzz/property testing, dependency/license review, and an independent cryptographic audit before describing encryption as generally available.
+
+---
 
 ## [1.9.9] - 2026-07-13
 

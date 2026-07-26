@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useEffect, ReactNode, useCallback } from 'react';
 import { load } from '@tauri-apps/plugin-store';
-import { SupportedLanguage } from '../i18n/languages';
+import { LanguagePreference } from '../i18n/languages';
 
 export interface Settings {
     viewMode: 'grid' | 'list';
@@ -8,7 +8,7 @@ export interface Settings {
     maxConcurrentUploads: number;
     maxConcurrentDownloads: number;
     zipFolders: boolean;
-    language: SupportedLanguage;
+    language: LanguagePreference;
 
     // ── Proxy ──────────────────────────────────────────────
     proxyEnabled: boolean;
@@ -51,6 +51,13 @@ export interface Settings {
 
     // ── Transcode cache ─────────────────────────────────────
     transcodeCacheMaxGb: number;     // 1–50 GB, default 5
+
+    // ── Encryption ────────────────────────────────────────
+    encryptionDefaultMode: 'standard' | 'vault' | 'passphrase' | 'vault_and_passphrase';
+    encryptionProtectMetadata: boolean;
+    encryptionAutoLockMinutes: number;
+    encryptionLockOnSleep: boolean;
+    encryptionTempPolicy: 'balanced' | 'strict';
 }
 
 const defaultSettings: Settings = {
@@ -59,7 +66,7 @@ const defaultSettings: Settings = {
     maxConcurrentUploads: 6,
     maxConcurrentDownloads: 6,
     zipFolders: true,
-    language: 'en',
+    language: 'system',
 
     // Proxy — off by default
     proxyEnabled: false,
@@ -98,6 +105,13 @@ const defaultSettings: Settings = {
     linuxRenderingFix: true,
 
     transcodeCacheMaxGb: 5,
+
+    // Encryption — off by default
+    encryptionDefaultMode: 'standard',
+    encryptionProtectMetadata: true,
+    encryptionAutoLockMinutes: 15,
+    encryptionLockOnSleep: true,
+    encryptionTempPolicy: 'balanced',
 };
 
 interface SettingsContextType {

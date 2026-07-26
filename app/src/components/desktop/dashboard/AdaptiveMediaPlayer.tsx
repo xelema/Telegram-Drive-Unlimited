@@ -819,36 +819,38 @@ export function AdaptiveMediaPlayer({
 
     return (
         <div
-            className={`fixed inset-0 z-[200] bg-black/90 animate-in fade-in duration-200 ${isFullscreen ? 'p-0' : 'flex items-center justify-center p-4 backdrop-blur-md'}`}
+            className={`viewer-overlay fixed inset-0 z-[200] animate-in fade-in duration-150 ${isFullscreen ? 'p-0' : 'flex items-center justify-center p-4'}`}
             onClick={onClose}
         >
             <div ref={containerRef} className={`relative ${isFullscreen ? 'fixed inset-0 w-screen h-screen max-w-none' : 'w-full max-w-6xl flex flex-col items-center'}`} onClick={e => e.stopPropagation()}>
                 {/* Nav buttons */}
-                <button onClick={onPrev} className={`absolute left-2 top-1/2 -translate-y-1/2 p-2 text-white/50 hover:text-white bg-white/10 hover:bg-white/20 rounded-full transition-all z-10 ${isFullscreen ? 'left-4' : ''}`} title="Previous (ArrowLeft / J)">
-                    <ChevronLeft className="w-6 h-6" />
+                <button onClick={onPrev} className={`viewer-navigation absolute start-2 top-1/2 z-10 -translate-y-1/2 ${isFullscreen ? 'start-4' : ''}`} title="Previous (ArrowLeft / J)" aria-label="Previous file">
+                    <ChevronLeft className="h-5 w-5 rtl:rotate-180" />
                 </button>
-                <button onClick={onNext} className={`absolute right-2 top-1/2 -translate-y-1/2 p-2 text-white/50 hover:text-white bg-white/10 hover:bg-white/20 rounded-full transition-all z-10 ${isFullscreen ? 'right-4' : ''}`} title="Next (ArrowRight / L)">
-                    <ChevronRight className="w-6 h-6" />
+                <button onClick={onNext} className={`viewer-navigation absolute end-2 top-1/2 z-10 -translate-y-1/2 ${isFullscreen ? 'end-4' : ''}`} title="Next (ArrowRight / L)" aria-label="Next file">
+                    <ChevronRight className="h-5 w-5 rtl:rotate-180" />
                 </button>
-                <div className={`absolute z-30 flex items-center gap-2 ${isFullscreen ? 'top-4 right-4' : '-top-12 right-0'}`}>
+                <div className={`viewer-toolbar absolute z-30 ${isFullscreen ? 'end-4 top-4' : '-top-10 end-0'}`}>
                     <button
                         onClick={toggleFullscreen}
-                        className="w-10 h-10 flex items-center justify-center text-white/50 hover:text-white bg-white/10 hover:bg-white/20 rounded-full transition-all"
+                        className="viewer-control"
                         title={isFullscreen ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}
+                        aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
                     >
                         {isFullscreen ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
                     </button>
                     <button
                         onClick={onClose}
-                        className="w-10 h-10 flex items-center justify-center text-white/50 hover:text-white bg-white/10 hover:bg-white/20 rounded-full transition-all"
+                        className="viewer-control"
                         title="Close (Esc)"
+                        aria-label="Close media player"
                     >
                         <X className="w-5 h-5" />
                     </button>
                 </div>
 
                 {/* Video container */}
-                <div className={`bg-black overflow-hidden flex items-center justify-center relative ${isFullscreen ? 'w-full h-full rounded-none shadow-none ring-0' : 'w-full aspect-video rounded-xl shadow-2xl ring-1 ring-white/10'}`}>
+                <div className={`relative flex items-center justify-center overflow-hidden bg-black ${isFullscreen ? 'h-full w-full rounded-none shadow-none' : 'viewer-panel aspect-video w-full'}`}>
                     {/* fMP4 remux loading overlay */}
                     {fmp4Remuxing && (
                         <div className="flex flex-col items-center gap-4 text-white absolute inset-0 bg-black/80 z-10">
@@ -1045,7 +1047,7 @@ export function AdaptiveMediaPlayer({
 
                 {/* Fullscreen overlay toolbar */}
                 {isFullscreen && (displayPhase !== 'error' && displayPhase !== 'failed') && (
-                    <div className="absolute bottom-0 left-0 right-0 z-30 bg-gradient-to-t from-black/90 via-black/60 to-transparent p-4 pt-12 pointer-events-none">
+                    <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 bg-gradient-to-t from-black/90 via-black/60 to-transparent p-4 pt-12">
                         <div className="flex items-center justify-between pointer-events-auto">
                             <div className="flex items-center gap-3">
                                 {/* Play/Pause */}
@@ -1054,7 +1056,7 @@ export function AdaptiveMediaPlayer({
                                         const video = hlsVideoRef.current || mseVideoRef.current;
                                         if (video) video.paused ? video.play().catch(() => {}) : video.pause();
                                     }}
-                                    className="p-2 text-white/80 hover:text-white hover:bg-white/10 rounded-full transition-all"
+                                    className="viewer-control text-white/80"
                                     title="Play/Pause (Space)"
                                 >
                                     <Play className="w-5 h-5" />
@@ -1065,7 +1067,7 @@ export function AdaptiveMediaPlayer({
                                     onMouseEnter={() => setShowVolumeSlider(true)}
                                     onMouseLeave={() => setShowVolumeSlider(false)}
                                 >
-                                    <button onClick={toggleMute} className="p-1.5 text-white/60 hover:text-white rounded-full hover:bg-white/10" title={isMuted ? 'Unmute' : 'Mute'}>
+                                    <button onClick={toggleMute} className="viewer-control text-white/60" title={isMuted ? 'Unmute' : 'Mute'}>
                                         {isMuted || volume === 0 ? <VolumeX className="w-4 h-4" /> : volume < 0.5 ? <Volume1 className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
                                     </button>
                                     <div className={`overflow-hidden transition-all duration-200 ${showVolumeSlider ? 'w-20 opacity-100' : 'w-0 opacity-0'}`}>
@@ -1101,8 +1103,9 @@ export function AdaptiveMediaPlayer({
                                 {/* Exit fullscreen */}
                                 <button
                                     onClick={exitFullscreen}
-                                    className="w-10 h-10 flex items-center justify-center text-white/60 hover:text-white hover:bg-white/10 rounded-full transition-all"
+                                    className="viewer-control"
                                     title="Exit fullscreen (F)"
+                                    aria-label="Exit fullscreen"
                                 >
                                     <Minimize2 className="w-5 h-5" />
                                 </button>
@@ -1110,8 +1113,9 @@ export function AdaptiveMediaPlayer({
                                 {/* Close */}
                                 <button
                                     onClick={onClose}
-                                    className="w-10 h-10 flex items-center justify-center text-white/60 hover:text-white hover:bg-white/10 rounded-full transition-all"
+                                    className="viewer-control"
                                     title="Close (Esc)"
+                                    aria-label="Close media player"
                                 >
                                     <X className="w-5 h-5" />
                                 </button>
@@ -1122,9 +1126,9 @@ export function AdaptiveMediaPlayer({
 
                 {/* Bottom bar: file info + volume + quality selector (non-fullscreen) */}
                 {!isFullscreen && <div className="mt-3 w-full flex items-center justify-between px-1 gap-3">
-                    <div className="text-left min-w-0 flex-1">
-                        <h3 className="text-sm font-medium text-white truncate max-w-md">{file.name}</h3>
-                        <p className="text-[11px] text-white/40 flex items-center gap-2">
+                    <div className="min-w-0 flex-1 text-start">
+                        <h3 className="max-w-md truncate text-ui font-medium text-white" title={file.name}>{file.name}</h3>
+                        <p className="flex items-center gap-2 text-badge text-white/40">
                             {isHlsMode && hlsQuality && (
                                 <span className="text-telegram-primary">{QUALITY_LABELS[hlsQuality]}</span>
                             )}

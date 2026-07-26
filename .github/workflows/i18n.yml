@@ -1,0 +1,33 @@
+name: i18n Validation
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  i18n-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: cd app && npm ci
+
+      - name: Run i18n key types check
+        run: cd app && node scripts/i18n/generate-key-types.cjs --check
+
+      - name: Validate locale resources
+        run: cd app && npm run i18n:validate
+
+      - name: Scan UI literals
+        run: cd app && npm run i18n:scan
+
+      - name: Build test
+        run: cd app && npm run build

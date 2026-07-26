@@ -1,13 +1,12 @@
 # Telegram Drive
 
-**Telegram Drive** is an open-source, cross-platform desktop application that turns
-your Telegram account into an unlimited, secure cloud storage drive. Built with
-**Tauri**, **Rust**, and **React**.
+Telegram Drive is a cross-platform file manager for using your Telegram account as a personal cloud drive. It provides a desktop-style workspace over Saved Messages and Telegram channels, with uploads, downloads, folders, previews, streaming, sharing tools, a local REST API, themes, localization, and an opt-in encrypted-transfer mode.
+
+The application is built with Tauri, Rust, React, and TypeScript.
 
 <div align="center">
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20MacOS%20%7C%20Linux-blue)]()
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Android-blue)]()
 ![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/caamer20/Telegram-Drive/total?style=flat)
 [![oosmetrics](https://api.oosmetrics.com/api/v1/badge/achievement/ae8e5a6b-e815-4799-a408-4a59980cf9c8.svg)](https://oosmetrics.com/repo/caamer20/Telegram-Drive)
 [![oosmetrics](https://api.oosmetrics.com/api/v1/badge/achievement/029fb97b-a54a-4566-a1eb-aa1a5039065d.svg)](https://oosmetrics.com/repo/caamer20/Telegram-Drive)
@@ -15,154 +14,278 @@ your Telegram account into an unlimited, secure cloud storage drive. Built with
 
 </div>
 
-![Auth Screen](screenshots/AuthScreen.png)
+> [!IMPORTANT]
+> The current source tree targets **Telegram Drive 2.0.0**. The latest published desktop binary is currently **1.9.9**, so features documented as new in 2.0.0 require a source build until a 2.0.0 release is published. Encryption is an **opt-in alpha** feature and is not yet recommended for the only copy of important data.
 
-##  What is Telegram Drive?
+## How Telegram Drive works
 
-Telegram Drive leverages the Telegram API to allow you to upload, organize, and manage files directly on Telegram's servers. It treats your "Saved Messages" and created Channels as folders, giving you a familiar file explorer interface for your Telegram cloud.
+Telegram Drive connects directly to Telegram with API credentials supplied by the user. Saved Messages acts as the home location, while Telegram channels created or selected by the app can be presented as folders. Files are still subject to Telegram account, service, and per-file limits; Telegram Drive does not provide literally unlimited storage.
 
-###  Key Features
+The current application policy caps a Telegram object at approximately **2,000,000,000 bytes**. An encrypted file has additional envelope overhead, so its maximum original plaintext size is slightly lower.
 
-*   **Unlimited Cloud Storage**: Utilizing Telegram's generous cloud infrastructure.
-*   **High Performance Grid**: Virtual scrolling handles folders with thousands of files instantly.
-*   **Auto-Updates**: Seamless updates for Windows, macOS, and Linux.
-*   **Media Streaming**: Stream video and audio files directly without downloading.
-*   **PDF Viewer:** Built-in PDF support with infinite scrolling for seamless document reading.
-*   **Drag & Drop**: Intuitive drag-and-drop upload and file management.
-*   **Thumbnail Previews**: Inline thumbnails for images and media files.
-*   **Folder Management**: Create "Folders" (private Telegram Channels) to organize content.
-*   **Shareable Links**: Generate direct download links with optional password protection and expiration, and revoke access anytime from the dashboard. Also supports copying native Telegram message links for files in public channels.
-*   **REST API for AI Integration**: Secure local API (off by default) with configurable port and API key auth. OpenAPI spec for seamless LLM and tool integration.
-*   **Proxy Support**: Native SOCKS5 proxy integration to bypass regional restrictions and secure your traffic.
-*   **VPN Optimizer**: Aggressive network tuning including bandwidth throttling, adjustable transfer chunk sizing, and adaptive keep-alives to ensure maximum stability on high-latency connections.
-*   **Privacy Focused**: API keys and data stay local. No third-party servers.
-*   **Cross-Platform**: Native apps for macOS (Intel/ARM), Windows, Linux and Android.
+## Features
 
-## Android (Pre‑built, Unsigned APK)
+### File workspace and organization
 
-A pre-built **unsigned APK** is available for Android sideloading via the [v2.1.5-android release](https://github.com/caamer20/Telegram-Drive/releases/tag/Androidv2.1.5beta).
+- Grid and list views with virtualized rendering for large folders.
+- Responsive file cards with adjustable sizing from **50% to 200%**.
+- Search, sorting, multi-select, range selection, and bulk actions.
+- Upload, download, rename, move, copy, and delete workflows where supported by Telegram.
+- Drag-and-drop uploads and internal drag-and-drop file organization.
+- Folder creation, rename, deletion, visibility controls, and local custom folder groups.
+- Entire-folder upload with optional ZIP creation before transfer.
+- Remote URL uploads with progress, cancellation, retry, and resumable range support when the source server allows it.
+- Persistent transfer queues and a compact transfer center for upload/download status.
 
-> [!WARNING]
-> This APK is **not signed** and is **not available on the Google Play Store**. You must enable "Install from Unknown Sources" on your device to install it. This build contains **Google AdMob banner ads** to support development.
+### Viewing, playback, and archives
 
-### How to Sideload
+- Inline image and media thumbnails with lazy loading.
+- Faster repeat image opens through bounded in-memory and on-disk preview caches, request deduplication, skeleton states, and asynchronous image decoding.
+- Built-in image preview, PDF reader, audio player, and video streaming.
+- Video streaming and remux/transcode support for compatible plaintext media.
+- ZIP, RAR, and 7z archive browsing and extraction, including extraction back into Telegram Drive.
 
-1. Download `Telegram-Drive-v2.1.5-beta.apk` from the [v2.1.5-android release](https://github.com/caamer20/Telegram-Drive/releases/tag/Androidv2.1.5beta).
-2. On your Android device, go to **Settings → Apps → Special App Access → Install unknown apps** and allow your browser or file manager.
-3. Open the downloaded APK and tap **Install**.
-4. Enter your Telegram API credentials on first launch (same as the desktop app).
+These viewers currently operate on standard, unencrypted files. See [Encryption mode](#encryption-mode-opt-in-alpha) for encrypted-file restrictions.
+
+### Modern interface and themes
+
+- The 2.0.0 **Quiet Utility** redesign uses a compact, content-first desktop and mobile visual system with calmer surfaces, smaller controls, clearer hierarchy, and restrained motion.
+- Aligned desktop toolbar/sidebar chrome, a collapsible bounded sidebar, responsive settings navigation, and polished authentication, viewer, empty, loading, error, and selection states.
+- **Default**, **System**, **Light**, and **Dark** appearance modes.
+- Built-in color presets plus a custom-theme editor for creating, editing, saving, activating, and deleting user themes.
+- Existing stored themes are adapted to the new semantic design tokens.
+- Reduced-motion and interface performance preferences remain available.
+
+### Sharing and local integrations
+
+- Local download links for standard files with optional password protection, expiration, listing, and revocation.
+- Native Telegram message links for files in public channels.
+- A desktop REST API that is **off by default**, binds to `127.0.0.1`, uses a configurable port, and requires an `X-API-Key` header for protected routes.
+- REST operations for files, folders, bulk actions, storage statistics, duplicates, empty folders, thumbnails, and media metadata.
 
 > [!NOTE]
-> - **Compatibility**: Requires **Android 7.0 (API level 24)** or higher.
-> - **Android 15+ Installation**: If you encounter blocks or security restrictions when installing on Android 15+ emulator/device, bypass it using ADB:
->   ```bash
->   adb install --bypass-low-target-sdk-block Telegram-Drive-v2.1.5-beta.apk
->   ```
-> - The Android build is a **community/beta release** compiled locally. The desktop app (Windows/macOS/Linux) remains the primary supported platform, built and signed automatically by GitHub CI.
+> Telegram Drive share links are served by the running desktop app at a loopback address. They are not public, hosted internet links. The repository contains a human-readable [REST API endpoint reference](REST_API_Documentation.md), but it does not currently contain a generated OpenAPI document.
 
----
+### Network and platform support
 
-##  Screenshots
+- Telegram authentication through phone/code or QR login, with cloud-password support when two-factor authentication is enabled.
+- SOCKS5 proxy configuration plus HTTP/HTTPS proxy routing through the application's local bridge.
+- VPN-oriented timeout, retry, keep-alive, polling, bandwidth, chunk-size, and archive-limit controls.
+- Desktop updater support for Windows, macOS, and Linux using signed Tauri updater artifacts.
+- Desktop builds for Windows, Linux, macOS Intel, and macOS Apple Silicon.
+- Android support with touch-oriented navigation, the Android share sheet, foreground transfers, native file publication, and Android API 24+ configuration.
 
-### Desktop App
+## Encryption mode (opt-in alpha)
 
-| Dashboard | File Preview |
-|-----------|--------------|
+Version 2.0.0 includes client-side encrypted transfers using the versioned **TDENC2** envelope. Standard uploads remain the default, and users can turn encryption on or off for future uploads from Settings or choose protection for an individual upload.
+
+### Upload protection modes
+
+| Mode | Protection | Unlock requirement |
+| --- | --- | --- |
+| Standard | Existing plaintext Telegram upload | None |
+| Vault | Encrypts with a key held in the local encrypted vault | The vault must be unlocked |
+| File passphrase | Adds a passphrase slot to that file | The file passphrase |
+| Vault + file passphrase | Adds both vault and per-file passphrase access | A valid supported slot |
+
+The implementation provides:
+
+- Streaming XChaCha20-Poly1305 encryption before upload to Telegram.
+- Streaming authenticated decryption on download, with a protected partial file published only after verification succeeds.
+- Optional authenticated protection for the original filename and MIME type.
+- A persistent local vault protected by a user passphrase.
+- Manual lock/unlock, inactivity auto-lock, background/sleep lock, logout lock, and exit lock.
+- Vault passphrase changes and authenticated recovery-bundle export/import.
+- Per-file encryption status badges and protected-name behavior on desktop and mobile.
+- Encryption coverage for file-picker uploads, drag-and-drop, folder ZIPs, Android shared files, retries, and remote URL uploads.
+- Short-lived passphrase prompt tokens; raw file passphrases are not persisted in transfer queues.
+
+### Encryption safety notice
+
+> [!CAUTION]
+> **Telegram Drive cannot recover, reset, or reconstruct a lost vault passphrase, file passphrase, encryption key, or unusable recovery bundle.** You are responsible for securely recording your credentials, protecting and testing recovery material, and keeping an independent backup of important files. Lost credentials, damaged recovery material, incorrect settings, or other encryption misuse can make data permanently unrecoverable. To the extent permitted by law, the project and its contributors are not responsible for data loss or other consequences resulting from the use or misuse of encryption features.
+
+The encryption design and implementation have **not received an independent security audit**. Use isolated test data first and do not treat this alpha as a substitute for a tested backup strategy.
+
+### Current encrypted-file limitations
+
+The following operations intentionally fail closed for encrypted objects; their existing behavior for standard files is unchanged:
+
+- In-app image, PDF, archive, audio, and video previews.
+- Encrypted thumbnails, range streaming, HLS/fMP4 playback, and transcoding.
+- Local plaintext share links and REST/local-server plaintext access.
+- Remote rename of encrypted Telegram media.
+- Plaintext-to-encrypted migration, decrypt-in-place migration, rekey/slot-management UI, and full format migration.
+
+Download and authenticate an encrypted file before opening it with another application. See the [TDENC2 architecture decision](app/docs/adr/ADR-0002-encrypted-file-envelope-v2.md) and [encryption execution report](ENCRYPTION_REMEDIATION_EXECUTION_REPORT.md) for format, verification, and rollout details.
+
+## Languages
+
+Telegram Drive supports a **System** language preference and these 13 selectable production locales:
+
+- English
+- Spanish
+- Russian
+- Simplified Chinese
+- French
+- Arabic
+- Brazilian Portuguese
+- German
+- Hindi
+- Indonesian
+- Turkish
+- Japanese
+- Korean
+
+The 2.0.0 localization infrastructure includes locale alias resolution, locale-aware number/date/size/rate formatting, right-to-left document direction for Arabic, bidirectional-text safety helpers, typed translation keys, interpolation validation, pseudo-locales, literal scanning, and CI checks.
+
+Localization is still being completed: some non-English entries currently fall back to or duplicate English, some UI literals remain to be extracted, and the full native-language, RTL, long-string, CJK, accessibility, and legal-copy review is not finished. The locale list therefore describes supported language selection, not a claim that every screen has completed native linguistic review. Track the remaining work in the [language support implementation plan](LANGUAGE_SUPPORT_IMPLEMENTATION_PLAN.md).
+
+## Data and privacy
+
+- Telegram API credentials, session data, settings, transfer state, encryption registry data, and vault material are stored locally in the application's data directories.
+- Standard uploads send file content to Telegram in its normal form. TDENC2 uploads send ciphertext; Telegram can still observe transport and account metadata such as ciphertext size, time, account, and destination channel.
+- File transfers go directly between the application and Telegram; the project does not operate a separate file-relay service.
+- The optional REST API binds only to loopback and stores only a hash of its generated API key. The plaintext API key is shown when generated and cannot be retrieved later.
+- Local share links depend on the app's local streaming server and the app remaining open and connected.
+- A configured proxy routes traffic according to the selected proxy settings. Review and trust your own proxy provider.
+
+## Android beta (pre-built unsigned APK)
+
+A pre-built **unsigned Android beta APK** is available from the [Telegram Drive v2.1.5 beta release](https://github.com/caamer20/Telegram-Drive/releases/tag/Androidv2.1.5beta).
+
+> [!WARNING]
+> The APK is not signed and is not distributed through Google Play. Installing an unsigned sideloaded build carries additional authenticity and update risks.
+
+### Sideloading
+
+1. Download `Telegram-Drive-v2.1.5-beta.apk` from the [Android beta release](https://github.com/caamer20/Telegram-Drive/releases/tag/Androidv2.1.5beta).
+2. On Android, open **Settings → Apps → Special app access → Install unknown apps** and grant permission to the browser or file manager used for the APK.
+3. Open the APK and choose **Install**.
+4. Enter your own Telegram API ID and API hash on first launch.
+
+Compatibility notes:
+
+- The current Android project has `minSdk 24`, corresponding to Android 7.0 or newer.
+- The pre-built Android release is a separate community/beta track from the primary desktop releases.
+- On devices that block the beta because of target-SDK policy, advanced users can attempt installation with ADB:
+
+  ```bash
+  adb install --bypass-low-target-sdk-block Telegram-Drive-v2.1.5-beta.apk
+  ```
+
+## Screenshots
+
+> [!NOTE]
+> These images document the currently published desktop and Android builds. They do not yet show every part of the unreleased 2.0.0 Quiet Utility redesign.
+
+### Desktop
+
+| Dashboard | File preview |
+| --- | --- |
 | ![Dashboard](screenshots/DashboardWithFiles.png) | ![Preview](screenshots/ImagePreview.png) |
 
-| Grid View | Authentication |
-|-----------|----------------|
-| ![Dark Mode](screenshots/DarkModeGrid.png) | ![Login](screenshots/LoginScreen.png) |
+| Grid view | Authentication |
+| --- | --- |
+| ![Dark mode](screenshots/DarkModeGrid.png) | ![Login](screenshots/LoginScreen.png) |
 
-| Audio Playback | Video Playback |
-|----------------|----------------|
-| ![Audio Playback](screenshots/AudioPlayback.png) | ![Video Playback](screenshots/VideoPlayback.png) |
+| Audio playback | Video playback |
+| --- | --- |
+| ![Audio playback](screenshots/AudioPlayback.png) | ![Video playback](screenshots/VideoPlayback.png) |
 
-| Auth Code Screen | Upload Example |
-|------------------|-------------|
-| ![Auth Code Screen](screenshots/AuthCodeScreen.png) | ![Upload Example](screenshots/UploadExample.png) |
+| Folder creation | Folder list |
+| --- | --- |
+| ![Folder creation](screenshots/FolderCreation.png) | ![Folder list](screenshots/FolderListView.png) |
 
-| Folder Creation | Folder List View |
-|-----------------|------------------|
-| ![Folder Creation](screenshots/FolderCreation.png) | ![Folder List View](screenshots/FolderListView.png) |
+### Android
 
-### Android App
+| Home | Splash | Dark folder view |
+| --- | --- | --- |
+| ![Home screen](screenshots/AndroidHomeScreenWithIcon.png) | ![Splash screen](screenshots/AndroidTelegram-DriveSplash.png) | ![Dark mode folder view](screenshots/AndroidDarkModeFolderView.png) |
 
-| Home Screen | Splash Screen | Dark Mode Folder View |
-|-------------|---------------|-----------------------|
-| ![Home Screen](screenshots/AndroidHomeScreenWithIcon.png) | ![Splash Screen](screenshots/AndroidTelegram-DriveSplash.png) | ![Dark Mode Folder View](screenshots/AndroidDarkModeFolderView.png) |
+| Folder list | Transfer queue | Settings |
+| --- | --- | --- |
+| ![Folder list](screenshots/AndroidFolderList.png) | ![Transfer queue](screenshots/AndroidTransferQue.png) | ![Settings page](screenshots/AndroidSettingsPage.png) |
 
-| Folder List | Transfer Queue | Settings Page |
-|-------------|----------------|---------------|
-| ![Folder List](screenshots/AndroidFolderList.png) | ![Transfer Queue](screenshots/AndroidTransferQue.png) | ![Settings Page](screenshots/AndroidSettingsPage.png) |
+## Technology
 
-##  Tech Stack
+- **Frontend:** React 19, TypeScript, Tailwind CSS 4, Framer Motion, TanStack Query, and TanStack Virtual.
+- **Desktop/mobile shell:** Tauri 2.
+- **Backend:** Rust, Grammers Telegram client, SQLite, Tokio, and Actix Web.
+- **Media and documents:** PDF.js, HLS.js, MP4Box, and Rust media/archive helpers.
+- **Build tooling:** Vite 7 and Cargo.
 
-*   **Frontend**: React, TypeScript, TailwindCSS, Framer Motion
-*   **Backend**: Rust (Tauri), Grammers (Telegram Client)
-*   **Build Tool**: Vite
-
-
-##  Getting Started
+## Build from source
 
 ### Prerequisites
 
-*   **Node.js (v18+)**: [Download here](https://nodejs.org/)
-*   **Rust (latest stable)**: Required to compile the Tauri backend. Install via [rustup](https://rustup.rs/):
-    *   **macOS/Linux:** `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
-    *   **Windows:** Download and run `rustup-init.exe` from [rustup.rs](https://rustup.rs/)
-    *   *Verify installation:* run `rustc --version` and `cargo --version` in your terminal.
-*   **OS-Specific Build Tools for Tauri**: 
-    *   **macOS:** Xcode Command Line Tools (`xcode-select --install`).
-    *   **Linux (Ubuntu/Debian):** `sudo apt update && sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev`
-    *   **Windows (CRITICAL):** You **must** install the [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/). During installation, select the **"Desktop development with C++"** workload. Without this, you will get a `linker 'link.exe' not found` error.
-    *   **Windows (WebView2):** Windows 10/11 users usually have this pre-installed. If not, download the [WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/#download-section).
-    *   *Reference:* See the official [Tauri v2 Prerequisites Guide](https://v2.tauri.app/start/prerequisites/) for detailed instructions.
-*   **Telegram API Credentials**: You need your own API ID and API Hash to communicate with Telegram's servers.
-    1. Log into [my.telegram.org](https://my.telegram.org).
-    2. Go to "API development tools" and create a new application to get your `api_id` and `api_hash`.
+- **Node.js:** `20.19.0+` within Node 20, or `22.12.0+`. These are the engine ranges required by the installed Vite 7 toolchain.
+- **Rust:** Latest stable toolchain installed with [rustup](https://rustup.rs/).
+- **Telegram API credentials:** Create an application under **API development tools** at [my.telegram.org](https://my.telegram.org) to obtain your own `api_id` and `api_hash`.
+- **Tauri platform prerequisites:** Follow the [Tauri 2 prerequisites guide](https://v2.tauri.app/start/prerequisites/) for the operating system being used.
 
-> [!NOTE]  
-> **First-run Compile Time:** The initial build (`npm run tauri dev` or `npm run tauri build`) will download and compile over 300 Rust crates. This process can take **5 to 15 minutes** depending on your hardware. Subsequent builds will be much faster.
+Common platform requirements:
 
-> [!TIP]
-> **NPM Vulnerabilities:** You may see vulnerability warnings during `npm install`. These are usually related to build tools and dev dependencies. You can optionally run `npm audit fix`, but it is not strictly required to run the app.
+- **macOS:** Xcode Command Line Tools (`xcode-select --install`).
+- **Windows:** Visual Studio Build Tools with **Desktop development with C++**, plus the Microsoft Edge WebView2 Runtime if it is not already installed.
+- **Ubuntu/Debian:** The CI build currently installs:
 
-### Installation
+  ```bash
+  sudo apt-get update
+  sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+    libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libfuse2
+  ```
 
-1.  **Clone the repository**
-    ```bash
-    git clone https://github.com/caamer20/Telegram-Drive.git
-    cd Telegram-Drive
-    ```
+### Install and run
 
-2.  **Install Dependencies**
-    ```bash
-    cd app
-    npm install
-    ```
+```bash
+git clone https://github.com/caamer20/Telegram-Drive.git
+cd Telegram-Drive/app
+npm install
+npm run tauri dev
+```
 
-3.  **Run in Development Mode**
-    ```bash
-    npm run tauri dev
-    ```
+The first Tauri run downloads and compiles the Rust dependency graph and can take several minutes. Later builds reuse Cargo's compilation cache.
 
-4.  **Build/Compile**
-    ```bash
-    npm run tauri build
-    ```
+Build release bundles with:
 
-##  Open Source & License
+```bash
+cd app
+npm run tauri build
+```
 
-This project is **Free and Open Source Software**. You are free to use, modify, and distribute it.
+### Validation commands
 
-Licensed under the **MIT License**.
+Run these from `app/`:
+
+```bash
+npm run build
+npm run i18n:check
+cd src-tauri && cargo test --lib
+```
+
+`npm run i18n:check` validates locale structure, variables, generated key types, and scans for untranslated literals. It currently reports known localization-completeness warnings described in the language plan.
+
+## Project documentation
+
+- [Changelog](CHANGELOG.md)
+- [REST API endpoint reference](REST_API_Documentation.md)
+- [Quiet Utility implementation plan](QUIET_UTILITY_IMPLEMENTATION_PLAN.md)
+- [Language support implementation plan](LANGUAGE_SUPPORT_IMPLEMENTATION_PLAN.md)
+- [Encryption architecture plan](ENCRYPTION_MODE_IMPLEMENTATION_PLAN.md)
+- [Encryption remediation plan](ENCRYPTION_REMEDIATION_IMPLEMENTATION_PLAN.md)
+- [Encryption execution report](ENCRYPTION_REMEDIATION_EXECUTION_REPORT.md)
+- [TDENC2 architecture decision](app/docs/adr/ADR-0002-encrypted-file-envelope-v2.md)
+
+## License status
+
+This checkout does not currently contain a `LICENSE` file. Earlier README versions described the project as MIT-licensed, but that statement cannot be verified from the repository contents. The intended license should be added as a repository license file before users rely on a particular grant of permission for copying, modification, or redistribution.
 
 ---
-*Disclaimer: This application is not affiliated with Telegram FZ-LLC. Use responsibly and in accordance with Telegram's Terms of Service.*
+
+*Telegram Drive is not affiliated with Telegram FZ-LLC. Use it responsibly and in accordance with Telegram's terms and applicable laws.*
 
 <div align="center">
-  <!-- PayPal -->
   <div style="margin: 15px 0;">
     <a href="https://www.paypal.me/Caamer20">
       <img src="https://raw.githubusercontent.com/stefan-niedermann/paypal-donate-button/master/paypal-donate-button.png" alt="Donate with PayPal" width="200">
@@ -170,7 +293,6 @@ Licensed under the **MIT License**.
     <div style="font-size: 14px; margin-top: 8px;">paypal.me/Caamer20</div>
   </div>
 
-  <!-- Litecoin -->
   <div style="margin: 15px 0;">
     <a href="litecoin:ltc1q6wkr5ac4u0pxx4hx7xgwn0gsaku25ws0df73rp">
       <img src="https://img.shields.io/badge/Donate-LTC-345D9D?style=for-the-badge&logo=litecoin&logoColor=white" alt="Donate LTC">
@@ -180,7 +302,6 @@ Licensed under the **MIT License**.
     </div>
   </div>
 
-  <!-- Bitcoin -->
   <div style="margin: 15px 0;">
     <a href="bitcoin:bc1q5pt7m2fk6w0dzsnf6vvd5k6nw5k44785286ujy">
       <img src="https://img.shields.io/badge/Donate-BTC-F7931A?style=for-the-badge&logo=bitcoin&logoColor=white" alt="Donate BTC">

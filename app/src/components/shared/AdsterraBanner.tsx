@@ -66,7 +66,7 @@ export default function AdsterraBanner({ visible }: AdsterraBannerProps) {
       id="adsterra-banner-container"
       role="complementary"
       aria-label="Sponsored content"
-      className="w-full flex justify-center bg-telegram-surface/80 border-t border-telegram-border/30 transition-all duration-300 ease-out overflow-hidden relative"
+      className="relative flex w-full justify-center overflow-hidden border border-app-border bg-app-surface-raised shadow-[var(--shadow-raised)] transition-all duration-200 ease-out"
       style={{
         visibility: isVisible ? 'visible' : 'hidden',
         minHeight: isVisible ? 48 : 0,
@@ -77,14 +77,14 @@ export default function AdsterraBanner({ visible }: AdsterraBannerProps) {
     >
       <button
         onClick={handleClick}
-        className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-semibold text-telegram-subtext hover:text-telegram-text hover:bg-telegram-hover/30 active:bg-telegram-hover/50 transition-all duration-200"
+        className="quiet-control flex flex-1 items-center justify-center gap-2 px-4 py-2.5 text-metadata font-medium text-app-text-secondary hover:bg-app-hover hover:text-app-text"
       >
-        <ExternalLink className="w-3 h-3 text-telegram-primary" />
-        <span className="text-[11px] uppercase tracking-wider">Sponsored</span>
+        <ExternalLink className="h-3 w-3 text-app-accent" />
+        <span className="sponsored-label border-0">Sponsored</span>
       </button>
       <button
         onClick={handleDismiss}
-        className="absolute right-1 top-1/2 -translate-y-1/2 p-1.5 text-telegram-subtext hover:text-telegram-text hover:bg-telegram-hover/30 rounded-full transition-all duration-200"
+        className="quiet-control absolute end-1 top-1/2 -translate-y-1/2 p-1.5 text-app-text-secondary hover:text-app-text"
         aria-label="Close ad"
       >
         <X className="w-3.5 h-3.5" />

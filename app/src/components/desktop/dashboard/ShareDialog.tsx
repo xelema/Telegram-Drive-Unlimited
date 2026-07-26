@@ -93,9 +93,9 @@ export function ShareDialog({ file, onClose }: ShareDialogProps) {
     };
 
     return (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
-            <div className="bg-telegram-surface border border-telegram-border rounded-xl w-[420px] shadow-2xl overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-150" onClick={e => e.stopPropagation()}>
-                <div className="p-4 border-b border-telegram-border flex justify-between items-center">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-app-overlay p-4 backdrop-blur-sm" onClick={onClose}>
+            <div className="quiet-raised flex w-[min(440px,calc(100vw-2rem))] flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150" onClick={e => e.stopPropagation()}>
+                <div className="flex items-center justify-between border-b border-app-border-subtle p-4">
                     <h3 className="text-telegram-text font-medium flex items-center gap-2">
                         <Link className="w-5 h-5 text-telegram-primary" />
                         {t('share.title')}
@@ -106,7 +106,7 @@ export function ShareDialog({ file, onClose }: ShareDialogProps) {
                 </div>
 
                 <div className="p-5 flex-1 overflow-y-auto space-y-4 max-h-[75vh]">
-                    <div className="bg-telegram-hover/40 border border-telegram-border/50 rounded-lg p-3">
+                    <div className="quiet-surface p-3">
                         <div className="text-xs text-telegram-subtext uppercase font-semibold tracking-wider mb-1">{t('share.sharing_file')}</div>
                         <div className="text-sm font-medium text-telegram-text truncate">{file.name}</div>
                         <div className="text-xs text-telegram-subtext mt-0.5">{file.sizeStr}</div>

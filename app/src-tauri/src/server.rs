@@ -272,6 +272,7 @@ async fn stream_media(
     query: web::Query<StreamQuery>,
     data: web::Data<Arc<TelegramState>>,
     token_data: web::Data<StreamTokenData>,
+    db_pool: web::Data<crate::db::DbConnection>,
 ) -> impl Responder {
     let (folder_id_str, message_id) = path.into_inner();
 
@@ -303,6 +304,27 @@ async fn stream_media(
         }
     };
 
+    let folder_key = folder_id
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "home".to_string());
+    let encrypted = db_pool
+        .lock()
+        .ok()
+        .and_then(|connection| {
+            let mut statement = connection
+                .prepare("SELECT 1 FROM encrypted_files WHERE folder_key = ? AND message_id = ? AND record_state = 'active'")
+                .ok()?;
+            statement.bind((1, folder_key.as_str())).ok()?;
+            statement.bind((2, i64::from(message_id))).ok()?;
+            Some(matches!(statement.next(), Ok(sqlite::State::Row)))
+        })
+        .unwrap_or(true);
+    if encrypted {
+        return HttpResponse::Conflict().body(
+            "Encrypted media streaming is unavailable until a credential-scoped decrypted range source is active",
+        );
+    }
+
     let client_opt = {
         data.client.lock().await.clone()
     };
@@ -316,6 +338,17 @@ async fn stream_media(
                  match client.get_messages_by_id(peer, &[message_id]).await {
                     Ok(messages) => {
                         if let Some(Some(msg)) = messages.first() {
+                            if msg.text() == "TDENC2"
+                                || matches!(
+                                    msg.media(),
+                                    Some(Media::Document(document))
+                                        if document.name().to_ascii_lowercase().ends_with(".tdenc")
+                                )
+                            {
+                                return HttpResponse::Conflict().body(
+                                    "Encrypted media streaming is unavailable until a credential-scoped decrypted range source is active",
+                                );
+                            }
                             if let Some(media) = msg.media() {
                                 log::debug!("Stream request: Message and media found for msg {}", message_id);
                                 let mime = mime_type_from_media(&media);

@@ -23,6 +23,7 @@ import {
     useSortable,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import { quietMetrics } from '../../../design/contracts';
 
 const PRESET_COLORS = [
     '#3B82F6', // Blue
@@ -72,10 +73,10 @@ function GroupTab({ id, groupId, label, colorHex, active, onClick, onEdit, isSor
             {...attributes}
             {...listeners}
             onClick={onClick}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold select-none cursor-pointer transition-all duration-150 flex-shrink-0 border ${
+            className={`quiet-control flex h-7 flex-shrink-0 cursor-pointer select-none items-center gap-1.5 border px-2 text-badge font-medium ${
                 active
-                    ? 'bg-telegram-primary/20 border-telegram-primary text-telegram-primary'
-                    : 'bg-telegram-surface border-telegram-border text-telegram-subtext hover:text-telegram-text hover:border-telegram-primary/40'
+                    ? 'border-app-accent/30 bg-app-selected text-app-accent'
+                    : 'border-app-border bg-app-surface text-app-text-secondary hover:border-app-border-strong hover:text-app-text'
             }`}
         >
             {colorHex && (
@@ -91,7 +92,7 @@ function GroupTab({ id, groupId, label, colorHex, active, onClick, onEdit, isSor
                         e.stopPropagation();
                         onEdit();
                     }}
-                    className="p-0.5 hover:bg-telegram-hover rounded text-telegram-subtext hover:text-telegram-text transition-colors"
+                    className="rounded p-0.5 text-app-text-secondary hover:bg-app-hover hover:text-app-text"
                 >
                     <Settings2 className="w-3 h-3" />
                 </button>
@@ -245,22 +246,23 @@ export function Sidebar({
 
     return (
         <aside 
-            className={`transition-all duration-300 ${settings.sidebarCollapsed ? 'w-14' : 'w-64'} bg-telegram-surface border-r border-telegram-border flex flex-col`} 
+            className="flex shrink-0 flex-col border-e border-app-border-subtle bg-app-sidebar transition-[width] duration-200"
+            style={{ width: settings.sidebarCollapsed ? quietMetrics.sidebarWidth.collapsed : quietMetrics.sidebarWidth.expanded }}
             onClick={e => e.stopPropagation()}
         >
-            <div className={`p-4 flex ${settings.sidebarCollapsed ? 'flex-col items-center gap-2' : 'items-center justify-between'} min-h-[64px]`}>
+            <div className={`flex h-12 shrink-0 border-b border-app-border-subtle ${settings.sidebarCollapsed ? 'flex-col items-center justify-center gap-px px-1' : 'items-center justify-between px-3'}`}>
                 <div className="flex items-center gap-2">
-                    <img src="/logo.svg" className="w-8 h-8 drop-shadow-lg" alt="Logo" />
+                    <img src="/logo.svg" className={settings.sidebarCollapsed ? 'h-[22px] w-[22px]' : 'h-6 w-6'} alt="Logo" />
                     {!settings.sidebarCollapsed && (
-                        <span className="font-bold text-lg text-telegram-text tracking-tight">{t('common.app_title')}</span>
+                        <span className="text-app-title font-semibold tracking-[-0.01em] text-app-text">{t('common.app_title')}</span>
                     )}
                 </div>
                 <button
                     onClick={() => updateSetting('sidebarCollapsed', !settings.sidebarCollapsed)}
-                    className="p-1 rounded-md hover:bg-telegram-hover text-telegram-subtext hover:text-telegram-text transition-colors"
+                    className={`quiet-control flex items-center justify-center text-app-text-tertiary hover:text-app-text ${settings.sidebarCollapsed ? 'h-[15px] w-6' : 'h-7 w-7'}`}
                     title={settings.sidebarCollapsed ? t('common.expand_sidebar') || "Expand Sidebar" : t('common.collapse_sidebar') || "Collapse Sidebar"}
                 >
-                    {settings.sidebarCollapsed ? <ChevronRight className="w-4.5 h-4.5" /> : <ChevronLeft className="w-4.5 h-4.5" />}
+                    {settings.sidebarCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronLeft className="h-3.5 w-3.5" />}
                 </button>
             </div>
 
@@ -270,15 +272,15 @@ export function Sidebar({
                 onDragEnd={handleDragEnd}
             >
                 {!settings.sidebarCollapsed && (
-                    <div className="px-4 py-2 border-b border-telegram-border flex flex-col gap-2">
+                    <div className="flex flex-col gap-2 border-b border-app-border-subtle px-3 py-2.5">
                         <div className="flex items-center justify-between">
-                            <span className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-1.5">
+                            <span className="flex items-center gap-1.5 text-badge font-medium text-app-text-tertiary">
                                 {t('common.groups') || "Groups"}
                             </span>
                             <div className="flex items-center gap-1">
                                 <button
                                     onClick={() => updateSetting('hideGroups', !settings.hideGroups)}
-                                    className="p-1 rounded-md hover:bg-telegram-hover text-telegram-subtext hover:text-telegram-text transition-all"
+                                    className="quiet-control p-1 text-app-text-tertiary hover:text-app-text"
                                     title={settings.hideGroups ? t('common.show_groups') || "Show Groups" : t('common.hide_groups') || "Hide Groups"}
                                 >
                                     {settings.hideGroups ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
@@ -291,7 +293,7 @@ export function Sidebar({
                                             setGroupColor("#3B82F6");
                                             setShowGroupEditor(true);
                                         }}
-                                        className="p-1 rounded-md hover:bg-telegram-hover text-telegram-subtext hover:text-telegram-text transition-all"
+                                        className="quiet-control p-1 text-app-text-tertiary hover:text-app-text"
                                         title={t('common.create_group') || "Create Group"}
                                     >
                                         <Plus className="w-3.5 h-3.5" />
@@ -301,15 +303,15 @@ export function Sidebar({
                         </div>
 
                         {!settings.hideGroups && showGroupEditor && (
-                            <div className="p-3 bg-telegram-hover/50 rounded-lg border border-telegram-border flex flex-col gap-3 animate-in fade-in slide-in-from-top-1 duration-150">
+                            <div className="quiet-surface flex flex-col gap-2.5 p-2.5 animate-in fade-in duration-150">
                                 <div>
-                                    <label className="text-[10px] font-semibold text-telegram-subtext uppercase tracking-wider block mb-1">
+                                    <label className="mb-1 block text-badge font-medium text-app-text-secondary">
                                         {editingGroup ? t('common.edit_group_name') : t('common.new_group_name')}
                                     </label>
                                     <input
                                         autoFocus
                                         type="text"
-                                        className="w-full bg-white/10 rounded px-2 py-1 text-xs text-telegram-text focus:outline-none focus:ring-1 focus:ring-telegram-primary"
+                                        className="quiet-control h-8 w-full border border-app-border bg-app-surface-sunken/50 px-2 text-ui text-app-text outline-none"
                                         placeholder={t('common.enter_group_name')}
                                         value={groupName}
                                         onChange={e => setGroupName(e.target.value)}
@@ -317,7 +319,7 @@ export function Sidebar({
                                 </div>
 
                                 <div>
-                                    <label className="text-[10px] font-semibold text-telegram-subtext uppercase tracking-wider block mb-1">
+                                    <label className="mb-1 block text-badge font-medium text-app-text-secondary">
                                         {t('common.theme_color')}
                                     </label>
                                     <div className="flex flex-wrap gap-1.5">
@@ -351,7 +353,7 @@ export function Sidebar({
                                             setShowGroupEditor(false);
                                             setEditingGroup(null);
                                         }}
-                                        className="px-2 py-1 text-[11px] font-semibold text-telegram-subtext hover:bg-telegram-hover rounded transition-colors flex items-center gap-1"
+                                        className="quiet-control flex h-7 items-center gap-1 px-2 text-badge font-medium text-app-text-secondary hover:text-app-text"
                                     >
                                         <X className="w-3 h-3" />
                                         {t('common.cancel') || "Cancel"}
@@ -359,7 +361,7 @@ export function Sidebar({
                                     <button
                                         onClick={handleSaveGroup}
                                         disabled={!groupName.trim()}
-                                        className="px-2.5 py-1 text-[11px] font-semibold bg-telegram-primary text-white hover:bg-telegram-primary/80 rounded transition-colors flex items-center gap-1 disabled:opacity-50"
+                                        className="quiet-control flex h-7 items-center gap-1 bg-app-accent px-2.5 text-badge font-medium text-app-accent-contrast hover:bg-app-accent-hover disabled:opacity-50"
                                     >
                                         <Check className="w-3 h-3" />
                                         {t('common.save') || "Save"}
@@ -422,7 +424,7 @@ export function Sidebar({
                 )}
 
                 {/* Scrollable folder list */}
-                <nav className="flex-1 px-2 py-4 space-y-1 overflow-y-auto min-h-0">
+                <nav className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 py-2">
                     <SidebarItem
                         icon={HardDrive}
                         label={t('common.saved_messages')}
@@ -461,13 +463,13 @@ export function Sidebar({
 
             {/* Sticky Create Folder section — always visible above the footer */}
             {!settings.sidebarCollapsed && (
-                <div className="px-2 pb-2 border-b border-telegram-border">
+                <div className="border-t border-app-border-subtle px-2 py-2">
                     {showNewFolderInput ? (
-                        <div className="px-3 py-2">
+                        <div className="px-1 py-1">
                             <input
                                 autoFocus
                                 type="text"
-                                className="w-full bg-white/10 rounded px-2 py-1 text-sm text-telegram-text focus:outline-none focus:ring-1 focus:ring-telegram-primary"
+                                className="quiet-control h-8 w-full border border-app-border bg-app-surface-sunken/50 px-2 text-ui text-app-text outline-none"
                                 placeholder={t('common.folder_name_placeholder')}
                                 value={newFolderName}
                                 onChange={e => setNewFolderName(e.target.value)}
@@ -478,7 +480,7 @@ export function Sidebar({
                     ) : (
                         <button
                             onClick={() => setShowNewFolderInput(true)}
-                            className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-telegram-subtext hover:bg-telegram-hover hover:text-telegram-text transition-colors border border-dashed border-telegram-border"
+                            className="quiet-control flex h-8 w-full items-center gap-2 border border-dashed border-app-border px-2.5 text-ui font-medium text-app-text-secondary hover:border-app-border-strong hover:text-app-text"
                         >
                             <Plus className="w-4 h-4" />
                             {t('common.create_folder')}
@@ -487,24 +489,24 @@ export function Sidebar({
                 </div>
             )}
 
-            <div className={`p-4 border-t border-telegram-border flex flex-col ${settings.sidebarCollapsed ? 'items-center gap-4' : 'gap-4'}`}>
+            <div className={`flex flex-col border-t border-app-border-subtle p-2 ${settings.sidebarCollapsed ? 'items-center gap-2' : 'gap-2'}`}>
                 {settings.sidebarCollapsed ? (
                     <>
                         <div
-                            className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}
+                            className={`h-2 w-2 flex-shrink-0 rounded-full ${isConnected ? 'bg-app-success' : 'bg-app-danger'}`}
                             title={isConnected ? t('common.connected_telegram') : t('common.disconnected_telegram')}
                         />
                         <button
                             onClick={onSync}
                             disabled={isSyncing}
-                            className={`p-2 text-blue-500 hover:text-blue-600 bg-blue-500/10 hover:bg-blue-500/20 rounded-lg transition-colors ${isSyncing ? 'opacity-50 cursor-not-allowed' : ''}`}
+                            className={`quiet-control sidebar-sync-action p-2 text-app-accent ${isSyncing ? 'cursor-not-allowed opacity-50' : ''}`}
                             title={isSyncing ? t('common.syncing') : t('common.sync')}
                         >
                             <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />
                         </button>
                         <button
                             onClick={onLogout}
-                            className="p-2 text-red-500 hover:text-red-600 bg-red-500/10 hover:bg-red-500/20 rounded-lg transition-colors"
+                            className="quiet-control sidebar-logout-action p-2 text-app-danger"
                             title={t('common.logout')}
                         >
                             <LogOut className="w-4 h-4" />
@@ -512,8 +514,8 @@ export function Sidebar({
                     </>
                 ) : (
                     <>
-                        <div className="flex items-center gap-2 text-telegram-subtext text-xs">
-                            <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></div>
+                        <div className="flex items-center gap-2 text-metadata text-app-text-secondary">
+                            <div className={`h-2 w-2 rounded-full ${isConnected ? 'bg-app-success' : 'bg-app-danger'}`}></div>
                             <span>{isConnected ? t('common.connected_telegram') : t('common.disconnected_telegram')}</span>
                         </div>
 
@@ -521,7 +523,7 @@ export function Sidebar({
                             <button
                                 onClick={onSync}
                                 disabled={isSyncing}
-                                className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-blue-500 hover:text-blue-600 bg-blue-500/10 hover:bg-blue-500/20 rounded-lg transition-colors ${isSyncing ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                className={`quiet-control sidebar-sync-action flex h-[30px] flex-1 items-center justify-center gap-1.5 px-2.5 text-badge font-medium text-app-accent ${isSyncing ? 'cursor-not-allowed opacity-50' : ''}`}
                                 title="Scan for existing folders"
                             >
                                 <RefreshCw className={`w-3 h-3 ${isSyncing ? 'animate-spin' : ''}`} />
@@ -529,7 +531,7 @@ export function Sidebar({
                             </button>
                             <button
                                 onClick={onLogout}
-                                className="flex-1 flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-red-500 hover:text-red-600 bg-red-500/10 hover:bg-red-500/20 rounded-lg transition-colors"
+                                className="quiet-control sidebar-logout-action flex h-[30px] flex-1 items-center justify-center gap-1.5 px-2.5 text-badge font-medium text-app-danger"
                                 title="Sign Out"
                             >
                                 <LogOut className="w-3 h-3" />

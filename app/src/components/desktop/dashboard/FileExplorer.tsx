@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
-import { Plus, ArrowUpDown, ArrowUp, ArrowDown, FolderUp, ZoomIn, ZoomOut } from 'lucide-react';
+import { Plus, ArrowUpDown, ArrowUp, ArrowDown, FolderUp } from 'lucide-react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useTranslation } from 'react-i18next';
 import { useSettings } from '../../../context/SettingsContext';
@@ -8,9 +8,16 @@ import { EmptyState } from './EmptyState';
 import { TelegramFile, TelegramFolder } from '../../../types';
 import { ContextMenu } from './ContextMenu';
 import { FileListItem } from './FileListItem';
+import { Skeleton } from '../../ui';
+import { quietMetrics } from '../../../design/contracts';
 
-type SortField = 'name' | 'size' | 'date';
-type SortDirection = 'asc' | 'desc';
+export type SortField = 'name' | 'size' | 'date';
+export type SortDirection = 'asc' | 'desc';
+
+const GRID_GAP = quietMetrics.fileGrid.gap;
+const MIN_CARD_WIDTH = quietMetrics.fileGrid.minimumCardWidth;
+const MIN_CARD_HEIGHT = quietMetrics.fileGrid.minimumCardHeight;
+const LIST_ROW_HEIGHT = quietMetrics.listRowHeight.desktop;
 
 interface FileExplorerProps {
     files: TelegramFile[];
@@ -35,7 +42,9 @@ interface FileExplorerProps {
     onFileMove?: (file: TelegramFile) => void;
     folders?: TelegramFolder[];
     cardScale: number;
-    onCardScaleChange: (scale: number) => void;
+    sortField: SortField;
+    sortDirection: SortDirection;
+    onSortChange: (field: SortField) => void;
 }
 
 
@@ -74,10 +83,8 @@ function useGridColumns(containerRef: React.RefObject<HTMLDivElement | null>) {
 export function FileExplorer({
     files, loading, error, viewMode, selectedIds, activeFolderId,
     onFileClick, onDelete, onDownload, onPreview, onManualUpload, onFolderUpload, showFolderUpload, onToggleSelection, onDrop, onDragStart, onDragEnd, onShare, onRename, onFileMove,
-    folders, cardScale, onCardScaleChange
+    folders, cardScale, sortField, sortDirection, onSortChange
 }: FileExplorerProps) {
-    const [sortField, setSortField] = useState<SortField>('name');
-    const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
     const [contextMenu, setContextMenu] = useState<{ x: number; y: number; file: TelegramFile } | null>(null);
     const { t } = useTranslation();
     const { settings } = useSettings();
@@ -85,12 +92,15 @@ export function FileExplorer({
     const parentRef = useRef<HTMLDivElement>(null);
     const { columns: baseColumns, containerWidth } = useGridColumns(parentRef);
 
-    // Scale columns by cardScale: higher scale = fewer columns = larger cards
-    const columns = Math.max(1, Math.round(baseColumns / cardScale));
+    // Scale columns by cardScale: higher scale = fewer columns = larger cards.
+    // Keep a compact protected footprint so 50–75% zoom can add columns while
+    // long names, metadata, thumbnails, and actions remain clipped per card.
+    const desiredColumns = Math.max(1, Math.round(baseColumns / cardScale));
+    const safeColumns = Math.max(1, Math.floor((containerWidth + GRID_GAP) / (MIN_CARD_WIDTH + GRID_GAP)));
+    const columns = Math.min(desiredColumns, safeColumns);
 
-    const GAP = 6;
-    const cardWidth = (containerWidth - (GAP * (columns - 1))) / columns;
-    const cardHeight = cardWidth * 0.75; // aspect-[4/3]
+    const cardWidth = (containerWidth - (GRID_GAP * (columns - 1))) / columns;
+    const cardHeight = Math.max(MIN_CARD_HEIGHT, cardWidth * 0.75); // 4:3 until the protected minimum
 
     const handleContextMenu = useCallback((e: React.MouseEvent, file: TelegramFile) => {
         e.preventDefault();
@@ -145,13 +155,13 @@ export function FileExplorer({
         getScrollElement: () => parentRef.current,
         estimateSize: useCallback(() => cardHeight, [cardHeight]),
         overscan: 2,
-        gap: GAP,
+        gap: GRID_GAP,
     });
 
     const listVirtualizer = useVirtualizer({
         count: listItems.length,
         getScrollElement: () => parentRef.current,
-        estimateSize: () => 48,
+        estimateSize: () => LIST_ROW_HEIGHT,
         overscan: 5,
     });
 
@@ -168,38 +178,48 @@ export function FileExplorer({
         gridVirtualizer.measure();
     }, [columns, cardHeight, gridVirtualizer]);
 
-    const handleSort = (field: SortField) => {
-        if (sortField === field) {
-            setSortDirection(d => d === 'asc' ? 'desc' : 'asc');
-        } else {
-            setSortField(field);
-            setSortDirection('asc');
-        }
-    };
-
     const SortIcon = ({ field }: { field: SortField }) => {
-        if (sortField !== field) return <ArrowUpDown className="w-3 h-3 opacity-30" />;
+        if (sortField !== field) return <ArrowUpDown className="h-3 w-3 opacity-40" />;
         return sortDirection === 'asc'
-            ? <ArrowUp className="w-3 h-3 text-telegram-primary" />
-            : <ArrowDown className="w-3 h-3 text-telegram-primary" />;
+            ? <ArrowUp className="h-3 w-3 text-app-accent" />
+            : <ArrowDown className="h-3 w-3 text-app-accent" />;
     };
 
     if (loading) {
         return (
-            <div className="flex-1 p-6 flex justify-center items-center text-telegram-subtext flex-col gap-4">
-                <div className="w-8 h-8 border-4 border-telegram-primary border-t-transparent rounded-full animate-spin"></div>
-                Loading your files...
+            <div className="custom-scrollbar flex-1 overflow-hidden p-5" aria-label={t('common.loading')}>
+                {viewMode === 'grid' ? (
+                    <div className="grid grid-cols-[repeat(auto-fill,minmax(120px,1fr))] gap-3">
+                        {Array.from({ length: 12 }, (_, index) => (
+                            <div key={index} className="h-[90px] overflow-hidden rounded-container border border-app-border-subtle bg-app-surface/35 p-3">
+                                <Skeleton className="h-12 w-12" />
+                                <Skeleton className="mt-5 h-3 w-4/5" />
+                                <Skeleton className="mt-2 h-2.5 w-2/5" />
+                            </div>
+                        ))}
+                    </div>
+                ) : (
+                    <div className="border-y border-app-border-subtle">
+                        {Array.from({ length: 10 }, (_, index) => (
+                            <div key={index} className="flex h-10 items-center gap-3 border-b border-app-border-subtle px-3 last:border-b-0">
+                                <Skeleton className="h-4 w-4" />
+                                <Skeleton className="h-3 w-[min(22rem,55%)]" />
+                                <Skeleton className="ms-auto h-3 w-16" />
+                            </div>
+                        ))}
+                    </div>
+                )}
             </div>
-        )
+        );
     }
 
     if (error) {
-        return <div className="flex-1 p-6 flex justify-center items-center text-red-400">Error loading files</div>
+        return <div className="flex flex-1 items-center justify-center p-5 text-ui text-app-danger">Error loading files</div>;
     }
 
     if (files.length === 0) {
         return (
-            <div className="flex-1 p-6 overflow-auto">
+            <div className="flex-1 overflow-auto p-5">
                 <EmptyState onUpload={onManualUpload} />
             </div>
         );
@@ -208,65 +228,10 @@ export function FileExplorer({
     return (
         <div
             ref={parentRef}
-            className="flex-1 p-6 overflow-auto custom-scrollbar"
+            className="custom-scrollbar flex-1 overflow-auto p-5"
         >
             {viewMode === 'grid' ? (
                 <>
-
-                    <div className="flex items-center gap-2 mb-4 text-xs text-telegram-subtext">
-                        <span>Sort by:</span>
-                        <button
-                            onClick={() => handleSort('name')}
-                            className={`px-2 py-1 rounded flex items-center gap-1 hover:bg-white/5 ${sortField === 'name' ? 'text-telegram-primary' : ''}`}
-                        >
-                            Name <SortIcon field="name" />
-                        </button>
-                        <button
-                            onClick={() => handleSort('size')}
-                            className={`px-2 py-1 rounded flex items-center gap-1 hover:bg-white/5 ${sortField === 'size' ? 'text-telegram-primary' : ''}`}
-                        >
-                            Size <SortIcon field="size" />
-                        </button>
-                        <button
-                            onClick={() => handleSort('date')}
-                            className={`px-2 py-1 rounded flex items-center gap-1 hover:bg-white/5 ${sortField === 'date' ? 'text-telegram-primary' : ''}`}
-                        >
-                            Date <SortIcon field="date" />
-                        </button>
-
-                        {/* Zoom slider */}
-                        <div className="ml-auto flex items-center gap-1.5">
-                            <button
-                                onClick={() => onCardScaleChange(Math.max(0.5, cardScale - 0.25))}
-                                className="p-1 rounded hover:bg-white/10 text-telegram-subtext hover:text-telegram-text transition-colors"
-                                title="Smaller thumbnails"
-                                disabled={cardScale <= 0.5}
-                            >
-                                <ZoomOut className="w-3.5 h-3.5" />
-                            </button>
-                            <input
-                                type="range"
-                                min="0.5"
-                                max="2"
-                                step="0.25"
-                                value={cardScale}
-                                onChange={(e) => onCardScaleChange(parseFloat(e.target.value))}
-                                className="w-20 h-1 bg-telegram-border rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-telegram-primary [&::-webkit-slider-thumb]:cursor-pointer [&::-webkit-slider-thumb]:transition-transform [&::-webkit-slider-thumb]:hover:scale-125"
-                                title={`Thumbnail zoom: ${Math.round(cardScale * 100)}%`}
-                            />
-                            <button
-                                onClick={() => onCardScaleChange(Math.min(2, cardScale + 0.25))}
-                                className="p-1 rounded hover:bg-white/10 text-telegram-subtext hover:text-telegram-text transition-colors"
-                                title="Larger thumbnails"
-                                disabled={cardScale >= 2}
-                            >
-                                <ZoomIn className="w-3.5 h-3.5" />
-                            </button>
-                            <span className="text-[10px] text-telegram-subtext/60 w-10 text-right tabular-nums">{Math.round(cardScale * 100)}%</span>
-                        </div>
-                    </div>
-
-
                     <div
                         className="relative w-full"
                         style={{ height: `${gridVirtualizer.getTotalSize()}px` }}
@@ -281,7 +246,7 @@ export function FileExplorer({
                                         height: `${cardHeight}px`,
                                         transform: `translateY(${virtualRow.start}px)`,
                                         gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
-                                        gap: `${GAP}px`,
+                                        gap: `${GRID_GAP}px`,
                                     }}
                                 >
                                     {row.map((item) => {
@@ -290,11 +255,11 @@ export function FileExplorer({
                                                 <button
                                                     key="upload"
                                                     onClick={(e) => { e.stopPropagation(); onManualUpload(); }}
-                                                    className="border-2 border-dashed border-telegram-border rounded-xl flex flex-col items-center justify-center text-telegram-subtext hover:border-telegram-primary hover:text-telegram-primary transition-all group overflow-hidden"
+                                                    className="quiet-control group flex min-w-0 flex-col items-center justify-center overflow-hidden border border-dashed border-app-border-subtle bg-app-surface/25 text-app-text-secondary hover:border-app-accent/45 hover:bg-app-surface/50 hover:text-app-accent"
                                                     style={{ height: `${cardHeight}px` }}
                                                 >
-                                                    <Plus className="w-8 h-8 mb-2 group-hover:scale-110 transition-transform" />
-                                                    <span className="text-sm font-medium">{t('common.upload_file')}</span>
+                                                    <Plus className="mb-1.5 h-6 w-6" />
+                                                    <span className="text-ui font-medium">{t('common.upload_file')}</span>
                                                 </button>
                                             );
                                         }
@@ -303,11 +268,11 @@ export function FileExplorer({
                                                 <button
                                                     key="upload-folder"
                                                     onClick={(e) => { e.stopPropagation(); onFolderUpload(); }}
-                                                    className="border-2 border-dashed border-telegram-border rounded-xl flex flex-col items-center justify-center text-telegram-subtext hover:border-telegram-primary hover:text-telegram-primary transition-all group overflow-hidden"
+                                                    className="quiet-control group flex min-w-0 flex-col items-center justify-center overflow-hidden border border-dashed border-app-border-subtle bg-app-surface/25 text-app-text-secondary hover:border-app-accent/45 hover:bg-app-surface/50 hover:text-app-accent"
                                                     style={{ height: `${cardHeight}px` }}
                                                 >
-                                                    <FolderUp className="w-8 h-8 mb-2 group-hover:scale-110 transition-transform" />
-                                                    <span className="text-sm font-medium">{t('common.upload_folder')}</span>
+                                                    <FolderUp className="mb-1.5 h-6 w-6" />
+                                                    <span className="text-ui font-medium">{t('common.upload_folder')}</span>
                                                 </button>
                                             );
                                         }
@@ -339,17 +304,17 @@ export function FileExplorer({
                     </div>
                 </>
             ) : (
-                <div className="flex flex-col w-full">
+                <div className="flex w-full flex-col overflow-hidden border-y border-app-border-subtle">
                     {/* List Header */}
-                    <div className="grid grid-cols-[2rem_2fr_6rem_8rem] gap-4 px-4 py-2 text-xs font-semibold text-telegram-subtext border-b border-telegram-border mb-2 select-none items-center">
+                    <div className="grid h-8 grid-cols-[1.75rem_2fr_6rem_8rem] items-center gap-3 border-b border-app-border-subtle bg-app-surface-sunken/20 px-3 text-metadata font-medium text-app-text-secondary select-none">
                         <div className="text-center">#</div>
-                        <button onClick={() => handleSort('name')} className="flex items-center gap-1 hover:text-telegram-text transition-colors">
+                        <button onClick={() => onSortChange('name')} className="flex items-center gap-1 transition-colors hover:text-app-text">
                             {t('common.name')} <SortIcon field="name" />
                         </button>
-                        <button onClick={() => handleSort('size')} className="flex items-center gap-1 justify-end hover:text-telegram-text transition-colors">
+                        <button onClick={() => onSortChange('size')} className="flex items-center justify-end gap-1 transition-colors hover:text-app-text">
                             {t('common.size')} <SortIcon field="size" />
                         </button>
-                        <button onClick={() => handleSort('date')} className="flex items-center gap-1 justify-end hover:text-telegram-text transition-colors">
+                        <button onClick={() => onSortChange('date')} className="flex items-center justify-end gap-1 transition-colors hover:text-app-text">
                             {t('common.date')} <SortIcon field="date" />
                         </button>
                     </div>
@@ -369,10 +334,10 @@ export function FileExplorer({
                                     >
                                         <button
                                             onClick={(e) => { e.stopPropagation(); onManualUpload(); }}
-                                            className="flex items-center gap-4 px-4 py-3 rounded-lg cursor-pointer border border-dashed border-telegram-border text-telegram-subtext hover:text-telegram-text hover:bg-telegram-hover w-full"
+                                        className="flex h-10 w-full cursor-pointer items-center gap-3 border-b border-dashed border-app-border-subtle px-3 text-app-text-secondary hover:bg-app-hover hover:text-app-text"
                                         >
-                                            <div className="w-5 h-5 flex items-center justify-center"><Plus className="w-4 h-4" /></div>
-                                            <span className="text-sm font-medium">{t('common.upload_file')}...</span>
+                                            <div className="flex h-5 w-5 items-center justify-center"><Plus className="h-3.5 w-3.5" /></div>
+                                            <span className="text-ui font-medium">{t('common.upload_file')}...</span>
                                         </button>
                                     </div>
                                 );
@@ -386,10 +351,10 @@ export function FileExplorer({
                                     >
                                         <button
                                             onClick={(e) => { e.stopPropagation(); onFolderUpload(); }}
-                                            className="flex items-center gap-4 px-4 py-3 rounded-lg cursor-pointer border border-dashed border-telegram-border text-telegram-subtext hover:text-telegram-text hover:bg-telegram-hover w-full"
+                                        className="flex h-10 w-full cursor-pointer items-center gap-3 border-b border-dashed border-app-border-subtle px-3 text-app-text-secondary hover:bg-app-hover hover:text-app-text"
                                         >
-                                            <div className="w-5 h-5 flex items-center justify-center"><FolderUp className="w-4 h-4" /></div>
-                                            <span className="text-sm font-medium">{t('common.upload_folder')}...</span>
+                                            <div className="flex h-5 w-5 items-center justify-center"><FolderUp className="h-3.5 w-3.5" /></div>
+                                            <span className="text-ui font-medium">{t('common.upload_folder')}...</span>
                                         </button>
                                     </div>
                                 );

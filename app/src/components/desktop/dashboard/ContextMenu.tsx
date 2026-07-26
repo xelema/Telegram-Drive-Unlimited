@@ -70,7 +70,7 @@ export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPrevi
     return (
         <div
             ref={menuRef}
-            className="fixed z-50 min-w-[200px] bg-telegram-surface/95 backdrop-blur-xl border border-telegram-border rounded-lg shadow-2xl p-1.5 animate-in fade-in zoom-in-95 duration-100 flex flex-col gap-0.5"
+            className="quiet-menu fixed z-50 flex min-w-[220px] flex-col gap-0.5 p-1.5 animate-in fade-in zoom-in-95 duration-100"
             style={{ left: adjustedPos.x, top: adjustedPos.y }}
             onClick={(e) => e.stopPropagation()}
             onContextMenu={(e) => e.preventDefault()}

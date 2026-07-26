@@ -36,6 +36,20 @@ pub async fn cmd_create_share(
     expiry_hours: Option<i64>,
     db_pool: State<'_, DbConnection>,
 ) -> Result<ShareInfo, String> {
+    {
+        let conn = db_pool.lock().map_err(|e| e.to_string())?;
+        let folder_key = folder_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "home".to_string());
+        let mut encrypted = conn
+            .prepare("SELECT 1 FROM encrypted_files WHERE folder_key = ? AND message_id = ? AND record_state = 'active'")
+            .map_err(|e| e.to_string())?;
+        encrypted.bind((1, folder_key.as_str())).map_err(|e| e.to_string())?;
+        encrypted.bind((2, i64::from(message_id))).map_err(|e| e.to_string())?;
+        if matches!(encrypted.next(), Ok(sqlite::State::Row)) {
+            return Err("[ENCRYPTED_SHARE_UNAVAILABLE] Encrypted sharing is disabled until a credential-safe sharing flow is available".to_string());
+        }
+    }
     let token = generate_share_token();
     let created_at = chrono::Utc::now().timestamp();
     let expires_at = expiry_hours.map(|hours| created_at + hours * 3600);

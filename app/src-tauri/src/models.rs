@@ -25,7 +25,14 @@ pub struct FileMetadata {
     pub mime_type: Option<String>,
     pub file_ext: Option<String>, // Added field
     pub created_at: String, 
-    pub icon_type: String, 
+    pub icon_type: String,
+    /// Encryption state: "plain" | "encrypted_locked" | "encrypted_unlocked" | etc.
+    #[serde(default = "default_encryption_state")]
+    pub encryption_state: String,
+}
+
+fn default_encryption_state() -> String {
+    "plain".to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

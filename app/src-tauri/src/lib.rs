@@ -1,4 +1,5 @@
 pub mod models;
+pub mod crypto;
 
 /// Initialize COM in Multi-Threaded Apartment mode on Windows worker threads.
 /// Tauri's main thread uses STA (required for WebView2/DragDrop), so any spawned
@@ -43,7 +44,7 @@ pub mod bandwidth;
 pub mod vpn_optimizer;
 pub mod socks5_bridge;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 
 use tokio::sync::Mutex;
@@ -63,6 +64,7 @@ pub mod jni_cache;
 pub mod transcode;
 pub mod fmp4_remux;
 pub mod mp4_utils;
+pub mod crypto_commands;
 
 
 /// Single source of truth for the Actix streaming server port.
@@ -205,7 +207,7 @@ fn cmd_open_file_externally(path: String, app_handle: tauri::AppHandle) -> Resul
         if let Some(main_class) = crate::jni_cache::get_main_activity_jclass() {
             let path_jstr = env.new_string(&path)
                 .map_err(|e| format!("Failed to create path JString: {}", e))?;
-            
+
             let lower_ext = std::path::Path::new(&path)
                 .extension()
                 .and_then(|ext| ext.to_str())
@@ -222,7 +224,7 @@ fn cmd_open_file_externally(path: String, app_handle: tauri::AppHandle) -> Resul
                 "zip" => "application/zip",
                 _ => "application/octet-stream",
             };
-            
+
             let mime_jstr = env.new_string(mime_type)
                 .map_err(|e| format!("Failed to create mime JString: {}", e))?;
 
@@ -543,6 +545,30 @@ pub fn run() {
             });
             app.manage(Arc::new(bandwidth::BandwidthManager::new(app.handle())));
             app.manage(StreamConfig { token: stream_token.clone(), port: STREAM_PORT });
+
+            // Initialize the passphrase-protected persistent production vault.
+            // Test-only MemoryVault must never be constructed by the app.
+            let crypto_data_dir = app.path().app_data_dir().map_err(|e| {
+                log::error!("Failed to get app data dir for encryption vault: {}", e);
+                e
+            })?;
+            let crypto_vault_path = crypto_data_dir.join("encryption").join("vault.v2");
+            let crypto_vault = Box::new(crypto::vault::file::FileVault::new(crypto_vault_path));
+            let crypto_state = crypto::state::CryptoState::new(crypto_vault);
+            let crypto_state_for_timer = crypto_state.clone();
+            app.manage(crypto_state);
+            let crypto_app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+                loop {
+                    interval.tick().await;
+                    if crypto_state_for_timer.check_auto_lock() {
+                        crypto_state_for_timer.lock();
+                        let _ = crypto_app_handle.emit("vault-locked", "auto_lock");
+                    }
+                }
+            });
+
             app.manage(ActixServerHandle(server_handle_for_setup.clone()));
             app.manage(ApiServerHandle(Arc::new(std::sync::Mutex::new(None))));
             app.manage(ApiServerRunning(Arc::new(std::sync::atomic::AtomicBool::new(false))));
@@ -746,6 +772,21 @@ pub fn run() {
             commands::cmd_assign_folder_to_group,
             commands::cmd_update_group_order,
             commands::cmd_get_groups,
+            crypto_commands::cmd_get_encryption_capabilities,
+            crypto_commands::cmd_get_crypto_inventory,
+            crypto_commands::cmd_get_encryption_settings,
+            crypto_commands::cmd_update_encryption_settings,
+            crypto_commands::cmd_create_vault,
+            crypto_commands::cmd_unlock_vault,
+            crypto_commands::cmd_change_vault_passphrase,
+            crypto_commands::cmd_lock_vault,
+            crypto_commands::cmd_stage_file_passphrase,
+            crypto_commands::cmd_get_vault_status,
+            crypto_commands::cmd_export_vault_recovery,
+            crypto_commands::cmd_import_vault_recovery,
+            crypto_commands::cmd_generate_recovery_key,
+            crypto_commands::cmd_get_file_encryption_info,
+            crypto_commands::cmd_verify_encrypted_file,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -753,6 +794,10 @@ pub fn run() {
     app.run(|app_handle, event| {
         if let tauri::RunEvent::Exit = event {
             log::info!("Application exiting — shutting down background services...");
+
+            if let Some(crypto_state) = app_handle.try_state::<crypto::state::CryptoState>() {
+                crypto_state.lock();
+            }
 
             // 1. Shutdown the grammers network runner
             let shutdown_arc = app_handle.state::<TelegramState>().runner_shutdown.clone();
@@ -786,4 +831,3 @@ pub fn run() {
         }
     });
 }
-

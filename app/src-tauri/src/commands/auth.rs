@@ -256,8 +256,10 @@ pub async fn cmd_reconnect_with_network_settings(
 pub async fn cmd_logout(
     app_handle: tauri::AppHandle,
     state: State<'_, TelegramState>,
+    crypto_state: State<'_, crate::crypto::state::CryptoState>,
 ) -> Result<bool, String> {
     log::info!("Logging out...");
+    crypto_state.lock();
     
     // 1. Shutdown the network runner FIRST to prevent any operations
     {
@@ -290,7 +292,7 @@ pub async fn cmd_logout(
     let _ = std::fs::remove_file(app_data_dir.join("telegram.session-wal"));
     let _ = std::fs::remove_file(app_data_dir.join("telegram.session-shm"));
 
-    log::info!("Logout complete. Runner count: {}", state.runner_count.load(Ordering::SeqCst));
+    log::info!("Logout complete. Vault locked. Runner count: {}", state.runner_count.load(Ordering::SeqCst));
     Ok(true)
 }
 

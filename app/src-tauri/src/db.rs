@@ -102,7 +102,131 @@ pub fn init_db(app: &AppHandle) -> Result<DbConnection, String> {
             ));
         }
     }
+
+    // Encryption tables migration. Run the complete migration in one explicit
+    // transaction so a crash cannot leave a partially upgraded registry.
+    {
+        let mut last_err = String::new();
+        for attempt in 0..MAX_DB_INIT_RETRIES {
+            match run_encryption_migration(&conn) {
+                Ok(_) => {
+                    last_err.clear();
+                    break;
+                }
+                Err(e) => {
+                    last_err = e.to_string();
+                    if attempt < MAX_DB_INIT_RETRIES - 1 {
+                        let wait_ms = 100 * 2u64.pow(attempt);
+                        log::warn!(
+                            "Failed to run encryption migration (attempt {}/{}): {}. Retrying in {}ms...",
+                            attempt + 1, MAX_DB_INIT_RETRIES, last_err, wait_ms
+                        );
+                        std::thread::sleep(Duration::from_millis(wait_ms));
+                    }
+                }
+            }
+        }
+        if !last_err.is_empty() {
+            return Err(format!(
+                "Failed to run encryption migration after {} attempts: {}",
+                MAX_DB_INIT_RETRIES, last_err
+            ));
+        }
+    }
     
     log::info!("SQLite database initialized successfully using sqlite crate.");
     Ok(Arc::new(Mutex::new(conn)))
+}
+
+fn encryption_column_exists(
+    conn: &sqlite::Connection,
+    column_name: &str,
+) -> Result<bool, String> {
+    let mut statement = conn
+        .prepare("SELECT COUNT(*) FROM pragma_table_info('encrypted_files') WHERE name = ?")
+        .map_err(|error| error.to_string())?;
+    statement
+        .bind((1, column_name))
+        .map_err(|error| error.to_string())?;
+    if let sqlite::State::Row = statement.next().map_err(|error| error.to_string())? {
+        return statement
+            .read::<i64, _>(0)
+            .map(|count| count > 0)
+            .map_err(|error| error.to_string());
+    }
+    Ok(false)
+}
+
+fn run_encryption_migration(conn: &sqlite::Connection) -> Result<(), String> {
+    conn.execute("BEGIN IMMEDIATE TRANSACTION")
+        .map_err(|error| error.to_string())?;
+    let result = (|| {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS encrypted_files (
+                folder_key TEXT NOT NULL,
+                message_id INTEGER NOT NULL,
+                file_uuid BLOB NOT NULL,
+                envelope_version INTEGER NOT NULL,
+                cipher_suite INTEGER NOT NULL,
+                ciphertext_size INTEGER NOT NULL,
+                plaintext_size INTEGER,
+                remote_name TEXT NOT NULL,
+                key_profile_id TEXT,
+                protection_mode TEXT NOT NULL DEFAULT 'vault',
+                metadata_protected INTEGER NOT NULL DEFAULT 0,
+                header_blob BLOB,
+                header_sha256 BLOB,
+                record_state TEXT NOT NULL DEFAULT 'active',
+                reconciliation_state TEXT NOT NULL DEFAULT 'ok',
+                created_at INTEGER NOT NULL,
+                last_verified_at INTEGER,
+                PRIMARY KEY(folder_key, message_id)
+            );
+            CREATE TABLE IF NOT EXISTS encryption_profiles (
+                id TEXT PRIMARY KEY,
+                label TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                vault_locator TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                is_deleted INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version INTEGER PRIMARY KEY,
+                applied_at INTEGER NOT NULL
+            );",
+        )
+        .map_err(|error| error.to_string())?;
+
+        let additions = [
+            ("plaintext_size", "INTEGER"),
+            ("protection_mode", "TEXT NOT NULL DEFAULT 'vault'"),
+            ("metadata_protected", "INTEGER NOT NULL DEFAULT 0"),
+            ("reconciliation_state", "TEXT NOT NULL DEFAULT 'ok'"),
+        ];
+        for (name, declaration) in additions {
+            if !encryption_column_exists(conn, name)? {
+                conn.execute(format!(
+                    "ALTER TABLE encrypted_files ADD COLUMN {name} {declaration}"
+                ))
+                .map_err(|error| error.to_string())?;
+            }
+        }
+        conn.execute(format!(
+            "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (3, {})",
+            chrono::Utc::now().timestamp()
+        ))
+        .map_err(|error| error.to_string())?;
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => conn
+            .execute("COMMIT")
+            .map_err(|error| error.to_string()),
+        Err(error) => {
+            let _ = conn.execute("ROLLBACK");
+            Err(error)
+        }
+    }
 }

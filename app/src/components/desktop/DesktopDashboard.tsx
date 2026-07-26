@@ -11,9 +11,8 @@ import { formatBytes, isMediaFile, isPdfFile, isArchiveFile, nativeShareOrCopy, 
 // Components
 import { Sidebar } from './dashboard/Sidebar';
 import { TopBar } from './dashboard/TopBar';
-import { FileExplorer } from './dashboard/FileExplorer';
-import { UploadQueue } from './dashboard/UploadQueue';
-import { DownloadQueue } from './dashboard/DownloadQueue';
+import { FileExplorer, type SortDirection, type SortField } from './dashboard/FileExplorer';
+import { TransferCenter } from './dashboard/TransferCenter';
 import { MoveToFolderModal } from './dashboard/MoveToFolderModal';
 import { PreviewModal } from './dashboard/PreviewModal';
 import { MediaPlayer } from './dashboard/MediaPlayer';
@@ -63,10 +62,21 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     const [searchResults, setSearchResults] = useState<TelegramFile[]>([]);
     const [isSearching, setIsSearching] = useState(false);
     const [cardScale, setCardScale] = useState(1.0);
+    const [sortField, setSortField] = useState<SortField>('name');
+    const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
     const internalDragRef = useRef<number[] | null>(null);
 
     const setInternalDragIds = (ids: number[] | null) => {
         internalDragRef.current = ids;
+    };
+
+    const handleSortChange = (field: SortField) => {
+        if (field === sortField) {
+            setSortDirection((direction) => direction === 'asc' ? 'desc' : 'asc');
+            return;
+        }
+        setSortField(field);
+        setSortDirection('asc');
     };
     const [showRemoteUpload, setShowRemoteUpload] = useState(false);
     const [playingFile, setPlayingFile] = useState<TelegramFile | null>(null);
@@ -85,25 +95,25 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     const { data: allFiles = [], isLoading, error } = useQuery({
         queryKey: ['files', activeFolderId],
         queryFn: async () => {
-            let accumulatedFiles: any[] = [];
+            const accumulatedFiles = new Map<number, TelegramFile>();
             queryClient.setQueryData(['files', activeFolderId], []);
 
             const unlisten = await listen<any>('folder-load-chunk', (event) => {
                 const payload = event.payload;
                 if (payload.folderId === activeFolderId) {
-                    const newChunk = payload.files.map((f: any) => ({
+                    const newChunk: TelegramFile[] = payload.files.map((f: any) => ({
                         ...f,
                         sizeStr: formatBytes(f.size),
                         type: (f.icon_type as TelegramFile['type']) || 'file'
                     }));
-                    accumulatedFiles = [...accumulatedFiles, ...newChunk];
-                    queryClient.setQueryData(['files', activeFolderId], accumulatedFiles);
+                    newChunk.forEach((file) => accumulatedFiles.set(file.id, file));
+                    queryClient.setQueryData(['files', activeFolderId], Array.from(accumulatedFiles.values()));
                 }
             });
 
             try {
                 await invoke('cmd_get_files', { folderId: activeFolderId });
-                return accumulatedFiles;
+                return Array.from(accumulatedFiles.values());
             } finally {
                 unlisten();
             }
@@ -547,7 +557,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
 
     return (
         <div
-            className="flex h-screen w-full overflow-hidden bg-telegram-bg relative"
+            className="desktop-shell relative flex h-screen w-full overflow-hidden bg-app-canvas"
             onDragOver={handleRootDragOver}
             onDragEnter={handleRootDragEnter}
         >
@@ -662,7 +672,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                 onDeleteGroup={handleDeleteGroup}
             />
 
-            <main className="flex-1 flex flex-col">
+            <main className="flex min-w-0 flex-1 flex-col">
                 <TopBar
                     currentFolderName={currentFolderName}
                     selectedIds={selectedIds}
@@ -672,17 +682,23 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                     onBulkShare={handleBulkShare}
                     onDownloadFolder={handleDownloadFolder}
                     onClearSelection={clearSelection}
+                    onUploadClick={handleManualUpload}
                     viewMode={viewMode}
                     setViewMode={setViewMode}
+                    cardScale={cardScale}
+                    onCardScaleChange={setCardScale}
+                    sortField={sortField}
+                    sortDirection={sortDirection}
+                    onSortChange={handleSortChange}
                     searchTerm={searchTerm}
                     onSearchChange={setSearchTerm}
                     onSettingsClick={() => setShowSettings(true)}
                     onRemoteUploadClick={() => setShowRemoteUpload(true)}
                 />
                 {searchTerm.length > 2 && (
-                    <div className="px-6 pt-4 pb-0">
-                        <h2 className="text-sm font-medium text-telegram-subtext">
-                            Search Results for <span className="text-telegram-primary">"{searchTerm}"</span>
+                    <div className="px-5 pb-0 pt-3">
+                        <h2 className="text-ui font-medium text-app-text-secondary">
+                            Search Results for <span className="text-app-accent">"{searchTerm}"</span>
                         </h2>
                     </div>
                 )}
@@ -709,7 +725,9 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                     onRename={handleRename}
                     onFileMove={handleFileMove}
                     cardScale={cardScale}
-                    onCardScaleChange={setCardScale}
+                    sortField={sortField}
+                    sortDirection={sortDirection}
+                    onSortChange={handleSortChange}
                 />
             </main>
 
@@ -743,19 +761,17 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
             )}
 
 
-            <UploadQueue
-                items={uploadQueue}
-                onClearFinished={() => setUploadQueue(q => q.filter(i => i.status !== 'success' && i.status !== 'error' && i.status !== 'cancelled'))}
-                onCancelAll={cancelUploads}
-                onCancelItem={cancelUploadItem}
-                onRetryItem={retryUploadItem}
-            />
-            <DownloadQueue
-                items={downloadQueue}
-                onClearFinished={clearDownloads}
-                onCancelAll={cancelDownloads}
-                onCancelItem={cancelDownloadItem}
-                onRetryItem={retryDownloadItem}
+            <TransferCenter
+                uploads={uploadQueue}
+                downloads={downloadQueue}
+                onClearUploads={() => setUploadQueue(q => q.filter(i => i.status !== 'success' && i.status !== 'error' && i.status !== 'cancelled'))}
+                onCancelUploads={cancelUploads}
+                onCancelUpload={cancelUploadItem}
+                onRetryUpload={retryUploadItem}
+                onClearDownloads={clearDownloads}
+                onCancelDownloads={cancelDownloads}
+                onCancelDownload={cancelDownloadItem}
+                onRetryDownload={retryDownloadItem}
             />
 
             <SettingsModal

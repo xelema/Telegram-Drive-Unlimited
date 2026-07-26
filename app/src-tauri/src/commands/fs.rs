@@ -5,16 +5,198 @@ use grammers_client::InputMessage;
 use grammers_tl_types as tl;
 use crate::TelegramState;
 use crate::models::{FolderMetadata, FileMetadata};
-use crate::bandwidth::BandwidthManager;
+use crate::bandwidth::{BandwidthManager, BandwidthReservation};
 use crate::commands::utils::{resolve_peer, map_error};
 use crate::vpn_optimizer::{NetworkConfig, backoff_ms};
 use crate::db::DbConnection;
+use crate::crypto::envelope::encrypt_reader::{EncryptingReader, EncryptionSession};
+use crate::crypto::envelope::header::{EnvelopeHeader, KeySlotEntry};
+use crate::crypto::envelope::key_slot::{wrap_dek, KeySlotContext};
+use crate::crypto::random;
+use crate::crypto::policy;
+use crate::crypto::kdf;
+use crate::crypto::registry::{upsert_encrypted_file, EncryptedFileRecord, EncryptedFileState};
+use crate::crypto::secret::{SecretBytes, SecretKey};
+use sha2::{Sha256, Digest};
 use sqlite;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::sync::Mutex;
 use tokio::sync::oneshot;
+use base64::Engine;
+
+#[derive(Serialize)]
+struct ProtectedFileMetadata<'a> {
+    schema_version: u16,
+    original_name: &'a str,
+    mime_type: &'a str,
+}
+
+#[derive(Deserialize)]
+struct DecodedProtectedFileMetadata {
+    schema_version: u16,
+    original_name: String,
+    mime_type: String,
+}
+
+struct EncryptedListInfo {
+    remote_name: String,
+    envelope_version: u16,
+    protection_mode: String,
+    metadata_protected: bool,
+    header_blob: Option<Vec<u8>>,
+    plaintext_size: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UploadProtectionMode {
+    Standard,
+    Vault,
+    Passphrase,
+    VaultAndPassphrase,
+}
+
+impl UploadProtectionMode {
+    fn parse(value: Option<&str>) -> Result<Self, String> {
+        match value.unwrap_or("standard") {
+            "standard" => Ok(Self::Standard),
+            "vault" => Ok(Self::Vault),
+            "passphrase" | "file_key" => Ok(Self::Passphrase),
+            "vault_and_passphrase" => Ok(Self::VaultAndPassphrase),
+            _ => Err("[POLICY_REJECTED] Unknown upload protection mode".to_string()),
+        }
+    }
+
+    fn needs_vault(self) -> bool {
+        matches!(self, Self::Vault | Self::VaultAndPassphrase)
+    }
+
+    fn needs_passphrase(self) -> bool {
+        matches!(self, Self::Passphrase | Self::VaultAndPassphrase)
+    }
+
+    fn registry_name(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::Vault => "vault",
+            Self::Passphrase => "passphrase",
+            Self::VaultAndPassphrase => "vault_and_passphrase",
+        }
+    }
+}
+
+fn protection_mode_from_header(header: &EnvelopeHeader) -> Result<&'static str, String> {
+    let has_vault = header
+        .key_slots
+        .iter()
+        .any(|slot| slot.kind == policy::SlotKind::Vault as u8);
+    let has_passphrase = header
+        .key_slots
+        .iter()
+        .any(|slot| slot.kind == policy::SlotKind::Passphrase as u8);
+    match (has_vault, has_passphrase) {
+        (true, true) => Ok("vault_and_passphrase"),
+        (true, false) => Ok("vault"),
+        (false, true) => Ok("passphrase"),
+        (false, false) => Err("Encrypted file has no supported unlock slot".to_string()),
+    }
+}
+
+fn registry_record_from_header(
+    folder_id: Option<i64>,
+    message_id: i32,
+    remote_name: String,
+    ciphertext_size: u64,
+    header_bytes: Vec<u8>,
+    reconciliation_state: &str,
+) -> Result<EncryptedFileRecord, String> {
+    let header = EnvelopeHeader::parse(&header_bytes).map_err(|error| error.to_string())?;
+    let expected_size = crate::crypto::envelope::length::calculate_ciphertext_length(
+        header.core.total_plaintext_length,
+        header.core.chunk_size,
+        header.core.header_length,
+    )
+    .map_err(|error| error.to_string())?;
+    if expected_size != ciphertext_size {
+        return Err("Encrypted envelope length does not match Telegram media size".to_string());
+    }
+    let protection_mode = protection_mode_from_header(&header)?.to_string();
+    let header_sha256 = Sha256::digest(&header_bytes).to_vec();
+    Ok(EncryptedFileRecord {
+        folder_key: folder_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "home".to_string()),
+        message_id,
+        file_uuid: header.core.file_uuid.to_vec(),
+        envelope_version: header.core.format_version,
+        cipher_suite: header.core.cipher_suite,
+        ciphertext_size,
+        plaintext_size: Some(header.core.total_plaintext_length),
+        remote_name,
+        key_profile_id: Some(protection_mode.clone()),
+        protection_mode,
+        metadata_protected: header.core.encrypted_metadata_length > 0,
+        header_blob: Some(header_bytes),
+        header_sha256: Some(header_sha256),
+        record_state: EncryptedFileState::Active,
+        reconciliation_state: reconciliation_state.to_string(),
+        created_at: chrono::Utc::now().timestamp(),
+        last_verified_at: None,
+    })
+}
+
+async fn probe_tdenc2_header(
+    client: &grammers_client::Client,
+    media: &Media,
+) -> Result<Vec<u8>, String> {
+    let mut download = client.iter_download(media);
+    let mut header_bytes = Vec::with_capacity(policy::CORE_HEADER_SIZE);
+    let mut expected_length: Option<usize> = None;
+
+    while expected_length.is_none_or(|length| header_bytes.len() < length) {
+        let Some(chunk) = download.next().await.transpose() else {
+            return Err("Encrypted envelope ended before its header was complete".to_string());
+        };
+        let bytes = chunk.map_err(|error| map_error(&error))?;
+        let target = expected_length.unwrap_or(policy::CORE_HEADER_SIZE);
+        let needed = target.saturating_sub(header_bytes.len());
+        header_bytes.extend_from_slice(&bytes[..bytes.len().min(needed)]);
+
+        if expected_length.is_none() && header_bytes.len() == policy::CORE_HEADER_SIZE {
+            let core = crate::crypto::envelope::header::CoreHeader::parse(&header_bytes)
+                .map_err(|error| error.to_string())?;
+            expected_length = Some(core.header_length as usize);
+            header_bytes.reserve(core.header_length as usize - policy::CORE_HEADER_SIZE);
+        }
+    }
+
+    EnvelopeHeader::parse(&header_bytes).map_err(|error| error.to_string())?;
+    Ok(header_bytes)
+}
+
+fn inferred_mime_type(path: &str) -> &'static str {
+    match std::path::Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "pdf" => "application/pdf",
+        "mp4" => "video/mp4",
+        "mov" => "video/quicktime",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "txt" => "text/plain",
+        "zip" => "application/zip",
+        _ => "application/octet-stream",
+    }
+}
 
 static UPLOAD_CANCELLATIONS: OnceLock<Mutex<HashMap<String, oneshot::Sender<()>>>> = OnceLock::new();
 
@@ -724,6 +906,151 @@ fn cleanup_partial_file(path: &str) {
     });
 }
 
+struct PartialFileGuard {
+    path: std::path::PathBuf,
+    armed: bool,
+}
+
+impl PartialFileGuard {
+    fn new(path: std::path::PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PartialFileGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+fn create_private_partial_file(path: &std::path::Path) -> Result<std::fs::File, String> {
+    let mut options = std::fs::OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path).map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "android")]
+fn publish_verified_android_download(
+    cache_path: &str,
+    file_name: &str,
+    mime_type: &str,
+) -> Result<(), String> {
+    let ctx = ndk_context::android_context();
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
+        .map_err(|error| format!("Failed to access Android VM: {}", error))?;
+    let mut env = vm
+        .attach_current_thread()
+        .map_err(|error| format!("Failed to attach Android thread: {}", error))?;
+    let main_class = crate::jni_cache::get_main_activity_jclass()
+        .ok_or_else(|| "Android activity is unavailable".to_string())?;
+    let j_cache_path = env.new_string(cache_path).map_err(|error| error.to_string())?;
+    let j_file_name = env.new_string(file_name).map_err(|error| error.to_string())?;
+    let j_mime_type = env.new_string(mime_type).map_err(|error| error.to_string())?;
+    let result = env.call_static_method(
+        &main_class,
+        "saveFileToPublicDownloads",
+        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Z",
+        &[
+            jni::objects::JValue::from(&j_cache_path),
+            jni::objects::JValue::from(&j_file_name),
+            jni::objects::JValue::from(&j_mime_type),
+        ],
+    );
+    match result {
+        Ok(value) if value.z().unwrap_or(false) => Ok(()),
+        Ok(_) => Err("Android MediaStore rejected the verified file".to_string()),
+        Err(error) => {
+            if env.exception_check().unwrap_or(false) {
+                let _ = env.exception_describe();
+                let _ = env.exception_clear();
+            }
+            Err(format!("Failed to publish verified file: {}", error))
+        }
+    }
+}
+
+fn initialize_tdenc2_decryptor(
+    header_bytes: &[u8],
+    vault_key: Option<&SecretKey>,
+    prompt_passphrase: Option<&SecretBytes>,
+) -> Result<crate::crypto::envelope::decrypt_reader::DecryptReader, String> {
+    use crate::crypto::envelope::decrypt_reader::DecryptReader;
+    use crate::crypto::envelope::header::EnvelopeHeader;
+    use crate::crypto::envelope::key_slot::unwrap_dek;
+
+    let header = EnvelopeHeader::parse(header_bytes)
+        .map_err(|error| format!("Failed to parse encrypted header: {}", error))?;
+    let context = KeySlotContext {
+        file_uuid: &header.core.file_uuid,
+        format_version: header.core.format_version,
+    };
+
+    for slot in &header.key_slots {
+        let wrapping_key = if slot.kind == policy::SlotKind::Vault as u8 {
+            let Some(master_key) = vault_key else { continue };
+            kdf::derive_file_wrapping_key(
+                master_key,
+                &header.core.file_uuid,
+                &slot.salt,
+                slot.kind,
+                slot.slot_id,
+            )
+        } else if slot.kind == policy::SlotKind::Passphrase as u8 {
+            let Some(passphrase) = prompt_passphrase else { continue };
+            kdf::derive_passphrase_key(
+                passphrase.expose(),
+                &slot.salt,
+                slot.argon2_memory_kib,
+                slot.argon2_iterations,
+                slot.argon2_parallelism,
+            )
+        } else {
+            continue;
+        };
+        let Ok(wrapping_key) = wrapping_key else { continue };
+        let Ok(dek) = unwrap_dek(
+            &context,
+            &slot.wrapped_dek,
+            &slot.wrap_nonce,
+            &wrapping_key,
+            slot.kind,
+            slot.slot_id,
+            slot.kdf_algorithm,
+            slot.argon2_memory_kib,
+            slot.argon2_iterations,
+            slot.argon2_parallelism,
+            &slot.salt,
+        ) else { continue };
+        return DecryptReader::new(header_bytes, dek)
+            .map_err(|error| format!("[WRONG_KEY_OR_CORRUPT] Failed to authenticate encrypted header: {}", error));
+    }
+
+    if header.key_slots.iter().any(|slot| slot.kind == policy::SlotKind::Passphrase as u8)
+        && prompt_passphrase.is_none()
+        && !header.key_slots.iter().any(|slot| slot.kind == policy::SlotKind::Vault as u8 && vault_key.is_some())
+    {
+        return Err("[KEY_REQUIRED] This file requires its file passphrase".to_string());
+    }
+    if header.key_slots.iter().any(|slot| slot.kind == policy::SlotKind::Vault as u8)
+        && vault_key.is_none()
+        && !header.key_slots.iter().any(|slot| slot.kind == policy::SlotKind::Passphrase as u8 && prompt_passphrase.is_some())
+    {
+        return Err("[VAULT_LOCKED] Unlock the vault to decrypt this file".to_string());
+    }
+    Err("[WRONG_KEY_OR_CORRUPT] The supplied credential could not unlock this file".to_string())
+}
+
 #[tauri::command]
 pub async fn cmd_cancel_transfer(
     transfer_id: String,
@@ -743,10 +1070,15 @@ pub async fn cmd_upload_file(
     mut path: String,
     folder_id: Option<i64>,
     transfer_id: Option<String>,
+    protection_mode: Option<String>,
+    prompt_token: Option<u64>,
+    protect_metadata: Option<bool>,
     app_handle: tauri::AppHandle,
     state: State<'_, TelegramState>,
     bw_state: State<'_, Arc<BandwidthManager>>,
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
+    crypto_state: State<'_, crate::crypto::state::CryptoState>,
+    db_pool: State<'_, DbConnection>,
 ) -> Result<String, String> {
     let mut temp_cache_path: Option<String> = None;
 
@@ -771,10 +1103,15 @@ pub async fn cmd_upload_file(
         path.clone(),
         folder_id,
         transfer_id,
+        protection_mode,
+        prompt_token,
+        protect_metadata,
         app_handle,
         state,
         bw_state,
         net_config,
+        crypto_state,
+        db_pool,
     ).await;
 
     if let Some(ref cache_path) = temp_cache_path {
@@ -789,13 +1126,38 @@ async fn cmd_upload_file_inner(
     path: String,
     folder_id: Option<i64>,
     transfer_id: Option<String>,
+    protection_mode: Option<String>,
+    prompt_token: Option<u64>,
+    protect_metadata: Option<bool>,
     app_handle: tauri::AppHandle,
     state: State<'_, TelegramState>,
     bw_state: State<'_, Arc<BandwidthManager>>,
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
+    crypto_state: State<'_, crate::crypto::state::CryptoState>,
+    db_pool: State<'_, DbConnection>,
 ) -> Result<String, String> {
 
-    let size = tokio::fs::metadata(&path).await.map_err(|e| e.to_string())?.len();
+    let plaintext_size = tokio::fs::metadata(&path).await.map_err(|e| e.to_string())?.len();
+    let protection_mode = UploadProtectionMode::parse(protection_mode.as_deref())?;
+    let is_encrypted = protection_mode != UploadProtectionMode::Standard;
+
+    // --- Encrypted upload path ---
+    if is_encrypted {
+        if !crypto_state.get_features().upload_enabled {
+            return Err(
+                "[ENCRYPTION_BLOCKED] Encrypted uploads are temporarily disabled while the corrected envelope and persistent vault are being completed. The file was not uploaded."
+                    .to_string(),
+            );
+        }
+        return cmd_upload_file_encrypted(
+            path, folder_id, transfer_id, app_handle, state,
+            bw_state, net_config, crypto_state, db_pool, plaintext_size,
+            protection_mode, prompt_token, protect_metadata.unwrap_or(true),
+        ).await;
+    }
+
+    // --- Standard upload path (unchanged) ---
+    let size = plaintext_size;
     bw_state.try_reserve_up(size)?;
 
     let tid = transfer_id.unwrap_or_default();
@@ -854,7 +1216,6 @@ async fn cmd_upload_file_inner(
                 last_time = now;
 
                 if current >= file_size { break; }
-                // Check cancellation
                 if cancelled.read().await.contains(&progress_tid) { break; }
             }
         }))
@@ -901,7 +1262,6 @@ async fn cmd_upload_file_inner(
         }
     };
 
-    // Stop progress reporter
     if let Some(t) = progress_task { t.abort(); }
 
     let uploaded_file = upload_result.map_err(map_error)?;
@@ -909,7 +1269,6 @@ async fn cmd_upload_file_inner(
 
     let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
 
-    // VPN-aware retry logic for send_message
     let max_retries = net_config.retry_attempts();
     let base_ms = net_config.retry_base_backoff_ms();
     let max_ms = net_config.retry_max_backoff_ms();
@@ -919,7 +1278,6 @@ async fn cmd_upload_file_inner(
     for attempt in 0..=max_retries {
         match client.send_message(&peer, message.clone()).await {
             Ok(_) => {
-                // Bandwidth was already reserved by try_reserve_up at start
         if !tid.is_empty() {
             let _ = app_handle.emit("upload-progress", ProgressPayload {
                 id: tid, percent: 100, uploaded_bytes: size, total_bytes: size, speed_bytes_per_sec: 0,
@@ -930,18 +1288,15 @@ async fn cmd_upload_file_inner(
             Err(e) => {
                 let err = map_error(e);
                 log::warn!("send_message attempt {}/{}: {}", attempt + 1, max_retries + 1, err);
-
-                // Handle FLOOD_WAIT: sleep the requested time if configured
                 if respect_flood && err.starts_with("FLOOD_WAIT_") {
                     if let Ok(secs) = err.trim_start_matches("FLOOD_WAIT_").parse::<u64>() {
-                        let wait = secs.min(300); // cap at 5 min
+                        let wait = secs.min(300);
                         log::info!("Respecting FLOOD_WAIT: sleeping {}s", wait);
                         tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
                         last_err = err;
                         continue;
                     }
                 }
-
                 last_err = err;
                 if attempt < max_retries {
                     let delay = backoff_ms(attempt, base_ms, max_ms);
@@ -955,8 +1310,8 @@ async fn cmd_upload_file_inner(
     Err(format!("Upload failed after {} attempts: {}", max_retries + 1, last_err))
 }
 
-#[tauri::command]
-pub async fn initiate_upload(
+/// Encrypted upload path: wraps the file with EncryptingReader, uploads TDENC1 bytes.
+async fn cmd_upload_file_encrypted(
     path: String,
     folder_id: Option<i64>,
     transfer_id: Option<String>,
@@ -964,16 +1319,358 @@ pub async fn initiate_upload(
     state: State<'_, TelegramState>,
     bw_state: State<'_, Arc<BandwidthManager>>,
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
+    crypto_state: State<'_, crate::crypto::state::CryptoState>,
+    db_pool: State<'_, DbConnection>,
+    plaintext_size: u64,
+    protection_mode: UploadProtectionMode,
+    prompt_token: Option<u64>,
+    protect_metadata: bool,
+) -> Result<String, String> {
+    use crate::crypto::envelope::length::calculate_ciphertext_length;
+
+    let vault_wrapping_key = if protection_mode.needs_vault() {
+        Some(
+            crypto_state
+                .get_current_wrapping_key()
+                .map_err(|_| "[VAULT_LOCKED] Unlock the vault before starting this upload".to_string())?,
+        )
+    } else {
+        None
+    };
+    let prompt_secret = if protection_mode.needs_passphrase() {
+        let token = prompt_token.ok_or_else(|| {
+            "[KEY_REQUIRED] Enter a file passphrase before starting this upload".to_string()
+        })?;
+        Some(
+            crypto_state
+                .consume_prompt_secret(token)
+                .map_err(|error| error.to_string())?,
+        )
+    } else {
+        None
+    };
+
+    // Generate keys for the encryption session
+    let dek = SecretKey::new(random::random_key());
+    let file_uuid = random::random_uuid();
+    let nonce_prefix = random::random_nonce_prefix();
+
+    let ctx = KeySlotContext {
+        file_uuid: &file_uuid,
+        format_version: policy::FORMAT_VERSION,
+    };
+    let mut key_slots = Vec::with_capacity(if protection_mode == UploadProtectionMode::VaultAndPassphrase { 2 } else { 1 });
+
+    if let Some(wrapping_key) = vault_wrapping_key.as_ref() {
+        let salt = random::random_salt();
+        let slot_kind = policy::SlotKind::Vault as u8;
+        let slot_id = 0;
+        let file_wrapping_key = kdf::derive_file_wrapping_key(
+            wrapping_key,
+            &file_uuid,
+            &salt,
+            slot_kind,
+            slot_id,
+        ).map_err(|e| format!("Failed to derive file wrapping key: {}", e))?;
+        let (wrapped_dek, wrap_nonce) = wrap_dek(
+            &ctx, &dek, &file_wrapping_key,
+            slot_kind, slot_id, policy::KdfAlgorithm::HkdfSha256 as u16,
+            0, 0, 0, &salt,
+        ).map_err(|e| format!("Failed to wrap DEK: {}", e))?;
+        key_slots.push(KeySlotEntry {
+            kind: slot_kind, slot_id,
+            kdf_algorithm: policy::KdfAlgorithm::HkdfSha256 as u16,
+            argon2_memory_kib: 0, argon2_iterations: 0, argon2_parallelism: 0,
+            salt, wrap_nonce, wrapped_dek,
+        });
+    }
+
+    if let Some(passphrase) = prompt_secret.as_ref() {
+        let salt = random::random_salt();
+        let slot_kind = policy::SlotKind::Passphrase as u8;
+        let slot_id = if key_slots.is_empty() { 0 } else { 1 };
+        let memory_kib = policy::ARGON2_MEMORY_FLOOR_KIB;
+        let iterations = policy::ARGON2_ITERATIONS_FLOOR;
+        let parallelism = policy::ARGON2_PARALLELISM_FLOOR;
+        let file_wrapping_key = kdf::derive_passphrase_key(
+            passphrase.expose(),
+            &salt,
+            memory_kib,
+            iterations,
+            parallelism,
+        ).map_err(|e| format!("Failed to derive passphrase key: {}", e))?;
+        let (wrapped_dek, wrap_nonce) = wrap_dek(
+            &ctx, &dek, &file_wrapping_key,
+            slot_kind, slot_id, policy::KdfAlgorithm::Argon2id as u16,
+            memory_kib, iterations, parallelism, &salt,
+        ).map_err(|e| format!("Failed to wrap DEK: {}", e))?;
+        key_slots.push(KeySlotEntry {
+            kind: slot_kind, slot_id,
+            kdf_algorithm: policy::KdfAlgorithm::Argon2id as u16,
+            argon2_memory_kib: memory_kib,
+            argon2_iterations: iterations,
+            argon2_parallelism: parallelism,
+            salt, wrap_nonce, wrapped_dek,
+        });
+    }
+
+    let original_name = std::path::Path::new(&path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("Encrypted file");
+    let mime_type = inferred_mime_type(&path);
+    let metadata_plaintext = if protect_metadata {
+        serde_json::to_vec(&ProtectedFileMetadata {
+            schema_version: 1,
+            original_name,
+            mime_type,
+        }).map_err(|e| format!("Failed to encode protected metadata: {}", e))?
+    } else {
+        Vec::new()
+    };
+
+    // Create encryption session with a protected original name and MIME type.
+    let session = EncryptionSession::new_with_keys(
+        plaintext_size, key_slots, metadata_plaintext,
+        dek, file_uuid, nonce_prefix,
+    ).map_err(|e| format!("Failed to create encryption session: {}", e))?;
+
+    let ciphertext_size = calculate_ciphertext_length(
+        plaintext_size,
+        policy::DEFAULT_CHUNK_SIZE,
+        session.header_bytes.len() as u32,
+    )
+    .map_err(|e| format!("Ciphertext size overflow: {}", e))?;
+
+    // RAII reservation prevents quota leaks on every error and cancellation path.
+    let mut bandwidth_reservation = BandwidthReservation::upload(
+        bw_state.inner().clone(),
+        ciphertext_size,
+    )?;
+
+    let tid = transfer_id.unwrap_or_default();
+
+    let client_opt = { state.client.lock().await.clone() };
+    #[cfg(debug_assertions)]
+    if client_opt.is_none() {
+        log::info!("[MOCK] Uploaded encrypted file {} to {:?}", path, folder_id);
+        return Ok("Mock encrypted upload successful".to_string());
+    }
+    let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
+
+    // Emit start progress (based on plaintext size for user familiarity)
+    if !tid.is_empty() {
+        let _ = app_handle.emit("upload-progress", ProgressPayload {
+            id: tid.clone(), percent: 0, uploaded_bytes: 0, total_bytes: plaintext_size, speed_bytes_per_sec: 0,
+        });
+    }
+
+    // Use the standard plaintext-relative progress reader under encryption.
+    let (reader, observed_plaintext_size, bytes_counter) = ProgressReader::new(&path).await?;
+    if observed_plaintext_size != plaintext_size {
+        return Err("Source file size changed before encryption started".to_string());
+    }
+
+    let cancelled = state.cancelled_transfers.clone();
+    let progress_tid = tid.clone();
+    let progress_handle = app_handle.clone();
+    let progress_counter = bytes_counter.clone();
+    let progress_task = if tid.is_empty() {
+        None
+    } else {
+        Some(tokio::spawn(async move {
+            let mut last_bytes = 0u64;
+            let mut last_time = std::time::Instant::now();
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                let current = progress_counter.load(std::sync::atomic::Ordering::Relaxed);
+                let now = std::time::Instant::now();
+                let elapsed = now.duration_since(last_time).as_secs_f64();
+                let speed = if elapsed > 0.0 {
+                    ((current.saturating_sub(last_bytes)) as f64 / elapsed) as u64
+                } else {
+                    0
+                };
+                let percent = if plaintext_size == 0 {
+                    0
+                } else {
+                    ((current as f64 / plaintext_size as f64) * 100.0).min(99.0) as u8
+                };
+                let _ = progress_handle.emit("upload-progress", ProgressPayload {
+                    id: progress_tid.clone(),
+                    percent,
+                    uploaded_bytes: current,
+                    total_bytes: plaintext_size,
+                    speed_bytes_per_sec: speed,
+                });
+                last_bytes = current;
+                last_time = now;
+                if current >= plaintext_size || cancelled.read().await.contains(&progress_tid) {
+                    break;
+                }
+            }
+        }))
+    };
+
+    // Wrap with EncryptingReader
+    let mut encrypting_reader = EncryptingReader::new(reader, session);
+
+    // Extract session info BEFORE the reader is moved into the spawn closure
+    let file_uuid = encrypting_reader.session.file_uuid;
+    let header_bytes_for_registry = encrypting_reader.session.header_bytes.clone();
+    let b32_name = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&file_uuid);
+    let remote_name = format!("tdrive_{}.tdenc", &b32_name[..b32_name.len().min(32)]);
+    let remote_name_for_spawn = remote_name.clone();
+
+    // Check cancellation before starting
+    if state.cancelled_transfers.read().await.contains(&tid) {
+        state.cancelled_transfers.write().await.remove(&tid);
+        if let Some(task) = progress_task { task.abort(); }
+        return Err("Transfer cancelled".to_string());
+    }
+
+    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+    if !tid.is_empty() {
+        get_upload_cancellations().lock().unwrap().insert(tid.clone(), cancel_tx);
+    }
+
+    let client_clone = client.clone();
+    let mut upload_task = tokio::spawn(async move {
+        client_clone.upload_stream(&mut encrypting_reader, ciphertext_size as usize, remote_name_for_spawn).await
+    });
+
+    let upload_result = {
+        tokio::select! {
+            res = &mut upload_task => {
+                if !tid.is_empty() {
+                    get_upload_cancellations().lock().unwrap().remove(&tid);
+                }
+                res.map_err(|e| {
+                    format!("Task join error: {}", e)
+                })?
+            }
+            _ = cancel_rx => {
+                log::info!("Aborting encrypted upload for transfer ID: {}", tid);
+                upload_task.abort();
+                state.cancelled_transfers.write().await.remove(&tid);
+                if let Some(task) = progress_task { task.abort(); }
+                return Err("Transfer cancelled".to_string());
+            }
+        }
+    };
+
+    if let Some(task) = progress_task { task.abort(); }
+
+    let _uploaded_file = upload_result.map_err(map_error)?;
+    let message = InputMessage::new().text("TDENC2").file(_uploaded_file);
+
+    let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
+
+    let max_retries = net_config.retry_attempts();
+    let base_ms = net_config.retry_base_backoff_ms();
+    let max_ms = net_config.retry_max_backoff_ms();
+    let respect_flood = net_config.should_respect_flood_wait();
+    let mut last_err = String::new();
+
+    for attempt in 0..=max_retries {
+        match client.send_message(&peer, message.clone()).await {
+            Ok(_sent) => {
+                bandwidth_reservation.commit();
+                if !tid.is_empty() {
+                    let _ = app_handle.emit("upload-progress", ProgressPayload {
+                        id: tid, percent: 100, uploaded_bytes: plaintext_size, total_bytes: plaintext_size, speed_bytes_per_sec: 0,
+                    });
+                }
+                let folder_key = folder_id.map(|id| id.to_string()).unwrap_or_else(|| "home".to_string());
+                let header_sha256 = Sha256::digest(&header_bytes_for_registry).to_vec();
+                let record = EncryptedFileRecord {
+                    folder_key,
+                    message_id: _sent.id(),
+                    file_uuid: file_uuid.to_vec(),
+                    envelope_version: policy::FORMAT_VERSION,
+                    cipher_suite: policy::CIPHER_SUITE_XCHACHA20_POLY1305,
+                    ciphertext_size,
+                    plaintext_size: Some(plaintext_size),
+                    remote_name: remote_name.clone(),
+                    key_profile_id: Some(protection_mode.registry_name().to_string()),
+                    protection_mode: protection_mode.registry_name().to_string(),
+                    metadata_protected: protect_metadata,
+                    header_blob: Some(header_bytes_for_registry.clone()),
+                    header_sha256: Some(header_sha256),
+                    record_state: EncryptedFileState::Active,
+                    reconciliation_state: "ok".to_string(),
+                    created_at: chrono::Utc::now().timestamp(),
+                    last_verified_at: None,
+                };
+                let registry_result = db_pool
+                    .lock()
+                    .map_err(|_| "Encrypted upload succeeded, but the local registry lock was poisoned".to_string())
+                    .and_then(|connection| {
+                        upsert_encrypted_file(&connection, &record).map_err(|error| error.to_string())
+                    });
+                if let Err(error) = registry_result {
+                    log::error!(
+                        "Encrypted upload {} succeeded as message {}, but registry reconciliation is required: {}",
+                        remote_name,
+                        _sent.id(),
+                        error
+                    );
+                    return Ok("Encrypted file uploaded successfully; local indexing will be reconciled on refresh".to_string());
+                }
+                return Ok("Encrypted file uploaded successfully".to_string());
+            }
+            Err(e) => {
+                let err = map_error(e);
+                log::warn!("send_message attempt {}/{}: {}", attempt + 1, max_retries + 1, err);
+                if respect_flood && err.starts_with("FLOOD_WAIT_") {
+                    if let Ok(secs) = err.trim_start_matches("FLOOD_WAIT_").parse::<u64>() {
+                        let wait = secs.min(300);
+                        tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                        last_err = err;
+                        continue;
+                    }
+                }
+                last_err = err;
+                if attempt < max_retries {
+                    let delay = backoff_ms(attempt, base_ms, max_ms);
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                }
+            }
+        }
+    }
+
+    Err(format!("Encrypted upload failed after {} attempts: {}", max_retries + 1, last_err))
+}
+
+#[tauri::command]
+pub async fn initiate_upload(
+    path: String,
+    folder_id: Option<i64>,
+    transfer_id: Option<String>,
+    protection_mode: Option<String>,
+    prompt_token: Option<u64>,
+    protect_metadata: Option<bool>,
+    app_handle: tauri::AppHandle,
+    state: State<'_, TelegramState>,
+    bw_state: State<'_, Arc<BandwidthManager>>,
+    net_config: State<'_, std::sync::Arc<NetworkConfig>>,
+    crypto_state: State<'_, crate::crypto::state::CryptoState>,
+    db_pool: State<'_, DbConnection>,
 ) -> Result<String, String> {
     crate::upload_service::start_foreground_service();
     cmd_upload_file(
         path,
         folder_id,
         transfer_id,
+        protection_mode,
+        prompt_token,
+        protect_metadata,
         app_handle,
         state,
         bw_state,
         net_config,
+        crypto_state,
+        db_pool,
     ).await
 }
 
@@ -983,7 +1680,20 @@ pub async fn cmd_rename_file(
     folder_id: Option<i64>,
     new_name: String,
     state: State<'_, TelegramState>,
+    db_pool: State<'_, DbConnection>,
 ) -> Result<bool, String> {
+    let folder_key = folder_id.map(|id| id.to_string()).unwrap_or_else(|| "home".to_string());
+    {
+        let connection = db_pool.lock().map_err(|_| "DB poisoned".to_string())?;
+        let mut statement = connection
+            .prepare("SELECT 1 FROM encrypted_files WHERE folder_key = ? AND message_id = ? AND record_state = 'active'")
+            .map_err(|error| error.to_string())?;
+        statement.bind((1, folder_key.as_str())).map_err(|error| error.to_string())?;
+        statement.bind((2, i64::from(message_id))).map_err(|error| error.to_string())?;
+        if matches!(statement.next(), Ok(sqlite::State::Row)) {
+            return Err("[ENCRYPTED_RENAME_UNAVAILABLE] Renaming encrypted files requires authenticated metadata rewrapping and is not yet available".to_string());
+        }
+    }
     let client_opt = { state.client.lock().await.clone() };
     #[cfg(debug_assertions)]
     if client_opt.is_none() {
@@ -1049,6 +1759,7 @@ pub async fn cmd_delete_file(
     message_id: i32,
     folder_id: Option<i64>,
     state: State<'_, TelegramState>,
+    db_pool: State<'_, DbConnection>,
 ) -> Result<bool, String> {
     let client_opt = { state.client.lock().await.clone() };
     #[cfg(debug_assertions)]
@@ -1074,6 +1785,21 @@ pub async fn cmd_delete_file(
     }
 
     client.delete_messages(&peer, &[message_id]).await.map_err(|e| e.to_string())?;
+    let folder_key = folder_id.map(|id| id.to_string()).unwrap_or_else(|| "home".to_string());
+    match db_pool.lock() {
+        Ok(connection) => {
+            if let Ok(mut statement) = connection.prepare(
+                "DELETE FROM encrypted_files WHERE folder_key = ? AND message_id = ?",
+            ) {
+                let _ = statement.bind((1, folder_key.as_str()));
+                let _ = statement.bind((2, i64::from(message_id)));
+                if let Err(error) = statement.next() {
+                    log::error!("Remote delete succeeded but encrypted registry cleanup failed: {}", error);
+                }
+            }
+        }
+        Err(_) => log::error!("Remote delete succeeded but encrypted registry lock was poisoned"),
+    }
     Ok(true)
 }
 
@@ -1083,6 +1809,7 @@ pub struct DownloadFileRequest {
     save_path: String,
     folder_id: Option<i64>,
     transfer_id: Option<String>,
+    prompt_token: Option<u64>,
 }
 
 #[tauri::command]
@@ -1092,11 +1819,14 @@ pub async fn cmd_download_file(
     state: State<'_, TelegramState>,
     bw_state: State<'_, Arc<BandwidthManager>>,
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
+    crypto_state: State<'_, crate::crypto::state::CryptoState>,
+    db_pool: State<'_, DbConnection>,
 ) -> Result<String, String> {
     let tid = req.transfer_id.unwrap_or_default();
     let save_path = req.save_path;
     let folder_id = req.folder_id;
     let message_id = req.message_id;
+    let prompt_token = req.prompt_token;
 
     #[cfg(target_os = "android")]
     let (actual_save_path, android_file_name) = {
@@ -1129,6 +1859,10 @@ pub async fn cmd_download_file(
 
     #[cfg(not(target_os = "android"))]
     let actual_save_path = save_path.clone();
+    #[cfg(target_os = "android")]
+    let encrypted_android_file_name = Some(android_file_name.clone());
+    #[cfg(not(target_os = "android"))]
+    let encrypted_android_file_name: Option<String> = None;
 
     let client_opt = { state.client.lock().await.clone() };
     #[cfg(debug_assertions)]
@@ -1138,6 +1872,78 @@ pub async fn cmd_download_file(
         return Ok("Download successful".to_string());
     }
     let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
+
+    // Check if this file is encrypted in the registry
+    let encrypted_mode = {
+        let conn = db_pool.lock().map_err(|_| "DB poisoned".to_string())?;
+        let folder_key = folder_id.map(|id| id.to_string()).unwrap_or_else(|| "home".to_string());
+        let query = "SELECT protection_mode FROM encrypted_files WHERE folder_key = ? AND message_id = ? AND record_state = 'active'";
+        let mut stmt = conn.prepare(query).map_err(|e| e.to_string())?;
+        stmt.bind((1, folder_key.as_str())).map_err(|e| e.to_string())?;
+        stmt.bind((2, message_id as i64)).map_err(|e| e.to_string())?;
+        if matches!(stmt.next(), Ok(sqlite::State::Row)) {
+            Some(stmt.read::<String, _>(0).unwrap_or_else(|_| "vault".to_string()))
+        } else {
+            None
+        }
+    };
+
+    let appears_to_be_unindexed_encrypted = if encrypted_mode.is_none() {
+        let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
+        let messages = client
+            .get_messages_by_id(&peer, &[message_id])
+            .await
+            .map_err(|error| error.to_string())?;
+        messages.into_iter().flatten().next().is_some_and(|message| {
+            let caption_matches = message.text() == "TDENC2";
+            let name_matches = matches!(
+                message.media(),
+                Some(Media::Document(document))
+                    if document.name().to_ascii_lowercase().ends_with(".tdenc")
+            );
+            caption_matches || name_matches
+        })
+    } else {
+        false
+    };
+
+    if let Some(protection_mode) = encrypted_mode.as_deref() {
+        if !crypto_state.get_features().read_enabled {
+            return Err(
+                "[ENCRYPTION_EXPERIMENTAL_UNSUPPORTED] This file uses the quarantined experimental encryption format. Its ciphertext has been preserved, but this build will not attempt unsafe decryption."
+                    .to_string(),
+            );
+        }
+        if protection_mode == "vault" && crypto_state.is_locked() {
+            return Err("[VAULT_LOCKED] Unlock the vault before downloading this file".to_string());
+        }
+        return cmd_download_encrypted_file(
+            message_id, folder_id, actual_save_path, tid,
+            app_handle, state, bw_state, net_config, crypto_state, db_pool,
+            client, prompt_token, encrypted_android_file_name,
+        ).await;
+    }
+    if appears_to_be_unindexed_encrypted {
+        if !crypto_state.get_features().read_enabled {
+            return Err("[ENCRYPTION_BLOCKED] Encrypted reads are disabled".to_string());
+        }
+        return cmd_download_encrypted_file(
+            message_id,
+            folder_id,
+            actual_save_path,
+            tid,
+            app_handle,
+            state,
+            bw_state,
+            net_config,
+            crypto_state,
+            db_pool,
+            client,
+            prompt_token,
+            encrypted_android_file_name,
+        )
+        .await;
+    }
     
     let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
 
@@ -1384,12 +2190,293 @@ pub async fn cmd_download_file(
     Ok("Download successful".to_string())
 }
 
+/// Download a TDENC2 file with bounded memory. Each record is authenticated
+/// before its plaintext is written to an owner-only partial file.
+async fn cmd_download_encrypted_file(
+    message_id: i32,
+    folder_id: Option<i64>,
+    save_path: String,
+    tid: String,
+    app_handle: tauri::AppHandle,
+    state: State<'_, TelegramState>,
+    bw_state: State<'_, Arc<BandwidthManager>>,
+    _net_config: State<'_, std::sync::Arc<NetworkConfig>>,
+    crypto_state: State<'_, crate::crypto::state::CryptoState>,
+    db_pool: State<'_, DbConnection>,
+    client: grammers_client::Client,
+    prompt_token: Option<u64>,
+    _android_file_name: Option<String>,
+) -> Result<String, String> {
+    let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
+    let messages = client.get_messages_by_id(&peer, &[message_id]).await.map_err(|e| e.to_string())?;
+    let msg = messages.into_iter().flatten().next().ok_or_else(|| "Message not found".to_string())?;
+    let media = msg.media().ok_or_else(|| "No media in message".to_string())?;
+
+    let ciphertext_size = match &media {
+        Media::Document(d) => d.size() as u64,
+        _ => { return Err("Encrypted file must be a document".to_string()); }
+    };
+    let remote_name = match &media {
+        Media::Document(document) => document.name().to_string(),
+        _ => "encrypted.tdenc".to_string(),
+    };
+
+    let mut bandwidth_reservation = BandwidthReservation::download(
+        bw_state.inner().clone(),
+        ciphertext_size,
+    )?;
+
+    // Emit decrypting phase
+    if !tid.is_empty() {
+        let _ = app_handle.emit("download-progress", ProgressPayload {
+            id: tid.clone(), percent: 0, uploaded_bytes: 0, total_bytes: ciphertext_size, speed_bytes_per_sec: 0,
+        });
+    }
+
+    let mut download_iter = client.iter_download(&media);
+    let mut downloaded_ciphertext = 0u64;
+    let mut header_bytes = Vec::with_capacity(policy::MAX_HEADER_LENGTH);
+    let mut expected_header_length: Option<usize> = None;
+    let vault_key = crypto_state.get_current_wrapping_key().ok();
+    let prompt_passphrase = match prompt_token {
+        Some(token) => Some(
+            crypto_state
+                .consume_prompt_secret(token)
+                .map_err(|error| error.to_string())?,
+        ),
+        None => None,
+    };
+    let mut decryptor: Option<crate::crypto::envelope::decrypt_reader::DecryptReader> = None;
+    let destination = std::path::PathBuf::from(&save_path);
+    let parent = destination
+        .parent()
+        .ok_or_else(|| "Download destination has no parent directory".to_string())?;
+    tokio::fs::create_dir_all(parent)
+        .await
+        .map_err(|error| format!("Failed to create download directory: {}", error))?;
+    let destination_name = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("download");
+    let part_path = parent.join(format!(
+        ".{}.{}.tdpart",
+        destination_name,
+        random::random_u64()
+    ));
+    let mut partial_guard = PartialFileGuard::new(part_path.clone());
+    let mut output_file: Option<tokio::fs::File> = None;
+    let mut plaintext_written = 0u64;
+    let mut decoded_metadata: Option<DecodedProtectedFileMetadata> = None;
+
+    while let Some(chunk) = download_iter.next().await.transpose() {
+        if state.cancelled_transfers.read().await.contains(&tid) {
+            state.cancelled_transfers.write().await.remove(&tid);
+            return Err("Transfer cancelled".to_string());
+        }
+        let bytes = chunk.map_err(|error| format!("Download chunk error: {}", map_error(&error)))?;
+        downloaded_ciphertext = downloaded_ciphertext.saturating_add(bytes.len() as u64);
+        if downloaded_ciphertext > ciphertext_size {
+            return Err("Encrypted download exceeded its declared size".to_string());
+        }
+        let mut remaining = bytes.as_slice();
+
+        if decryptor.is_none() {
+            while !remaining.is_empty() && decryptor.is_none() {
+                let target = expected_header_length.unwrap_or(policy::CORE_HEADER_SIZE);
+                let needed = target.saturating_sub(header_bytes.len());
+                let take = needed.min(remaining.len());
+                header_bytes.extend_from_slice(&remaining[..take]);
+                remaining = &remaining[take..];
+
+                if expected_header_length.is_none()
+                    && header_bytes.len() == policy::CORE_HEADER_SIZE
+                {
+                    let core = crate::crypto::envelope::header::CoreHeader::parse(&header_bytes)
+                        .map_err(|error| format!("Failed to parse encrypted preamble: {}", error))?;
+                    expected_header_length = Some(core.header_length as usize);
+                }
+
+                if let Some(expected) = expected_header_length {
+                    if header_bytes.len() == expected {
+                        let parsed = crate::crypto::envelope::header::EnvelopeHeader::parse(&header_bytes)
+                            .map_err(|error| format!("Failed to parse encrypted header: {}", error))?;
+                        let expected_total = crate::crypto::envelope::length::calculate_ciphertext_length(
+                            parsed.core.total_plaintext_length,
+                            parsed.core.chunk_size,
+                            parsed.core.header_length,
+                        ).map_err(|error| format!("Invalid encrypted length: {}", error))?;
+                        if expected_total != ciphertext_size {
+                            return Err(format!(
+                                "Encrypted file length mismatch: expected {}, Telegram reported {}",
+                                expected_total, ciphertext_size
+                            ));
+                        }
+                        let probed_record = registry_record_from_header(
+                            folder_id,
+                            message_id,
+                            remote_name.clone(),
+                            ciphertext_size,
+                            header_bytes.clone(),
+                            "probed_unverified",
+                        )?;
+                        {
+                            let connection = db_pool
+                                .lock()
+                                .map_err(|_| "[ENCRYPTION_REGISTRY_UNAVAILABLE] DB poisoned".to_string())?;
+                            upsert_encrypted_file(&connection, &probed_record)
+                                .map_err(|error| format!("[ENCRYPTION_REGISTRY_UNAVAILABLE] {}", error))?;
+                        }
+                        let reader = initialize_tdenc2_decryptor(
+                            &header_bytes,
+                            vault_key.as_ref(),
+                            prompt_passphrase.as_ref(),
+                        )?;
+                        let mut authenticated_record = probed_record;
+                        authenticated_record.reconciliation_state = "header_authenticated".to_string();
+                        if let Ok(connection) = db_pool.lock() {
+                            if let Err(error) = upsert_encrypted_file(&connection, &authenticated_record) {
+                                log::error!("Authenticated encrypted header could not update registry state: {}", error);
+                            }
+                        }
+                        if !reader.metadata_plaintext().is_empty() {
+                            let metadata: DecodedProtectedFileMetadata = serde_json::from_slice(
+                                reader.metadata_plaintext(),
+                            ).map_err(|_| "Encrypted metadata is invalid".to_string())?;
+                            if metadata.schema_version != 1
+                                || metadata.original_name.is_empty()
+                                || metadata.mime_type.is_empty()
+                            {
+                                return Err("Encrypted metadata version or fields are invalid".to_string());
+                            }
+                            decoded_metadata = Some(metadata);
+                        }
+                        let std_file = create_private_partial_file(&part_path)
+                            .map_err(|error| format!("Failed to create secure partial file: {}", error))?;
+                        output_file = Some(tokio::fs::File::from_std(std_file));
+                        decryptor = Some(reader);
+                    }
+                }
+            }
+        }
+
+        if !remaining.is_empty() {
+            let reader = decryptor
+                .as_mut()
+                .ok_or_else(|| "Encrypted header was not initialized".to_string())?;
+            let mut plaintext = reader
+                .feed(remaining)
+                .map_err(|error| format!("Encrypted record authentication failed: {}", error))?;
+            if !plaintext.is_empty() {
+                use tokio::io::AsyncWriteExt;
+                output_file
+                    .as_mut()
+                    .ok_or_else(|| "Secure partial file is unavailable".to_string())?
+                    .write_all(&plaintext)
+                    .await
+                    .map_err(|error| format!("Failed to write verified plaintext: {}", error))?;
+                plaintext_written = plaintext_written.saturating_add(plaintext.len() as u64);
+                zeroize::Zeroize::zeroize(&mut plaintext);
+            }
+        }
+
+        if !tid.is_empty() {
+            let total_plaintext = decryptor
+                .as_ref()
+                .map(|reader| reader.plaintext_length())
+                .unwrap_or(0);
+            let percent = if total_plaintext == 0 {
+                0
+            } else {
+                ((plaintext_written as f64 / total_plaintext as f64) * 100.0).min(99.0) as u8
+            };
+            let _ = app_handle.emit("download-progress", ProgressPayload {
+                id: tid.clone(),
+                percent,
+                uploaded_bytes: plaintext_written,
+                total_bytes: total_plaintext,
+                speed_bytes_per_sec: 0,
+            });
+        }
+    }
+
+    if downloaded_ciphertext != ciphertext_size {
+        return Err("Encrypted download ended before its declared size".to_string());
+    }
+    let reader = decryptor
+        .as_ref()
+        .ok_or_else(|| "Encrypted file ended before a complete header was received".to_string())?;
+    reader
+        .finish()
+        .map_err(|error| format!("Encrypted final record is missing or invalid: {}", error))?;
+    if plaintext_written != reader.plaintext_length() {
+        return Err("Verified plaintext length mismatch".to_string());
+    }
+
+    use tokio::io::AsyncWriteExt;
+    let mut file = output_file
+        .take()
+        .ok_or_else(|| "Secure partial file is unavailable".to_string())?;
+    file.flush()
+        .await
+        .map_err(|error| format!("Failed to flush verified file: {}", error))?;
+    file.sync_all()
+        .await
+        .map_err(|error| format!("Failed to sync verified file: {}", error))?;
+    drop(file);
+    tokio::fs::rename(&part_path, &destination)
+        .await
+        .map_err(|error| format!("Failed to publish verified file: {}", error))?;
+    partial_guard.disarm();
+    bandwidth_reservation.commit();
+    crypto_state.touch_activity();
+
+    if !tid.is_empty() {
+        let _ = app_handle.emit("download-progress", ProgressPayload {
+            id: tid,
+            percent: 100,
+            uploaded_bytes: plaintext_written,
+            total_bytes: plaintext_written,
+            speed_bytes_per_sec: 0,
+        });
+    }
+
+    let protected_mime = decoded_metadata
+        .as_ref()
+        .map(|metadata| metadata.mime_type.as_str())
+        .unwrap_or("application/octet-stream");
+    #[cfg(target_os = "android")]
+    if let Some(file_name) = _android_file_name.as_deref() {
+        let publish_name = decoded_metadata
+            .as_ref()
+            .map(|metadata| metadata.original_name.as_str())
+            .unwrap_or(file_name);
+        publish_verified_android_download(&save_path, publish_name, protected_mime).map_err(|error| {
+            format!(
+                "{}; verified cache copy was preserved at {}",
+                error, save_path
+            )
+        })?;
+        tokio::fs::remove_file(&save_path)
+            .await
+            .map_err(|error| format!("Published file but failed to clear verified cache copy: {}", error))?;
+    }
+    log::info!(
+        "Encrypted download complete: message {} -> {} ({} verified plaintext bytes, MIME {})",
+        message_id,
+        save_path,
+        plaintext_written,
+        protected_mime
+    );
+    Ok("Encrypted download successful".to_string())
+}
+
 #[tauri::command]
 pub async fn cmd_move_files(
     message_ids: Vec<i32>,
     source_folder_id: Option<i64>,
     target_folder_id: Option<i64>,
     state: State<'_, TelegramState>,
+    db_pool: State<'_, DbConnection>,
 ) -> Result<bool, String> {
     if source_folder_id == target_folder_id { return Ok(true); }
     let client_opt = { state.client.lock().await.clone() };
@@ -1403,14 +2490,52 @@ pub async fn cmd_move_files(
     let source_peer = resolve_peer(&client, source_folder_id, &state.peer_cache).await?;
     let target_peer = resolve_peer(&client, target_folder_id, &state.peer_cache).await?;
 
-    match client.forward_messages(&target_peer, &message_ids, &source_peer).await {
-        Ok(_) => {},
+    let forwarded = match client.forward_messages(&target_peer, &message_ids, &source_peer).await {
+        Ok(messages) => messages,
         Err(e) => return Err(format!("Forward failed: {}", e)),
-    }
+    };
     
     match client.delete_messages(&source_peer, &message_ids).await {
         Ok(_) => {},
         Err(e) => return Err(format!("Delete original failed: {}", e)),
+    }
+
+    if forwarded.len() == message_ids.len() {
+        let source_key = source_folder_id.map(|id| id.to_string()).unwrap_or_else(|| "home".to_string());
+        let target_key = target_folder_id.map(|id| id.to_string()).unwrap_or_else(|| "home".to_string());
+        if let Ok(connection) = db_pool.lock() {
+            if connection.execute("BEGIN IMMEDIATE").is_ok() {
+                let mut registry_ok = true;
+                for (old_id, new_message) in message_ids.iter().zip(forwarded.iter()) {
+                    let Some(new_message) = new_message.as_ref() else {
+                        registry_ok = false;
+                        log::error!("Remote move did not return a message identifier; registry reconciliation required");
+                        break;
+                    };
+                    let update = connection
+                        .prepare("UPDATE encrypted_files SET folder_key = ?, message_id = ?, reconciliation_state = 'ok' WHERE folder_key = ? AND message_id = ?")
+                        .and_then(|mut statement| {
+                            statement.bind((1, target_key.as_str()))?;
+                            statement.bind((2, i64::from(new_message.id())))?;
+                            statement.bind((3, source_key.as_str()))?;
+                            statement.bind((4, i64::from(*old_id)))?;
+                            statement.next().map(|_| ())
+                        });
+                    if let Err(error) = update {
+                        registry_ok = false;
+                        log::error!("Remote move succeeded but encrypted registry relocation failed: {}", error);
+                        break;
+                    }
+                }
+                let _ = connection.execute(if registry_ok { "COMMIT" } else { "ROLLBACK" });
+            }
+        }
+    } else {
+        log::error!(
+            "Remote move returned {} forwarded messages for {} source messages; registry reconciliation required",
+            forwarded.len(),
+            message_ids.len()
+        );
     }
 
     Ok(true)
@@ -1421,6 +2546,8 @@ pub async fn cmd_get_files(
     folder_id: Option<i64>,
     app_handle: tauri::AppHandle,
     state: State<'_, TelegramState>,
+    db_pool: State<'_, DbConnection>,
+    crypto_state: State<'_, crate::crypto::state::CryptoState>,
 ) -> Result<Vec<FileMetadata>, String> {
     let client_opt = { state.client.lock().await.clone() };
     #[cfg(debug_assertions)]
@@ -1429,8 +2556,42 @@ pub async fn cmd_get_files(
         return Ok(Vec::new()); // No mock files for now
     }
     let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
+
+    // Pre-load encrypted file registry for this folder
+    let encrypted_map: HashMap<i32, EncryptedListInfo> = {
+        let conn = db_pool.lock().map_err(|_| "DB poisoned".to_string())?;
+        let folder_key = folder_id.map(|id| id.to_string()).unwrap_or_else(|| "home".to_string());
+        let mut map = HashMap::new();
+        let query = "SELECT message_id, remote_name, envelope_version, protection_mode, metadata_protected, header_blob, plaintext_size FROM encrypted_files WHERE folder_key = ? AND record_state = 'active'";
+        if let Ok(mut stmt) = conn.prepare(query) {
+            let _ = stmt.bind((1, folder_key.as_str()));
+            while let Ok(sqlite::State::Row) = stmt.next() {
+                let msg_id: i64 = stmt.read::<i64, _>(0).unwrap_or(0);
+                let remote_name: String = stmt.read::<String, _>(1).unwrap_or_default();
+                let envelope_version = stmt.read::<i64, _>(2).unwrap_or(0) as u16;
+                let protection_mode = stmt.read::<String, _>(3).unwrap_or_else(|_| "vault".to_string());
+                let metadata_protected = stmt.read::<i64, _>(4).unwrap_or(1) != 0;
+                let header_blob = stmt.read::<Option<Vec<u8>>, _>(5).ok().flatten();
+                let plaintext_size = stmt
+                    .read::<Option<i64>, _>(6)
+                    .ok()
+                    .flatten()
+                    .and_then(|value| u64::try_from(value).ok());
+                map.insert(msg_id as i32, EncryptedListInfo {
+                    remote_name,
+                    envelope_version,
+                    protection_mode,
+                    metadata_protected,
+                    header_blob,
+                    plaintext_size,
+                });
+            }
+        }
+        map
+    };
     
     let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
+    let vault_key = crypto_state.get_current_wrapping_key().ok();
 
     let mut msgs = client.iter_messages(&peer);
     let mut last_msg_id: Option<i32> = None;
@@ -1450,7 +2611,7 @@ pub async fn cmd_get_files(
         last_msg_id = Some(current_msg_id);
 
         if let Some(doc) = msg.media() {
-            let (name, size, mime, ext) = match doc {
+            let (mut name, mut size, mut mime, mut ext, remote_document_name) = match doc {
                 Media::Document(d) => {
                     let doc_name = d.name().to_string();
                     // Prefer the message caption (set by rename via EditMessage) over the
@@ -1461,13 +2622,114 @@ pub async fn cmd_get_files(
                     let m = d.mime_type().map(|s| s.to_string());
                     // Extension always from the original document name for correct file-type icon
                     let e = std::path::Path::new(&doc_name).extension().map(|os| os.to_str().unwrap_or("").to_string());
-                    (display_name, s, m, e)
+                    (display_name, s, m, e, doc_name)
                 },
-                Media::Photo(_) => ("Photo.jpg".to_string(), 0, Some("image/jpeg".into()), Some("jpg".into())),
-                _ => ("Unknown".to_string(), 0, None, None),
+                Media::Photo(_) => ("Photo.jpg".to_string(), 0, Some("image/jpeg".into()), Some("jpg".into()), "Photo.jpg".to_string()),
+                _ => ("Unknown".to_string(), 0, None, None, "Unknown".to_string()),
             };
+            let file_id_i64 = msg.id() as i64;
+            let msg_id_i32 = msg.id();
+            let suspected_tdenc2 = name == "TDENC2"
+                || remote_document_name.to_ascii_lowercase().ends_with(".tdenc");
+            let mut reconciled_info: Option<EncryptedListInfo> = None;
+            let mut probe_failed = false;
+            if encrypted_map.get(&msg_id_i32).is_none() && suspected_tdenc2 {
+                if let Some(media) = msg.media() {
+                    match probe_tdenc2_header(&client, &media).await.and_then(|header_bytes| {
+                        registry_record_from_header(
+                            folder_id,
+                            msg_id_i32,
+                            remote_document_name.clone(),
+                            size as u64,
+                            header_bytes,
+                            "probed_unverified",
+                        )
+                    }) {
+                        Ok(record) => {
+                            let info = EncryptedListInfo {
+                                remote_name: record.remote_name.clone(),
+                                envelope_version: record.envelope_version,
+                                protection_mode: record.protection_mode.clone(),
+                                metadata_protected: record.metadata_protected,
+                                header_blob: record.header_blob.clone(),
+                                plaintext_size: record.plaintext_size,
+                            };
+                            match db_pool.lock() {
+                                Ok(connection) => {
+                                    if let Err(error) = upsert_encrypted_file(&connection, &record) {
+                                        log::error!("Failed to index probed encrypted file {}: {}", msg_id_i32, error);
+                                        probe_failed = true;
+                                    } else {
+                                        reconciled_info = Some(info);
+                                    }
+                                }
+                                Err(_) => {
+                                    log::error!("Failed to index probed encrypted file {}: registry lock poisoned", msg_id_i32);
+                                    probe_failed = true;
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            log::warn!("TDENC2 probe failed for message {}: {}", msg_id_i32, error);
+                            probe_failed = true;
+                        }
+                    }
+                }
+            }
+            let encrypted_info = encrypted_map
+                .get(&msg_id_i32)
+                .or(reconciled_info.as_ref());
+            let enc_state = if let Some(info) = encrypted_info {
+                if info.envelope_version != policy::FORMAT_VERSION {
+                    "encrypted_unsupported_version"
+                } else if vault_key.is_some()
+                    && matches!(info.protection_mode.as_str(), "vault" | "vault_and_passphrase")
+                {
+                    "encrypted_unlocked"
+                } else {
+                    "encrypted_locked"
+                }
+            } else if probe_failed && name == "TDENC2" {
+                "encrypted_corrupt"
+            } else if suspected_tdenc2 {
+                "encrypted_key_missing"
+            } else {
+                "plain"
+            };
+            if let Some(info) = encrypted_info {
+                if let Some(plaintext_size) = info.plaintext_size {
+                    size = plaintext_size as _;
+                }
+                if info.metadata_protected {
+                    name = "Encrypted file".to_string();
+                    mime = Some("application/octet-stream".to_string());
+                    ext = None;
+                    if let Some(header) = info.header_blob.as_deref() {
+                        if let Ok(reader) = initialize_tdenc2_decryptor(header, vault_key.as_ref(), None) {
+                            if let Ok(metadata) = serde_json::from_slice::<DecodedProtectedFileMetadata>(reader.metadata_plaintext()) {
+                                if metadata.schema_version == 1 && !metadata.original_name.is_empty() {
+                                    name = metadata.original_name;
+                                    mime = Some(metadata.mime_type);
+                                    ext = std::path::Path::new(&name)
+                                        .extension()
+                                        .and_then(|value| value.to_str())
+                                        .map(str::to_string);
+                                }
+                            }
+                        }
+                    }
+                } else if !info.remote_name.is_empty() && name == "TDENC2" {
+                    name = info.remote_name.clone();
+                }
+            } else if suspected_tdenc2 {
+                name = "Encrypted file".to_string();
+                mime = Some("application/octet-stream".to_string());
+                ext = None;
+            }
             chunk.push(FileMetadata {
-                id: msg.id() as i64, folder_id, name, size: size as u64, mime_type: mime, file_ext: ext, created_at: msg.date().to_string(), icon_type: "file".into()
+                id: file_id_i64, folder_id, name, size: size as u64, mime_type: mime, file_ext: ext,
+                created_at: msg.date().to_string(), icon_type: "file".into(),
+                encryption_state: enc_state.to_string(),
             });
 
             if chunk.len() >= 500 {
@@ -1532,7 +2794,8 @@ fn extract_search_files(msgs: &[tl::enums::Message]) -> Vec<FileMetadata> {
                     files.push(FileMetadata {
                         id: m.id as i64, folder_id, name, size,
                         mime_type: Some(mime), file_ext: ext,
-                        created_at: m.date.to_string(), icon_type: "file".into()
+                        created_at: m.date.to_string(), icon_type: "file".into(),
+                        encryption_state: "plain".to_string(),
                     });
                 }
             }
@@ -2046,10 +3309,15 @@ pub async fn cmd_upload_from_url(
     url: String,
     folder_id: Option<i64>,
     transfer_id: String,
+    protection_mode: Option<String>,
+    prompt_token: Option<u64>,
+    protect_metadata: Option<bool>,
     app_handle: tauri::AppHandle,
     state: State<'_, TelegramState>,
     bw_state: State<'_, Arc<BandwidthManager>>,
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
+    crypto_state: State<'_, crate::crypto::state::CryptoState>,
+    db_pool: State<'_, DbConnection>,
 ) -> Result<String, String> {
     let mut client_builder = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(30))
@@ -2260,6 +3528,25 @@ pub async fn cmd_upload_from_url(
         }
     };
 
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(error) = tokio::fs::set_permissions(
+            &temp_file_path,
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .await
+        {
+            drop(file);
+            let _ = tokio::fs::remove_file(&temp_file_path).await;
+            if let Some(size) = known_size {
+                bw_state.release_down(size);
+                bw_state.release_up(size);
+            }
+            return Err(format!("Failed to protect remote-upload temporary file: {}", error));
+        }
+    }
+
     if need_download {
         let mut stream = stream_res.bytes_stream();
         let mut last_emit_time = std::time::Instant::now();
@@ -2378,6 +3665,67 @@ pub async fn cmd_upload_from_url(
     if actual_size > 2_147_483_648 {
         let _ = tokio::fs::remove_file(&temp_file_path).await;
         return Err("Downloaded file exceeds 2GB Telegram limit.".to_string());
+    }
+
+    // Remote uploads must preserve the same protection intent as every other
+    // upload origin. Stage the downloaded file under its logical server name so
+    // protected metadata never records the randomized temporary filename.
+    let parsed_protection = match UploadProtectionMode::parse(protection_mode.as_deref()) {
+        Ok(mode) => mode,
+        Err(error) => {
+            let _ = tokio::fs::remove_file(&temp_file_path).await;
+            return Err(error);
+        }
+    };
+    if parsed_protection != UploadProtectionMode::Standard {
+        let logical_name = server_filename.clone().unwrap_or_else(|| {
+            reqwest::Url::parse(&url)
+                .ok()
+                .and_then(|parsed| {
+                    parsed
+                        .path_segments()
+                        .and_then(|segments| segments.last())
+                        .filter(|segment| !segment.is_empty())
+                        .map(str::to_owned)
+                })
+                .unwrap_or_else(|| "remote_file".to_string())
+        });
+        let safe_name = std::path::Path::new(&logical_name)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or("remote_file")
+            .to_string();
+        let staged_dir = temp_dir.join(format!("tg_drive_encrypted_{}", transfer_id));
+        if let Err(error) = tokio::fs::create_dir_all(&staged_dir).await {
+            let _ = tokio::fs::remove_file(&temp_file_path).await;
+            return Err(format!("Failed to stage encrypted remote upload: {}", error));
+        }
+        let staged_path = staged_dir.join(safe_name);
+        if let Err(error) = tokio::fs::rename(&temp_file_path, &staged_path).await {
+            let _ = tokio::fs::remove_file(&temp_file_path).await;
+            let _ = tokio::fs::remove_dir(&staged_dir).await;
+            return Err(format!("Failed to stage encrypted remote upload: {}", error));
+        }
+
+        let result = cmd_upload_file_inner(
+            staged_path.to_string_lossy().to_string(),
+            folder_id,
+            Some(transfer_id),
+            protection_mode,
+            prompt_token,
+            protect_metadata,
+            app_handle,
+            state,
+            bw_state,
+            net_config,
+            crypto_state,
+            db_pool,
+        )
+        .await;
+        let _ = tokio::fs::remove_file(&staged_path).await;
+        let _ = tokio::fs::remove_dir(&staged_dir).await;
+        return result;
     }
 
     // Reserve upload bandwidth based on the real file size (handles both known and unknown upfront)

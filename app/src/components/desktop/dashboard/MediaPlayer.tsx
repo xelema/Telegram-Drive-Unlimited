@@ -147,41 +147,45 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
     }
 
     return (
-        <div className={`fixed inset-0 z-[200] bg-black/90 animate-in fade-in duration-200 ${isFullscreen ? 'p-0' : 'flex items-center justify-center p-4 backdrop-blur-md'}`} onClick={onClose}>
+        <div className={`viewer-overlay fixed inset-0 z-[200] animate-in fade-in duration-150 ${isFullscreen ? 'p-0' : 'flex items-center justify-center p-4'}`} onClick={onClose}>
             <div ref={containerRef} className={`relative ${isFullscreen ? 'w-full h-full' : 'w-full max-w-6xl flex flex-col items-center'}`} onClick={e => e.stopPropagation()}>
-                <div className={`absolute z-30 flex items-center gap-2 ${isFullscreen ? 'top-4 right-4' : '-top-12 right-0'}`}>
+                <div className={`viewer-toolbar absolute z-30 ${isFullscreen ? 'end-4 top-4' : '-top-10 end-0'}`}>
                     <button
                         onClick={toggleFullscreen}
-                        className="w-10 h-10 flex items-center justify-center text-white/50 hover:text-white bg-white/10 hover:bg-white/20 rounded-full transition-all"
+                        className="viewer-control"
                         title={isFullscreen ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}
+                        aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
                     >
                         {isFullscreen ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
                     </button>
                     <button
                         onClick={onClose}
-                        className="w-10 h-10 flex items-center justify-center text-white/50 hover:text-white bg-white/10 hover:bg-white/20 rounded-full transition-all"
+                        className="viewer-control"
                         title="Close (Esc)"
+                        aria-label="Close media player"
                     >
                         <X className="w-5 h-5" />
                     </button>
                 </div>
                 <button
                     onClick={onPrev}
-                    className={`absolute top-1/2 -translate-y-1/2 p-2 text-white/50 hover:text-white bg-white/10 hover:bg-white/20 rounded-full transition-all z-10 ${isFullscreen ? 'left-4' : 'left-2'}`}
+                    className={`viewer-navigation absolute start-2 top-1/2 z-10 -translate-y-1/2 ${isFullscreen ? 'start-4' : ''}`}
                     title="Previous (ArrowLeft / J)"
+                    aria-label="Previous file"
                 >
-                    <ChevronLeft className="w-6 h-6" />
+                    <ChevronLeft className="h-5 w-5 rtl:rotate-180" />
                 </button>
 
                 <button
                     onClick={onNext}
-                    className={`absolute top-1/2 -translate-y-1/2 p-2 text-white/50 hover:text-white bg-white/10 hover:bg-white/20 rounded-full transition-all z-10 ${isFullscreen ? 'right-4' : 'right-2'}`}
+                    className={`viewer-navigation absolute end-2 top-1/2 z-10 -translate-y-1/2 ${isFullscreen ? 'end-4' : ''}`}
                     title="Next (ArrowRight / L)"
+                    aria-label="Next file"
                 >
-                    <ChevronRight className="w-6 h-6" />
+                    <ChevronRight className="h-5 w-5 rtl:rotate-180" />
                 </button>
 
-                <div className={`bg-black overflow-hidden flex items-center justify-center ${isFullscreen ? 'w-full h-full rounded-none shadow-none ring-0' : 'w-full aspect-video rounded-xl shadow-2xl ring-1 ring-white/10'}`}>
+                <div className={`flex items-center justify-center overflow-hidden bg-black ${isFullscreen ? 'h-full w-full rounded-none shadow-none' : 'viewer-panel aspect-video w-full'}`}>
                     {!streamUrl ? (
                         <div className="flex flex-col items-center gap-4 text-white">
                             <div className="w-10 h-10 border-4 border-telegram-primary border-t-transparent rounded-full animate-spin"></div>
@@ -207,12 +211,12 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
                     )}
                 </div>
 
-                {!isFullscreen && <div className="mt-4 text-center">
-                    <h3 className="text-lg font-medium text-white">{file.name}</h3>
-                    <p className="text-sm text-white/50">
+                {!isFullscreen && <div className="mt-3 max-w-full text-center">
+                    <h3 className="max-w-2xl truncate text-ui font-medium text-white" title={file.name}>{file.name}</h3>
+                    <p className="text-metadata text-white/45">
                         Streaming from Telegram Drive
                         {typeof currentIndex === 'number' && typeof totalItems === 'number' && totalItems > 0 && (
-                            <span className="ml-2">• {currentIndex + 1}/{totalItems}</span>
+                            <span className="ms-2">• {currentIndex + 1}/{totalItems}</span>
                         )}
                     </p>
                 </div>}

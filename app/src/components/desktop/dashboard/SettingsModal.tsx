@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, RotateCcw, Download, Upload, Trash2, HardDrive, Globe, Key, Copy, Check, RefreshCw, FolderArchive, Shield, Zap, Activity, Gauge, Wifi, ChevronDown, Link, Sparkles, Info, Clipboard, Monitor, Loader2, Languages, Play, Palette, Plus, Tag } from 'lucide-react';
+import { X, RotateCcw, Download, Upload, Trash2, HardDrive, Globe, Key, Copy, Check, RefreshCw, FolderArchive, Shield, Zap, Activity, Gauge, Wifi, ChevronDown, Link, Sparkles, Info, Clipboard, Monitor, Loader2, Languages, Play, Palette, Plus, Tag, Moon, Sun } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-shell';
 import { toast } from 'sonner';
@@ -9,12 +9,14 @@ import { relaunch } from '@tauri-apps/plugin-process';
 import { useSettings } from '../../../context/SettingsContext';
 import { useConfirm } from '../../../context/ConfirmContext';
 import { useTranslation } from 'react-i18next';
+import { EncryptionSettingsSection } from '../../shared/EncryptionSettingsSection';
 import { LANGUAGES } from '../../../i18n/languages';
 import { ShareInfo, CacheEntry, DetailedCacheInfo } from '../../../types';
 import { version as appVersion } from '../../../../package.json';
 import { useTheme } from '../../../context/ThemeContext';
 import { CustomTheme, ThemeColorPalette, generateThemeId } from '../../../theme/themeEngine';
 import { getDefaultPalette } from '../../../theme/presets';
+import { clearImageMemoryCaches } from '../../../services/imagePreviewCache';
 
 interface SettingsModalProps {
     isOpen: boolean;
@@ -28,7 +30,7 @@ interface ApiSettings {
     running: boolean;
 }
 
-type SettingsTab = 'general' | 'themes' | 'proxy' | 'vpn' | 'sharing' | 'about';
+type SettingsTab = 'general' | 'themes' | 'proxy' | 'vpn' | 'encryption' | 'sharing' | 'about';
 
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const { settings, updateSetting, resetSettings } = useSettings();
@@ -409,7 +411,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
-                    className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm"
+                    className="fixed inset-0 z-[100] flex items-center justify-center bg-app-overlay p-6 backdrop-blur-sm"
                     onClick={onClose}
                 >
                     <motion.div
@@ -417,50 +419,54 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                         initial={{ opacity: 0, scale: 0.95, y: 10 }}
                         animate={{ opacity: 1, scale: 1, y: 0 }}
                         exit={{ opacity: 0, scale: 0.95, y: 10 }}
-                        transition={{ type: 'spring', damping: 25, stiffness: 220 }}
-                        className="bg-telegram-surface border border-telegram-border rounded-xl w-[440px] shadow-2xl overflow-hidden flex flex-col"
+                        transition={{ duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
+                        className="quiet-raised flex h-[min(760px,calc(100vh-3rem))] w-[min(920px,calc(100vw-3rem))] flex-col overflow-hidden"
                         onClick={e => e.stopPropagation()}
                     >
                         {/* Header */}
-                        <div className="px-5 py-4 border-b border-telegram-border flex justify-between items-center">
-                            <h2 className="text-telegram-text font-semibold text-base">{t('settings.title')}</h2>
+                        <div className="flex min-h-16 items-center justify-between border-b border-app-border-subtle px-6 py-4">
+                            <div>
+                                <h2 className="text-base font-semibold text-app-text">{t('settings.title')}</h2>
+                                <p className="mt-0.5 text-xs text-app-text-tertiary">{t(`settings.tab_${activeTab}`)}</p>
+                            </div>
                             <button
                                 onClick={onClose}
-                                className="p-1.5 hover:bg-telegram-hover rounded-lg text-telegram-subtext hover:text-telegram-text transition"
+                                className="quiet-control p-2 text-app-text-secondary hover:text-app-text"
                             >
                                 <X className="w-4 h-4" />
                             </button>
                         </div>
 
-                        {/* Tab Bar */}
-                        <div className="px-5 pt-3 pb-0 flex gap-1 justify-start overflow-x-auto border-b border-telegram-border scrollbar-none">
-                            {([['general', Globe], ['themes', Palette], ['proxy', Shield], ['vpn', Zap], ['sharing', Link], ['about', Info]] as const).map(([key, Icon]) => (
+                        <div className="flex min-h-0 flex-1">
+                        {/* Settings navigation */}
+                        <aside className="w-48 shrink-0 border-e border-app-border-subtle bg-app-sidebar p-3">
+                            {([['general', Globe], ['themes', Palette], ['proxy', Shield], ['vpn', Zap], ['encryption', Shield], ['sharing', Link], ['about', Info]] as const).map(([key, Icon]) => (
                                 <button
                                     key={key}
                                     onClick={() => setActiveTab(key as SettingsTab)}
-                                    className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-t-lg transition-colors shrink-0 ${
+                                    className={`quiet-control mb-1 flex w-full items-center gap-2.5 px-3 py-2.5 text-start text-sm font-medium ${
                                         activeTab === key
-                                            ? 'text-telegram-primary border-b-2 border-telegram-primary bg-telegram-primary/5'
-                                            : 'text-telegram-subtext hover:text-telegram-text hover:bg-telegram-hover/50'
+                                            ? 'bg-app-selected text-app-text'
+                                            : 'text-app-text-secondary hover:text-app-text'
                                     }`}
                                 >
-                                    <Icon className="w-3.5 h-3.5" />
+                                    <Icon className={`h-4 w-4 ${activeTab === key ? 'text-app-accent' : ''}`} />
                                     {t(`settings.tab_${key}`)}
                                 </button>
                             ))}
-                        </div>
+                        </aside>
 
                         {/* Body */}
-                        <motion.div layout className="px-5 py-4 max-h-[70vh] overflow-y-auto overflow-x-hidden relative">
-                            <AnimatePresence mode="popLayout" initial={false}>
+                        <div className="relative min-w-0 flex-1 overflow-y-auto overflow-x-hidden px-7 py-6">
+                            <AnimatePresence mode="wait" initial={false}>
 
                                 {activeTab === 'general' && (
                                     <motion.div
                                         key="general"
-                                        initial={{ opacity: 0, x: -20 }}
-                                        animate={{ opacity: 1, x: 0 }}
-                                        exit={{ opacity: 0, x: 20 }}
-                                        transition={{ type: 'spring', damping: 25, stiffness: 220, opacity: { duration: 0.15 } }}
+                                        initial={{ opacity: 0 }}
+                                        animate={{ opacity: 1 }}
+                                        exit={{ opacity: 0 }}
+                                        transition={{ duration: 0.12, ease: [0.2, 0.8, 0.2, 1] }}
                                         className="space-y-6 w-full"
                                     >
 
@@ -771,6 +777,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                             setClearing(true);
                                             try {
                                                 await invoke('cmd_clean_cache');
+                                                clearImageMemoryCaches();
                                                 toast.success(t('settings.cache_cleared'));
                                             } catch {
                                                 toast.error(t('settings.cache_clear_failed'));
@@ -976,10 +983,10 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                 {activeTab === 'proxy' && (
                                     <motion.section
                                         key="proxy"
-                                        initial={{ opacity: 0, x: -20 }}
-                                        animate={{ opacity: 1, x: 0 }}
-                                        exit={{ opacity: 0, x: 20 }}
-                                        transition={{ type: 'spring', damping: 25, stiffness: 220, opacity: { duration: 0.15 } }}
+                                        initial={{ opacity: 0 }}
+                                        animate={{ opacity: 1 }}
+                                        exit={{ opacity: 0 }}
+                                        transition={{ duration: 0.12, ease: [0.2, 0.8, 0.2, 1] }}
                                         className="space-y-3 w-full"
                                     >
                                 <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
@@ -1200,10 +1207,10 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                         {activeTab === 'vpn' && (
                                     <motion.section
                                         key="vpn"
-                                        initial={{ opacity: 0, x: -20 }}
-                                        animate={{ opacity: 1, x: 0 }}
-                                        exit={{ opacity: 0, x: 20 }}
-                                        transition={{ type: 'spring', damping: 25, stiffness: 220, opacity: { duration: 0.15 } }}
+                                        initial={{ opacity: 0 }}
+                                        animate={{ opacity: 1 }}
+                                        exit={{ opacity: 0 }}
+                                        transition={{ duration: 0.12, ease: [0.2, 0.8, 0.2, 1] }}
                                         className="space-y-3 w-full"
                                     >
                                 <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
@@ -1484,13 +1491,25 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     </motion.section>
                                 )}
 
+                                {activeTab === 'encryption' && (
+                                    <motion.section
+                                        key="encryption"
+                                        initial={{ opacity: 0 }}
+                                        animate={{ opacity: 1 }}
+                                        exit={{ opacity: 0 }}
+                                        transition={{ duration: 0.12, ease: [0.2, 0.8, 0.2, 1] }}
+                                    >
+                                        <EncryptionSettingsSection />
+                                    </motion.section>
+                                )}
+
                                 {activeTab === 'sharing' && (
                                     <motion.section
                                         key="sharing"
-                                        initial={{ opacity: 0, x: -20 }}
-                                        animate={{ opacity: 1, x: 0 }}
-                                        exit={{ opacity: 0, x: 20 }}
-                                        transition={{ type: 'spring', damping: 25, stiffness: 220, opacity: { duration: 0.15 } }}
+                                        initial={{ opacity: 0 }}
+                                        animate={{ opacity: 1 }}
+                                        exit={{ opacity: 0 }}
+                                        transition={{ duration: 0.12, ease: [0.2, 0.8, 0.2, 1] }}
                                         className="space-y-4 w-full"
                                     >
                                         <div className="flex items-center justify-between">
@@ -1597,10 +1616,10 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                 {activeTab === 'about' && (
                                     <motion.section
                                         key="about"
-                                        initial={{ opacity: 0, x: -20 }}
-                                        animate={{ opacity: 1, x: 0 }}
-                                        exit={{ opacity: 0, x: 20 }}
-                                        transition={{ type: 'spring', damping: 25, stiffness: 220, opacity: { duration: 0.15 } }}
+                                        initial={{ opacity: 0 }}
+                                        animate={{ opacity: 1 }}
+                                        exit={{ opacity: 0 }}
+                                        transition={{ duration: 0.12, ease: [0.2, 0.8, 0.2, 1] }}
                                         className="space-y-4 w-full"
                                     >
                                         <div className="flex flex-col items-center py-6 space-y-5">
@@ -1676,10 +1695,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     </motion.section>
                                 )}
                             </AnimatePresence>
-                        </motion.div>
+                        </div>
+                        </div>
 
                         {/* Footer */}
-                        <div className="px-5 py-3 border-t border-telegram-border flex items-center justify-between">
+                        <div className="flex items-center justify-between border-t border-app-border-subtle px-6 py-3">
                             <button
                                 onClick={resetSettings}
                                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-telegram-subtext hover:text-red-400 hover:bg-red-500/10 transition font-medium"
@@ -1704,19 +1724,23 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 // ── Themes Tab ──────────────────────────────────────────────────────
 // Inline component (follows the pattern of the other tabs in this file).
 
-const PALETTE_KEYS: { key: keyof ThemeColorPalette; labelKey: string }[] = [
-    { key: 'bg', labelKey: 'settings.color_bg' },
-    { key: 'surface', labelKey: 'settings.color_surface' },
-    { key: 'primary', labelKey: 'settings.color_primary' },
-    { key: 'secondary', labelKey: 'settings.color_secondary' },
-    { key: 'text', labelKey: 'settings.color_text' },
-    { key: 'subtext', labelKey: 'settings.color_subtext' },
+const PALETTE_KEYS: { key: keyof ThemeColorPalette; labelKey: string; defaultLabel: string }[] = [
+    { key: 'bg', labelKey: 'settings.color_bg', defaultLabel: 'Canvas' },
+    { key: 'surface', labelKey: 'settings.color_surface', defaultLabel: 'Surface' },
+    { key: 'primary', labelKey: 'settings.color_primary', defaultLabel: 'Accent' },
+    { key: 'secondary', labelKey: 'settings.color_secondary', defaultLabel: 'Information' },
+    { key: 'text', labelKey: 'settings.color_text', defaultLabel: 'Text' },
+    { key: 'subtext', labelKey: 'settings.color_subtext', defaultLabel: 'Secondary text' },
+    { key: 'border', labelKey: 'settings.color_border', defaultLabel: 'Border' },
+    { key: 'hover', labelKey: 'settings.color_hover', defaultLabel: 'Hover' },
 ];
 
 function ThemesTab() {
     const { t } = useTranslation();
     const {
         customThemes,
+        themePreference,
+        setThemePreference,
         activeCustomThemeId,
         setActiveCustomTheme,
         addCustomTheme,
@@ -1790,42 +1814,73 @@ function ThemesTab() {
     return (
         <motion.section
             key="themes"
-            initial={{ opacity: 0, x: -20 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: 20 }}
-            transition={{ type: 'spring', damping: 25, stiffness: 220, opacity: { duration: 0.15 } }}
-            className="space-y-5 w-full"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.12, ease: [0.2, 0.8, 0.2, 1] }}
+            className="w-full space-y-6"
         >
+            <div className="space-y-2">
+                <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-app-text-secondary">
+                    <Monitor className="h-3.5 w-3.5" />
+                    {t('common.theme')}
+                </h3>
+                <div className="grid grid-cols-4 gap-2 rounded-container border border-app-border-subtle bg-app-surface-sunken/30 p-2">
+                    {([
+                        ['default', Sparkles, t('common.default', { defaultValue: 'Default' })],
+                        ['system', Monitor, 'System'],
+                        ['light', Sun, t('common.light_mode')],
+                        ['dark', Moon, t('common.dark_mode')],
+                    ] as const).map(([preference, Icon, label]) => (
+                        <button
+                            key={preference}
+                            onClick={() => setThemePreference(preference)}
+                            className={`quiet-control flex items-center justify-center gap-2 border px-3 py-2 text-xs font-medium ${
+                                !activeCustomThemeId && themePreference === preference
+                                    ? 'border-app-accent/40 bg-app-selected text-app-accent'
+                                    : 'border-transparent text-app-text-secondary hover:text-app-text'
+                            }`}
+                        >
+                            <Icon className="h-3.5 w-3.5" />
+                            {label}
+                        </button>
+                    ))}
+                </div>
+                <p className="text-xs leading-relaxed text-app-text-tertiary">
+                    Default restores the Quiet Utility theme. System follows your device, while presets and custom themes override these standard modes.
+                </p>
+            </div>
+
             {/* Presets */}
             <div className="space-y-2">
                 <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
                     <Palette className="w-3.5 h-3.5" />
                     {t('settings.presets')}
                 </h3>
-                <div className="grid grid-cols-4 gap-2">
+                <div className="grid grid-cols-4 gap-3">
                     {builtinThemes.map(theme => (
                         <button
                             key={theme.id}
                             onClick={() => handleSelectTheme(theme)}
-                            className={`relative rounded-lg p-0.5 transition-all duration-200 ${
+                            className={`relative rounded-container border p-1.5 transition-colors ${
                                 activeCustomThemeId === theme.id
-                                    ? 'ring-2 ring-telegram-primary ring-offset-1 ring-offset-telegram-surface'
-                                    : 'hover:ring-1 hover:ring-telegram-subtext/30'
+                                    ? 'border-app-accent bg-app-selected'
+                                    : 'border-app-border-subtle hover:border-app-border-strong'
                             }`}
                             title={theme.name}
                         >
                             {/* Color preview swatch */}
-                            <div className="rounded-md overflow-hidden h-10 flex">
+                            <div className="flex h-12 overflow-hidden rounded-control">
                                 <div className="flex-1" style={{ background: theme.palette.bg }} />
                                 <div className="flex-1" style={{ background: theme.palette.surface }} />
                                 <div className="flex-1" style={{ background: theme.palette.primary }} />
                             </div>
-                            <p className="text-[10px] text-telegram-subtext mt-1 truncate text-center">
+                            <p className="mt-1.5 truncate text-center text-[10px] text-app-text-secondary">
                                 {theme.name}
                             </p>
                             {activeCustomThemeId === theme.id && (
-                                <div className="absolute -top-1 -right-1 w-4 h-4 bg-telegram-primary rounded-full flex items-center justify-center">
-                                    <Check className="w-2.5 h-2.5 text-white" />
+                                <div className="absolute -end-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-app-accent">
+                                    <Check className="h-2.5 w-2.5 text-app-accent-contrast" />
                                 </div>
                             )}
                         </button>
@@ -1841,29 +1896,29 @@ function ThemesTab() {
                 </h3>
 
                 {userThemes.length > 0 && (
-                    <div className="grid grid-cols-4 gap-2">
+                    <div className="grid grid-cols-4 gap-3">
                         {userThemes.map(theme => (
                             <button
                                 key={theme.id}
                                 onClick={() => handleSelectTheme(theme)}
-                                className={`relative rounded-lg p-0.5 transition-all duration-200 ${
+                                className={`relative rounded-container border p-1.5 transition-colors ${
                                     activeCustomThemeId === theme.id
-                                        ? 'ring-2 ring-telegram-primary ring-offset-1 ring-offset-telegram-surface'
-                                        : 'hover:ring-1 hover:ring-telegram-subtext/30'
+                                        ? 'border-app-accent bg-app-selected'
+                                        : 'border-app-border-subtle hover:border-app-border-strong'
                                 }`}
                                 title={theme.name}
                             >
-                                <div className="rounded-md overflow-hidden h-10 flex">
+                                <div className="flex h-12 overflow-hidden rounded-control">
                                     <div className="flex-1" style={{ background: theme.palette.bg }} />
                                     <div className="flex-1" style={{ background: theme.palette.surface }} />
                                     <div className="flex-1" style={{ background: theme.palette.primary }} />
                                 </div>
-                                <p className="text-[10px] text-telegram-subtext mt-1 truncate text-center">
+                                <p className="mt-1.5 truncate text-center text-[10px] text-app-text-secondary">
                                     {theme.name}
                                 </p>
                                 {activeCustomThemeId === theme.id && (
-                                    <div className="absolute -top-1 -right-1 w-4 h-4 bg-telegram-primary rounded-full flex items-center justify-center">
-                                        <Check className="w-2.5 h-2.5 text-white" />
+                                    <div className="absolute -end-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-app-accent">
+                                        <Check className="h-2.5 w-2.5 text-app-accent-contrast" />
                                     </div>
                                 )}
                             </button>
@@ -1873,7 +1928,7 @@ function ThemesTab() {
 
                 <button
                     onClick={handleCreateTheme}
-                    className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg border border-dashed border-telegram-border text-telegram-subtext hover:text-telegram-primary hover:border-telegram-primary/50 transition-colors text-xs"
+                    className="quiet-control flex w-full items-center justify-center gap-2 border border-dashed border-app-border px-3 py-2.5 text-xs text-app-text-secondary hover:border-app-accent/50 hover:text-app-accent"
                 >
                     <Plus className="w-3.5 h-3.5" />
                     {t('settings.create_theme')}
@@ -1882,7 +1937,7 @@ function ThemesTab() {
 
             {/* Editor (shown when a custom theme is selected) */}
             {editingTheme && !editingTheme.isBuiltin && (
-                <div className="space-y-3 p-3 rounded-lg bg-telegram-hover/30 border border-telegram-border/50">
+                <div className="quiet-surface space-y-4 p-4">
                     <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider">
                         {t('settings.edit_theme')}
                     </h3>
@@ -1928,9 +1983,9 @@ function ThemesTab() {
 
                     {/* Color Pickers */}
                     <div className="space-y-2">
-                        {PALETTE_KEYS.map(({ key, labelKey }) => (
+                        {PALETTE_KEYS.map(({ key, labelKey, defaultLabel }) => (
                             <div key={key} className="flex items-center gap-2">
-                                <label className="text-xs text-telegram-subtext w-16 shrink-0">{t(labelKey)}</label>
+                                <label className="w-24 shrink-0 text-xs text-telegram-subtext">{t(labelKey, { defaultValue: defaultLabel })}</label>
                                 <div className="flex items-center gap-1.5 flex-1">
                                     <input
                                         type="color"
@@ -1965,7 +2020,7 @@ function ThemesTab() {
             {activeCustomThemeId && (
                 <button
                     onClick={() => {
-                        setActiveCustomTheme(null);
+                        setThemePreference('default');
                         setEditingId(null);
                     }}
                     className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium text-telegram-subtext hover:text-telegram-text bg-telegram-hover/50 hover:bg-telegram-hover transition"

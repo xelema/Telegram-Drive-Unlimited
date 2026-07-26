@@ -82,18 +82,57 @@ fn get_share_by_token(db: &DbConnection, token: &str) -> Result<Option<SharedLin
 /// This is acceptable because the page is served only over the local
 /// Actix streaming server (127.0.0.1/0.0.0.0:14201), not the public internet,
 /// so the XSS attack surface is minimal.
-fn render_password_form(file_name: &str, token: &str, error: Option<&str>) -> HttpResponse {
+fn escape_html(input: &str) -> String {
+    input.replace('&', "&amp;")
+         .replace('<', "&lt;")
+         .replace('>', "&gt;")
+         .replace('"', "&quot;")
+         .replace('\'', "&#x27;")
+}
+
+fn resolve_req_lang(req: &HttpRequest) -> (&'static str, &'static str) {
+    if let Some(query) = req.uri().query() {
+        if query.contains("lang=ar") { return ("ar", "rtl"); }
+        if query.contains("lang=es") { return ("es", "ltr"); }
+        if query.contains("lang=ru") { return ("ru", "ltr"); }
+        if query.contains("lang=fr") { return ("fr", "ltr"); }
+        if query.contains("lang=de") { return ("de", "ltr"); }
+        if query.contains("lang=pt") { return ("pt-BR", "ltr"); }
+        if query.contains("lang=zh") { return ("zh-CN", "ltr"); }
+    }
+    if let Some(accept) = req.headers().get("Accept-Language") {
+        if let Ok(val) = accept.to_str() {
+            if val.contains("ar") { return ("ar", "rtl"); }
+            if val.contains("es") { return ("es", "ltr"); }
+            if val.contains("ru") { return ("ru", "ltr"); }
+            if val.contains("fr") { return ("fr", "ltr"); }
+            if val.contains("de") { return ("de", "ltr"); }
+            if val.contains("pt") { return ("pt-BR", "ltr"); }
+            if val.contains("zh") { return ("zh-CN", "ltr"); }
+        }
+    }
+    ("en", "ltr")
+}
+
+fn render_password_form(req: &HttpRequest, file_name: &str, token: &str, error: Option<&str>) -> HttpResponse {
+    let (lang, dir) = resolve_req_lang(req);
+    let safe_file_name = escape_html(file_name);
     let error_html = match error {
-        Some(err) => format!("<div class=\"error\">{}</div>", err),
+        Some(err) => format!("<div class=\"error\">{}</div>", escape_html(err)),
         None => "".to_string(),
     };
-    
+
+    let title_text = if lang == "es" { "Archivo protegido con contraseña" } else if lang == "ru" { "Файл защищен паролем" } else { "Password Protected File" };
+    let heading_text = if lang == "es" { "Ingrese contraseña" } else if lang == "ru" { "Введите пароль" } else { "Enter Password" };
+    let desc_text = if lang == "es" { "Este enlace está protegido con contraseña." } else if lang == "ru" { "Эта ссылка защищена паролем." } else { "This share link is password-protected." };
+    let btn_text = if lang == "es" { "Verificar y descargar" } else if lang == "ru" { "Проверить и скачать" } else { "Verify & Download" };
+
     let html = format!(
         r#"<!DOCTYPE html>
-<html>
+<html lang="{}" dir="{}">
 <head>
     <meta charset="utf-8">
-    <title>Password Protected File - Telegram Drive</title>
+    <title>{} - Telegram Drive</title>
     <style>
         body {{
             background-color: #182533;
@@ -163,17 +202,17 @@ fn render_password_form(file_name: &str, token: &str, error: Option<&str>) -> Ht
 </head>
 <body>
     <div class="container">
-        <h2>Enter Password</h2>
-        <p>This share link is password-protected.<br>File: <strong>{}</strong></p>
+        <h2>{}</h2>
+        <p>{}<br>File: <strong><bdi dir="auto">{}</bdi></strong></p>
         {}
         <form method="POST" action="/d/{}/verify">
             <input type="password" name="password" placeholder="Password" autofocus required>
-            <button type="submit">Verify & Download</button>
+            <button type="submit">{}</button>
         </form>
     </div>
 </body>
 </html>"#,
-        file_name, error_html, token
+        lang, dir, title_text, heading_text, desc_text, safe_file_name, error_html, token, btn_text
     );
 
     HttpResponse::Ok()
@@ -222,7 +261,7 @@ async fn get_shared_file(
         }
         
         if !authenticated {
-            return render_password_form(&row.file_name, &token, None);
+            return render_password_form(&req, &row.file_name, &token, None);
         }
     }
     
@@ -271,6 +310,7 @@ async fn get_shared_file(
 
 #[post("/d/{token}/verify")]
 async fn verify_shared_file_password(
+    req: HttpRequest,
     path: web::Path<String>,
     form: web::Form<VerifyForm>,
     db_conn: web::Data<DbConnection>,
@@ -314,7 +354,7 @@ async fn verify_shared_file_password(
             .cookie(cookie)
             .finish()
     } else {
-        render_password_form(&row.file_name, &token, Some("Incorrect password. Please try again."))
+        render_password_form(&req, &row.file_name, &token, Some("Incorrect password. Please try again."))
     }
 }
 

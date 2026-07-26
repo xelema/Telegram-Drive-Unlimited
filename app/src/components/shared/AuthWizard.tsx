@@ -7,6 +7,8 @@ import { useTheme } from '../../context/ThemeContext';
 import { open } from '@tauri-apps/plugin-shell';
 import { QRCodeSVG } from 'qrcode.react';
 
+import { useTranslation } from "react-i18next";
+
 type Step = "setup" | "phone" | "code" | "password";
 
 function AuthThemeToggle() {
@@ -14,34 +16,37 @@ function AuthThemeToggle() {
     return (
         <button
             onClick={toggleTheme}
-            className="absolute top-[calc(1rem+env(safe-area-inset-top,24px))] right-4 p-3 rounded-full bg-white/10 hover:bg-white/20 transition-colors z-10"
+            className="quiet-control absolute end-4 top-[calc(1rem+env(safe-area-inset-top,24px))] z-10 flex h-9 w-9 items-center justify-center border border-app-border bg-app-surface-raised text-app-text-secondary shadow-[var(--shadow-raised)] hover:text-app-text"
             title={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+            aria-label={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
         >
             {theme === 'dark' ? (
-                <Sun className="w-5 h-5 text-white" />
+                <Sun className="h-4 w-4" />
             ) : (
-                <Moon className="w-5 h-5 text-white" />
+                <Moon className="h-4 w-4" />
             )}
         </button>
     );
 }
 export function AuthWizard({ onLogin }: { onLogin: () => void }) {
+    const { t } = useTranslation();
     const isBrowser = typeof window !== 'undefined' && !('__TAURI_INTERNALS__' in window);
 
     if (isBrowser) {
         return (
-            <div className="flex flex-col items-center justify-center h-full max-w-lg mx-auto p-8 text-center">
-                <div className="w-20 h-20 bg-red-500/20 rounded-full flex items-center justify-center mb-6">
-                    <ShieldCheck className="w-10 h-10 text-red-500" />
+            <div className="auth-gradient flex h-full items-center justify-center p-6 text-center text-app-text">
+              <div className="quiet-raised max-w-md p-6">
+                <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-container bg-app-danger/10">
+                    <ShieldCheck className="h-6 w-6 text-app-danger" />
                 </div>
-                <h1 className="text-2xl font-bold text-white mb-4">Desktop App Required</h1>
-                <p className="text-gray-400 mb-6 leading-relaxed">
-                    You are viewing the internal development server in a browser.
-                    This application cannot function here because it requires access to the system backend (Rust).
+                <h1 className="text-app-title font-semibold text-app-text">{t('auth.desktop_required')}</h1>
+                <p className="mx-auto mt-2 max-w-sm text-ui leading-relaxed text-app-text-secondary">
+                    {t('auth.desktop_required_desc')}
                 </p>
-                <div className="p-4 bg-gray-800 rounded-xl border border-gray-700 text-sm text-gray-300">
-                    Please open the <strong>Telegram Drive</strong> window in your OS taskbar/dock to continue.
+                <div className="mt-5 rounded-control border border-app-border bg-app-surface-sunken/40 p-3 text-metadata text-app-text-secondary">
+                    {t('auth.open_window_prompt')}
                 </div>
+              </div>
             </div>
         )
     }
@@ -264,20 +269,21 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
     };
 
     return (
-        <div className="h-full w-full auth-gradient flex items-center justify-center p-6 pt-[calc(1.5rem+env(safe-area-inset-top,24px))] relative">
+        <div className="auth-gradient relative flex h-full w-full items-center justify-center overflow-y-auto p-4 pt-[calc(1rem+env(safe-area-inset-top,24px))] text-app-text sm:p-6">
             <AuthThemeToggle />
 
             <motion.div
-                initial={{ opacity: 0, scale: 0.95 }}
-                animate={{ opacity: 1, scale: 1 }}
-                className="auth-glass p-8 rounded-3xl shadow-2xl w-full max-w-md"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.18 }}
+                className="auth-glass my-auto w-full max-w-[26rem] rounded-overlay p-5 sm:p-6"
             >
-                <div className="text-center mb-8">
-                    <div className="w-20 h-20 mb-6 mx-auto flex items-center justify-center filter drop-shadow-lg">
+                <div className="mb-6 text-center">
+                    <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center">
                         <img src="/logo.svg" alt="Logo" className="w-full h-full" />
                     </div>
-                    <h1 className="text-2xl font-bold text-white mb-1 tracking-tight">Telegram Drive</h1>
-                    <p className="text-sm text-white/60 font-medium">Self-Hosted Secure Storage</p>
+                    <h1 className="text-app-title font-semibold tracking-[-0.01em] text-app-text">Telegram Drive</h1>
+                    <p className="mt-1 text-metadata text-app-text-secondary">Self-hosted secure storage</p>
                 </div>
 
                 <AnimatePresence mode="wait">
@@ -286,22 +292,22 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
                             key="flood"
                             initial={{ opacity: 0 }}
                             animate={{ opacity: 1 }}
-                            className="text-center space-y-6"
+                            className="space-y-5 text-center"
                         >
-                            <div className="w-16 h-16 bg-red-500/20 rounded-full flex items-center justify-center mx-auto animate-pulse">
-                                <span className="text-2xl">⏳</span>
+                            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-container bg-app-danger/10">
+                                <span className="text-xl">⏳</span>
                             </div>
                             <div>
-                                <h2 className="text-xl font-bold text-white mb-2">Too Many Requests</h2>
-                                <p className="text-sm text-gray-400">Telegram has temporarily limited your actions.</p>
-                                <p className="text-sm text-gray-400">Please wait before trying again.</p>
+                                <h2 className="text-app-title font-semibold text-app-text">Too Many Requests</h2>
+                                <p className="mt-2 text-ui text-app-text-secondary">Telegram has temporarily limited your actions.</p>
+                                <p className="text-ui text-app-text-secondary">Please wait before trying again.</p>
                             </div>
 
-                            <div className="text-5xl font-mono items-center justify-center flex text-blue-400 font-bold">
+                            <div className="flex items-center justify-center font-mono text-3xl font-semibold tabular-nums text-app-accent">
                                 {Math.floor(floodWait / 60)}:{(floodWait % 60).toString().padStart(2, '0')}
                             </div>
 
-                            <p className="text-xs text-red-400/60 mt-4">
+                            <p className="mt-4 text-metadata text-app-danger">
                                 Do not restart the app. The timer will reset if you do.
                             </p>
                         </motion.div>
@@ -316,32 +322,32 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
                                     animate={{ x: 0, opacity: 1 }}
                                     exit={{ x: -20, opacity: 0 }}
                                     onSubmit={handleSetupSubmit}
-                                    className="space-y-5"
+                                    className="space-y-4"
                                 >
-                                    <div className="space-y-4">
+                                    <div className="space-y-3">
                                         <div>
-                                            <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">API ID</label>
+                                            <label className="auth-label">API ID</label>
                                             <div className="relative">
-                                                <Key className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 auth-form-icon" />
+                                                <Key className="auth-input-icon" />
                                                 <input
                                                     type="text"
                                                     value={apiId}
                                                     onChange={(e) => setApiId(e.target.value)}
                                                     placeholder="12345678"
-                                                    className="w-full glass-input rounded-xl pl-12 pr-4 py-3.5 text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-all font-mono text-sm"
+                                                    className="auth-input font-mono"
                                                 />
                                             </div>
                                         </div>
                                         <div>
-                                            <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">API Hash</label>
+                                            <label className="auth-label">API Hash</label>
                                             <div className="relative">
-                                                <Key className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 auth-form-icon" />
+                                                <Key className="auth-input-icon" />
                                                 <input
                                                     type="text"
                                                     value={apiHash}
                                                     onChange={(e) => setApiHash(e.target.value)}
                                                     placeholder="abcdef123456..."
-                                                    className="w-full glass-input rounded-xl pl-12 pr-4 py-3.5 text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-all font-mono text-sm"
+                                                    className="auth-input font-mono"
                                                 />
                                             </div>
                                         </div>
@@ -349,7 +355,7 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
 
                                     <button
                                         type="submit"
-                                        className="w-full bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 text-white font-bold py-4 rounded-xl flex items-center justify-center gap-2 transition-all shadow-lg shadow-blue-900/20 active:scale-[0.98]"
+                                        className="quiet-control auth-primary-action"
                                     >
                                         Configure <Settings className="w-4 h-4" />
                                     </button>
@@ -357,7 +363,7 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
                                     <button
                                         type="button"
                                         onClick={() => setShowHelp(true)}
-                                        className="w-full text-xs text-blue-300 hover:text-white transition-colors flex items-center justify-center gap-1.5 py-1"
+                                        className="quiet-control auth-secondary-action w-full"
                                     >
                                         <HelpCircle className="w-3 h-3" />
                                         How do I get my API credentials?
@@ -367,7 +373,7 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
                                         <button
                                             type="button"
                                             onClick={() => onLogin()}
-                                            className="w-full text-xs text-red-400/60 hover:text-red-300 transition-colors py-1"
+                                            className="quiet-control auth-secondary-action w-full text-app-danger"
                                         >
                                             Dev Mode
                                         </button>
@@ -382,18 +388,18 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
                                     initial={{ x: 20, opacity: 0 }}
                                     animate={{ x: 0, opacity: 1 }}
                                     exit={{ x: -20, opacity: 0 }}
-                                    className="space-y-6"
+                                    className="space-y-5"
                                 >
                                     {/* Phone / QR Toggle */}
                                     {!isMobile && (
-                                        <div className="flex rounded-xl overflow-hidden border border-white/10">
+                                        <div className="quiet-control flex overflow-hidden border border-app-border bg-app-surface-sunken/40 p-0.5">
                                             <button
                                                 type="button"
                                                 onClick={() => { setLoginMethod('phone'); setQrUrl(null); setQrPolling(false); setError(null); }}
-                                                className={`flex-1 py-2.5 text-sm font-medium flex items-center justify-center gap-2 transition-all ${
+                                                className={`quiet-control flex h-8 flex-1 items-center justify-center gap-2 text-metadata font-medium ${
                                                     loginMethod === 'phone'
-                                                        ? 'bg-white/15 text-white'
-                                                        : 'text-white/50 hover:text-white/70'
+                                                        ? 'bg-app-surface-raised text-app-text shadow-sm'
+                                                        : 'text-app-text-secondary hover:text-app-text'
                                                 }`}
                                             >
                                                 <Phone className="w-4 h-4" /> Phone Number
@@ -401,10 +407,10 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
                                             <button
                                                 type="button"
                                                 onClick={() => { setLoginMethod('qr'); setError(null); handleQrLogin(); }}
-                                                className={`flex-1 py-2.5 text-sm font-medium flex items-center justify-center gap-2 transition-all ${
+                                                className={`quiet-control flex h-8 flex-1 items-center justify-center gap-2 text-metadata font-medium ${
                                                     loginMethod === 'qr'
-                                                        ? 'bg-white/15 text-white'
-                                                        : 'text-white/50 hover:text-white/70'
+                                                        ? 'bg-app-surface-raised text-app-text shadow-sm'
+                                                        : 'text-app-text-secondary hover:text-app-text'
                                                 }`}
                                             >
                                                 <QrCode className="w-4 h-4" /> QR Code
@@ -413,17 +419,17 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
                                     )}
 
                                     {loginMethod === 'phone' ? (
-                                        <form onSubmit={handlePhoneSubmit} className="space-y-6">
+                                        <form onSubmit={handlePhoneSubmit} className="space-y-5">
                                             <div className="space-y-2">
-                                                <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider">Phone Number</label>
+                                                <label className="auth-label">Phone Number</label>
                                                 <div className="relative">
-                                                    <Phone className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 auth-form-icon" />
+                                                    <Phone className="auth-input-icon" />
                                                     <input
                                                         type="tel"
                                                         value={phone}
                                                         onChange={(e) => setPhone(e.target.value)}
                                                         placeholder="+1 234 567 8900"
-                                                        className="w-full glass-input rounded-xl pl-12 pr-4 py-4 text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-all text-lg tracking-wide"
+                                                        className="auth-input tracking-wide"
                                                     />
                                                 </div>
                                             </div>
@@ -432,11 +438,11 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
                                                 <button
                                                     type="submit"
                                                     disabled={loading}
-                                                    className="w-full bg-white text-black hover:bg-gray-100 font-bold py-4 rounded-xl flex items-center justify-center gap-2 transition-all shadow-lg active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
+                                                    className="quiet-control auth-primary-action disabled:opacity-45"
                                                 >
-                                                    {loading ? "Connecting..." : <>Continue <ArrowRight className="w-5 h-5" /></>}
+                                                    {loading ? "Connecting..." : <>Continue <ArrowRight className="h-4 w-4 rtl:rotate-180" /></>}
                                                 </button>
-                                                <button type="button" onClick={() => setStep("setup")} className="text-xs text-gray-500 hover:text-white transition-colors py-2">
+                                                <button type="button" onClick={() => setStep("setup")} className="quiet-control auth-secondary-action w-full">
                                                     Back to Configuration
                                                 </button>
                                             </div>
@@ -444,13 +450,13 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
                                     ) : (
                                         <div className="flex flex-col items-center gap-5">
                                             {loading && !qrUrl && (
-                                                <div className="w-52 h-52 rounded-2xl bg-white/5 flex items-center justify-center">
-                                                    <div className="w-8 h-8 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+                                                <div className="flex h-52 w-52 items-center justify-center rounded-container bg-app-surface-sunken/45">
+                                                    <div className="h-7 w-7 animate-spin rounded-full border-2 border-app-border border-t-app-accent" />
                                                 </div>
                                             )}
                                             {qrUrl && (
                                                 <>
-                                                    <div className="p-4 bg-white rounded-2xl shadow-xl">
+                                                    <div className="rounded-container bg-white p-3 shadow-[var(--shadow-raised)]">
                                                         <QRCodeSVG
                                                             value={qrUrl}
                                                             size={200}
@@ -460,25 +466,25 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
                                                         />
                                                     </div>
                                                     <div className="text-center space-y-1">
-                                                        <p className="text-sm text-white/80">Scan with your Telegram app</p>
-                                                        <p className="text-xs text-white/40">Settings &gt; Devices &gt; Link Desktop Device</p>
+                                                        <p className="text-ui text-app-text">Scan with your Telegram app</p>
+                                                        <p className="text-metadata text-app-text-tertiary">Settings &gt; Devices &gt; Link Desktop Device</p>
                                                     </div>
                                                     {qrPolling && (
-                                                        <div className="flex items-center gap-2 text-xs text-blue-300">
-                                                            <div className="w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+                                                        <div className="flex items-center gap-2 text-metadata text-app-accent">
+                                                            <div className="h-3 w-3 animate-spin rounded-full border-2 border-app-border border-t-app-accent" />
                                                             Waiting for scan...
                                                         </div>
                                                     )}
                                                     <button
                                                         type="button"
                                                         onClick={handleQrLogin}
-                                                        className="text-xs text-white/50 hover:text-white transition-colors"
+                                                        className="quiet-control auth-secondary-action px-2"
                                                     >
                                                         Refresh QR Code
                                                     </button>
                                                 </>
                                             )}
-                                            <button type="button" onClick={() => { setStep("setup"); setQrPolling(false); }} className="text-xs text-gray-500 hover:text-white transition-colors py-2">
+                                            <button type="button" onClick={() => { setStep("setup"); setQrPolling(false); }} className="quiet-control auth-secondary-action w-full">
                                                 Back to Configuration
                                             </button>
                                         </div>
@@ -494,18 +500,18 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
                                     animate={{ x: 0, opacity: 1 }}
                                     exit={{ x: -20, opacity: 0 }}
                                     onSubmit={handleCodeSubmit}
-                                    className="space-y-6"
+                                    className="space-y-5"
                                 >
                                     <div className="space-y-2">
-                                        <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider">Telegram Code</label>
+                                        <label className="auth-label">Telegram Code</label>
                                         <div className="relative">
-                                            <Key className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 auth-form-icon" />
+                                            <Key className="auth-input-icon" />
                                             <input
                                                 type="text"
                                                 value={code}
                                                 onChange={(e) => setCode(e.target.value)}
                                                 placeholder="1 2 3 4 5"
-                                                className="w-full glass-input rounded-xl pl-12 pr-4 py-4 text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-all text-2xl tracking-[0.5em] font-mono text-center"
+                                                className="auth-input pe-3 ps-10 text-center font-mono text-base tracking-[0.4em]"
                                             />
                                         </div>
                                     </div>
@@ -514,11 +520,11 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
                                         <button
                                             type="submit"
                                             disabled={loading}
-                                            className="w-full bg-white text-black hover:bg-gray-100 font-bold py-4 rounded-xl flex items-center justify-center gap-2 transition-all shadow-lg active:scale-[0.98]"
+                                            className="quiet-control auth-primary-action disabled:opacity-45"
                                         >
                                             {loading ? "Verifying..." : "Sign In"}
                                         </button>
-                                        <button type="button" onClick={() => setStep("phone")} className="text-xs text-gray-500 hover:text-white transition-colors py-2">
+                                        <button type="button" onClick={() => setStep("phone")} className="quiet-control auth-secondary-action w-full">
                                             Change Phone Number
                                         </button>
                                     </div>
@@ -533,24 +539,24 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
                                     animate={{ x: 0, opacity: 1 }}
                                     exit={{ x: -20, opacity: 0 }}
                                     onSubmit={handlePasswordSubmit}
-                                    className="space-y-6"
+                                    className="space-y-5"
                                 >
                                     <div className="space-y-2">
-                                        <div className="p-3 bg-blue-500/10 border border-blue-500/20 rounded-xl mb-4">
-                                            <p className="text-xs text-blue-300 text-center">
+                                        <div className="mb-4 rounded-control border border-app-accent/20 bg-app-selected p-3">
+                                            <p className="text-center text-metadata text-app-accent">
                                                 Your account has Two-Factor Authentication enabled.
                                                 Please enter your cloud password to continue.
                                             </p>
                                         </div>
-                                        <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider">Cloud Password</label>
+                                        <label className="auth-label">Cloud Password</label>
                                         <div className="relative">
-                                            <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 auth-form-icon" />
+                                            <Lock className="auth-input-icon" />
                                             <input
                                                 type="password"
                                                 value={password}
                                                 onChange={(e) => setPassword(e.target.value)}
                                                 placeholder="Enter your password"
-                                                className="w-full glass-input rounded-xl pl-12 pr-4 py-4 text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-all text-lg"
+                                                className="auth-input"
                                                 autoFocus
                                             />
                                         </div>
@@ -560,11 +566,11 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
                                         <button
                                             type="submit"
                                             disabled={loading || !password}
-                                            className="w-full bg-white text-black hover:bg-gray-100 font-bold py-4 rounded-xl flex items-center justify-center gap-2 transition-all shadow-lg active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
+                                            className="quiet-control auth-primary-action disabled:opacity-45"
                                         >
                                             {loading ? "Verifying..." : "Unlock"}
                                         </button>
-                                        <button type="button" onClick={() => { setStep("code"); setPassword(""); setError(null); }} className="text-xs text-gray-500 hover:text-white transition-colors py-2">
+                                        <button type="button" onClick={() => { setStep("code"); setPassword(""); setError(null); }} className="quiet-control auth-secondary-action w-full">
                                             Back to Code Entry
                                         </button>
                                     </div>
@@ -578,17 +584,17 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
                     <motion.div
                         initial={{ opacity: 0, y: 10 }}
                         animate={{ opacity: 1, y: 0 }}
-                        className="mt-6 p-4 bg-red-500/10 border border-red-500/20 rounded-xl flex items-start gap-3"
+                        className="mt-5 flex items-start gap-2 rounded-control border border-app-danger/20 bg-app-danger/10 p-3"
                     >
                         <div className="w-1.5 h-1.5 rounded-full bg-red-500 mt-2 shrink-0" />
-                        <p className="text-red-400 text-sm leading-snug">{error}</p>
+                        <p className="text-ui leading-snug text-app-danger">{error}</p>
                     </motion.div>
                 )}
 
-                <div className="mt-8 pt-4 border-t border-white/5 text-center">
+                <div className="mt-6 border-t border-app-border-subtle pt-3 text-center">
                     <button
                         onClick={() => setShowDonate(true)}
-                        className="text-xs text-telegram-subtext hover:text-telegram-text transition-colors flex items-center justify-center gap-1.5 mx-auto"
+                        className="quiet-control auth-secondary-action mx-auto px-2"
                     >
                         <Heart className="w-3.5 h-3.5 text-red-500/80" />
                         Donate
@@ -603,62 +609,62 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         exit={{ opacity: 0 }}
-                        className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
+                        className="fixed inset-0 z-50 flex items-center justify-center bg-app-overlay p-4 backdrop-blur-sm"
                         onClick={() => setShowHelp(false)}
                     >
                         <motion.div
                             initial={{ scale: 0.95, opacity: 0 }}
                             animate={{ scale: 1, opacity: 1 }}
                             exit={{ scale: 0.95, opacity: 0 }}
-                            className="glass bg-telegram-surface border border-telegram-border rounded-2xl p-6 max-w-lg w-full max-h-[80vh] overflow-y-auto shadow-2xl"
+                            className="quiet-raised max-h-[80vh] w-full max-w-lg overflow-y-auto p-5 sm:p-6"
                             onClick={(e) => e.stopPropagation()}
                         >
-                            <div className="flex items-center justify-between mb-6">
-                                <h2 className="text-xl font-bold text-telegram-text">Getting Started</h2>
-                                <button onClick={() => setShowHelp(false)} className="p-2 hover:bg-telegram-hover rounded-lg transition-colors">
-                                    <X className="w-5 h-5 text-telegram-subtext" />
+                            <div className="mb-5 flex items-center justify-between">
+                                <h2 className="text-app-title font-semibold text-app-text">Getting Started</h2>
+                                <button onClick={() => setShowHelp(false)} className="quiet-control flex h-8 w-8 items-center justify-center text-app-text-secondary hover:text-app-text" aria-label="Close help">
+                                    <X className="h-4 w-4" />
                                 </button>
                             </div>
 
-                            <div className="space-y-6 text-telegram-text">
-                                <div className="p-4 bg-telegram-primary/10 border border-telegram-primary/20 rounded-xl">
-                                    <p className="text-sm text-telegram-subtext">
-                                        <strong className="text-telegram-primary">Telegram Drive</strong> uses your Telegram account as secure cloud storage. You'll need a Telegram account and API credentials to get started.
+                            <div className="space-y-5 text-app-text">
+                                <div className="rounded-control border border-app-accent/20 bg-app-selected p-3">
+                                    <p className="text-ui leading-relaxed text-app-text-secondary">
+                                        <strong className="text-app-accent">Telegram Drive</strong> uses your Telegram account as secure cloud storage. You'll need a Telegram account and API credentials to get started.
                                     </p>
                                 </div>
 
-                                <div className="space-y-4">
-                                    <h3 className="font-semibold flex items-center gap-2">
-                                        <span className="w-6 h-6 bg-telegram-primary text-white text-xs font-bold rounded-full flex items-center justify-center">1</span>
+                                <div className="space-y-2">
+                                    <h3 className="flex items-center gap-2 text-ui font-semibold">
+                                        <span className="flex h-5 w-5 items-center justify-center rounded-full bg-app-accent text-badge font-semibold text-app-accent-contrast">1</span>
                                         Go to Telegram's Developer Portal
                                     </h3>
-                                    <p className="text-sm text-telegram-subtext ml-8">
-                                        Visit <button type="button" onClick={(e) => { e.preventDefault(); open('https://my.telegram.org'); }} className="text-telegram-primary underline hover:text-telegram-text cursor-pointer">my.telegram.org</button> and log in with your phone number.
+                                    <p className="ms-7 text-ui leading-relaxed text-app-text-secondary">
+                                        Visit <button type="button" onClick={(e) => { e.preventDefault(); open('https://my.telegram.org'); }} className="cursor-pointer text-app-accent underline hover:text-app-text">my.telegram.org</button> and log in with your phone number.
                                     </p>
                                 </div>
 
-                                <div className="space-y-4">
-                                    <h3 className="font-semibold flex items-center gap-2">
-                                        <span className="w-6 h-6 bg-telegram-primary text-white text-xs font-bold rounded-full flex items-center justify-center">2</span>
+                                <div className="space-y-2">
+                                    <h3 className="flex items-center gap-2 text-ui font-semibold">
+                                        <span className="flex h-5 w-5 items-center justify-center rounded-full bg-app-accent text-badge font-semibold text-app-accent-contrast">2</span>
                                         Create a New Application
                                     </h3>
-                                    <p className="text-sm text-telegram-subtext ml-8">
+                                    <p className="ms-7 text-ui leading-relaxed text-app-text-secondary">
                                         Click on <strong>"API development tools"</strong> and create a new application. Use any name and description you like.
                                     </p>
                                 </div>
 
-                                <div className="space-y-4">
-                                    <h3 className="font-semibold flex items-center gap-2">
-                                        <span className="w-6 h-6 bg-telegram-primary text-white text-xs font-bold rounded-full flex items-center justify-center">3</span>
+                                <div className="space-y-2">
+                                    <h3 className="flex items-center gap-2 text-ui font-semibold">
+                                        <span className="flex h-5 w-5 items-center justify-center rounded-full bg-app-accent text-badge font-semibold text-app-accent-contrast">3</span>
                                         Copy Your Credentials
                                     </h3>
-                                    <p className="text-sm text-telegram-subtext ml-8">
+                                    <p className="ms-7 text-ui leading-relaxed text-app-text-secondary">
                                         After creating the app, you'll see your <strong>API ID</strong> (a number) and <strong>API Hash</strong> (a string). Copy both and paste them into the fields on the previous screen.
                                     </p>
                                 </div>
 
-                                <div className="p-4 bg-telegram-hover rounded-xl border border-telegram-border">
-                                    <p className="text-xs text-telegram-subtext">
+                                <div className="rounded-control border border-app-border bg-app-surface-sunken/35 p-3">
+                                    <p className="text-metadata leading-relaxed text-app-text-secondary">
                                         <strong>🔒 Privacy:</strong> Your credentials are stored locally on your device and are never sent to any third-party servers. All data goes directly between you and Telegram.
                                     </p>
                                 </div>
@@ -666,7 +672,7 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
                                 <button
                                     type="button"
                                     onClick={(e) => { e.preventDefault(); open('https://my.telegram.org'); }}
-                                    className="w-full bg-telegram-primary text-white font-semibold py-3 rounded-xl flex items-center justify-center gap-2 hover:bg-telegram-primary/90 transition-colors"
+                                    className="quiet-control auth-primary-action"
                                 >
                                     <ExternalLink className="w-4 h-4" />
                                     Open my.telegram.org
@@ -683,27 +689,27 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         exit={{ opacity: 0 }}
-                        className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
+                        className="fixed inset-0 z-50 flex items-center justify-center bg-app-overlay p-4 backdrop-blur-sm"
                         onClick={() => setShowDonate(false)}
                     >
                         <motion.div
                             initial={{ scale: 0.95, opacity: 0 }}
                             animate={{ scale: 1, opacity: 1 }}
                             exit={{ scale: 0.95, opacity: 0 }}
-                            className="glass bg-telegram-surface border border-telegram-border rounded-2xl p-6 max-w-sm w-full shadow-2xl"
+                            className="quiet-raised w-full max-w-sm p-5"
                             onClick={(e) => e.stopPropagation()}
                         >
-                            <div className="relative flex items-center justify-center mb-6">
-                                <h2 className="text-xl font-bold text-telegram-text text-center">
+                            <div className="relative mb-5 flex items-center justify-center">
+                                <h2 className="text-center text-app-title font-semibold text-app-text">
                                     Support the Project
                                 </h2>
-                                <button onClick={() => setShowDonate(false)} className="absolute right-0 p-2 hover:bg-telegram-hover rounded-lg transition-colors">
-                                    <X className="w-5 h-5 text-telegram-subtext" />
+                                <button onClick={() => setShowDonate(false)} className="quiet-control absolute end-0 flex h-8 w-8 items-center justify-center text-app-text-secondary hover:text-app-text" aria-label="Close donation options">
+                                    <X className="h-4 w-4" />
                                 </button>
                             </div>
 
                             <div className="space-y-4 text-center">
-                                <p className="text-sm text-telegram-subtext mb-6">
+                                <p className="mb-5 text-ui leading-relaxed text-app-text-secondary">
                                     If you find Telegram Drive useful, consider supporting its development!
                                 </p>
 
@@ -726,8 +732,6 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
                 )}
             </AnimatePresence>
 
-            <div className="fixed top-[-20%] left-[-10%] w-[500px] h-[500px] bg-blue-600/20 rounded-full blur-[120px] pointer-events-none -z-10" />
-            <div className="fixed bottom-[-10%] right-[-10%] w-[400px] h-[400px] bg-purple-600/10 rounded-full blur-[100px] pointer-events-none -z-10" />
         </div>
     );
 }

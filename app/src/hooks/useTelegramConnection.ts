@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { useConfirm } from '../context/ConfirmContext';
 import { TelegramFolder, FolderInviteInfo, FolderGroup } from '../types';
 import { useNetworkStatus } from './useNetworkStatus';
+import { clearImageMemoryCaches } from '../services/imagePreviewCache';
 
 export function useTelegramConnection(onLogoutParent: () => void) {
     const queryClient = useQueryClient();
@@ -20,6 +21,8 @@ export function useTelegramConnection(onLogoutParent: () => void) {
 
     const networkIsOnline = useNetworkStatus();
     const handleSyncFoldersRef = useRef<((silentParam?: boolean | unknown) => Promise<void>) | null>(null);
+    const initialSyncStartedRef = useRef(false);
+    const syncInFlightRef = useRef<Promise<void> | null>(null);
 
     // Fetch groups list from DB
     const fetchGroups = useCallback(async () => {
@@ -40,8 +43,6 @@ export function useTelegramConnection(onLogoutParent: () => void) {
                 if (!checkId) {
                     _store = await load('settings.json');
                 }
-                setStore(_store);
-
                 // Fetch local-first SQLite enriched folders
                 try {
                     const dbFolders = await invoke<TelegramFolder[]>('cmd_get_enriched_folders');
@@ -67,8 +68,11 @@ export function useTelegramConnection(onLogoutParent: () => void) {
                 const savedActiveFolderId = await _store.get<number | null>('activeFolderId');
                 if (savedActiveFolderId !== undefined) setActiveFolderId(savedActiveFolderId);
 
+                // Enable file queries only after the persisted folder has been restored.
+                // Otherwise the dashboard briefly loads Saved Messages first, then starts
+                // a second overlapping request for the actual startup folder.
+                setStore(_store);
                 setIsConnected(true);
-                queryClient.invalidateQueries({ queryKey: ['files'] });
             } catch {
                 // store not available
             }
@@ -80,17 +84,30 @@ export function useTelegramConnection(onLogoutParent: () => void) {
     useEffect(() => {
         if (!store || !isConnected) return;
 
-        const syncAndRefresh = async () => {
-            if (!handleSyncFoldersRef.current) return;
-            await handleSyncFoldersRef.current(true);
-            queryClient.invalidateQueries({ queryKey: ['files'] });
+        const syncAndRefresh = () => {
+            if (!handleSyncFoldersRef.current) return Promise.resolve();
+            if (syncInFlightRef.current) return syncInFlightRef.current;
+
+            const request = (async () => {
+                await handleSyncFoldersRef.current?.(true);
+                await queryClient.invalidateQueries({ queryKey: ['files'] });
+            })().finally(() => {
+                syncInFlightRef.current = null;
+            });
+            syncInFlightRef.current = request;
+            return request;
         };
 
-        syncAndRefresh();
+        // React Strict Mode remounts effects in development. Keep the initial refresh
+        // single-shot so it cannot start two Telegram file streams for the same folder.
+        if (!initialSyncStartedRef.current) {
+            initialSyncStartedRef.current = true;
+            void syncAndRefresh();
+        }
 
         const handleVisibilityChange = () => {
             if (document.visibilityState === 'visible') {
-                syncAndRefresh();
+                void syncAndRefresh();
             }
         };
 
@@ -110,6 +127,7 @@ export function useTelegramConnection(onLogoutParent: () => void) {
         try {
             await invoke('cmd_logout');
             await invoke('cmd_clean_cache');
+            clearImageMemoryCaches();
             if (store) {
                 await store.delete('api_id');
                 await store.delete('api_hash');

@@ -1,13 +1,14 @@
-import { motion } from 'framer-motion';
 import { useState, useEffect } from 'react';
 import { Folder, Eye, Trash2, Link, Check } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';
 import { TelegramFile } from '../../../types';
 import { createDragGhost } from '../../../utils';
+import { forgetThumbnail, getCachedThumbnail, loadThumbnail } from '../../../services/imagePreviewCache';
 import { FileTypeIcon } from '../../shared/FileTypeIcon';
 import { useVideoMetadata } from '../../../hooks/useVideoMetadata';
 import { useCachedVariants } from '../../../hooks/useCachedVariants';
 import { VideoMetaBadge } from '../../shared/VideoMetaBadge';
+import { Skeleton } from '../../ui';
+import { EncryptionBadge } from '../../shared/EncryptionBadge';
 
 interface FileCardProps {
     file: TelegramFile;
@@ -39,6 +40,7 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
     const [isDragOver, setIsDragOver] = useState(false);
     const [thumbnail, setThumbnail] = useState<string | null>(null);
     const [thumbnailLoading, setThumbnailLoading] = useState(false);
+    const [thumbnailReady, setThumbnailReady] = useState(false);
 
     // Lazy video metadata badge (.mp4 only)
     const { data: videoMeta, isLoading: videoMetaLoading } = useVideoMetadata(
@@ -60,13 +62,14 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
         if (isFolder || !isImageFile(file.name)) return;
 
         let cancelled = false;
-        setThumbnailLoading(true);
+        const cached = getCachedThumbnail(file.id, activeFolderId);
+        setThumbnail(cached);
+        setThumbnailLoading(!cached);
+        setThumbnailReady(Boolean(cached));
 
-        invoke<string>('cmd_get_thumbnail', {
-            messageId: file.id,
-            folderId: activeFolderId
-        }).then((result) => {
+        loadThumbnail(file.id, activeFolderId).then((result) => {
             if (!cancelled && result) {
+                if (result !== cached) setThumbnailReady(false);
                 setThumbnail(result);
             }
         }).catch(() => {
@@ -80,7 +83,7 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
 
     return (
         <div
-            className="relative"
+            className="file-card-container relative h-full min-w-0 overflow-hidden"
             draggable={!isFolder}
             onContextMenu={onContextMenu}
             onClick={onClick}
@@ -120,32 +123,40 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
                 }
             }}
         >
-            <motion.div
-                whileHover={{ y: -4 }}
-                className={`group cursor-pointer bg-telegram-surface rounded-xl overflow-hidden border hover:shadow-[0_4px_20px_rgba(0,0,0,0.2)] transition-all relative
-                ${isSelected ? 'border-telegram-primary bg-telegram-primary/5 ring-1 ring-telegram-primary' : 'border-telegram-border hover:border-telegram-primary/50'}
-                ${isDragOver ? 'ring-2 ring-telegram-primary bg-telegram-primary/20 scale-105' : ''}`}
+            <div
+                className={`group relative h-full w-full min-w-0 cursor-pointer overflow-hidden rounded-container border transition-[border-color,background-color,box-shadow]
+                ${isSelected ? 'border-app-accent bg-app-selected ring-1 ring-app-accent' : 'border-transparent bg-app-surface/45 hover:border-app-border hover:bg-app-surface/70'}
+                ${isDragOver ? 'bg-app-selected ring-2 ring-app-accent' : ''}`}
                 style={height ? { height: `${height}px` } : { aspectRatio: '4/3' }}
             >
                 {/* Thumbnail or Icon */}
                 {thumbnail ? (
                     <div className="absolute inset-0">
+                        {!thumbnailReady && <Skeleton className="absolute inset-0 rounded-none" />}
                         <img
                             src={thumbnail}
                             alt={file.name}
-                            className="w-full h-full object-contain"
+                            loading="lazy"
+                            decoding="async"
+                            className={`h-full w-full object-cover transition-opacity duration-200 ${thumbnailReady ? 'opacity-100' : 'opacity-0'}`}
+                            onLoad={() => setThumbnailReady(true)}
+                            onError={() => {
+                                forgetThumbnail(file.id, activeFolderId);
+                                setThumbnail(null);
+                                setThumbnailReady(false);
+                            }}
                         />
                         {/* Gradient overlay for text readability */}
                         <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent" />
                     </div>
                 ) : (
-                    <div className="absolute inset-x-0 top-0 bottom-14 flex items-center justify-center p-4">
+                    <div className="file-card-icon absolute inset-x-0 bottom-12 top-0 flex items-center justify-center p-3">
                         {isFolder ? (
-                            <Folder className="w-12 h-12 text-telegram-primary max-h-full max-w-full shrink-0" />
+                            <Folder className="h-10 w-10 max-h-full max-w-full shrink-0 text-app-accent" strokeWidth={1.6} />
                         ) : thumbnailLoading && isImageFile(file.name) ? (
-                            <div className="w-8 h-8 border-2 border-telegram-primary/30 border-t-telegram-primary rounded-full animate-spin shrink-0" />
+                            <Skeleton className="h-10 w-10 shrink-0" />
                         ) : (
-                            <FileTypeIcon filename={file.name} size="lg" className="w-12 h-12 max-h-full max-w-full shrink-0" />
+                            <FileTypeIcon filename={file.name} size="lg" className="h-10 w-10 max-h-full max-w-full shrink-0" />
                         )}
                     </div>
                 )}
@@ -156,22 +167,23 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
                         e.stopPropagation();
                         if (onToggleSelection) onToggleSelection();
                     }}
-                    className={`absolute top-2 left-2 w-5 h-5 rounded-full border flex items-center justify-center transition-all z-10 cursor-pointer ${isSelected ? 'bg-telegram-primary border-telegram-primary' : 'border-white/50 bg-black/30 opacity-0 group-hover:opacity-100'}`}
+                    className={`absolute start-2 top-2 z-10 flex h-[22px] w-[22px] cursor-pointer items-center justify-center rounded-full border transition-opacity ${isSelected ? 'border-app-accent bg-app-accent text-app-accent-contrast' : 'border-white/55 bg-black/35 text-white opacity-0 group-hover:opacity-100 focus-visible:opacity-100'}`}
                 >
-                    {isSelected && <div className="w-1.5 h-1.5 bg-black rounded-full" />}
+                    {isSelected && <Check className="h-3 w-3" />}
                 </div>
 
                 {/* File info overlay at bottom */}
-                <div className={`absolute bottom-0 left-0 right-0 p-3 ${thumbnail ? 'text-white' : 'text-telegram-text'}`}>
-                    <h3 className="text-sm font-medium truncate w-full min-w-0" title={file.name}>{file.name}</h3>
-                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5 w-full min-w-0 overflow-hidden">
-                        <p className={`text-xs shrink-0 ${thumbnail ? 'text-white/70' : 'text-telegram-subtext'}`}>{file.sizeStr}</p>
+                <div className={`file-card-info absolute inset-x-0 bottom-0 z-[1] min-h-12 overflow-hidden px-2.5 py-2 ${thumbnail ? 'text-white' : 'text-app-text'}`}>
+                    <h3 className="block w-full min-w-0 truncate text-ui font-medium" title={file.name}>{file.name}</h3>
+                    <div className="file-card-metadata mt-0.5 flex h-4 w-full min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap">
+                        <p className={`shrink-0 text-metadata ${thumbnail ? 'text-white/70' : 'text-app-text-secondary'}`}>{file.sizeStr}</p>
+                        <EncryptionBadge state={file.encryption_state ?? 'plain'} className="shrink-0" />
                         <VideoMetaBadge metadata={videoMeta} isLoading={videoMetaLoading} />
                         {cachedQualities.length > 0 && (
-                            <span className="inline-flex items-center gap-0.5 shrink-0">
+                            <span className="inline-flex min-w-0 items-center gap-0.5 overflow-hidden">
                                 {cachedQualities.map(q => (
-                                    <span key={q} className="inline-flex items-center gap-0.5 text-[9px] font-medium text-emerald-400 bg-emerald-500/10 px-1 py-0.5 rounded">
-                                        <Check className="w-2.5 h-2.5" />
+                                    <span key={q} className="inline-flex items-center gap-0.5 rounded bg-emerald-500/10 px-1 py-0.5 text-badge font-medium text-emerald-400">
+                                        <Check className="h-2.5 w-2.5" />
                                         {q}
                                     </span>
                                 ))}
@@ -181,23 +193,23 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
                 </div>
 
                 {/* Quick actions on hover */}
-                <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1 z-10">
-                    <button onClick={(e) => { e.stopPropagation(); if (onPreview) onPreview() }} className="file-action-btn p-1 bg-black/50 rounded-full hover:bg-telegram-primary hover:text-white text-white/70" title="Preview">
-                        <Eye className="w-3 h-3" />
+                <div className="file-card-actions absolute end-2 top-2 z-10 flex max-w-[calc(100%-2.75rem)] gap-0.5 overflow-hidden rounded-control border border-white/10 bg-black/55 p-0.5 opacity-0 backdrop-blur-md transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                    <button onClick={(e) => { e.stopPropagation(); if (onPreview) onPreview() }} className="quiet-control file-action-btn flex h-7 w-7 items-center justify-center text-white/80 hover:text-white" title="Preview">
+                        <Eye className="h-3.5 w-3.5" />
                     </button>
-                    <button onClick={(e) => { e.stopPropagation(); onDownload() }} className="file-action-btn p-1 bg-black/50 rounded-full hover:bg-green-500 hover:text-white text-white/70" title="Download">
+                    <button onClick={(e) => { e.stopPropagation(); onDownload() }} className="quiet-control file-action-btn flex h-7 w-7 items-center justify-center text-white/80 hover:text-white" title="Download">
                         <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-3 h-3"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
                     </button>
                     {!isFolder && onShare && (
-                        <button onClick={(e) => { e.stopPropagation(); onShare() }} className="file-action-btn p-1 bg-black/50 rounded-full hover:bg-telegram-primary hover:text-white text-white/70" title="Share">
-                            <Link className="w-3 h-3" />
+                        <button onClick={(e) => { e.stopPropagation(); onShare() }} className="quiet-control file-action-btn flex h-7 w-7 items-center justify-center text-white/80 hover:text-white" title="Share">
+                            <Link className="h-3.5 w-3.5" />
                         </button>
                     )}
-                    <button onClick={(e) => { e.stopPropagation(); onDelete() }} className="file-action-btn p-1 bg-black/50 rounded-full hover:bg-red-500 hover:text-white text-white/70" title="Delete">
-                        <Trash2 className="w-3 h-3" />
+                    <button onClick={(e) => { e.stopPropagation(); onDelete() }} className="quiet-control file-action-btn flex h-7 w-7 items-center justify-center text-white/80 hover:bg-red-500/70 hover:text-white" title="Delete">
+                        <Trash2 className="h-3.5 w-3.5" />
                     </button>
                 </div>
-            </motion.div>
+            </div>
         </div>
     )
 }

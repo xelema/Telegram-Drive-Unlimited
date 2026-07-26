@@ -3,10 +3,11 @@ import { invoke } from '@tauri-apps/api/core';
 import { save, open } from '@tauri-apps/plugin-dialog';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
-import { DownloadItem, TelegramFile } from '../types';
+import { DownloadItem, FileEncryptionInfo, TelegramFile, VaultStatus } from '../types';
 import { isAndroidPlatform, showFileDialogFallback, pickWithFallback, sanitizeFilename } from '../utils';
 import { useSettings } from '../context/SettingsContext';
 import type { Store } from '@tauri-apps/plugin-store';
+import { useTranslation } from 'react-i18next';
 
 interface ProgressPayload {
     id: string;
@@ -17,6 +18,7 @@ interface ProgressPayload {
 }
 
 export function useFileDownload(store: Store | null) {
+    const { t } = useTranslation();
     const [downloadQueue, setDownloadQueue] = useState<DownloadItem[]>([]);
     const [initialized, setInitialized] = useState(false);
     const cancelledRef = useRef<Set<string>>(new Set());
@@ -45,7 +47,9 @@ export function useFileDownload(store: Store | null) {
         if (!store || initialized) return;
         store.get<DownloadItem[]>('downloadQueue').then((saved) => {
             if (saved && saved.length > 0) {
-                const pending = saved.filter(i => i.status === 'pending');
+                const pending = saved
+                    .filter(i => i.status === 'pending' || i.status === 'waiting_for_unlock')
+                    .map(i => ({ ...i, promptToken: undefined }));
                 if (pending.length > 0) {
                     setDownloadQueue(pending);
                     toast.info(`Restored ${pending.length} pending downloads`);
@@ -58,7 +62,9 @@ export function useFileDownload(store: Store | null) {
     // Save queue when it changes (only pending items)
     useEffect(() => {
         if (!store || !initialized) return;
-        const pending = downloadQueue.filter(i => i.status === 'pending');
+        const pending = downloadQueue
+            .filter(i => i.status === 'pending' || i.status === 'waiting_for_unlock')
+            .map(i => ({ ...i, promptToken: undefined }));
         store.set('downloadQueue', pending).then(() => store.save());
     }, [store, downloadQueue, initialized]);
 
@@ -78,6 +84,42 @@ export function useFileDownload(store: Store | null) {
         setDownloadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'downloading', progress: 0 } : i));
 
         try {
+            const encryptionInfo = await invoke<FileEncryptionInfo>('cmd_get_file_encryption_info', {
+                messageId: item.messageId,
+                folderId: item.folderId,
+            });
+            const protectionMode = encryptionInfo.protection_mode;
+            let promptToken = item.promptToken;
+            if (encryptionInfo.state !== 'plain') {
+                setDownloadQueue(q => q.map(i => i.id === item.id ? {
+                    ...i,
+                    status: 'decrypting',
+                    protectionMode,
+                } : i));
+            }
+            let needsPassphrase = protectionMode === 'passphrase';
+            if (protectionMode === 'vault_and_passphrase') {
+                const vault = await invoke<VaultStatus>('cmd_get_vault_status').catch(() => null);
+                needsPassphrase = !vault?.is_unlocked;
+            }
+            if (needsPassphrase && !promptToken) {
+                const passphrase = window.prompt(
+                    protectionMode === 'vault_and_passphrase'
+                        ? `${t('settings.vault_is_locked')}\n${t('settings.encryption_mode_passphrase')}`
+                        : t('settings.encryption_mode_passphrase'),
+                );
+                if (!passphrase) {
+                    setDownloadQueue(q => q.map(i => i.id === item.id ? {
+                        ...i,
+                        status: 'waiting_for_unlock',
+                        protectionMode,
+                        error: 'Encryption credentials required',
+                    } : i));
+                    return;
+                }
+                promptToken = await invoke<number>('cmd_stage_file_passphrase', { passphrase });
+            }
+
             // On Android, skip the save dialog entirely — the Rust backend handles saving
             // to public Downloads via MediaStore. Passing the original filename ensures the
             // correct file extension is preserved instead of getting a numeric document ID.
@@ -106,7 +148,8 @@ export function useFileDownload(store: Store | null) {
                     message_id: item.messageId,
                     save_path: savePath,
                     folder_id: item.folderId,
-                    transfer_id: item.id
+                    transfer_id: item.id,
+                    prompt_token: promptToken,
                 }
             });
 
@@ -121,6 +164,14 @@ export function useFileDownload(store: Store | null) {
                 const errMsg = String(e);
                 if (errMsg.includes('Transfer cancelled')) {
                     setDownloadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'cancelled' } : i));
+                } else if (errMsg.includes('VAULT_LOCKED') || errMsg.includes('KEY_REQUIRED')) {
+                    setDownloadQueue(q => q.map(i => i.id === item.id ? {
+                        ...i,
+                        status: 'waiting_for_unlock',
+                        promptToken: undefined,
+                        error: errMsg,
+                    } : i));
+                    toast.warning(t('settings.encryption_mode_passphrase'));
                 } else {
                     setDownloadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'error', error: errMsg } : i));
                     toast.error(`Download failed: ${item.filename}`);
@@ -231,7 +282,7 @@ export function useFileDownload(store: Store | null) {
 
     const retryItem = (id: string) => {
         setDownloadQueue(q => q.map(i =>
-            i.id === id && (i.status === 'error' || i.status === 'cancelled')
+            i.id === id && (i.status === 'error' || i.status === 'cancelled' || i.status === 'waiting_for_unlock')
                 ? { ...i, status: 'pending' as const, error: undefined, progress: undefined, downloadedBytes: undefined, totalBytes: undefined, speedBytesPerSec: undefined }
                 : i
         ));
