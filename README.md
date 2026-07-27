@@ -14,9 +14,6 @@ The application is built with Tauri, Rust, React, and TypeScript.
 
 </div>
 
-> [!IMPORTANT]
-> The current source tree targets **Telegram Drive 2.0.0**. The latest published desktop binary is currently **1.9.9**, so features documented as new in 2.0.0 require a source build until a 2.0.0 release is published. Encryption is an **opt-in alpha** feature and is not yet recommended for the only copy of important data.
-
 ## How Telegram Drive works
 
 Telegram Drive connects directly to Telegram with API credentials supplied by the user. Saved Messages acts as the home location, while Telegram channels created or selected by the app can be presented as folders. Files are still subject to Telegram account, service, and per-file limits; Telegram Drive does not provide literally unlimited storage.
