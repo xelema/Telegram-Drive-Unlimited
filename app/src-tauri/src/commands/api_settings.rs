@@ -99,6 +99,11 @@ pub async fn cmd_update_api_settings(
         return Err(format!("Port {} is used by the media streaming server", port));
     }
 
+    let webdav_settings = crate::commands::webdav_settings::load_settings(&app);
+    if enabled && webdav_settings.enabled && webdav_settings.port == port {
+        return Err(format!("Port {} is already used by WebDAV", port));
+    }
+
     let mut settings = load_settings(&app);
     let port_changed = settings.port != port;
     let enabled_changed = settings.enabled != enabled;

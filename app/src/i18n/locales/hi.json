@@ -338,7 +338,35 @@
     "encryption_capabilities": "एन्क्रिप्शन क्षमताएँ",
     "core_available": "कोर उपलब्ध",
     "vault_exists": "वॉल्ट मौजूद",
-    "max_file_size": "अधिकतम फ़ाइल आकार"
+    "max_file_size": "अधिकतम फ़ाइल आकार",
+    "tab_webdav": "WebDAV",
+    "webdav_title": "WebDAV access",
+    "webdav_description": "Open Telegram Drive in Finder, File Explorer, or another WebDAV client.",
+    "webdav_local_only": "The server listens only on this computer (127.0.0.1).",
+    "enable_webdav": "Enable WebDAV server",
+    "webdav_running": "Running on port {{port}}",
+    "webdav_stopped": "Server stopped",
+    "webdav_port_desc": "Listening port (1024–65535)",
+    "webdav_allow_changes": "Allow file changes",
+    "webdav_allow_changes_desc": "Allow WebDAV clients to upload, rename, move, and delete unencrypted files. Leave off for safer read-only access.",
+    "webdav_connection_link": "Connection link",
+    "webdav_link_configured": "Secure link configured. Regenerate it if you no longer have a copy.",
+    "webdav_link_unset": "Generate a private connection link before enabling the server.",
+    "webdav_copy_alert": "Copy now — this private link will not be shown again",
+    "webdav_link_generated": "WebDAV connection link generated",
+    "webdav_generate_failed": "Could not generate WebDAV link: {{error}}",
+    "webdav_update_failed": "Could not update WebDAV settings: {{error}}",
+    "webdav_port_updated": "WebDAV port updated to {{port}}",
+    "webdav_started": "WebDAV server enabled",
+    "webdav_stopped_toast": "WebDAV server disabled",
+    "webdav_read_only": "Current access: read-only",
+    "webdav_changes_enabled": "Current access: file changes are allowed",
+    "webdav_last_error": "Server error",
+    "webdav_mobile_unavailable": "WebDAV hosting is available in the macOS, Windows, and Linux desktop apps.",
+    "webdav_regenerate_title": "Regenerate WebDAV link?",
+    "webdav_regenerate_desc": "The current connection link will stop working immediately. You will need to reconnect every WebDAV client with the new link.",
+    "webdav_enable_changes_title": "Allow WebDAV file changes?",
+    "webdav_enable_changes_confirm": "Connected WebDAV clients will be able to upload, rename, move, and delete unencrypted files. Encrypted files remain protected."
   },
   "files": {
     "download": "डाउनलोड",
@@ -383,7 +411,13 @@
     "url_must_start": "URL http:// या https:// से शुरू होना चाहिए",
     "transfers_queue": "स्थानांतरण कतार",
     "transfers_queue_desc": "डाउनलोड और अपलोड पृष्ठभूमि में सुरक्षित रूप से कतारबद्ध हैं।",
-    "move_to_group": "Move to Group"
+    "move_to_group": "Move to Group",
+    "drop_to_upload": "{{folder}} में अपलोड करने के लिए छोड़ें",
+    "drop_hint_one": "{{count}} फ़ाइल को कतार में जोड़ने के लिए छोड़ें",
+    "drop_hint_other": "{{count}} फ़ाइलों को कतार में जोड़ने के लिए छोड़ें",
+    "drop_not_available": "खींचकर छोड़ना उपलब्ध नहीं है",
+    "drop_browser_help": "फ़ाइलें छोड़ने के लिए डेस्कटॉप ऐप का उपयोग करें या अपलोड संवाद खोलें।",
+    "open_upload_dialog": "अपलोड संवाद खोलें"
   },
   "archive": {
     "archive_viewer": "संग्रह व्यूअर",
@@ -409,7 +443,9 @@
     "moved_success_one": "{{count}} फ़ाइल सफलतापूर्वक स्थानांतरित की गई",
     "moved_success_other": "{{count}} फ़ाइलें सफलतापूर्वक स्थानांतरित की गईं",
     "telegram_link_copied": "टेलीग्राम लिंक कॉपी किया गया",
-    "copy_link_failed": "लिंक कॉपी करने में विफल"
+    "copy_link_failed": "लिंक कॉपी करने में विफल",
+    "drop_rejected_one": "छोड़ा गया {{count}} आइटम छोड़ दिया गया। सामान्य फ़ाइलें छोड़ें या फ़ोल्डर अपलोड करें का उपयोग करें।",
+    "drop_rejected_other": "छोड़े गए {{count}} आइटम छोड़ दिए गए। सामान्य फ़ाइलें छोड़ें या फ़ोल्डर अपलोड करें का उपयोग करें।"
   },
   "share": {
     "title": "Share File",

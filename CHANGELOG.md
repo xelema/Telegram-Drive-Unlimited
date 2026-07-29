@@ -1,11 +1,28 @@
-## [2.1.0] - 2026-07-28
+## [2.2.0] - 2026-07-29
+
+### WebDAV Access
+
+- Added a local WebDAV server for browsing Telegram Drive in macOS Finder, Windows File Explorer, and Linux WebDAV clients.
+- Added a WebDAV tab in Settings with server status, custom port selection, read-only-by-default access, and optional write access.
+- Added private connection links with secure token regeneration.
+- Supports Saved Messages and Telegram Drive folders, directory browsing, range downloads, uploads, rename, move, copy, and delete for unencrypted files when write access is enabled.
+- Added port conflict checks, staged upload cleanup, client-lock support, and macOS Finder compatibility fixes.
+- Added WebDAV setup and troubleshooting documentation.
+
+### Desktop File Handling & Interface
+
+- Added external file drag-and-drop uploads from the desktop or file manager into the currently open folder.
+- Moved WebDAV in Settings to sit between VPN and Encryption.
+- Improved spacing and hit areas in folder action menus and the Grid/List layout picker.
 
 ### Italian Language Support & Build Fixes
 
-- **Localization**
-  - Added complete Italian (`it`) language support across all application surfaces, settings, dialogs, and error messages.
-- **Build & Quality**
-  - Resolved build warnings and runtime layout/formatting issues.
+- Added complete Italian (`it`) language support across all application surfaces, settings, dialogs, and error messages.
+- Resolved build warnings and runtime layout/formatting issues.
+
+### Verification
+
+- Verified production frontend build, localization validation, Rust compilation, and WebDAV regression tests.
 
 ## [2.0.0] - 2026-07-26
 

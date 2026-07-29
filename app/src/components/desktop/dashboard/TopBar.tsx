@@ -206,7 +206,7 @@ export function TopBar({
                                         <button
                                             type="button"
                                             onClick={() => setViewMode('grid')}
-                                            className={`quiet-control flex h-8 items-center justify-center gap-2 px-2 text-ui font-medium ${viewMode === 'grid' ? 'bg-app-selected text-app-accent' : 'text-app-text-secondary hover:text-app-text'}`}
+                                            className={`quiet-control flex h-10 items-center justify-center gap-2 px-3 text-ui font-medium ${viewMode === 'grid' ? 'bg-app-selected text-app-accent' : 'text-app-text-secondary hover:text-app-text'}`}
                                         >
                                             <LayoutGrid className="h-3.5 w-3.5" />
                                             {t('files.switch_grid')}
@@ -214,7 +214,7 @@ export function TopBar({
                                         <button
                                             type="button"
                                             onClick={() => setViewMode('list')}
-                                            className={`quiet-control flex h-8 items-center justify-center gap-2 px-2 text-ui font-medium ${viewMode === 'list' ? 'bg-app-selected text-app-accent' : 'text-app-text-secondary hover:text-app-text'}`}
+                                            className={`quiet-control flex h-10 items-center justify-center gap-2 px-3 text-ui font-medium ${viewMode === 'list' ? 'bg-app-selected text-app-accent' : 'text-app-text-secondary hover:text-app-text'}`}
                                         >
                                             <List className="h-3.5 w-3.5" />
                                             {t('files.switch_list')}

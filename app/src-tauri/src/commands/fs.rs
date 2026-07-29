@@ -21,6 +21,7 @@ use sha2::{Sha256, Digest};
 use sqlite;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::OnceLock;
 use std::sync::Mutex;
 use tokio::sync::oneshot;
@@ -1067,6 +1068,99 @@ pub async fn cmd_cancel_transfer(
         let _ = tx.send(());
     }
     Ok(true)
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct DroppedPathRejection {
+    path: String,
+    reason: &'static str,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct DroppedPathValidation {
+    accepted: Vec<String>,
+    rejected: Vec<DroppedPathRejection>,
+}
+
+async fn validate_dropped_paths(paths: Vec<String>) -> DroppedPathValidation {
+    let mut accepted = Vec::new();
+    let mut rejected = Vec::new();
+    let mut seen = HashSet::new();
+
+    for path in paths {
+        if path.trim().is_empty() || !seen.insert(path.clone()) {
+            continue;
+        }
+
+        let metadata = match tokio::fs::metadata(&path).await {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                let reason = if error.kind() == std::io::ErrorKind::NotFound {
+                    "missing"
+                } else {
+                    "unreadable"
+                };
+                rejected.push(DroppedPathRejection { path, reason });
+                continue;
+            }
+        };
+
+        if metadata.is_dir() {
+            rejected.push(DroppedPathRejection { path, reason: "directory" });
+            continue;
+        }
+        if !metadata.is_file() {
+            rejected.push(DroppedPathRejection { path, reason: "unsupported" });
+            continue;
+        }
+
+        match tokio::fs::File::open(&path).await {
+            Ok(_) => accepted.push(path),
+            Err(_) => rejected.push(DroppedPathRejection { path, reason: "unreadable" }),
+        }
+    }
+
+    DroppedPathValidation { accepted, rejected }
+}
+
+#[tauri::command]
+pub async fn cmd_validate_dropped_paths(paths: Vec<String>) -> DroppedPathValidation {
+    validate_dropped_paths(paths).await
+}
+
+#[cfg(test)]
+mod dropped_path_tests {
+    use super::validate_dropped_paths;
+
+    #[tokio::test]
+    async fn accepts_files_and_rejects_directories_missing_paths_and_duplicates() {
+        let root = std::env::temp_dir().join(format!(
+            "telegram-drive-drop-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after unix epoch")
+                .as_nanos(),
+        ));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let file = root.join("upload.txt");
+        std::fs::write(&file, b"upload").expect("test file should be created");
+        let missing = root.join("missing.txt");
+
+        let result = validate_dropped_paths(vec![
+            file.to_string_lossy().into_owned(),
+            file.to_string_lossy().into_owned(),
+            root.to_string_lossy().into_owned(),
+            missing.to_string_lossy().into_owned(),
+        ]).await;
+
+        assert_eq!(result.accepted, vec![file.to_string_lossy().into_owned()]);
+        assert_eq!(result.rejected.len(), 2);
+        assert_eq!(result.rejected[0].reason, "directory");
+        assert_eq!(result.rejected[1].reason, "missing");
+
+        std::fs::remove_dir_all(&root).expect("test directory should be removed");
+    }
 }
 
 #[cfg_attr(not(target_os = "android"), allow(unused_mut))]

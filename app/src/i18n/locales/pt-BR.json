@@ -338,7 +338,35 @@
     "encryption_capabilities": "Recursos de criptografia",
     "core_available": "Núcleo disponível",
     "vault_exists": "Cofre existente",
-    "max_file_size": "Tamanho máximo do arquivo"
+    "max_file_size": "Tamanho máximo do arquivo",
+    "tab_webdav": "WebDAV",
+    "webdav_title": "WebDAV access",
+    "webdav_description": "Open Telegram Drive in Finder, File Explorer, or another WebDAV client.",
+    "webdav_local_only": "The server listens only on this computer (127.0.0.1).",
+    "enable_webdav": "Enable WebDAV server",
+    "webdav_running": "Running on port {{port}}",
+    "webdav_stopped": "Server stopped",
+    "webdav_port_desc": "Listening port (1024–65535)",
+    "webdav_allow_changes": "Allow file changes",
+    "webdav_allow_changes_desc": "Allow WebDAV clients to upload, rename, move, and delete unencrypted files. Leave off for safer read-only access.",
+    "webdav_connection_link": "Connection link",
+    "webdav_link_configured": "Secure link configured. Regenerate it if you no longer have a copy.",
+    "webdav_link_unset": "Generate a private connection link before enabling the server.",
+    "webdav_copy_alert": "Copy now — this private link will not be shown again",
+    "webdav_link_generated": "WebDAV connection link generated",
+    "webdav_generate_failed": "Could not generate WebDAV link: {{error}}",
+    "webdav_update_failed": "Could not update WebDAV settings: {{error}}",
+    "webdav_port_updated": "WebDAV port updated to {{port}}",
+    "webdav_started": "WebDAV server enabled",
+    "webdav_stopped_toast": "WebDAV server disabled",
+    "webdav_read_only": "Current access: read-only",
+    "webdav_changes_enabled": "Current access: file changes are allowed",
+    "webdav_last_error": "Server error",
+    "webdav_mobile_unavailable": "WebDAV hosting is available in the macOS, Windows, and Linux desktop apps.",
+    "webdav_regenerate_title": "Regenerate WebDAV link?",
+    "webdav_regenerate_desc": "The current connection link will stop working immediately. You will need to reconnect every WebDAV client with the new link.",
+    "webdav_enable_changes_title": "Allow WebDAV file changes?",
+    "webdav_enable_changes_confirm": "Connected WebDAV clients will be able to upload, rename, move, and delete unencrypted files. Encrypted files remain protected."
   },
   "files": {
     "download": "Baixar",
@@ -383,7 +411,13 @@
     "url_must_start": "A URL deve começar com http:// ou https://",
     "transfers_queue": "Fila de Transferências",
     "transfers_queue_desc": "Downloads e uploads são gerenciados com segurança em segundo plano.",
-    "move_to_group": "Move to Group"
+    "move_to_group": "Move to Group",
+    "drop_to_upload": "Solte para enviar para {{folder}}",
+    "drop_hint_one": "Solte para colocar {{count}} arquivo na fila",
+    "drop_hint_other": "Solte para colocar {{count}} arquivos na fila",
+    "drop_not_available": "Arrastar e soltar não está disponível",
+    "drop_browser_help": "Use o aplicativo para desktop para soltar arquivos ou abra a janela de envio.",
+    "open_upload_dialog": "Abrir janela de envio"
   },
   "archive": {
     "archive_viewer": "Visualizador de arquivos compactados",
@@ -409,7 +443,9 @@
     "moved_success_one": "{{count}} arquivo movido com sucesso",
     "moved_success_other": "{{count}} arquivos movidos com sucesso",
     "telegram_link_copied": "Link do Telegram copiado",
-    "copy_link_failed": "Falha ao copiar link"
+    "copy_link_failed": "Falha ao copiar link",
+    "drop_rejected_one": "{{count}} item solto foi ignorado. Solte arquivos comuns ou use Enviar pasta.",
+    "drop_rejected_other": "{{count}} itens soltos foram ignorados. Solte arquivos comuns ou use Enviar pasta."
   },
   "share": {
     "title": "Share File",

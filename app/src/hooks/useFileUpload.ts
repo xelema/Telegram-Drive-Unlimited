@@ -4,7 +4,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { QueueItem, UploadProtectionIntent } from '../types';
+import { DropUploadResult, DroppedPathValidation, QueueItem, UploadProtectionIntent } from '../types';
 import { isAndroidPlatform, showFileDialogFallback, pickWithFallback } from '../utils';
 import { useSettings } from '../context/SettingsContext';
 import type { Store } from '@tauri-apps/plugin-store';
@@ -259,19 +259,23 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
     };
 
     /** Queues a set of file paths with an explicit, non-secret protection intent. */
-    const queueFiles = async (paths: string[]) => {
-        if (!paths || paths.length === 0) return;
+    const queueFiles = async (
+        paths: string[],
+        destinationFolderId: number | null = activeFolderId,
+    ): Promise<number> => {
+        if (!paths || paths.length === 0) return 0;
         const protection = await stageProtectionForFiles(paths.length);
-        if (!protection) return;
+        if (!protection) return 0;
         const newItems: QueueItem[] = paths.map((path: string, index) => ({
             id: Math.random().toString(36).substr(2, 9),
             path,
-            folderId: activeFolderId,
+            folderId: destinationFolderId,
             status: 'pending' as const,
             protection: protection[index],
         }));
         setUploadQueue(prev => [...prev, ...newItems]);
-        toast.info(`Queued ${paths.length} file${paths.length !== 1 ? 's' : ''} for upload`);
+        toast.info(t('notifications.uploads_queued', { count: paths.length }));
+        return paths.length;
     };
 
     const handleManualUpload = async () => {
@@ -296,9 +300,29 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
     };
 
     /** Queue files dropped from the OS file manager (drag-and-drop upload) */
-    const handleDropUpload = (paths: string[]) => {
-        if (!paths || paths.length === 0) return;
-        void queueFiles(paths);
+    const handleDropUpload = async (paths: string[]): Promise<DropUploadResult> => {
+        if (!paths || paths.length === 0) return { queued: 0, rejected: [] };
+
+        // Snapshot the destination before validation or an encryption prompt can yield.
+        const destinationFolderId = activeFolderId;
+        let validation: DroppedPathValidation;
+        try {
+            validation = await invoke<DroppedPathValidation>('cmd_validate_dropped_paths', { paths });
+        } catch (error) {
+            toast.error(t('settings.failed_prefix', { error: String(error) }));
+            return { queued: 0, rejected: [] };
+        }
+
+        if (validation.rejected.length > 0) {
+            toast.warning(t('notifications.drop_rejected', { count: validation.rejected.length }));
+        }
+
+        const queued = await queueFiles(validation.accepted, destinationFolderId);
+        return {
+            queued,
+            rejected: validation.rejected,
+            cancelled: validation.accepted.length > 0 && queued === 0,
+        };
     };
 
     const handleFolderUpload = async () => {

@@ -1,210 +1,193 @@
-import { useState, useEffect, useRef } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Upload, CheckCircle2 } from 'lucide-react';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { useEffect, useRef, useState } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
+import { Upload } from 'lucide-react';
+import { isTauri } from '@tauri-apps/api/core';
+import { getCurrentWebview } from '@tauri-apps/api/webview';
+import { useTranslation } from 'react-i18next';
+
+import type { DropUploadResult } from '../../../types';
 import { DragDropOverlay } from './DragDropOverlay';
 
+interface ExternalDropBlockerProps {
+    currentFolderName: string;
+    enabled?: boolean;
+    onFilesDropped: (paths: string[]) => Promise<DropUploadResult> | DropUploadResult;
+    onUploadClick?: () => void;
+}
+
 /**
- * ExternalDropBlocker - Intercepts external file drops and triggers uploads directly.
- * 
- * With Tauri's dragDropEnabled: false, we handle DOM drag events ourselves.
- * On drop, file paths are extracted from File objects (Tauri webviews expose .path)
- * and passed to the onFilesDropped callback for direct upload queueing.
- * 
- * Falls back to showing the Upload dialog prompt only if file paths cannot be extracted.
+ * Handles files dragged from the operating-system file manager. Tauri's native
+ * event is the source of truth because browser File objects do not expose
+ * portable absolute paths.
  */
-export function ExternalDropBlocker({ onFilesDropped, onUploadClick }: { onFilesDropped?: (paths: string[]) => void; onUploadClick?: () => void }) {
+export function ExternalDropBlocker({
+    currentFolderName,
+    enabled = true,
+    onFilesDropped,
+    onUploadClick,
+}: ExternalDropBlockerProps) {
+    const { t } = useTranslation();
     const [isDragging, setIsDragging] = useState(false);
-    const [droppedCount, setDroppedCount] = useState<number | null>(null);
+    const [detectedCount, setDetectedCount] = useState(0);
     const [showFallback, setShowFallback] = useState(false);
-    
-    // Use refs for values accessed inside stable event listeners
     const onFilesDroppedRef = useRef(onFilesDropped);
+    const lastDropRef = useRef<{ signature: string; timestamp: number } | null>(null);
+
     onFilesDroppedRef.current = onFilesDropped;
 
-    // Listen for file-dropped events emitted from Rust on_navigation handler.
-    // This catches file drops on Linux window managers that bypass DOM drag events
-    // and instead pass files as application-level file-open events.
     useEffect(() => {
-        let unlisten: UnlistenFn | undefined;
-        let messageTimeout: ReturnType<typeof setTimeout>;
-
-        (async () => {
-            try {
-                unlisten = await listen<string>('file-dropped', (event) => {
-                    const path = event.payload;
-                    if (path && typeof path === 'string' && path.length > 0) {
-                        onFilesDroppedRef.current?.([path]);
-                        // Show the same visual confirmation as DOM-based drops
-                        clearTimeout(messageTimeout);
-                        setDroppedCount(1);
-                        messageTimeout = setTimeout(() => setDroppedCount(null), 2000);
-                    }
-                });
-            } catch (e) {
-                // listen() throws only if the event name is invalid — shouldn't happen
-                console.warn('[ExternalDropBlocker] Failed to listen for file-dropped event:', e);
-            }
-        })();
-
-        return () => {
-            if (unlisten) unlisten();
-            clearTimeout(messageTimeout);
-        };
-    }, []);
-
-    useEffect(() => {
-        let dragEnterCount = 0;
-        let hideTimeout: ReturnType<typeof setTimeout>;
-        let messageTimeout: ReturnType<typeof setTimeout>;
-
-        const handleDragEnter = (e: DragEvent) => {
-            if (e.dataTransfer?.types.includes('Files')) {
-                e.preventDefault();
-                e.stopPropagation();
-                dragEnterCount++;
-                setIsDragging(true);
-                clearTimeout(hideTimeout);
-            }
-        };
-
-        const handleDragOver = (e: DragEvent) => {
-            if (e.dataTransfer?.types.includes('Files')) {
-                e.preventDefault();
-                e.stopPropagation();
-                e.dataTransfer.dropEffect = 'copy';
-                clearTimeout(hideTimeout);
-            }
-        };
-
-        const handleDragLeave = (e: DragEvent) => {
-            if (e.dataTransfer?.types.includes('Files')) {
-                dragEnterCount--;
-                // Only hide when truly leaving the window
-                if (dragEnterCount <= 0 &&
-                    (e.clientX <= 0 || e.clientY <= 0 ||
-                     e.clientX >= window.innerWidth || e.clientY >= window.innerHeight)) {
-                    dragEnterCount = 0;
-                    hideTimeout = setTimeout(() => {
-                        setIsDragging(false);
-                    }, 150);
-                }
-            }
-        };
-
-        const handleDrop = (e: DragEvent) => {
-            if (!e.dataTransfer?.types.includes('Files')) return;
-
-            e.preventDefault();
-            e.stopPropagation();
-            dragEnterCount = 0;
+        if (!enabled) {
             setIsDragging(false);
-            clearTimeout(hideTimeout);
-            clearTimeout(messageTimeout);
+            setDetectedCount(0);
+            return;
+        }
 
-            const files = e.dataTransfer.files;
-            const paths: string[] = [];
+        // Browser-only development cannot turn dropped File objects into paths
+        // the Rust upload command can read. Preserve the gesture and direct the
+        // developer to the normal file picker instead.
+        if (!isTauri()) {
+            const handleDragEnter = (event: DragEvent) => {
+                if (!event.dataTransfer?.types.includes('Files')) return;
+                event.preventDefault();
+                setDetectedCount(event.dataTransfer.items.length || event.dataTransfer.files.length);
+                setIsDragging(true);
+            };
+            const handleDragOver = (event: DragEvent) => {
+                if (!event.dataTransfer?.types.includes('Files')) return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = 'copy';
+            };
+            const handleDragLeave = (event: DragEvent) => {
+                if (event.relatedTarget !== null) return;
+                setIsDragging(false);
+                setDetectedCount(0);
+            };
+            const handleDrop = (event: DragEvent) => {
+                if (!event.dataTransfer?.types.includes('Files')) return;
+                event.preventDefault();
+                setIsDragging(false);
+                setDetectedCount(0);
+                setShowFallback(true);
+            };
 
-            for (let i = 0; i < files.length; i++) {
-                // In Tauri webviews, File objects expose a non-standard .path property
-                const path = (files[i] as any).path as string | undefined;
-                if (path && typeof path === 'string' && path.length > 0) {
-                    paths.push(path);
+            document.addEventListener('dragenter', handleDragEnter, true);
+            document.addEventListener('dragover', handleDragOver, true);
+            document.addEventListener('dragleave', handleDragLeave, true);
+            document.addEventListener('drop', handleDrop, true);
+            return () => {
+                document.removeEventListener('dragenter', handleDragEnter, true);
+                document.removeEventListener('dragover', handleDragOver, true);
+                document.removeEventListener('dragleave', handleDragLeave, true);
+                document.removeEventListener('drop', handleDrop, true);
+            };
+        }
+
+        let disposed = false;
+        let unlisten: (() => void) | undefined;
+
+        getCurrentWebview().onDragDropEvent(async (event) => {
+            if (disposed) return;
+
+            switch (event.payload.type) {
+                case 'enter':
+                    setDetectedCount(event.payload.paths.length);
+                    setIsDragging(event.payload.paths.length > 0);
+                    break;
+                case 'over':
+                    break;
+                case 'leave':
+                    setIsDragging(false);
+                    setDetectedCount(0);
+                    break;
+                case 'drop': {
+                    setIsDragging(false);
+                    setDetectedCount(0);
+                    const paths = event.payload.paths.filter(path => path.trim().length > 0);
+                    if (paths.length === 0) return;
+
+                    // Guard against duplicate native delivery during webview/window
+                    // transitions without suppressing a later intentional re-drop.
+                    const signature = [...paths].sort().join('\u0000');
+                    const now = Date.now();
+                    const lastDrop = lastDropRef.current;
+                    if (lastDrop && lastDrop.signature === signature && now - lastDrop.timestamp < 750) {
+                        return;
+                    }
+                    lastDropRef.current = { signature, timestamp: now };
+
+                    try {
+                        await onFilesDroppedRef.current(paths);
+                    } catch (error) {
+                        console.error('[ExternalDropBlocker] Failed to queue dropped files:', error);
+                    }
+                    break;
                 }
             }
-
-            if (paths.length > 0 && onFilesDroppedRef.current) {
-                onFilesDroppedRef.current(paths);
-                setDroppedCount(paths.length);
-                messageTimeout = setTimeout(() => setDroppedCount(null), 2000);
-            } else {
-                // Fallback: file paths not available (e.g., non-Tauri browser during dev)
-                setShowFallback(true);
-                messageTimeout = setTimeout(() => setShowFallback(false), 4000);
-            }
-        };
-
-        // Capture phase ensures we intercept before the webview's default handler
-        document.addEventListener('dragenter', handleDragEnter, true);
-        document.addEventListener('dragover', handleDragOver, true);
-        document.addEventListener('dragleave', handleDragLeave, true);
-        document.addEventListener('drop', handleDrop, true);
+        }).then(listener => {
+            if (disposed) listener();
+            else unlisten = listener;
+        }).catch(error => {
+            console.error('[ExternalDropBlocker] Failed to register native drop listener:', error);
+            if (!disposed) setShowFallback(true);
+        });
 
         return () => {
-            document.removeEventListener('dragenter', handleDragEnter, true);
-            document.removeEventListener('dragover', handleDragOver, true);
-            document.removeEventListener('dragleave', handleDragLeave, true);
-            document.removeEventListener('drop', handleDrop, true);
-            clearTimeout(hideTimeout);
-            clearTimeout(messageTimeout);
+            disposed = true;
+            unlisten?.();
         };
-    }, []);
+    }, [enabled]);
 
     return (
         <>
-            {/* Drag overlay - shown while files are being dragged over the window */}
             <AnimatePresence>
-                {isDragging && <DragDropOverlay />}
-            </AnimatePresence>
-
-            {/* Brief success confirmation after drop */}
-            <AnimatePresence>
-                {droppedCount !== null && (
-                    <motion.div
-                        initial={{ opacity: 0, y: 20 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: 20 }}
-                        className="fixed bottom-20 right-4 z-[110] pointer-events-none"
-                    >
-                        <div className="glass bg-telegram-surface border border-green-500/30 rounded-xl p-4 flex items-center gap-3 shadow-xl">
-                            <CheckCircle2 className="w-5 h-5 text-green-400 flex-shrink-0" />
-                            <span className="text-sm text-telegram-text">
-                                Queued {droppedCount} file{droppedCount !== 1 ? 's' : ''} for upload
-                            </span>
-                        </div>
-                    </motion.div>
+                {isDragging && (
+                    <DragDropOverlay
+                        currentFolderName={currentFolderName}
+                        fileCount={detectedCount}
+                    />
                 )}
             </AnimatePresence>
 
-            {/* Fallback message when file paths cannot be extracted */}
             <AnimatePresence>
                 {showFallback && (
                     <motion.div
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         exit={{ opacity: 0 }}
-                        className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center pointer-events-none"
+                        className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+                        onClick={() => setShowFallback(false)}
                     >
-                        <div className="glass bg-telegram-surface border border-telegram-border rounded-2xl p-8 max-w-md mx-4 shadow-2xl pointer-events-auto">
-                            <div className="flex flex-col items-center text-center gap-4">
-                                <div className="w-16 h-16 rounded-full bg-telegram-primary/20 flex items-center justify-center">
-                                    <Upload className="w-8 h-8 text-telegram-primary" />
+                        <div
+                            className="glass max-w-md rounded-2xl border border-telegram-border bg-telegram-surface p-8 shadow-2xl"
+                            onClick={event => event.stopPropagation()}
+                        >
+                            <div className="flex flex-col items-center gap-4 text-center">
+                                <div className="flex h-16 w-16 items-center justify-center rounded-full bg-telegram-primary/20">
+                                    <Upload className="h-8 w-8 text-telegram-primary" />
                                 </div>
                                 <div>
-                                    <h3 className="text-lg font-semibold text-telegram-text mb-2">
-                                        Drag-and-drop not available
+                                    <h3 className="mb-2 text-lg font-semibold text-telegram-text">
+                                        {t('files.drop_not_available')}
                                     </h3>
-                                    <p className="text-telegram-subtext text-sm">
-                                        File paths could not be read from the drag event.
-                                        <br />
-                                        Use the button below or the <strong>Upload File</strong> button in the toolbar.
+                                    <p className="text-sm text-telegram-subtext">
+                                        {t('files.drop_browser_help')}
                                     </p>
                                 </div>
                                 <div className="flex gap-3">
                                     <button
                                         onClick={() => setShowFallback(false)}
-                                        className="mt-2 px-4 py-2 bg-telegram-hover text-telegram-text rounded-lg text-sm hover:bg-telegram-border transition-colors"
+                                        className="quiet-control px-4 py-2 text-sm text-telegram-text"
                                     >
-                                        Dismiss
+                                        {t('common.cancel')}
                                     </button>
                                     <button
                                         onClick={() => {
                                             setShowFallback(false);
                                             onUploadClick?.();
                                         }}
-                                        className="mt-2 px-6 py-2 bg-telegram-primary text-white rounded-lg font-medium hover:bg-telegram-primary/90 transition-colors"
+                                        className="rounded-lg bg-telegram-primary px-6 py-2 text-sm font-medium text-white hover:bg-telegram-primary/90"
                                     >
-                                        Open Upload Dialog
+                                        {t('files.open_upload_dialog')}
                                     </button>
                                 </div>
                             </div>

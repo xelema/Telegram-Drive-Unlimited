@@ -4,6 +4,19 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
+import { useTranslation } from 'react-i18next';
+import {
+    closestCenter,
+    DndContext,
+    DragEndEvent,
+    DragOverlay,
+    DragStartEvent,
+    KeyboardSensor,
+    PointerSensor,
+    useSensor,
+    useSensors,
+} from '@dnd-kit/core';
+import { arrayMove, sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 
 import { TelegramFile, BandwidthStats, ShareInfo } from '../../types';
 import { formatBytes, isMediaFile, isPdfFile, isArchiveFile, nativeShareOrCopy, copyToClipboard } from '../../utils';
@@ -25,7 +38,7 @@ import { RenameFolderModal } from './dashboard/RenameFolderModal';
 import { RenameFileModal } from './dashboard/RenameFileModal';
 import { DesktopAdBanner } from './dashboard/DesktopAdBanner';
 import { RemoteUploadModal } from './dashboard/RemoteUploadModal';
-import { Link, Copy, Check, X, Loader2, Share2 } from 'lucide-react';
+import { Files, Link, Copy, Check, X, Loader2, Share2 } from 'lucide-react';
 
 // Hooks
 import { useTelegramConnection } from '../../hooks/useTelegramConnection';
@@ -38,6 +51,7 @@ import { useConfirm } from '../../context/ConfirmContext';
 
 export function Dashboard({ onLogout }: { onLogout: () => void }) {
     const queryClient = useQueryClient();
+    const { t } = useTranslation();
 
 
     const {
@@ -64,11 +78,11 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     const [cardScale, setCardScale] = useState(1.0);
     const [sortField, setSortField] = useState<SortField>('name');
     const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
-    const internalDragRef = useRef<number[] | null>(null);
-
-    const setInternalDragIds = (ids: number[] | null) => {
-        internalDragRef.current = ids;
-    };
+    const [internalDrag, setInternalDrag] = useState<{ fileIds: number[]; label: string } | null>(null);
+    const dragSensors = useSensors(
+        useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+        useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+    );
 
     const handleSortChange = (field: SortField) => {
         if (field === sortField) {
@@ -470,25 +484,8 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
         };
     }, [previewContextFiles, previewFile, playingFile, pdfFile, archiveViewFile]);
 
-    const handleDropOnFolder = async (e: React.DragEvent, targetFolderId: number | null) => {
-        e.preventDefault();
-        e.stopPropagation();
-
-        // Read multi-ID drag data (new format) or fall back to single-ID (legacy)
-        let idsToMove: number[] | null = null;
-        const rawIds = e.dataTransfer.getData("application/x-telegram-file-ids");
-        if (rawIds) {
-            try { idsToMove = JSON.parse(rawIds); } catch { /* ignore parse errors */ }
-        }
-        if (!idsToMove || idsToMove.length === 0) {
-            const singleId = e.dataTransfer.getData("application/x-telegram-file-id");
-            if (singleId) idsToMove = [parseInt(singleId)];
-        }
-        if (!idsToMove || idsToMove.length === 0) {
-            idsToMove = internalDragRef.current;
-        }
-        if (!idsToMove || idsToMove.length === 0) return;
-
+    const handleMoveFilesToFolder = async (idsToMove: number[], targetFolderId: number | null) => {
+        if (idsToMove.length === 0) return;
         if (activeFolderId === targetFolderId) {
             toast.info('File is already in this folder');
             return;
@@ -519,50 +516,99 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
             queryClient.invalidateQueries({ queryKey: ['files', activeFolderId] });
             setSelectedIds([]);
             toast.success(`Moved ${idsToMove.length} file(s).`);
-            setInternalDragIds(null);
         } catch {
             toast.error(`Failed to move file(s).`);
         }
-    }
+    };
+
+    const handleInternalDragStart = (event: DragStartEvent) => {
+        if (event.active.data.current?.kind !== 'telegram-files') return;
+        const fileIds = event.active.data.current.fileIds;
+        if (!Array.isArray(fileIds) || fileIds.length === 0) return;
+        setInternalDrag({
+            fileIds: fileIds.filter((id): id is number => typeof id === 'number'),
+            label: String(event.active.data.current.label || ''),
+        });
+    };
+
+    const handleInternalDragEnd = async (event: DragEndEvent) => {
+        const { active, over } = event;
+        setInternalDrag(null);
+        if (!over) return;
+
+        const activeKind = active.data.current?.kind;
+        const overKind = over.data.current?.kind;
+
+        if (activeKind === 'telegram-files') {
+            const fileIds = active.data.current?.fileIds;
+            const targetFolderId = over.data.current?.folderId;
+            const isFolderTarget = overKind === 'sidebar-folder' || overKind === 'content-folder';
+            if (isFolderTarget && Array.isArray(fileIds) && (targetFolderId === null || typeof targetFolderId === 'number')) {
+                await handleMoveFilesToFolder(
+                    fileIds.filter((id): id is number => typeof id === 'number'),
+                    targetFolderId,
+                );
+            }
+            return;
+        }
+
+        if (activeKind === 'sidebar-folder') {
+            const draggedFolderId = active.data.current?.folderId;
+            if (typeof draggedFolderId !== 'number') return;
+
+            if (overKind === 'sidebar-group') {
+                const groupId = over.data.current?.groupId;
+                await handleAssignFolderToGroup(draggedFolderId, typeof groupId === 'number' ? groupId : null);
+                return;
+            }
+
+            if (overKind === 'sidebar-folder') {
+                const overFolderId = over.data.current?.folderId;
+                if (typeof overFolderId !== 'number' || draggedFolderId === overFolderId) return;
+                const oldIndex = folders.findIndex(folder => folder.id === draggedFolderId);
+                const newIndex = folders.findIndex(folder => folder.id === overFolderId);
+                if (oldIndex !== -1 && newIndex !== -1) {
+                    await handleReorderFolders(arrayMove(folders, oldIndex, newIndex));
+                }
+            }
+            return;
+        }
+
+        if (activeKind === 'sidebar-group' && overKind === 'sidebar-group') {
+            const draggedGroupId = active.data.current?.groupId;
+            const overGroupId = over.data.current?.groupId;
+            if (typeof draggedGroupId !== 'number' || typeof overGroupId !== 'number' || draggedGroupId === overGroupId) return;
+            const oldIndex = groups.findIndex(group => group.id === draggedGroupId);
+            const newIndex = groups.findIndex(group => group.id === overGroupId);
+            if (oldIndex !== -1 && newIndex !== -1) {
+                await handleUpdateGroupOrder(arrayMove(groups, oldIndex, newIndex));
+            }
+        }
+    };
 
     const currentFolderName = activeFolderId === null
-        ? "Saved Messages"
-        : folders.find(f => f.id === activeFolderId)?.name || "Folder";
+        ? t('common.saved_messages')
+        : folders.find(f => f.id === activeFolderId)?.name || t('common.folders');
 
-
-    const handleRootDragOver = (e: React.DragEvent) => {
-        // Accept our internal file drags (custom MIME type) so drops work anywhere
-        const isInternalDrag = internalDragRef.current !== null ||
-            e.dataTransfer.types.includes("application/x-telegram-file-id") ||
-            e.dataTransfer.types.includes("application/x-telegram-file-ids");
-        if (isInternalDrag) {
-            e.preventDefault();
-            e.stopPropagation();
-            e.dataTransfer.dropEffect = 'move';
-        }
-    };
-
-    const handleRootDragEnter = (e: React.DragEvent) => {
-        const isInternalDrag = internalDragRef.current !== null ||
-            e.dataTransfer.types.includes("application/x-telegram-file-id") ||
-            e.dataTransfer.types.includes("application/x-telegram-file-ids");
-        if (isInternalDrag) {
-            e.preventDefault();
-            e.stopPropagation();
-            e.dataTransfer.dropEffect = 'move';
-        }
-    };
 
     const previewNeighbors = previewNeighborFiles();
 
     return (
-        <div
-            className="desktop-shell relative flex h-screen w-full overflow-hidden bg-app-canvas"
-            onDragOver={handleRootDragOver}
-            onDragEnter={handleRootDragEnter}
+        <DndContext
+            sensors={dragSensors}
+            collisionDetection={closestCenter}
+            onDragStart={handleInternalDragStart}
+            onDragCancel={() => setInternalDrag(null)}
+            onDragEnd={handleInternalDragEnd}
         >
+            <div className="desktop-shell relative flex h-screen w-full overflow-hidden bg-app-canvas">
 
-            <ExternalDropBlocker onFilesDropped={handleDropUpload} onUploadClick={handleManualUpload} />
+            <ExternalDropBlocker
+                currentFolderName={currentFolderName}
+                enabled={isConnected}
+                onFilesDropped={handleDropUpload}
+                onUploadClick={handleManualUpload}
+            />
 
             <AnimatePresence>
                 {showMoveModal && (
@@ -638,7 +684,6 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                 groups={groups}
                 activeFolderId={activeFolderId}
                 setActiveFolderId={setActiveFolderId}
-                onDrop={handleDropOnFolder}
                 onDelete={handleFolderDelete}
                 onRename={(id, name) => setRenameFolder({ id, name })}
                 onToggleVisibility={async (id, _name, isPublic) => {
@@ -665,8 +710,6 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                 onLogout={handleLogout}
                 bandwidth={bandwidth || null}
                 onAssignFolderToGroup={handleAssignFolderToGroup}
-                onReorderFolders={handleReorderFolders}
-                onUpdateGroupOrder={handleUpdateGroupOrder}
                 onCreateGroup={handleCreateGroup}
                 onUpdateGroup={handleUpdateGroup}
                 onDeleteGroup={handleDeleteGroup}
@@ -718,9 +761,6 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                     onFolderUpload={handleFolderUpload}
                     showFolderUpload={settings.zipFolders}
                     onToggleSelection={handleToggleSelection}
-                    onDrop={handleDropOnFolder}
-                    onDragStart={(ids) => setInternalDragIds(ids)}
-                    onDragEnd={() => setTimeout(() => setInternalDragIds(null), 50)}
                     onShare={setShareFile}
                     onRename={handleRename}
                     onFileMove={handleFileMove}
@@ -881,6 +921,20 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                     </div>
                 </div>
             )}
-        </div>
+                <DragOverlay dropAnimation={null}>
+                    {internalDrag && (
+                        <div className="flex max-w-xs items-center gap-2 rounded-lg border border-app-accent/40 bg-app-surface px-3 py-2 text-sm font-medium text-app-text shadow-2xl">
+                            <Files className="h-4 w-4 shrink-0 text-app-accent" />
+                            <span className="truncate">{internalDrag.label}</span>
+                            {internalDrag.fileIds.length > 1 && (
+                                <span className="rounded-full bg-app-accent px-1.5 py-0.5 text-[10px] font-bold text-app-accent-contrast">
+                                    {internalDrag.fileIds.length}
+                                </span>
+                            )}
+                        </div>
+                    )}
+                </DragOverlay>
+            </div>
+        </DndContext>
     );
 }

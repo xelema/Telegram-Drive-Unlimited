@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useCallback } from 'react';
 import { Folder, MoreVertical, Check } from 'lucide-react';
+import { useDraggable, useDroppable } from '@dnd-kit/core';
 import { TelegramFile } from '../../../types';
-import { createDragGhost } from '../../../utils';
 import { FileTypeIcon } from '../../shared/FileTypeIcon';
 import { useVideoMetadata } from '../../../hooks/useVideoMetadata';
 import { useCachedVariants } from '../../../hooks/useCachedVariants';
@@ -14,17 +14,37 @@ interface FileListItemProps {
     selectedIds: number[];
     onFileClick: (e: React.MouseEvent, id: number) => void;
     handleContextMenu: (e: React.MouseEvent, file: TelegramFile) => void;
-    onDragStart?: (fileIds: number[]) => void;
-    onDragEnd?: () => void;
-    onDrop?: (e: React.DragEvent, folderId: number) => void;
 }
 
 export function FileListItem({
-    file, selectedIds, onFileClick, handleContextMenu,
-    onDragStart, onDragEnd, onDrop
+    file, selectedIds, onFileClick, handleContextMenu
 }: FileListItemProps) {
-    const [isDragOver, setIsDragOver] = useState(false);
     const isFolder = file.type === 'folder';
+    const fileIds = selectedIds.includes(file.id) ? selectedIds : [file.id];
+    const {
+        attributes,
+        listeners,
+        setNodeRef: setDraggableNodeRef,
+        isDragging,
+    } = useDraggable({
+        id: `telegram-file-${file.id}`,
+        disabled: isFolder,
+        data: { kind: 'telegram-files', fileIds, label: file.name },
+    });
+    const {
+        setNodeRef: setDroppableNodeRef,
+        isOver,
+        active: dragActive,
+    } = useDroppable({
+        id: `content-folder-${file.id}`,
+        disabled: !isFolder,
+        data: { kind: 'content-folder', folderId: file.id },
+    });
+    const setNodeRef = useCallback((node: HTMLDivElement | null) => {
+        setDraggableNodeRef(node);
+        setDroppableNodeRef(node);
+    }, [setDraggableNodeRef, setDroppableNodeRef]);
+    const isFileDragOver = isFolder && isOver && dragActive?.data.current?.kind === 'telegram-files';
 
     // Lazy video metadata badge (.mp4 only)
     const { data: videoMeta, isLoading: videoMetaLoading } = useVideoMetadata(
@@ -43,47 +63,15 @@ export function FileListItem({
 
     return (
         <div
+            ref={setNodeRef}
             onClick={(e) => onFileClick(e, file.id)}
             onContextMenu={(e) => handleContextMenu(e, file)}
-            draggable
-            onDragStart={(e) => {
-                const idsToDrag = selectedIds.includes(file.id) ? selectedIds : [file.id];
-                if (onDragStart) onDragStart(idsToDrag);
-                e.dataTransfer.setData("application/x-telegram-file-ids", JSON.stringify(idsToDrag));
-                e.dataTransfer.effectAllowed = 'move';
-                const dragCount = idsToDrag.length;
-                const ghost = createDragGhost(file.name, isFolder, dragCount);
-                e.dataTransfer.setDragImage(ghost, 0, 0);
-                requestAnimationFrame(() => ghost.remove());
-            }}
-            onDragEnd={() => {
-                if (onDragEnd) onDragEnd();
-            }}
-            onDragOver={(e) => {
-                if (isFolder) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    if (!isDragOver) setIsDragOver(true);
-                }
-            }}
-            onDragLeave={(e) => {
-                if (isFolder) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setIsDragOver(false);
-                }
-            }}
-            onDrop={(e) => {
-                if (isFolder && onDrop) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setIsDragOver(false);
-                    onDrop(e, file.id);
-                }
-            }}
+            style={{ opacity: isDragging ? 0.45 : undefined }}
+            {...(!isFolder ? attributes : {})}
+            {...(!isFolder ? listeners : {})}
             className={`group grid h-10 cursor-pointer grid-cols-[1.75rem_minmax(0,1fr)_2rem] items-center gap-3 border-b border-app-border-subtle px-3 transition-colors hover:bg-app-hover sm:grid-cols-[1.75rem_minmax(0,2fr)_6rem_8rem_2rem]
                 ${selectedIds.includes(file.id) ? 'bg-app-selected' : ''}
-                ${isDragOver ? 'bg-app-selected ring-2 ring-inset ring-app-accent' : ''}
+                ${isFileDragOver ? 'bg-app-selected ring-2 ring-inset ring-app-accent' : ''}
             `}
         >
             <div className="flex justify-center">

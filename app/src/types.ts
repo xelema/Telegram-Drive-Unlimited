@@ -51,6 +51,24 @@ export interface QueueItem {
     protection?: UploadProtectionIntent;
 }
 
+export type DroppedPathRejectionReason = 'directory' | 'missing' | 'unreadable' | 'unsupported';
+
+export interface DroppedPathRejection {
+    path: string;
+    reason: DroppedPathRejectionReason;
+}
+
+export interface DroppedPathValidation {
+    accepted: string[];
+    rejected: DroppedPathRejection[];
+}
+
+export interface DropUploadResult {
+    queued: number;
+    rejected: DroppedPathRejection[];
+    cancelled?: boolean;
+}
+
 export interface BandwidthStats {
     up_bytes: number;
     down_bytes: number;

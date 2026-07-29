@@ -59,9 +59,10 @@ These viewers currently operate on standard, unencrypted files. See [Encryption 
 - Native Telegram message links for files in public channels.
 - A desktop REST API that is **off by default**, binds to `127.0.0.1`, uses a configurable port, and requires an `X-API-Key` header for protected routes.
 - REST operations for files, folders, bulk actions, storage statistics, duplicates, empty folders, thumbnails, and media metadata.
+- Desktop WebDAV access that is **off by default**, loopback-only, read-only by default, protected by a one-time capability link, and available on a user-selected port.
 
 > [!NOTE]
-> Telegram Drive share links are served by the running desktop app at a loopback address. They are not public, hosted internet links. The repository contains a human-readable [REST API endpoint reference](REST_API_Documentation.md), but it does not currently contain a generated OpenAPI document.
+> Telegram Drive share links are served by the running desktop app at a loopback address. They are not public, hosted internet links. See the [WebDAV guide](WEBDAV_GUIDE.md) and the human-readable [REST API endpoint reference](REST_API_Documentation.md). The repository does not currently contain a generated OpenAPI document.
 
 ### Network and platform support
 

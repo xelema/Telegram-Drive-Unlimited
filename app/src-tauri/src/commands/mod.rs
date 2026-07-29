@@ -37,6 +37,7 @@ pub mod utils;
 pub mod network;
 pub mod streaming;
 pub mod api_settings;
+pub mod webdav_settings;
 pub mod settings;
 pub mod sharing;
 pub mod video_metadata;
@@ -55,4 +56,3 @@ pub use sharing::*;
 pub use video_metadata::*;
 pub use archive::*;
 pub use folder_groups::*;
-

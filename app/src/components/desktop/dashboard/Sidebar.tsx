@@ -6,18 +6,7 @@ import { BandwidthWidget } from './BandwidthWidget';
 import { TelegramFolder, BandwidthStats, FolderGroup } from '../../../types';
 import { useSettings } from '../../../context/SettingsContext';
 import {
-    DndContext,
-    closestCenter,
-    KeyboardSensor,
-    PointerSensor,
-    useSensor,
-    useSensors,
-    DragEndEvent,
-} from '@dnd-kit/core';
-import {
-    arrayMove,
     SortableContext,
-    sortableKeyboardCoordinates,
     verticalListSortingStrategy,
     horizontalListSortingStrategy,
     useSortable,
@@ -57,7 +46,8 @@ function GroupTab({ id, groupId, label, colorHex, active, onClick, onEdit, isSor
         isDragging,
     } = useSortable({
         id,
-        disabled: !isSortable,
+        data: { kind: 'sidebar-group', groupId },
+        disabled: !isSortable ? { draggable: true, droppable: false } : false,
     });
 
     const style = {
@@ -106,7 +96,6 @@ interface SidebarProps {
     groups: FolderGroup[];
     activeFolderId: number | null;
     setActiveFolderId: (id: number | null) => void;
-    onDrop: (e: React.DragEvent, folderId: number | null) => void;
     onDelete: (id: number, name: string) => void;
     onRename: (id: number, name: string) => void;
     onToggleVisibility: (id: number, name: string, isPublic: boolean) => void;
@@ -118,17 +107,15 @@ interface SidebarProps {
     onLogout: () => void;
     bandwidth: BandwidthStats | null;
     onAssignFolderToGroup: (folderId: number, groupId: number | null) => Promise<void>;
-    onReorderFolders: (reordered: TelegramFolder[]) => Promise<void>;
-    onUpdateGroupOrder: (reorderedGroups: FolderGroup[]) => Promise<void>;
     onCreateGroup: (name: string, colorHex: string) => Promise<void>;
     onUpdateGroup: (groupId: number, name: string, colorHex: string) => Promise<void>;
     onDeleteGroup: (groupId: number) => Promise<void>;
 }
 
 export function Sidebar({
-    folders, groups = [], activeFolderId, setActiveFolderId, onDrop, onDelete, onRename, onToggleVisibility, onExportInvite, onCreate,
+    folders, groups = [], activeFolderId, setActiveFolderId, onDelete, onRename, onToggleVisibility, onExportInvite, onCreate,
     isSyncing, isConnected, onSync, onLogout, bandwidth,
-    onAssignFolderToGroup, onReorderFolders, onUpdateGroupOrder, onCreateGroup, onUpdateGroup, onDeleteGroup
+    onAssignFolderToGroup, onCreateGroup, onUpdateGroup, onDeleteGroup
 }: SidebarProps) {
     const [showNewFolderInput, setShowNewFolderInput] = useState(false);
     const [newFolderName, setNewFolderName] = useState("");
@@ -141,67 +128,6 @@ export function Sidebar({
     const [editingGroup, setEditingGroup] = useState<FolderGroup | null>(null); // null means creating
     const [groupName, setGroupName] = useState("");
     const [groupColor, setGroupColor] = useState("#3B82F6");
-
-    // DND Kit Sensors
-    const sensors = useSensors(
-        useSensor(PointerSensor, {
-            activationConstraint: {
-                distance: 8,
-            },
-        }),
-        useSensor(KeyboardSensor, {
-            coordinateGetter: sortableKeyboardCoordinates,
-        })
-    );
-
-    const handleDragEnd = (event: DragEndEvent) => {
-        const { active, over } = event;
-        if (!over) return;
-
-        const activeId = active.id.toString();
-        const overId = over.id.toString();
-
-        if (activeId.startsWith('folder-')) {
-            const activeFolderId = parseInt(activeId.replace('folder-', ''), 10);
-
-            if (overId.startsWith('group-tab-')) {
-                const overGroupIdStr = overId.replace('group-tab-', '');
-                const overGroupId = overGroupIdStr === 'all'
-                    ? null
-                    : overGroupIdStr === 'unassigned'
-                        ? null
-                        : parseInt(overGroupIdStr, 10);
-                onAssignFolderToGroup(activeFolderId, overGroupId);
-            } else if (overId.startsWith('folder-')) {
-                const overFolderId = parseInt(overId.replace('folder-', ''), 10);
-                if (activeFolderId !== overFolderId) {
-                    const oldIndex = folders.findIndex(f => f.id === activeFolderId);
-                    const newIndex = folders.findIndex(f => f.id === overFolderId);
-                    if (oldIndex !== -1 && newIndex !== -1) {
-                        const reordered = arrayMove(folders, oldIndex, newIndex);
-                        onReorderFolders(reordered);
-                    }
-                }
-            }
-        } else if (activeId.startsWith('group-tab-')) {
-            const activeGroupId = parseInt(activeId.replace('group-tab-', ''), 10);
-
-            if (overId.startsWith('group-tab-')) {
-                const overGroupIdStr = overId.replace('group-tab-', '');
-                if (overGroupIdStr !== 'all' && overGroupIdStr !== 'unassigned') {
-                    const overGroupId = parseInt(overGroupIdStr, 10);
-                    if (activeGroupId !== overGroupId) {
-                        const oldIndex = groups.findIndex(g => g.id === activeGroupId);
-                        const newIndex = groups.findIndex(g => g.id === overGroupId);
-                        if (oldIndex !== -1 && newIndex !== -1) {
-                            const reordered = arrayMove(groups, oldIndex, newIndex);
-                            onUpdateGroupOrder(reordered);
-                        }
-                    }
-                }
-            }
-        }
-    };
 
     const submitCreate = async () => {
         if (!newFolderName.trim()) return;
@@ -266,11 +192,6 @@ export function Sidebar({
                 </button>
             </div>
 
-            <DndContext
-                sensors={sensors}
-                collisionDetection={closestCenter}
-                onDragEnd={handleDragEnd}
-            >
                 {!settings.sidebarCollapsed && (
                     <div className="flex flex-col gap-2 border-b border-app-border-subtle px-3 py-2.5">
                         <div className="flex items-center justify-between">
@@ -430,7 +351,6 @@ export function Sidebar({
                         label={t('common.saved_messages')}
                         active={activeFolderId === null}
                         onClick={() => setActiveFolderId(null)}
-                        onDrop={(e: React.DragEvent) => onDrop(e, null)}
                         folderId={null}
                         collapsed={settings.sidebarCollapsed}
                     />
@@ -445,7 +365,6 @@ export function Sidebar({
                                 label={folder.name}
                                 active={activeFolderId === folder.id}
                                 onClick={() => setActiveFolderId(folder.id)}
-                                onDrop={(e: React.DragEvent) => onDrop(e, folder.id)}
                                 onDelete={() => onDelete(folder.id, folder.name)}
                                 onRename={() => onRename(folder.id, folder.name)}
                                 onToggleVisibility={() => onToggleVisibility(folder.id, folder.name, !!(folder.is_public || folder.username))}
@@ -459,8 +378,6 @@ export function Sidebar({
                         ))}
                     </SortableContext>
                 </nav>
-            </DndContext>
-
             {/* Sticky Create Folder section — always visible above the footer */}
             {!settings.sidebarCollapsed && (
                 <div className="border-t border-app-border-subtle px-2 py-2">

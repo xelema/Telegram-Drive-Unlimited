@@ -30,7 +30,22 @@ interface ApiSettings {
     running: boolean;
 }
 
-type SettingsTab = 'general' | 'themes' | 'proxy' | 'vpn' | 'encryption' | 'sharing' | 'about';
+interface WebDavSettings {
+    supported: boolean;
+    enabled: boolean;
+    port: number;
+    write_enabled: boolean;
+    token_set: boolean;
+    running: boolean;
+    last_error: string | null;
+}
+
+interface WebDavTokenResponse {
+    token: string;
+    url: string;
+}
+
+type SettingsTab = 'general' | 'webdav' | 'themes' | 'proxy' | 'vpn' | 'encryption' | 'sharing' | 'about';
 
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const { settings, updateSetting, resetSettings } = useSettings();
@@ -176,6 +191,22 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const [generatedKey, setGeneratedKey] = useState<string | null>(null);
     const [keyCopied, setKeyCopied] = useState(false);
 
+    // WebDAV settings state
+    const [webDavSettings, setWebDavSettings] = useState<WebDavSettings>({
+        supported: true,
+        enabled: false,
+        port: 8551,
+        write_enabled: false,
+        token_set: false,
+        running: false,
+        last_error: null,
+    });
+    const [webDavPort, setWebDavPort] = useState('8551');
+    const [webDavLoading, setWebDavLoading] = useState(false);
+    const [webDavGenerating, setWebDavGenerating] = useState(false);
+    const [generatedWebDavUrl, setGeneratedWebDavUrl] = useState<string | null>(null);
+    const [webDavUrlCopied, setWebDavUrlCopied] = useState(false);
+
     const fetchApiSettings = useCallback(async () => {
         try {
             const result = await invoke<ApiSettings>('cmd_get_api_settings');
@@ -186,14 +217,27 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         }
     }, []);
 
+    const fetchWebDavSettings = useCallback(async (syncPort = true) => {
+        try {
+            const result = await invoke<WebDavSettings>('cmd_get_webdav_settings');
+            setWebDavSettings(result);
+            if (syncPort) setWebDavPort(result.port.toString());
+        } catch {
+            setWebDavSettings(previous => ({ ...previous, supported: false }));
+        }
+    }, []);
+
     // Load API settings when modal opens
     useEffect(() => {
         if (isOpen) {
             fetchApiSettings();
+            fetchWebDavSettings();
             setGeneratedKey(null);
             setKeyCopied(false);
+            setGeneratedWebDavUrl(null);
+            setWebDavUrlCopied(false);
         }
-    }, [isOpen, fetchApiSettings]);
+    }, [isOpen, fetchApiSettings, fetchWebDavSettings]);
 
     // Fetch transcode cache info
     const fetchTranscodeCache = useCallback(async () => {
@@ -221,6 +265,13 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         const interval = setInterval(fetchApiSettings, 3000);
         return () => clearInterval(interval);
     }, [isOpen, apiSettings.enabled, fetchApiSettings]);
+
+    // Poll WebDAV runtime state while its tab is visible.
+    useEffect(() => {
+        if (!isOpen || activeTab !== 'webdav') return;
+        const interval = setInterval(() => void fetchWebDavSettings(false), 3000);
+        return () => clearInterval(interval);
+    }, [isOpen, activeTab, fetchWebDavSettings]);
 
     // Sync proxy settings to backend whenever they change
     useEffect(() => {
@@ -404,6 +455,134 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         }
     };
 
+    const parseWebDavPort = () => {
+        const port = Number.parseInt(webDavPort, 10);
+        if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+            toast.error(t('settings.port_range_error'));
+            return null;
+        }
+        return port;
+    };
+
+    const generateWebDavLink = async (askBeforeReplacing = true) => {
+        if (askBeforeReplacing && webDavSettings.token_set) {
+            const ok = await confirm({
+                title: t('settings.webdav_regenerate_title'),
+                message: t('settings.webdav_regenerate_desc'),
+                confirmText: t('settings.regenerate'),
+                variant: 'danger',
+            });
+            if (!ok) return null;
+        }
+        setWebDavGenerating(true);
+        try {
+            const result = await invoke<WebDavTokenResponse>('cmd_regenerate_webdav_token');
+            setGeneratedWebDavUrl(result.url);
+            setWebDavUrlCopied(false);
+            setWebDavSettings(previous => ({ ...previous, token_set: true }));
+            toast.success(t('settings.webdav_link_generated'));
+            return result;
+        } catch (error) {
+            toast.error(t('settings.webdav_generate_failed', { error }));
+            return null;
+        } finally {
+            setWebDavGenerating(false);
+        }
+    };
+
+    const handleWebDavToggle = async () => {
+        const port = parseWebDavPort();
+        if (port === null || !webDavSettings.supported) return;
+        setWebDavLoading(true);
+        try {
+            if (!webDavSettings.enabled && !webDavSettings.token_set) {
+                const generated = await generateWebDavLink(false);
+                if (!generated) return;
+            }
+            const result = await invoke<WebDavSettings>('cmd_update_webdav_settings', {
+                enabled: !webDavSettings.enabled,
+                port,
+                writeEnabled: webDavSettings.write_enabled,
+            });
+            setWebDavSettings(result);
+            toast.success(result.enabled ? t('settings.webdav_started') : t('settings.webdav_stopped_toast'));
+        } catch (error) {
+            toast.error(t('settings.webdav_update_failed', { error }));
+        } finally {
+            setWebDavLoading(false);
+        }
+    };
+
+    const handleWebDavPortApply = async () => {
+        const port = parseWebDavPort();
+        if (port === null || port === webDavSettings.port || !webDavSettings.supported) return;
+        setWebDavLoading(true);
+        try {
+            const result = await invoke<WebDavSettings>('cmd_update_webdav_settings', {
+                enabled: webDavSettings.enabled,
+                port,
+                writeEnabled: webDavSettings.write_enabled,
+            });
+            setWebDavSettings(result);
+            setGeneratedWebDavUrl(previous => {
+                if (!previous) return previous;
+                try {
+                    const updated = new URL(previous);
+                    updated.port = port.toString();
+                    return updated.toString();
+                } catch {
+                    return previous;
+                }
+            });
+            toast.success(t('settings.webdav_port_updated', { port }));
+        } catch (error) {
+            setWebDavPort(webDavSettings.port.toString());
+            toast.error(t('settings.webdav_update_failed', { error }));
+        } finally {
+            setWebDavLoading(false);
+        }
+    };
+
+    const handleWebDavWriteToggle = async () => {
+        if (!webDavSettings.supported) return;
+        const port = parseWebDavPort();
+        if (port === null) return;
+        const nextWriteEnabled = !webDavSettings.write_enabled;
+        if (nextWriteEnabled) {
+            const ok = await confirm({
+                title: t('settings.webdav_enable_changes_title'),
+                message: t('settings.webdav_enable_changes_confirm'),
+                confirmText: t('common.confirm'),
+                variant: 'danger',
+            });
+            if (!ok) return;
+        }
+        setWebDavLoading(true);
+        try {
+            const result = await invoke<WebDavSettings>('cmd_update_webdav_settings', {
+                enabled: webDavSettings.enabled,
+                port,
+                writeEnabled: nextWriteEnabled,
+            });
+            setWebDavSettings(result);
+        } catch (error) {
+            toast.error(t('settings.webdav_update_failed', { error }));
+        } finally {
+            setWebDavLoading(false);
+        }
+    };
+
+    const handleCopyWebDavUrl = async () => {
+        if (!generatedWebDavUrl) return;
+        try {
+            await navigator.clipboard.writeText(generatedWebDavUrl);
+            setWebDavUrlCopied(true);
+            setTimeout(() => setWebDavUrlCopied(false), 2000);
+        } catch {
+            toast.error(t('settings.copy_clipboard_failed'));
+        }
+    };
+
     return (
         <AnimatePresence>
             {isOpen && (
@@ -440,7 +619,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                         <div className="flex min-h-0 flex-1">
                         {/* Settings navigation */}
                         <aside className="w-48 shrink-0 border-e border-app-border-subtle bg-app-sidebar p-3">
-                            {([['general', Globe], ['themes', Palette], ['proxy', Shield], ['vpn', Zap], ['encryption', Shield], ['sharing', Link], ['about', Info]] as const).map(([key, Icon]) => (
+                            {([['general', Globe], ['themes', Palette], ['proxy', Shield], ['vpn', Zap], ['webdav', HardDrive], ['encryption', Shield], ['sharing', Link], ['about', Info]] as const).map(([key, Icon]) => (
                                 <button
                                     key={key}
                                     onClick={() => setActiveTab(key as SettingsTab)}
@@ -1488,6 +1667,159 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         </button>
                                     </div>
                                 </>)}
+                                    </motion.section>
+                                )}
+
+                                {activeTab === 'webdav' && (
+                                    <motion.section
+                                        key="webdav"
+                                        initial={{ opacity: 0 }}
+                                        animate={{ opacity: 1 }}
+                                        exit={{ opacity: 0 }}
+                                        transition={{ duration: 0.12, ease: [0.2, 0.8, 0.2, 1] }}
+                                        className="space-y-4 w-full"
+                                    >
+                                        <div className="flex items-start gap-3 rounded-lg border border-telegram-primary/20 bg-telegram-primary/5 p-3">
+                                            <HardDrive className="mt-0.5 h-4 w-4 shrink-0 text-telegram-primary" />
+                                            <div>
+                                                <h3 className="text-sm font-semibold text-telegram-text">{t('settings.webdav_title')}</h3>
+                                                <p className="mt-1 text-xs leading-relaxed text-telegram-subtext">{t('settings.webdav_description')}</p>
+                                                <p className="mt-1 text-[11px] text-telegram-primary">{t('settings.webdav_local_only')}</p>
+                                            </div>
+                                        </div>
+
+                                        {!webDavSettings.supported ? (
+                                            <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-4 text-sm text-amber-300">
+                                                {t('settings.webdav_mobile_unavailable')}
+                                            </div>
+                                        ) : (
+                                            <>
+                                                <div className="flex items-center justify-between rounded-lg bg-telegram-hover/50 p-3">
+                                                    <div className="flex items-center gap-2">
+                                                        <div className={`h-2.5 w-2.5 rounded-full ${
+                                                            webDavSettings.running
+                                                                ? 'bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.5)]'
+                                                                : webDavSettings.enabled
+                                                                    ? 'animate-pulse bg-amber-400'
+                                                                    : 'bg-gray-500'
+                                                        }`} />
+                                                        <div>
+                                                            <p className="text-sm font-medium text-telegram-text">{t('settings.enable_webdav')}</p>
+                                                            <p className="text-xs text-telegram-subtext">
+                                                                {webDavSettings.running
+                                                                    ? t('settings.webdav_running', { port: webDavSettings.port })
+                                                                    : t('settings.webdav_stopped')}
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                    <button
+                                                        onClick={handleWebDavToggle}
+                                                        disabled={webDavLoading || webDavGenerating}
+                                                        aria-label={t('settings.enable_webdav')}
+                                                        className={`relative h-6 w-11 rounded-full transition-colors duration-200 ${webDavSettings.enabled ? 'bg-telegram-primary' : 'bg-telegram-border'} disabled:opacity-50`}
+                                                    >
+                                                        <span className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform duration-200 ${webDavSettings.enabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                                                    </button>
+                                                </div>
+
+                                                <div className="flex items-center justify-between rounded-lg bg-telegram-hover/50 p-3">
+                                                    <div>
+                                                        <p className="text-sm font-medium text-telegram-text">{t('common.port')}</p>
+                                                        <p className="text-xs text-telegram-subtext">{t('settings.webdav_port_desc')}</p>
+                                                    </div>
+                                                    <input
+                                                        type="number"
+                                                        inputMode="numeric"
+                                                        min="1024"
+                                                        max="65535"
+                                                        value={webDavPort}
+                                                        onChange={event => setWebDavPort(event.target.value)}
+                                                        onBlur={handleWebDavPortApply}
+                                                        onKeyDown={event => {
+                                                            if (event.key === 'Enter') {
+                                                                event.currentTarget.blur();
+                                                            }
+                                                        }}
+                                                        disabled={webDavLoading || webDavGenerating}
+                                                        aria-label={t('common.port')}
+                                                        className="w-24 rounded-md border border-telegram-border bg-telegram-bg px-2 py-1.5 text-center font-mono text-sm text-telegram-text outline-none transition focus:border-telegram-primary/50 disabled:opacity-50"
+                                                    />
+                                                </div>
+
+                                                <div className="flex items-center justify-between rounded-lg bg-telegram-hover/50 p-3">
+                                                    <div className="max-w-[75%]">
+                                                        <p className="text-sm font-medium text-telegram-text">{t('settings.webdav_allow_changes')}</p>
+                                                        <p className="text-xs text-telegram-subtext">{t('settings.webdav_allow_changes_desc')}</p>
+                                                    </div>
+                                                    <button
+                                                        onClick={handleWebDavWriteToggle}
+                                                        disabled={webDavLoading || webDavGenerating}
+                                                        aria-label={t('settings.webdav_allow_changes')}
+                                                        className={`relative h-6 w-11 shrink-0 rounded-full transition-colors duration-200 ${webDavSettings.write_enabled ? 'bg-telegram-primary' : 'bg-telegram-border'} disabled:opacity-50`}
+                                                    >
+                                                        <span className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform duration-200 ${webDavSettings.write_enabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                                                    </button>
+                                                </div>
+
+                                                <div className="space-y-3 rounded-lg bg-telegram-hover/50 p-3">
+                                                    <div className="flex items-center justify-between gap-3">
+                                                        <div className="flex min-w-0 items-center gap-2">
+                                                            <Key className="h-4 w-4 shrink-0 text-telegram-subtext" />
+                                                            <div className="min-w-0">
+                                                                <p className="text-sm font-medium text-telegram-text">{t('settings.webdav_connection_link')}</p>
+                                                                <p className="text-xs text-telegram-subtext">
+                                                                    {webDavSettings.token_set
+                                                                        ? t('settings.webdav_link_configured')
+                                                                        : t('settings.webdav_link_unset')}
+                                                                </p>
+                                                            </div>
+                                                        </div>
+                                                        <button
+                                                            onClick={() => void generateWebDavLink(true)}
+                                                            disabled={webDavLoading || webDavGenerating}
+                                                            className="flex shrink-0 items-center gap-1.5 rounded-lg bg-telegram-primary/10 px-3 py-1.5 text-xs font-medium text-telegram-primary transition hover:bg-telegram-primary/20 disabled:opacity-50"
+                                                        >
+                                                            <RefreshCw className={`h-3 w-3 ${webDavGenerating ? 'animate-spin' : ''}`} />
+                                                            {webDavSettings.token_set ? t('settings.regenerate') : t('settings.generate')}
+                                                        </button>
+                                                    </div>
+
+                                                    {generatedWebDavUrl && (
+                                                        <div className="rounded-lg border border-yellow-500/20 bg-telegram-bg p-2.5">
+                                                            <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-yellow-400/80">
+                                                                {t('settings.webdav_copy_alert')}
+                                                            </p>
+                                                            <div className="flex items-center gap-2">
+                                                                <code className="min-w-0 flex-1 select-all overflow-x-auto rounded bg-telegram-hover px-2 py-1.5 font-mono text-xs text-telegram-text">
+                                                                    {generatedWebDavUrl}
+                                                                </code>
+                                                                <button
+                                                                    onClick={handleCopyWebDavUrl}
+                                                                    className="shrink-0 rounded-md p-1.5 text-telegram-subtext transition hover:bg-telegram-hover hover:text-telegram-text"
+                                                                    title={t('settings.webdav_connection_link')}
+                                                                >
+                                                                    {webDavUrlCopied
+                                                                        ? <Check className="h-4 w-4 text-green-400" />
+                                                                        : <Copy className="h-4 w-4" />}
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                </div>
+
+                                                <div className="flex items-center gap-2 text-[11px] text-telegram-subtext">
+                                                    {(webDavLoading || webDavGenerating) && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                                                    <span>{webDavSettings.write_enabled ? t('settings.webdav_changes_enabled') : t('settings.webdav_read_only')}</span>
+                                                </div>
+
+                                                {webDavSettings.last_error && (
+                                                    <div className="rounded-lg border border-red-500/20 bg-red-500/5 p-3">
+                                                        <p className="text-xs font-medium text-red-300">{t('settings.webdav_last_error')}</p>
+                                                        <p className="mt-1 break-words font-mono text-[11px] text-red-300/80">{webDavSettings.last_error}</p>
+                                                    </div>
+                                                )}
+                                            </>
+                                        )}
                                     </motion.section>
                                 )}
 

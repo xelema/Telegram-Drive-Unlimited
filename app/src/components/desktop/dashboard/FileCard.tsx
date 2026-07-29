@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useState, useEffect } from 'react';
 import { Folder, Eye, Trash2, Link, Check } from 'lucide-react';
+import { useDraggable, useDroppable } from '@dnd-kit/core';
 import { TelegramFile } from '../../../types';
-import { createDragGhost } from '../../../utils';
 import { forgetThumbnail, getCachedThumbnail, loadThumbnail } from '../../../services/imagePreviewCache';
 import { FileTypeIcon } from '../../shared/FileTypeIcon';
 import { useVideoMetadata } from '../../../hooks/useVideoMetadata';
@@ -19,9 +19,6 @@ interface FileCardProps {
     isSelected: boolean;
     onClick?: (e: React.MouseEvent) => void;
     onContextMenu?: (e: React.MouseEvent) => void;
-    onDrop?: (e: React.DragEvent, folderId: number) => void;
-    onDragStart?: (fileIds: number[]) => void;
-    onDragEnd?: () => void;
     activeFolderId?: number | null;
     height?: number;
     onToggleSelection?: () => void;
@@ -35,12 +32,36 @@ function isImageFile(filename: string): boolean {
 }
 
 
-export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSelected, onClick, onContextMenu, onDrop, onDragStart, onDragEnd, activeFolderId, height, onToggleSelection, selectedIds }: FileCardProps) {
+export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSelected, onClick, onContextMenu, activeFolderId, height, onToggleSelection, selectedIds }: FileCardProps) {
     const isFolder = file.type === 'folder';
-    const [isDragOver, setIsDragOver] = useState(false);
     const [thumbnail, setThumbnail] = useState<string | null>(null);
     const [thumbnailLoading, setThumbnailLoading] = useState(false);
     const [thumbnailReady, setThumbnailReady] = useState(false);
+    const fileIds = selectedIds?.includes(file.id) ? selectedIds : [file.id];
+    const {
+        attributes,
+        listeners,
+        setNodeRef: setDraggableNodeRef,
+        isDragging,
+    } = useDraggable({
+        id: `telegram-file-${file.id}`,
+        disabled: isFolder,
+        data: { kind: 'telegram-files', fileIds, label: file.name },
+    });
+    const {
+        setNodeRef: setDroppableNodeRef,
+        isOver,
+        active: dragActive,
+    } = useDroppable({
+        id: `content-folder-${file.id}`,
+        disabled: !isFolder,
+        data: { kind: 'content-folder', folderId: file.id },
+    });
+    const setNodeRef = useCallback((node: HTMLDivElement | null) => {
+        setDraggableNodeRef(node);
+        setDroppableNodeRef(node);
+    }, [setDraggableNodeRef, setDroppableNodeRef]);
+    const isFileDragOver = isFolder && isOver && dragActive?.data.current?.kind === 'telegram-files';
 
     // Lazy video metadata badge (.mp4 only)
     const { data: videoMeta, isLoading: videoMetaLoading } = useVideoMetadata(
@@ -83,50 +104,18 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
 
     return (
         <div
+            ref={setNodeRef}
             className="file-card-container relative h-full min-w-0 overflow-hidden"
-            draggable={!isFolder}
+            style={{ opacity: isDragging ? 0.45 : undefined }}
+            {...(!isFolder ? attributes : {})}
+            {...(!isFolder ? listeners : {})}
             onContextMenu={onContextMenu}
             onClick={onClick}
-            onDragStart={!isFolder ? (e: any) => {
-                const idsToDrag = selectedIds && selectedIds.includes(file.id) ? selectedIds : [file.id];
-                if (onDragStart) onDragStart(idsToDrag);
-                e.dataTransfer.setData("application/x-telegram-file-ids", JSON.stringify(idsToDrag));
-                e.dataTransfer.effectAllowed = 'move';
-                const dragCount = idsToDrag.length;
-                const ghost = createDragGhost(file.name, isFolder, dragCount);
-                e.dataTransfer.setDragImage(ghost, 0, 0);
-                requestAnimationFrame(() => ghost.remove());
-            } : undefined}
-            onDragEnd={!isFolder ? () => {
-                if (onDragEnd) onDragEnd();
-            } : undefined}
-            onDragOver={(e) => {
-                if (isFolder) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    if (!isDragOver) setIsDragOver(true);
-                }
-            }}
-            onDragLeave={(e) => {
-                if (isFolder) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setIsDragOver(false);
-                }
-            }}
-            onDrop={(e) => {
-                if (isFolder && onDrop) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setIsDragOver(false);
-                    onDrop(e, file.id);
-                }
-            }}
         >
             <div
                 className={`group relative h-full w-full min-w-0 cursor-pointer overflow-hidden rounded-container border transition-[border-color,background-color,box-shadow]
                 ${isSelected ? 'border-app-accent bg-app-selected ring-1 ring-app-accent' : 'border-transparent bg-app-surface/45 hover:border-app-border hover:bg-app-surface/70'}
-                ${isDragOver ? 'bg-app-selected ring-2 ring-app-accent' : ''}`}
+                ${isFileDragOver ? 'bg-app-selected ring-2 ring-app-accent' : ''}`}
                 style={height ? { height: `${height}px` } : { aspectRatio: '4/3' }}
             >
                 {/* Thumbnail or Icon */}

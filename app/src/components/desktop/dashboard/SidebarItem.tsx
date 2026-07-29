@@ -11,7 +11,6 @@ interface SidebarItemProps {
     label: string;
     active: boolean;
     onClick: () => void;
-    onDrop: (e: React.DragEvent) => void;
     onDelete?: () => void;
     folderId: number | null;
     isPublic?: boolean;
@@ -24,18 +23,12 @@ interface SidebarItemProps {
 }
 
 /**
- * SidebarItem - Pure DOM event-based drop handling
- * 
- * With Tauri's dragDropEnabled: false, DOM events work reliably.
- * This component handles internal file moves via standard React drag events.
- * Right-click shows a context menu for folder management.
+ * Sortable sidebar folder and drop target for pointer/keyboard file moves.
  */
 export function SidebarItem({
-    icon: Icon, label, active = false, onClick, onDrop, onDelete, folderId, isPublic, onRename, onToggleVisibility, onExportInvite, collapsed = false,
+    icon: Icon, label, active = false, onClick, onDelete, folderId, isPublic, onRename, onToggleVisibility, onExportInvite, collapsed = false,
     groups = [], onAssignFolderToGroup
 }: SidebarItemProps) {
-    const [isOver, setIsOver] = useState(false);
-    const [dragCount, setDragCount] = useState(0);
     const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
     const menuRef = useRef<HTMLDivElement>(null);
     const settingsBtnRef = useRef<HTMLDivElement>(null);
@@ -48,9 +41,12 @@ export function SidebarItem({
         transform,
         transition,
         isDragging,
+        isOver,
+        active: dragActive,
     } = useSortable({
         id: folderId !== null ? `folder-${folderId}` : 'saved-messages',
-        disabled: folderId === null,
+        data: { kind: 'sidebar-folder', folderId },
+        disabled: folderId === null ? { draggable: true, droppable: false } : false,
     });
 
     const style = folderId !== null ? {
@@ -60,6 +56,10 @@ export function SidebarItem({
     } : undefined;
 
     const hasFolderActions = onDelete && folderId !== null;
+    const isFileDragOver = isOver && dragActive?.data.current?.kind === 'telegram-files';
+    const dragCount = Array.isArray(dragActive?.data.current?.fileIds)
+        ? dragActive.data.current.fileIds.length
+        : 0;
 
     // Open the settings popover positioned relative to the ⋮ button
     const openSettingsPopover = useCallback((e: React.MouseEvent) => {
@@ -103,17 +103,6 @@ export function SidebarItem({
         }
     }, [contextMenu]);
 
-    // Parse drop count from drag data so we can show a badge
-    const parseDragCount = useCallback((e: React.DragEvent): number => {
-        const rawIds = e.dataTransfer.getData("application/x-telegram-file-ids");
-        if (rawIds) {
-            try { const ids = JSON.parse(rawIds); if (Array.isArray(ids) && ids.length > 0) return ids.length; } catch { /* ignore */ }
-        }
-        const singleId = e.dataTransfer.getData("application/x-telegram-file-id");
-        if (singleId) return 1;
-        return 0;
-    }, []);
-
     return (
         <div
             ref={setNodeRef}
@@ -122,46 +111,17 @@ export function SidebarItem({
             {...listeners}
             onClick={onClick}
             title={collapsed ? label : undefined}
-            onDragEnter={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setIsOver(true);
-                setDragCount(parseDragCount(e));
-            }}
-            onDragOver={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                e.dataTransfer.dropEffect = 'move';
-            }}
-            onDragLeave={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                const rect = e.currentTarget.getBoundingClientRect();
-                const x = e.clientX;
-                const y = e.clientY;
-                if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) {
-                    setIsOver(false);
-                    setDragCount(0);
-                }
-            }}
-            onDrop={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setIsOver(false);
-                setDragCount(0);
-                if (onDrop) onDrop(e);
-            }}
             onContextMenu={openContextMenu}
             className={`quiet-control group flex h-8 w-full cursor-pointer select-none items-center text-ui ${collapsed ? 'justify-center px-0' : 'gap-2.5 px-2.5'} ${active
                 ? 'bg-app-selected font-medium text-app-text'
-                : isOver
+                : isFileDragOver
                     ? 'bg-app-selected text-app-text ring-2 ring-app-accent'
                     : 'text-app-text-secondary hover:text-app-text'
                 }`}
         >
-            <Icon className={`h-4 w-4 flex-shrink-0 ${active || isOver ? 'text-app-accent' : ''}`} />
+            <Icon className={`h-4 w-4 flex-shrink-0 ${active || isFileDragOver ? 'text-app-accent' : ''}`} />
             {!collapsed && <span className="flex-1 truncate text-start">{label}</span>}
-            {isOver && dragCount > 1 && (
+            {isFileDragOver && dragCount > 1 && (
                 <span className="flex-shrink-0 px-1.5 py-0.5 bg-telegram-primary text-white text-[10px] font-bold rounded-full leading-none min-w-[18px] text-center">
                     {dragCount}
                 </span>
@@ -184,19 +144,19 @@ export function SidebarItem({
             {contextMenu && (
                 <div
                     ref={menuRef}
-                    className="quiet-menu fixed z-[300] flex min-w-[208px] flex-col gap-0.5 p-1 animate-in fade-in duration-100"
+                    className="quiet-menu fixed z-[300] flex min-w-[232px] flex-col gap-1 p-1.5 animate-in fade-in duration-100"
                     style={{ left: contextMenu.x, top: contextMenu.y }}
                     onClick={(e) => e.stopPropagation()}
                     onContextMenu={(e) => e.preventDefault()}
                 >
-                    <div className="mb-1 max-w-[192px] truncate border-b border-app-border-subtle px-2 py-1.5 text-metadata font-medium text-app-text-secondary">
+                    <div className="mb-1 max-w-[216px] truncate border-b border-app-border-subtle px-3 py-2.5 text-ui font-medium text-app-text-secondary">
                         {label}
                     </div>
 
                     {onRename && (
                         <button
                             onClick={() => { setContextMenu(null); onRename(); }}
-                            className="quiet-menu-item"
+                            className="quiet-menu-item min-h-10 gap-3 px-3 py-2"
                         >
                             <Pencil className="w-4 h-4 text-blue-400" />
                             {t('files.rename')}
@@ -206,7 +166,7 @@ export function SidebarItem({
                     {onToggleVisibility && (
                         <button
                             onClick={() => { setContextMenu(null); onToggleVisibility(); }}
-                            className="quiet-menu-item"
+                            className="quiet-menu-item min-h-10 gap-3 px-3 py-2"
                         >
                             {isPublic ? (
                                 <>
@@ -225,7 +185,7 @@ export function SidebarItem({
                     {onExportInvite && (
                         <button
                             onClick={() => { setContextMenu(null); onExportInvite(); }}
-                            className="quiet-menu-item"
+                            className="quiet-menu-item min-h-10 gap-3 px-3 py-2"
                         >
                             <Link className="w-4 h-4 text-telegram-primary" />
                             {t('files.copy_link')}
@@ -234,13 +194,13 @@ export function SidebarItem({
 
                     {onAssignFolderToGroup && folderId !== null && groups && groups.length > 0 && (
                         <>
-                            <div className="h-px bg-telegram-border my-1" />
-                            <div className="px-2 py-1 text-badge font-medium text-app-text-tertiary">
+                            <div className="my-1.5 h-px bg-telegram-border" />
+                            <div className="px-3 py-1.5 text-badge font-medium text-app-text-tertiary">
                                 {t('files.move_to_group') || "Move to Group"}
                             </div>
                             <button
                                 onClick={() => { setContextMenu(null); onAssignFolderToGroup(folderId, null); }}
-                                className="quiet-menu-item text-metadata"
+                                className="quiet-menu-item min-h-10 gap-3 px-3 py-2 text-metadata"
                             >
                                 <span className="w-1.5 h-1.5 rounded-full bg-telegram-subtext" />
                                 {t('common.unassigned') || "None (Unassigned)"}
@@ -249,7 +209,7 @@ export function SidebarItem({
                                 <button
                                     key={group.id}
                                     onClick={() => { setContextMenu(null); onAssignFolderToGroup(folderId, group.id); }}
-                                    className="quiet-menu-item text-metadata"
+                                    className="quiet-menu-item min-h-10 gap-3 px-3 py-2 text-metadata"
                                 >
                                     <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: group.color_hex }} />
                                     {group.name}
@@ -258,11 +218,11 @@ export function SidebarItem({
                         </>
                     )}
 
-                    <div className="h-px bg-telegram-border my-1" />
+                    <div className="my-1.5 h-px bg-telegram-border" />
 
                     <button
                         onClick={() => { setContextMenu(null); onDelete?.(); }}
-                        className="quiet-menu-item text-app-danger hover:bg-app-danger/10"
+                        className="quiet-menu-item min-h-10 gap-3 px-3 py-2 text-app-danger hover:bg-app-danger/10"
                     >
                         <Trash2 className="w-4 h-4" />
                         {t('files.delete')}

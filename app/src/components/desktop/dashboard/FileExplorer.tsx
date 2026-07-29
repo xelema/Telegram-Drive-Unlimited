@@ -34,9 +34,6 @@ interface FileExplorerProps {
     onFolderUpload: () => void;
     showFolderUpload: boolean;
     onToggleSelection: (id: number) => void;
-    onDrop?: (e: React.DragEvent, folderId: number) => void;
-    onDragStart?: (fileIds: number[]) => void;
-    onDragEnd?: () => void;
     onShare?: (file: TelegramFile) => void;
     onRename?: (file: TelegramFile) => void;
     onFileMove?: (file: TelegramFile) => void;
@@ -82,7 +79,7 @@ function useGridColumns(containerRef: React.RefObject<HTMLDivElement | null>) {
 
 export function FileExplorer({
     files, loading, error, viewMode, selectedIds, activeFolderId,
-    onFileClick, onDelete, onDownload, onPreview, onManualUpload, onFolderUpload, showFolderUpload, onToggleSelection, onDrop, onDragStart, onDragEnd, onShare, onRename, onFileMove,
+    onFileClick, onDelete, onDownload, onPreview, onManualUpload, onFolderUpload, showFolderUpload, onToggleSelection, onShare, onRename, onFileMove,
     folders, cardScale, sortField, sortDirection, onSortChange
 }: FileExplorerProps) {
     const [contextMenu, setContextMenu] = useState<{ x: number; y: number; file: TelegramFile } | null>(null);
@@ -287,9 +284,6 @@ export function FileExplorer({
                                                 onDelete={() => onDelete(file.id)}
                                                 onDownload={() => onDownload(file.id, file.name)}
                                                 onPreview={() => handlePreviewRequest(file)}
-                                                onDrop={onDrop}
-                                                onDragStart={onDragStart}
-                                                onDragEnd={onDragEnd}
                                                 activeFolderId={activeFolderId}
                                                 height={cardHeight}
                                                 onToggleSelection={() => onToggleSelection(file.id)}
@@ -371,9 +365,6 @@ export function FileExplorer({
                                         selectedIds={selectedIds}
                                         onFileClick={(e, id) => onFileClick(e, id, sortedFiles)}
                                         handleContextMenu={handleContextMenu}
-                                        onDragStart={onDragStart}
-                                        onDragEnd={onDragEnd}
-                                        onDrop={onDrop}
                                     />
                                 </div>
                             );

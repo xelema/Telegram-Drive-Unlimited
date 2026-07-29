@@ -57,6 +57,8 @@ use rand::Rng;
 
 pub mod server;
 pub mod api_routes;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub mod webdav;
 pub mod db;
 pub mod share_routes;
 pub mod upload_service;
@@ -88,6 +90,15 @@ pub struct ApiServerRunning(pub Arc<std::sync::atomic::AtomicBool>);
 
 /// Holds the API server stop handle separately so we can restart it independently
 pub struct ApiServerHandle(pub Arc<std::sync::Mutex<Option<actix_web::dev::ServerHandle>>>);
+
+/// Tracks whether the local WebDAV server is accepting connections.
+pub struct WebDavServerRunning(pub Arc<std::sync::atomic::AtomicBool>);
+
+/// Stores the most recent WebDAV bind/startup error for display in Settings.
+pub struct WebDavServerLastError(pub Arc<std::sync::Mutex<Option<String>>>);
+
+/// Holds the WebDAV server stop handle so settings can restart it independently.
+pub struct WebDavServerHandle(pub Arc<std::sync::Mutex<Option<actix_web::dev::ServerHandle>>>);
 
 /// Restart (or stop) the API server based on current settings.
 /// Called from Tauri commands when the user changes API settings.
@@ -192,6 +203,137 @@ pub fn restart_api_server(app: &tauri::AppHandle) {
 #[cfg(target_os = "android")]
 pub fn restart_api_server(_app: &tauri::AppHandle) {
     log::info!("REST API disabled on mobile.");
+}
+
+/// Restart (or stop) the loopback-only WebDAV server using persisted settings.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub fn restart_webdav_server(app: &tauri::AppHandle) {
+    use std::sync::atomic::Ordering;
+
+    let handle_arc = app.state::<WebDavServerHandle>().0.clone();
+    let old_handle = handle_arc.lock().ok().and_then(|mut handle| handle.take());
+    if let Some(handle) = old_handle {
+        log::info!("Stopping existing WebDAV server...");
+        drop(handle.stop(false));
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+
+    let running = app.state::<WebDavServerRunning>().0.clone();
+    let last_error = app.state::<WebDavServerLastError>().0.clone();
+    running.store(false, Ordering::Relaxed);
+    if let Ok(mut error) = last_error.lock() {
+        *error = None;
+    }
+
+    let settings = commands::webdav_settings::load_settings(app);
+    if !settings.enabled {
+        log::info!("WebDAV server disabled");
+        return;
+    }
+    let Some(token_hash) = settings.token_hash else {
+        if let Ok(mut error) = last_error.lock() {
+            *error = Some("Generate a WebDAV connection link before enabling the server".to_string());
+        }
+        return;
+    };
+
+    let telegram_state = Arc::new(app.state::<TelegramState>().inner().clone());
+    let bandwidth = app
+        .state::<Arc<bandwidth::BandwidthManager>>()
+        .inner()
+        .clone();
+    let network = app
+        .state::<Arc<vpn_optimizer::NetworkConfig>>()
+        .inner()
+        .clone();
+    let database = app.state::<db::DbConnection>().inner().clone();
+    let staging_dir = match app.path().app_cache_dir() {
+        Ok(path) => path.join("webdav-staging"),
+        Err(error) => {
+            if let Ok(mut value) = last_error.lock() {
+                *value = Some(format!("Could not resolve the WebDAV cache directory: {error}"));
+            }
+            return;
+        }
+    };
+    let port = settings.port;
+    let write_enabled = settings.write_enabled;
+    let thread_handle = handle_arc.clone();
+
+    std::thread::spawn(move || {
+        #[cfg(target_os = "windows")]
+        init_com_on_worker_thread();
+        let system = actix_rt::System::new();
+        system.block_on(async move {
+            if let Err(error) = tokio::fs::create_dir_all(&staging_dir).await {
+                let message = format!("Could not create the WebDAV staging directory: {error}");
+                log::error!("{message}");
+                if let Ok(mut value) = last_error.lock() {
+                    *value = Some(message);
+                }
+                return;
+            }
+            if let Ok(mut entries) = tokio::fs::read_dir(&staging_dir).await {
+                while let Ok(Some(entry)) = entries.next_entry().await {
+                    let is_staged_upload = entry
+                        .file_name()
+                        .to_str()
+                        .is_some_and(|name| name.starts_with("webdav-"));
+                    if is_staged_upload {
+                        let _ = tokio::fs::remove_file(entry.path()).await;
+                    }
+                }
+            }
+
+            let filesystem = webdav::TelegramDavFs::new(
+                telegram_state,
+                bandwidth,
+                network,
+                database,
+                write_enabled,
+                staging_dir,
+            );
+            let (handler, auth) = webdav::build_handler(filesystem, token_hash);
+            let handler = actix_web::web::Data::new(handler);
+            let auth = actix_web::web::Data::new(auth);
+
+            log::info!("Starting WebDAV server on 127.0.0.1:{port}");
+            match actix_web::HttpServer::new(move || {
+                actix_web::App::new()
+                    .app_data(handler.clone())
+                    .app_data(auth.clone())
+                    .service(
+                        actix_web::web::resource("/{tail:.*}")
+                            .to(webdav::webdav_handler),
+                    )
+            })
+            .bind(("127.0.0.1", port))
+            {
+                Ok(bound) => {
+                    let server = bound.run();
+                    if let Ok(mut value) = thread_handle.lock() {
+                        *value = Some(server.handle());
+                    }
+                    running.store(true, Ordering::Relaxed);
+                    log::info!("WebDAV server started on http://127.0.0.1:{port}");
+                    let _ = server.await;
+                    running.store(false, Ordering::Relaxed);
+                }
+                Err(error) => {
+                    let message = format!("Could not start WebDAV on port {port}: {error}");
+                    log::error!("{message}");
+                    if let Ok(mut value) = last_error.lock() {
+                        *value = Some(message);
+                    }
+                }
+            }
+        });
+    });
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub fn restart_webdav_server(_app: &tauri::AppHandle) {
+    log::info!("WebDAV hosting is disabled on mobile platforms.");
 }
 
 #[tauri::command]
@@ -572,6 +714,9 @@ pub fn run() {
             app.manage(ActixServerHandle(server_handle_for_setup.clone()));
             app.manage(ApiServerHandle(Arc::new(std::sync::Mutex::new(None))));
             app.manage(ApiServerRunning(Arc::new(std::sync::atomic::AtomicBool::new(false))));
+            app.manage(WebDavServerHandle(Arc::new(std::sync::Mutex::new(None))));
+            app.manage(WebDavServerRunning(Arc::new(std::sync::atomic::AtomicBool::new(false))));
+            app.manage(WebDavServerLastError(Arc::new(std::sync::Mutex::new(None))));
             
             // Initialize TranscodeManager for HLS streaming
             let app_data_dir = app.path().app_data_dir().map_err(|e| {
@@ -654,6 +799,9 @@ pub fn run() {
             // Start API server if enabled in settings
             restart_api_server(app.handle());
 
+            // Start WebDAV server if enabled in settings.
+            restart_webdav_server(app.handle());
+
             // Start VPN keep-alive background task
             // Disabled on Android: unnecessary on mobile and spawn_blocking may
             // conflict with the platform's background execution limits.
@@ -696,6 +844,7 @@ pub fn run() {
             commands::cmd_auth_check_password,
             commands::cmd_get_files,
             commands::cmd_upload_file,
+            commands::cmd_validate_dropped_paths,
             commands::initiate_upload,
             commands::cmd_upload_from_url,
             cmd_open_file_externally,
@@ -730,6 +879,9 @@ pub fn run() {
             commands::cmd_get_api_settings,
             commands::cmd_update_api_settings,
             commands::cmd_regenerate_api_key,
+            commands::webdav_settings::cmd_get_webdav_settings,
+            commands::webdav_settings::cmd_update_webdav_settings,
+            commands::webdav_settings::cmd_regenerate_webdav_token,
             commands::cmd_delete_image_thumbnail,
             commands::cmd_zip_folder,
             commands::cmd_delete_temp_zip,
@@ -823,7 +975,15 @@ pub fn run() {
                 drop(handle.stop(true));
             }
 
-            // 4. Stop local SOCKS5 proxy bridge (if running)
+            // 4. Stop the WebDAV server (graceful)
+            let webdav_arc = app_handle.state::<WebDavServerHandle>().0.clone();
+            let webdav_handle = webdav_arc.lock().ok().and_then(|mut handle| handle.take());
+            if let Some(handle) = webdav_handle {
+                log::info!("Stopping WebDAV server...");
+                drop(handle.stop(true));
+            }
+
+            // 5. Stop local SOCKS5 proxy bridge (if running)
             if let Some(net_config) = app_handle.try_state::<Arc<vpn_optimizer::NetworkConfig>>() {
                 log::info!("Stopping SOCKS5 bridge...");
                 net_config.stop_http_bridge();

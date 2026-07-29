@@ -338,7 +338,35 @@
     "encryption_capabilities": "암호화 기능",
     "core_available": "핵심 사용 가능",
     "vault_exists": "보관함 있음",
-    "max_file_size": "최대 파일 크기"
+    "max_file_size": "최대 파일 크기",
+    "tab_webdav": "WebDAV",
+    "webdav_title": "WebDAV access",
+    "webdav_description": "Open Telegram Drive in Finder, File Explorer, or another WebDAV client.",
+    "webdav_local_only": "The server listens only on this computer (127.0.0.1).",
+    "enable_webdav": "Enable WebDAV server",
+    "webdav_running": "Running on port {{port}}",
+    "webdav_stopped": "Server stopped",
+    "webdav_port_desc": "Listening port (1024–65535)",
+    "webdav_allow_changes": "Allow file changes",
+    "webdav_allow_changes_desc": "Allow WebDAV clients to upload, rename, move, and delete unencrypted files. Leave off for safer read-only access.",
+    "webdav_connection_link": "Connection link",
+    "webdav_link_configured": "Secure link configured. Regenerate it if you no longer have a copy.",
+    "webdav_link_unset": "Generate a private connection link before enabling the server.",
+    "webdav_copy_alert": "Copy now — this private link will not be shown again",
+    "webdav_link_generated": "WebDAV connection link generated",
+    "webdav_generate_failed": "Could not generate WebDAV link: {{error}}",
+    "webdav_update_failed": "Could not update WebDAV settings: {{error}}",
+    "webdav_port_updated": "WebDAV port updated to {{port}}",
+    "webdav_started": "WebDAV server enabled",
+    "webdav_stopped_toast": "WebDAV server disabled",
+    "webdav_read_only": "Current access: read-only",
+    "webdav_changes_enabled": "Current access: file changes are allowed",
+    "webdav_last_error": "Server error",
+    "webdav_mobile_unavailable": "WebDAV hosting is available in the macOS, Windows, and Linux desktop apps.",
+    "webdav_regenerate_title": "Regenerate WebDAV link?",
+    "webdav_regenerate_desc": "The current connection link will stop working immediately. You will need to reconnect every WebDAV client with the new link.",
+    "webdav_enable_changes_title": "Allow WebDAV file changes?",
+    "webdav_enable_changes_confirm": "Connected WebDAV clients will be able to upload, rename, move, and delete unencrypted files. Encrypted files remain protected."
   },
   "files": {
     "download": "다운로드",
@@ -383,7 +411,13 @@
     "url_must_start": "URL은 http:// 또는 https://로 시작해야 합니다",
     "transfers_queue": "전송 대기열",
     "transfers_queue_desc": "다운로드 및 업로드가 백그라운드에서 안전하게 관리됩니다.",
-    "move_to_group": "Move to Group"
+    "move_to_group": "Move to Group",
+    "drop_to_upload": "{{folder}}에 업로드하려면 놓으세요",
+    "drop_hint_one": "{{count}}개 파일을 대기열에 추가하려면 놓으세요",
+    "drop_hint_other": "{{count}}개 파일을 대기열에 추가하려면 놓으세요",
+    "drop_not_available": "드래그 앤 드롭을 사용할 수 없습니다",
+    "drop_browser_help": "파일을 놓으려면 데스크톱 앱을 사용하거나 업로드 대화 상자를 여세요.",
+    "open_upload_dialog": "업로드 대화 상자 열기"
   },
   "archive": {
     "archive_viewer": "압축 파일 뷰어",
@@ -409,7 +443,9 @@
     "moved_success_one": "{{count}}개 파일 성공적으로 이동됨",
     "moved_success_other": "{{count}}개 파일 성공적으로 이동됨",
     "telegram_link_copied": "Telegram 링크 복사됨",
-    "copy_link_failed": "링크 복사 실패"
+    "copy_link_failed": "링크 복사 실패",
+    "drop_rejected_one": "놓은 항목 {{count}}개를 건너뛰었습니다. 일반 파일을 놓거나 폴더 업로드를 사용하세요.",
+    "drop_rejected_other": "놓은 항목 {{count}}개를 건너뛰었습니다. 일반 파일을 놓거나 폴더 업로드를 사용하세요."
   },
   "share": {
     "title": "Share File",
