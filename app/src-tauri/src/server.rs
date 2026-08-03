@@ -1,7 +1,7 @@
 use actix_web::{get, web, App, HttpServer, HttpResponse, Responder};
 use actix_cors::Cors;
 use crate::commands::TelegramState;
-use crate::commands::utils::resolve_peer;
+use crate::commands::utils::{media_size, resolve_peer};
 use grammers_client::types::Media;
 use crate::transcode::TranscodeManager;
 
@@ -97,11 +97,7 @@ pub fn build_media_response(
     filename: Option<&str>,
     extras: StreamingExtras,
 ) -> HttpResponse {
-    let size = match media {
-        Media::Document(d) => d.size() as u64,
-        Media::Photo(_) => 0,
-        _ => 0,
-    };
+    let size = media_size(media);
 
     // Parse Range header
     let mut start_byte = 0u64;

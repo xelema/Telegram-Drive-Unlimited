@@ -99,6 +99,7 @@ fn resolve_req_lang(req: &HttpRequest) -> (&'static str, &'static str) {
         if query.contains("lang=de") { return ("de", "ltr"); }
         if query.contains("lang=pt") { return ("pt-BR", "ltr"); }
         if query.contains("lang=zh") { return ("zh-CN", "ltr"); }
+        if query.contains("lang=vi") { return ("vi", "ltr"); }
     }
     if let Some(accept) = req.headers().get("Accept-Language") {
         if let Ok(val) = accept.to_str() {
@@ -109,6 +110,7 @@ fn resolve_req_lang(req: &HttpRequest) -> (&'static str, &'static str) {
             if val.contains("de") { return ("de", "ltr"); }
             if val.contains("pt") { return ("pt-BR", "ltr"); }
             if val.contains("zh") { return ("zh-CN", "ltr"); }
+            if val.contains("vi") { return ("vi", "ltr"); }
         }
     }
     ("en", "ltr")
@@ -117,15 +119,49 @@ fn resolve_req_lang(req: &HttpRequest) -> (&'static str, &'static str) {
 fn render_password_form(req: &HttpRequest, file_name: &str, token: &str, error: Option<&str>) -> HttpResponse {
     let (lang, dir) = resolve_req_lang(req);
     let safe_file_name = escape_html(file_name);
+    let (title_text, heading_text, desc_text, file_label, password_placeholder, btn_text, incorrect_password) =
+        match lang {
+            "es" => (
+                "Archivo protegido con contraseña",
+                "Ingrese contraseña",
+                "Este enlace está protegido con contraseña.",
+                "Archivo",
+                "Contraseña",
+                "Verificar y descargar",
+                "Contraseña incorrecta. Inténtelo de nuevo.",
+            ),
+            "ru" => (
+                "Файл защищен паролем",
+                "Введите пароль",
+                "Эта ссылка защищена паролем.",
+                "Файл",
+                "Пароль",
+                "Проверить и скачать",
+                "Неверный пароль. Повторите попытку.",
+            ),
+            "vi" => (
+                "Tệp được bảo vệ bằng mật khẩu",
+                "Nhập mật khẩu",
+                "Liên kết chia sẻ này được bảo vệ bằng mật khẩu.",
+                "Tệp",
+                "Mật khẩu",
+                "Xác minh và tải xuống",
+                "Mật khẩu không đúng. Vui lòng thử lại.",
+            ),
+            _ => (
+                "Password Protected File",
+                "Enter Password",
+                "This share link is password-protected.",
+                "File",
+                "Password",
+                "Verify & Download",
+                "Incorrect password. Please try again.",
+            ),
+        };
     let error_html = match error {
-        Some(err) => format!("<div class=\"error\">{}</div>", escape_html(err)),
+        Some(_) => format!("<div class=\"error\">{}</div>", escape_html(incorrect_password)),
         None => "".to_string(),
     };
-
-    let title_text = if lang == "es" { "Archivo protegido con contraseña" } else if lang == "ru" { "Файл защищен паролем" } else { "Password Protected File" };
-    let heading_text = if lang == "es" { "Ingrese contraseña" } else if lang == "ru" { "Введите пароль" } else { "Enter Password" };
-    let desc_text = if lang == "es" { "Este enlace está protegido con contraseña." } else if lang == "ru" { "Эта ссылка защищена паролем." } else { "This share link is password-protected." };
-    let btn_text = if lang == "es" { "Verificar y descargar" } else if lang == "ru" { "Проверить и скачать" } else { "Verify & Download" };
 
     let html = format!(
         r#"<!DOCTYPE html>
@@ -203,16 +239,16 @@ fn render_password_form(req: &HttpRequest, file_name: &str, token: &str, error: 
 <body>
     <div class="container">
         <h2>{}</h2>
-        <p>{}<br>File: <strong><bdi dir="auto">{}</bdi></strong></p>
+        <p>{}<br>{}: <strong><bdi dir="auto">{}</bdi></strong></p>
         {}
         <form method="POST" action="/d/{}/verify">
-            <input type="password" name="password" placeholder="Password" autofocus required>
+            <input type="password" name="password" placeholder="{}" autofocus required>
             <button type="submit">{}</button>
         </form>
     </div>
 </body>
 </html>"#,
-        lang, dir, title_text, heading_text, desc_text, safe_file_name, error_html, token, btn_text
+        lang, dir, title_text, heading_text, desc_text, file_label, safe_file_name, error_html, token, password_placeholder, btn_text
     );
 
     HttpResponse::Ok()
@@ -361,4 +397,21 @@ async fn verify_shared_file_password(
 pub fn configure_share_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(get_shared_file)
        .service(verify_shared_file_password);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_req_lang;
+    use actix_web::test::TestRequest;
+
+    #[test]
+    fn resolves_vietnamese_share_language() {
+        let query_request = TestRequest::with_uri("/d/example?lang=vi").to_http_request();
+        assert_eq!(resolve_req_lang(&query_request), ("vi", "ltr"));
+
+        let header_request = TestRequest::default()
+            .insert_header(("Accept-Language", "vi-VN,vi;q=0.9,en;q=0.8"))
+            .to_http_request();
+        assert_eq!(resolve_req_lang(&header_request), ("vi", "ltr"));
+    }
 }

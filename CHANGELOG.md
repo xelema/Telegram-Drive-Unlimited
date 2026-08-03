@@ -1,3 +1,44 @@
+## [Unreleased] - 2026-08-02
+
+### Vietnamese Language Support
+
+- Added complete Vietnamese (`vi`) translations across the application, settings, dialogs, notifications, authentication, encryption, sharing, and WebDAV surfaces.
+- Added Vietnamese to desktop and mobile language selectors with automatic `vi` and `vi-VN` system-language detection and locale-aware number and date formatting.
+- Added Vietnamese localization for password-protected public share pages.
+
+### File Size Metadata
+
+- Fixed Telegram photos being reported as `0 KB` in folder listings, REST responses, storage statistics, streaming headers, and Windows clients by consistently using the largest available photo representation size.
+- Aligned file-size metadata across the application, downloads, previews, public sharing, and WebDAV while safely handling invalid negative values from remote metadata.
+
+### Security
+
+- Hardened ad-link fallback windows with `noopener,noreferrer` to prevent opened ad pages from accessing the application window through `window.opener`.
+
+## [2.2.5] - 2026-08-03
+
+### Highlights
+
+- Added complete Vietnamese language support across desktop, mobile, settings, sharing, authentication, encryption, and WebDAV.
+- Added automatic Vietnamese system-locale detection and localized number/date formatting.
+- Added Vietnamese localization for password-protected share pages.
+
+### Fixes
+
+- Fixed photos being displayed as `0 KB` in folder listings, REST responses, storage statistics, streaming headers, downloads, previews, and WebDAV clients.
+- Standardized file-size metadata using Telegram’s largest available photo representation.
+- Improved handling of invalid remote size metadata.
+
+### Security
+
+- Added `noopener,noreferrer` to ad-link `window.open` fallbacks to prevent tabnabbing through `window.opener`.
+
+### Verification
+
+- Production frontend build passed.
+- Full Rust test suite passed.
+- Localization validation passed.
+
 ## [2.2.0] - 2026-07-29
 
 ### WebDAV Access

@@ -119,13 +119,14 @@ Download and authenticate an encrypted file before opening it with another appli
 
 ## Languages
 
-Telegram Drive supports a **System** language preference and these 13 selectable production locales:
+Telegram Drive supports a **System** language preference and these 15 selectable production locales:
 
 - English
 - Spanish
 - Russian
 - Simplified Chinese
 - French
+- Italian
 - Arabic
 - Brazilian Portuguese
 - German
@@ -134,6 +135,7 @@ Telegram Drive supports a **System** language preference and these 13 selectable
 - Turkish
 - Japanese
 - Korean
+- Vietnamese
 
 The 2.0.0 localization infrastructure includes locale alias resolution, locale-aware number/date/size/rate formatting, right-to-left document direction for Arabic, bidirectional-text safety helpers, typed translation keys, interpolation validation, pseudo-locales, literal scanning, and CI checks.
 

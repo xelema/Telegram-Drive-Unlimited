@@ -23,7 +23,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
 use crate::bandwidth::{BandwidthManager, BandwidthReservation};
-use crate::commands::utils::{map_error, resolve_peer};
+use crate::commands::utils::{map_error, media_size, resolve_peer};
 use crate::commands::{
     create_folder_inner, delete_folder_inner, rename_folder_inner, TelegramState,
 };
@@ -281,9 +281,10 @@ impl TelegramDavFs {
             let Some(media) = message.media() else {
                 continue;
             };
-            let (remote_name, size) = match media {
-                Media::Document(document) => (document.name().to_string(), document.size() as u64),
-                Media::Photo(photo) => ("Photo.jpg".to_string(), photo.size().max(0) as u64),
+            let size = media_size(&media);
+            let remote_name = match media {
+                Media::Document(document) => document.name().to_string(),
+                Media::Photo(_) => "Photo.jpg".to_string(),
                 _ => continue,
             };
             let caption = message.text();

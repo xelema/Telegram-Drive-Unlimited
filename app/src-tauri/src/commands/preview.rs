@@ -1,5 +1,5 @@
 use crate::bandwidth::BandwidthManager;
-use crate::commands::utils::resolve_peer;
+use crate::commands::utils::{media_size, resolve_peer};
 use crate::vpn_optimizer::NetworkConfig;
 use crate::TelegramState;
 use crate::db::DbConnection;
@@ -136,14 +136,6 @@ fn media_extension(media: &Media) -> String {
         extension
     } else {
         "bin".to_string()
-    }
-}
-
-fn media_size(media: &Media) -> u64 {
-    match media {
-        Media::Document(document) => document.size() as u64,
-        Media::Photo(_) => 1024 * 1024,
-        _ => 0,
     }
 }
 

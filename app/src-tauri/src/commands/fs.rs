@@ -6,7 +6,7 @@ use grammers_tl_types as tl;
 use crate::TelegramState;
 use crate::models::{FolderMetadata, FileMetadata};
 use crate::bandwidth::{BandwidthManager, BandwidthReservation};
-use crate::commands::utils::{resolve_peer, map_error};
+use crate::commands::utils::{media_size, resolve_peer, map_error};
 use crate::vpn_optimizer::{NetworkConfig, backoff_ms};
 use crate::db::DbConnection;
 use crate::crypto::envelope::encrypt_reader::{EncryptingReader, EncryptionSession};
@@ -2057,14 +2057,9 @@ pub async fn cmd_download_file(
     let media = msg.media()
         .ok_or_else(|| "No media in message".to_string())?;
 
-    let expected_file_size = match &media {
-        Media::Document(d) => Some(d.size() as u64),
-        _ => None,
-    };
-    let total_size = expected_file_size.unwrap_or(match &media {
-        Media::Photo(_) => 1024 * 1024,
-        _ => 0,
-    });
+    let declared_size = media_size(&media);
+    let expected_file_size = (declared_size > 0).then_some(declared_size);
+    let total_size = declared_size;
     
     bw_state.try_reserve_down(total_size)?;
 
@@ -2710,6 +2705,7 @@ pub async fn cmd_get_files(
         last_msg_id = Some(current_msg_id);
 
         if let Some(doc) = msg.media() {
+            let declared_size = media_size(&doc);
             let (mut name, mut size, mut mime, mut ext, remote_document_name) = match doc {
                 Media::Document(d) => {
                     let doc_name = d.name().to_string();
@@ -2717,13 +2713,12 @@ pub async fn cmd_get_files(
                     // document's built-in filename attribute, so renames persist across refreshes.
                     let caption = msg.text();
                     let display_name = if caption.is_empty() { doc_name.clone() } else { caption.to_string() };
-                    let s = d.size();
                     let m = d.mime_type().map(|s| s.to_string());
                     // Extension always from the original document name for correct file-type icon
                     let e = std::path::Path::new(&doc_name).extension().map(|os| os.to_str().unwrap_or("").to_string());
-                    (display_name, s, m, e, doc_name)
+                    (display_name, declared_size, m, e, doc_name)
                 },
-                Media::Photo(_) => ("Photo.jpg".to_string(), 0, Some("image/jpeg".into()), Some("jpg".into()), "Photo.jpg".to_string()),
+                Media::Photo(_) => ("Photo.jpg".to_string(), declared_size, Some("image/jpeg".into()), Some("jpg".into()), "Photo.jpg".to_string()),
                 _ => ("Unknown".to_string(), 0, None, None, "Unknown".to_string()),
             };
             let file_id_i64 = msg.id() as i64;
@@ -2739,7 +2734,7 @@ pub async fn cmd_get_files(
                             folder_id,
                             msg_id_i32,
                             remote_document_name.clone(),
-                            size as u64,
+                            size,
                             header_bytes,
                             "probed_unverified",
                         )
@@ -2797,7 +2792,7 @@ pub async fn cmd_get_files(
             };
             if let Some(info) = encrypted_info {
                 if let Some(plaintext_size) = info.plaintext_size {
-                    size = plaintext_size as _;
+                    size = plaintext_size;
                 }
                 if info.metadata_protected {
                     name = "Encrypted file".to_string();
@@ -2826,7 +2821,7 @@ pub async fn cmd_get_files(
                 ext = None;
             }
             chunk.push(FileMetadata {
-                id: file_id_i64, folder_id, name, size: size as u64, mime_type: mime, file_ext: ext,
+                id: file_id_i64, folder_id, name, size, mime_type: mime, file_ext: ext,
                 created_at: msg.date().to_string(), icon_type: "file".into(),
                 encryption_state: enc_state.to_string(),
             });

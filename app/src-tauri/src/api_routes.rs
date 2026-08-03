@@ -5,7 +5,7 @@ use tokio::io::{AsyncRead, AsyncWriteExt};
 use actix_web::web::Bytes;
 use std::task::{Context, Poll};
 use crate::commands::TelegramState;
-use crate::commands::utils::{resolve_peer, map_error};
+use crate::commands::utils::{media_size, resolve_peer, map_error};
 use crate::commands::{create_folder_inner, delete_folder_inner, rename_folder_inner};
 use crate::commands::preview::THUMBNAIL_EXTS;
 use crate::models::FolderMetadata;
@@ -330,23 +330,24 @@ async fn api_list_files(
 
         while let Some(msg) = msgs.next().await.ok().flatten() {
             if let Some(doc) = msg.media() {
-                let (name, size, mime) = match doc {
+                let size = media_size(&doc);
+                let (name, mime) = match doc {
                     Media::Document(d) => {
                         let doc_name = d.name().to_string();
                         // Prefer the message caption (set by rename via EditMessage)
                         let caption = msg.text();
                         let display_name = if caption.is_empty() { doc_name } else { caption.to_string() };
-                        (display_name, d.size(), d.mime_type().map(|s| s.to_string()))
+                        (display_name, d.mime_type().map(|s| s.to_string()))
                     }
-                    Media::Photo(_) => ("Photo.jpg".to_string(), 0, Some("image/jpeg".into())),
-                    _ => ("Unknown".to_string(), 0, None),
+                    Media::Photo(_) => ("Photo.jpg".to_string(), Some("image/jpeg".into())),
+                    _ => ("Unknown".to_string(), None),
                 };
 
                 all_files.push(ApiFile {
                     id: msg.id() as i64,
                     folder_id: *fid,
                     name,
-                    size: size as u64,
+                    size,
                     mime_type: mime,
                     created_at: msg.date().to_string(),
                 });
@@ -513,21 +514,22 @@ async fn api_get_file(
         Ok(messages) => {
             if let Some(Some(msg)) = messages.first() {
                 if let Some(doc) = msg.media() {
-                    let (name, size, mime) = match doc {
+                    let size = media_size(&doc);
+                    let (name, mime) = match doc {
                         Media::Document(d) => {
                             let doc_name = d.name().to_string();
                             let caption = msg.text();
                             let display_name = if caption.is_empty() { doc_name } else { caption.to_string() };
-                            (display_name, d.size(), d.mime_type().map(|s| s.to_string()))
+                            (display_name, d.mime_type().map(|s| s.to_string()))
                         }
-                        Media::Photo(_) => ("Photo.jpg".to_string(), 0, Some("image/jpeg".into())),
-                        _ => ("Unknown".to_string(), 0, None),
+                        Media::Photo(_) => ("Photo.jpg".to_string(), Some("image/jpeg".into())),
+                        _ => ("Unknown".to_string(), None),
                     };
                     return HttpResponse::Ok().json(ApiFile {
                         id: msg.id() as i64,
                         folder_id: query.folder_id,
                         name,
-                        size: size as u64,
+                        size,
                         mime_type: mime,
                         created_at: msg.date().to_string(),
                     });
@@ -941,15 +943,16 @@ async fn api_search_files(
         let mut msgs = client.iter_messages(peer).limit(200);
         while let Some(msg) = msgs.next().await.ok().flatten() {
             if let Some(doc) = msg.media() {
-                let (name, size, mime) = match doc {
+                let size = media_size(&doc);
+                let (name, mime) = match doc {
                     Media::Document(d) => {
                         let doc_name = d.name().to_string();
                         let caption = msg.text();
                         let display_name = if caption.is_empty() { doc_name } else { caption.to_string() };
-                        (display_name, d.size(), d.mime_type().map(|s| s.to_string()))
+                        (display_name, d.mime_type().map(|s| s.to_string()))
                     }
-                    Media::Photo(_) => ("Photo.jpg".to_string(), 0, Some("image/jpeg".into())),
-                    _ => ("Unknown".to_string(), 0, None),
+                    Media::Photo(_) => ("Photo.jpg".to_string(), Some("image/jpeg".into())),
+                    _ => ("Unknown".to_string(), None),
                 };
                 
                 if name.to_lowercase().contains(&search_q.to_lowercase()) {
@@ -957,7 +960,7 @@ async fn api_search_files(
                         id: msg.id() as i64,
                         folder_id: *fid,
                         name,
-                        size: size as u64,
+                        size,
                         mime_type: mime,
                         created_at: msg.date().to_string(),
                     });
@@ -1600,9 +1603,10 @@ async fn api_storage_stats(
         let mut msgs = client.iter_messages(peer).limit(200);
         while let Some(msg) = msgs.next().await.ok().flatten() {
             if let Some(doc) = msg.media() {
-                let (size, mime) = match doc {
-                    Media::Document(d) => (d.size() as u64, d.mime_type().unwrap_or("application/octet-stream").to_string()),
-                    Media::Photo(_) => (0, "image/jpeg".to_string()),
+                let size = media_size(&doc);
+                let mime = match doc {
+                    Media::Document(d) => d.mime_type().unwrap_or("application/octet-stream").to_string(),
+                    Media::Photo(_) => "image/jpeg".to_string(),
                     _ => continue,
                 };
                 file_count += 1;
@@ -1682,9 +1686,10 @@ async fn api_storage_duplicates(
         let mut msgs = client.iter_messages(peer).limit(200);
         while let Some(msg) = msgs.next().await.ok().flatten() {
             if let Some(doc) = msg.media() {
-                let (name, size, mime) = match doc {
-                    Media::Document(d) => (d.name().to_string(), d.size() as u64, d.mime_type().map(|s| s.to_string())),
-                    Media::Photo(_) => ("Photo.jpg".to_string(), 0, Some("image/jpeg".into())),
+                let size = media_size(&doc);
+                let (name, mime) = match doc {
+                    Media::Document(d) => (d.name().to_string(), d.mime_type().map(|s| s.to_string())),
+                    Media::Photo(_) => ("Photo.jpg".to_string(), Some("image/jpeg".into())),
                     _ => continue,
                 };
 

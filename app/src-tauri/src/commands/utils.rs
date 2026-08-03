@@ -1,5 +1,5 @@
 use grammers_client::Client;
-use grammers_client::types::Peer;
+use grammers_client::types::{Media, Peer};
 use tauri::State;
 use crate::bandwidth::BandwidthManager;
 use std::collections::HashMap;
@@ -90,4 +90,66 @@ pub fn map_error(e: impl std::fmt::Display) -> String {
         return "FLOOD_WAIT_60".to_string();
     }
     err_str
+}
+
+/// Return Telegram's declared byte size for downloadable media.
+///
+/// Photos do not expose a document-level size. Grammers derives their size
+/// from the largest available photo representation, which is the same media
+/// variant downloaded when the original photo is requested.
+pub fn media_size(media: &Media) -> u64 {
+    let size = match media {
+        Media::Document(document) => document.size(),
+        Media::Photo(photo) => photo.size(),
+        _ => 0,
+    };
+
+    nonnegative_size(size)
+}
+
+fn nonnegative_size(size: i64) -> u64 {
+    u64::try_from(size).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{media_size, nonnegative_size};
+    use grammers_client::types::{Media, Photo};
+    use grammers_tl_types as tl;
+
+    #[test]
+    fn telegram_sizes_are_safely_normalized() {
+        assert_eq!(nonnegative_size(-1), 0);
+        assert_eq!(nonnegative_size(0), 0);
+        assert_eq!(nonnegative_size(1_572_864), 1_572_864);
+    }
+
+    #[test]
+    fn photo_size_uses_the_largest_available_representation() {
+        let photo = Photo::from_raw(tl::enums::Photo::Photo(tl::types::Photo {
+            has_stickers: false,
+            id: 1,
+            access_hash: 2,
+            file_reference: Vec::new(),
+            date: 0,
+            sizes: vec![
+                tl::enums::PhotoSize::Size(tl::types::PhotoSize {
+                    r#type: "m".to_string(),
+                    w: 320,
+                    h: 240,
+                    size: 42_000,
+                }),
+                tl::enums::PhotoSize::Size(tl::types::PhotoSize {
+                    r#type: "y".to_string(),
+                    w: 2560,
+                    h: 1920,
+                    size: 1_572_864,
+                }),
+            ],
+            video_sizes: None,
+            dc_id: 1,
+        }));
+
+        assert_eq!(media_size(&Media::Photo(photo)), 1_572_864);
+    }
 }

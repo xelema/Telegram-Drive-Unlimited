@@ -15,6 +15,7 @@ import id from './locales/id.json';
 import tr from './locales/tr.json';
 import ja from './locales/ja.json';
 import ko from './locales/ko.json';
+import vi from './locales/vi.json';
 
 i18n
   .use(initReactI18next)
@@ -34,6 +35,7 @@ i18n
       tr: { translation: tr },
       ja: { translation: ja },
       ko: { translation: ko },
+      vi: { translation: vi },
     },
     lng: 'en',
     fallbackLng: 'en',

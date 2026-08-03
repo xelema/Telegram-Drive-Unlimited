@@ -1,4 +1,4 @@
-export type SupportedLanguage = 'en' | 'es' | 'ru' | 'zh-CN' | 'fr' | 'it' | 'ar' | 'pt-BR' | 'de' | 'hi' | 'id' | 'tr' | 'ja' | 'ko';
+export type SupportedLanguage = 'en' | 'es' | 'ru' | 'zh-CN' | 'fr' | 'it' | 'ar' | 'pt-BR' | 'de' | 'hi' | 'id' | 'tr' | 'ja' | 'ko' | 'vi';
 
 export type LanguagePreference = 'system' | SupportedLanguage;
 
@@ -28,6 +28,7 @@ export const LANGUAGES: LanguageInfo[] = [
   { code: 'tr', nativeLabel: 'Türkçe', englishLabel: 'Turkish', dir: 'ltr', numberLocale: 'tr-TR', dateLocale: 'tr-TR', aliases: ['tr'] },
   { code: 'ja', nativeLabel: '日本語', englishLabel: 'Japanese', dir: 'ltr', numberLocale: 'ja-JP', dateLocale: 'ja-JP', aliases: ['ja'] },
   { code: 'ko', nativeLabel: '한국어', englishLabel: 'Korean', dir: 'ltr', numberLocale: 'ko-KR', dateLocale: 'ko-KR', aliases: ['ko'] },
+  { code: 'vi', nativeLabel: 'Tiếng Việt', englishLabel: 'Vietnamese', dir: 'ltr', numberLocale: 'vi-VN', dateLocale: 'vi-VN', aliases: ['vi', 'vi-VN'] },
 ];
 
 export function getLanguageInfo(code: string): LanguageInfo {
