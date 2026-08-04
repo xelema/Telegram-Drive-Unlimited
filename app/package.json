@@ -1,13 +1,13 @@
 {
   "name": "app",
   "private": true,
-  "version": "2.2.6",
+  "version": "2.2.7",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri",
+    "tauri": "node scripts/tauri-cli.cjs",
     "i18n:validate": "node scripts/i18n/validate-locales.cjs",
     "i18n:scan": "node scripts/i18n/scan-ui-literals.cjs",
     "i18n:types": "node scripts/i18n/generate-key-types.cjs",

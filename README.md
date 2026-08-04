@@ -254,6 +254,8 @@ cd app
 npm run tauri build
 ```
 
+On Windows, this command automatically downloads and validates Microsoft's signed Visual C++ Redistributable before creating the NSIS installer. The installer-only resource is deliberately excluded from `npm run tauri dev`, so development builds do not require a pre-downloaded `vc_redist.x64.exe`.
+
 ### Validation commands
 
 Run these from `app/`:

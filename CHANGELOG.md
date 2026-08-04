@@ -1,3 +1,18 @@
+## [2.2.7] - 2026-08-04
+
+### Windows Build Experience
+
+- Fixed `npm run tauri dev` failing when `resources/vc_redist.x64.exe` had not been downloaded.
+- Separated development-safe Windows settings from release-only NSIS resources and installer hooks.
+- Made the standard `npm run tauri build` command automatically prepare and validate Microsoft's signed Visual C++ Redistributable on Windows.
+- Kept the Visual C++ runtime and embedded WebView2 bootstrapper in the finished Windows installer for reliable startup on clean Windows systems.
+
+### Verification
+
+- Production frontend build passed.
+- Desktop Rust tests passed.
+- The tagged release workflow prepares and verifies the Windows runtime on a native Windows runner before publishing the NSIS installer.
+
 ## [2.2.6] - 2026-08-04
 
 ### Windows Startup Reliability

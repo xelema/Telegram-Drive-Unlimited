@@ -81,7 +81,7 @@ jobs:
         include:
           # Windows
           - platform: windows-latest
-            args: '--bundles nsis'
+            args: '--bundles nsis --config src-tauri/tauri.windows.release.conf.json'
             target: ''
           
           # Linux
