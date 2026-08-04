@@ -8,10 +8,15 @@ const DISMISSED_AT_KEY = 'desktopAdDismissedAt';
 
 const AD_CLICK_URL = 'https://www.effectivecpmnetwork.com/nk8qy01t0g?key=a6c132f628973ad13b326e57e4a92f40';
 
-// Serve from the local streaming server (using standard loopback HTTP origin)
-// Adsterra accepts standard HTTP/HTTPS origins. invoke.js uses referrerpolicy="no-referrer"
-// to strip the Referer header so Adsterra cannot reject the custom Tauri origin.
-const AD_IFRAME_URL = 'http://127.0.0.1:14201/ad-banner';
+// "localhost" is treated as a trustworthy loopback origin by WebView2. Using
+// 127.0.0.1 here can be blocked as mixed content when the Windows frontend is
+// served from https://tauri.localhost.
+const AD_IFRAME_ORIGIN = 'http://localhost:14201';
+const AD_IFRAME_URL = `${AD_IFRAME_ORIGIN}/ad-banner`;
+const AD_STATUS_MESSAGE = 'telegram-drive:ad-banner-status';
+const AD_LOAD_TIMEOUT_MS = 6_500;
+
+type AdLoadStatus = 'loading' | 'loaded' | 'fallback';
 
 
 // Safe localStorage wrappers — prevent crashes in restricted webview environments
@@ -41,7 +46,7 @@ function safeTrySet(key: string, value: string): void {
  * Sandbox permissions:
  *   allow-scripts              → ad script can execute
  *   allow-same-origin          → iframe keeps its real origin
- *                              (cameronamer.com/127.0.0.1) instead of
+ *                              (localhost) instead of
  *                              opaque origin — needed for cookies,
  *                              localStorage, and XHR/fetch.
  *   allow-popups               → ad clicks can open popups
@@ -58,6 +63,7 @@ export function DesktopAdBanner() {
   const [exiting, setExiting] = useState(false);
   const [countdown, setCountdown] = useState(AUTO_DISMISS_SECONDS);
   const [isHovering, setIsHovering] = useState(false);
+  const [adLoadStatus, setAdLoadStatus] = useState<AdLoadStatus>('loading');
   const mountedRef = useRef(true);
 
   // Clear dismissed state on mount so it shows on every reload
@@ -118,6 +124,40 @@ export function DesktopAdBanner() {
     }
   }, []);
 
+  // The local banner page reports whether the third-party script actually
+  // injected a creative. The iframe's own load event is not enough because it
+  // still fires when the external ad script is blocked by DNS or an ad blocker.
+  useEffect(() => {
+    if (!visible) return;
+
+    setAdLoadStatus('loading');
+    const loadTimeout = setTimeout(() => {
+      setAdLoadStatus(current => current === 'loading' ? 'fallback' : current);
+    }, AD_LOAD_TIMEOUT_MS);
+
+    const handleBannerStatus = (event: MessageEvent<unknown>) => {
+      if (event.origin !== AD_IFRAME_ORIGIN) return;
+      if (event.source !== iframeRef.current?.contentWindow) return;
+      if (!event.data || typeof event.data !== 'object') return;
+
+      const message = event.data as { type?: unknown; status?: unknown };
+      if (message.type !== AD_STATUS_MESSAGE) return;
+
+      if (message.status === 'loaded') {
+        clearTimeout(loadTimeout);
+        setAdLoadStatus('loaded');
+      } else if (message.status === 'failed') {
+        setAdLoadStatus('fallback');
+      }
+    };
+
+    window.addEventListener('message', handleBannerStatus);
+    return () => {
+      clearTimeout(loadTimeout);
+      window.removeEventListener('message', handleBannerStatus);
+    };
+  }, [visible]);
+
   // ── Auto-dismiss after 10 seconds ─────────────────────────────────────
   useEffect(() => {
     if (!visible) {
@@ -128,10 +168,13 @@ export function DesktopAdBanner() {
       if (!exiting) handleDismissInternal();
       return;
     }
-    if (isHovering) return;
+    // Give the relayed service loader time to resolve before consuming the
+    // ten-second impression window. The fallback timeout guarantees this does
+    // not pause indefinitely on an unavailable network.
+    if (isHovering || adLoadStatus === 'loading') return;
     const timer = setTimeout(() => setCountdown(c => c - 1), 1000);
     return () => clearTimeout(timer);
-  }, [visible, countdown, exiting, isHovering, handleDismissInternal]);
+  }, [visible, countdown, exiting, isHovering, adLoadStatus, handleDismissInternal]);
 
   if (!visible) return null;
 
@@ -185,6 +228,17 @@ export function DesktopAdBanner() {
           className="relative m-0 block h-[250px] w-[300px] cursor-pointer border-0 bg-transparent p-0"
           aria-label="Click to open sponsored content in browser"
         >
+          <div
+            className={`absolute inset-0 flex flex-col items-center justify-center gap-2 bg-app-surface-sunken/50 px-6 text-center transition-opacity duration-200 ${adLoadStatus === 'loaded' ? 'opacity-0' : 'opacity-100'}`}
+          >
+            <span className="sponsored-label">Sponsored</span>
+            <span className="text-ui font-medium text-app-text-secondary">
+              {adLoadStatus === 'loading' ? 'Loading advertisement…' : 'Sponsored content unavailable'}
+            </span>
+            {adLoadStatus === 'fallback' && (
+              <span className="text-metadata text-app-accent">Open sponsor</span>
+            )}
+          </div>
           <iframe
             ref={iframeRef}
             src={AD_IFRAME_URL}
@@ -193,7 +247,8 @@ export function DesktopAdBanner() {
             width={300}
             height={250}
             style={{ border: 'none', overflow: 'hidden', pointerEvents: 'none' }}
-            className="bg-app-surface-sunken/50"
+            onError={() => setAdLoadStatus('fallback')}
+            className={`relative bg-transparent transition-opacity duration-200 ${adLoadStatus === 'loaded' ? 'opacity-100' : 'opacity-0'}`}
           />
         </button>
       </div>

@@ -1,3 +1,24 @@
+## [2.2.6] - 2026-08-04
+
+### Windows Startup Reliability
+
+- Added the signed Microsoft Visual C++ 2015–2022 x64 Redistributable to the Windows NSIS installer so fresh Windows installations have `MSVCP140.dll` and the matching runtime libraries before Telegram Drive starts.
+- Added silent prerequisite detection and installation with explicit failure handling and reboot-required support.
+- Embedded the WebView2 bootstrapper for Windows systems where the Evergreen WebView2 Runtime is unavailable.
+- Added release-time checks for the redistributable's Microsoft Authenticode signature, its presence inside the finished NSIS installer, and the built executable's PE dependencies.
+- Restricted Windows release artifacts to the verified NSIS installer so an installer without the prerequisite cannot be published accidentally.
+
+### Desktop Advertising
+
+- Fixed blank desktop advertisement panels by relaying and validating the configured advertisement loader through the local desktop server.
+- Added resilient DNS recovery, short-term loader caching, and a clear sponsored-content fallback when the service is blocked or unavailable.
+
+### Verification
+
+- Production frontend build passed.
+- Desktop Rust tests passed.
+- The tagged release workflow verifies and compiles the Windows installer on a native Windows runner before publishing.
+
 ## [Unreleased] - 2026-08-02
 
 ### Vietnamese Language Support

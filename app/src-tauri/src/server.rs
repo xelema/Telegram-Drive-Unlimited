@@ -5,15 +5,47 @@ use crate::commands::utils::{media_size, resolve_peer};
 use grammers_client::types::Media;
 use crate::transcode::TranscodeManager;
 
-use std::net::TcpListener;
+use std::net::{IpAddr, SocketAddr, TcpListener};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+const AD_SCRIPT_HOST: &str = "www.highperformanceformat.com";
+const AD_SCRIPT_URL: &str = "https://www.highperformanceformat.com/9cf449272b7e1c83054b82b7639c6029/invoke.js";
+const AD_SCRIPT_CACHE_TTL: Duration = Duration::from_secs(30 * 60);
+const AD_SCRIPT_MAX_BYTES: usize = 512 * 1024;
+const AD_SCRIPT_FALLBACK_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36";
+const AD_DOH_URL: &str = "https://cloudflare-dns.com/dns-query?name=www.highperformanceformat.com&type=A";
+
+#[derive(Clone)]
+struct CachedAdScript {
+    body: bytes::Bytes,
+    fetched_at: Instant,
+}
+
+#[derive(Default)]
+struct AdScriptCache {
+    value: tokio::sync::RwLock<Option<CachedAdScript>>,
+}
+
+#[derive(serde::Deserialize)]
+struct DnsJsonResponse {
+    #[serde(rename = "Answer", default)]
+    answers: Vec<DnsJsonAnswer>,
+}
+
+#[derive(serde::Deserialize)]
+struct DnsJsonAnswer {
+    #[serde(rename = "type")]
+    record_type: u16,
+    data: String,
+}
 
 /// Ad banner HTML matching the working cameronamer.com/ad-banner.html structure.
-/// Served from the streaming server so the iframe gets a real http://127.0.0.1 origin.
-/// Key detail: referrerpolicy="no-referrer" on the invoke.js script tag prevents the
-/// browser from sending a Referer header that Adsterra would reject.
-/// No 'async' attribute — prevents race conditions where the script tries to inject
-/// the ad iframe before the DOM is ready.
+/// Served from the streaming server so the iframe gets a real http://localhost origin.
+/// The external loader is relayed through `/ad-script` because some DNS security
+/// services rewrite the Adsterra loader hostname to a private address. The resulting
+/// creative remains isolated inside this sandboxed page. The page also reports whether
+/// the loader injected a creative so the parent can avoid showing an empty square.
 const AD_BANNER_HTML: &str = r#"<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -39,11 +71,48 @@ const AD_BANNER_HTML: &str = r#"<!DOCTYPE html>
       'width' : 300,
       'params' : {}
     };
+
+    (function () {
+      var statusType = 'telegram-drive:ad-banner-status';
+      var lastStatus = '';
+
+      function reportStatus(status) {
+        if (lastStatus === status) return;
+        lastStatus = status;
+        window.parent.postMessage({ type: statusType, status: status }, '*');
+      }
+
+      var loadTimeout = window.setTimeout(function () {
+        reportStatus('failed');
+      }, 6000);
+
+      window.telegramDriveAdLoaded = function () {
+        var attempts = 0;
+        var creativeCheck = window.setInterval(function () {
+          attempts += 1;
+          if (document.querySelector('iframe')) {
+            window.clearInterval(creativeCheck);
+            window.clearTimeout(loadTimeout);
+            reportStatus('loaded');
+          } else if (attempts >= 16) {
+            window.clearInterval(creativeCheck);
+            reportStatus('failed');
+          }
+        }, 250);
+      };
+
+      window.telegramDriveAdFailed = function () {
+        window.clearTimeout(loadTimeout);
+        reportStatus('failed');
+      };
+    })();
   </script>
   <script 
     type="text/javascript" 
-    src="https://www.highperformanceformat.com/9cf449272b7e1c83054b82b7639c6029/invoke.js"
-    referrerpolicy="no-referrer">
+    src="/ad-script"
+    referrerpolicy="no-referrer"
+    onload="window.telegramDriveAdLoaded()"
+    onerror="window.telegramDriveAdFailed()">
   </script>
 </body>
 </html>"#;
@@ -261,6 +330,189 @@ async fn ad_banner() -> impl Responder {
         .body(AD_BANNER_HTML)
 }
 
+fn is_public_ad_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(address) => {
+            !address.is_private()
+                && !address.is_loopback()
+                && !address.is_link_local()
+                && !address.is_broadcast()
+                && !address.is_unspecified()
+                && !address.is_multicast()
+        }
+        IpAddr::V6(address) => {
+            !address.is_loopback()
+                && !address.is_unspecified()
+                && !address.is_multicast()
+                && !address.is_unique_local()
+                && !address.is_unicast_link_local()
+        }
+    }
+}
+
+fn is_valid_ad_script(content_type: &str, body: &[u8]) -> bool {
+    let content_type = content_type.to_ascii_lowercase();
+    let contains_marker = |marker: &[u8]| body.windows(marker.len()).any(|window| window == marker);
+
+    content_type.contains("javascript")
+        && (1024..=AD_SCRIPT_MAX_BYTES).contains(&body.len())
+        && contains_marker(b"atOptions")
+        && contains_marker(b"currentScript")
+}
+
+async fn request_ad_script(
+    client: &reqwest::Client,
+    user_agent: &str,
+) -> Result<bytes::Bytes, String> {
+    let response = client
+        .get(AD_SCRIPT_URL)
+        .header(reqwest::header::ACCEPT, "*/*")
+        .header(reqwest::header::USER_AGENT, user_agent)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+
+    if !response.status().is_success() {
+        return Err(format!("loader returned HTTP {}", response.status()));
+    }
+
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let body = response.bytes().await.map_err(|error| error.to_string())?;
+
+    if !is_valid_ad_script(&content_type, &body) {
+        return Err(format!(
+            "loader response failed validation (content-type: {}, bytes: {})",
+            content_type,
+            body.len()
+        ));
+    }
+
+    Ok(body)
+}
+
+async fn resolve_ad_script_addresses() -> Result<Vec<SocketAddr>, String> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(4))
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|error| error.to_string())?;
+    let response = client
+        .get(AD_DOH_URL)
+        .header(reqwest::header::ACCEPT, "application/dns-json")
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+
+    if !response.status().is_success() {
+        return Err(format!("DNS resolver returned HTTP {}", response.status()));
+    }
+
+    let response_body = response.text().await.map_err(|error| error.to_string())?;
+    let dns: DnsJsonResponse =
+        serde_json::from_str(&response_body).map_err(|error| error.to_string())?;
+    let addresses: Vec<SocketAddr> = dns
+        .answers
+        .into_iter()
+        .filter(|answer| answer.record_type == 1)
+        .filter_map(|answer| answer.data.parse::<IpAddr>().ok())
+        .filter(|address| is_public_ad_ip(*address))
+        .map(|address| SocketAddr::new(address, 443))
+        .collect();
+
+    if addresses.is_empty() {
+        Err("DNS resolver returned no public addresses".to_string())
+    } else {
+        Ok(addresses)
+    }
+}
+
+async fn fetch_ad_script(user_agent: &str) -> Result<bytes::Bytes, String> {
+    let normal_client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(4))
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|error| error.to_string())?;
+
+    match request_ad_script(&normal_client, user_agent).await {
+        Ok(body) => return Ok(body),
+        Err(error) => log::warn!(
+            "Ad loader request using system DNS failed validation: {}. Retrying with public DNS.",
+            error
+        ),
+    }
+
+    let addresses = resolve_ad_script_addresses().await?;
+    let resolved_client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(4))
+        .timeout(Duration::from_secs(10))
+        .resolve_to_addrs(AD_SCRIPT_HOST, &addresses)
+        .build()
+        .map_err(|error| error.to_string())?;
+
+    request_ad_script(&resolved_client, user_agent).await
+}
+
+fn ad_script_response(body: bytes::Bytes, cache_state: &'static str) -> HttpResponse {
+    HttpResponse::Ok()
+        .content_type("application/javascript; charset=utf-8")
+        .insert_header(("Cache-Control", "private, max-age=1800"))
+        .insert_header(("X-Content-Type-Options", "nosniff"))
+        .insert_header(("X-Telegram-Drive-Ad-Cache", cache_state))
+        .body(body)
+}
+
+/// Relays only the fixed Adsterra loader URL into the sandboxed local ad page.
+/// A validated cached copy is retained so transient DNS/network failures do not
+/// turn a previously working banner into a blank panel.
+#[get("/ad-script")]
+async fn ad_script(
+    req: actix_web::HttpRequest,
+    cache: web::Data<AdScriptCache>,
+) -> impl Responder {
+    {
+        let cached = cache.value.read().await;
+        if let Some(script) = cached.as_ref() {
+            if script.fetched_at.elapsed() < AD_SCRIPT_CACHE_TTL {
+                return ad_script_response(script.body.clone(), "fresh");
+            }
+        }
+    }
+
+    let user_agent = req
+        .headers()
+        .get("user-agent")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(AD_SCRIPT_FALLBACK_USER_AGENT);
+
+    match fetch_ad_script(user_agent).await {
+        Ok(body) => {
+            *cache.value.write().await = Some(CachedAdScript {
+                body: body.clone(),
+                fetched_at: Instant::now(),
+            });
+            ad_script_response(body, "refreshed")
+        }
+        Err(error) => {
+            log::warn!("Ad loader relay unavailable: {}", error);
+            let cached = cache.value.read().await;
+            if let Some(script) = cached.as_ref() {
+                return ad_script_response(script.body.clone(), "stale");
+            }
+
+            HttpResponse::ServiceUnavailable()
+                .content_type("application/javascript; charset=utf-8")
+                .insert_header(("Cache-Control", "no-store"))
+                .body("/* Advertisement loader temporarily unavailable. */")
+        }
+    }
+}
+
 #[get("/stream/{folder_id}/{message_id}")]
 async fn stream_media(
     req: actix_web::HttpRequest,
@@ -387,6 +639,57 @@ fn mime_type_from_media(media: &Media) -> String {
     }
 }
 
+#[cfg(test)]
+mod ad_tests {
+    use super::{
+        fetch_ad_script, is_public_ad_ip, is_valid_ad_script, AD_BANNER_HTML,
+        AD_SCRIPT_FALLBACK_USER_AGENT,
+    };
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    #[test]
+    fn ad_banner_reports_creative_load_status() {
+        assert!(AD_BANNER_HTML.contains("telegram-drive:ad-banner-status"));
+        assert!(AD_BANNER_HTML.contains("src=\"/ad-script\""));
+        assert!(!AD_BANNER_HTML.contains("highperformanceformat.com"));
+        assert!(AD_BANNER_HTML.contains("onload=\"window.telegramDriveAdLoaded()\""));
+        assert!(AD_BANNER_HTML.contains("onerror=\"window.telegramDriveAdFailed()\""));
+        assert!(AD_BANNER_HTML.contains("document.querySelector('iframe')"));
+    }
+
+    #[test]
+    fn ad_script_validation_rejects_empty_or_unexpected_responses() {
+        let valid = format!("/* atOptions currentScript */{}", "x".repeat(1100));
+        assert!(is_valid_ad_script("application/javascript", valid.as_bytes()));
+        assert!(!is_valid_ad_script("text/html", valid.as_bytes()));
+        assert!(!is_valid_ad_script(
+            "application/javascript",
+            b"atOptions currentScript"
+        ));
+    }
+
+    #[test]
+    fn ad_dns_recovery_accepts_only_public_addresses() {
+        assert!(is_public_ad_ip(IpAddr::V4(Ipv4Addr::new(
+            172, 240, 108, 76
+        ))));
+        assert!(!is_public_ad_ip(IpAddr::V4(Ipv4Addr::new(
+            192, 168, 4, 1
+        ))));
+        assert!(!is_public_ad_ip(IpAddr::V4(Ipv4Addr::LOCALHOST)));
+        assert!(!is_public_ad_ip(IpAddr::V6(Ipv6Addr::LOCALHOST)));
+    }
+
+    #[actix_rt::test]
+    #[ignore = "requires the live advertisement service and public DNS"]
+    async fn live_ad_loader_relay_fetches_a_valid_script() {
+        let script = fetch_ad_script(AD_SCRIPT_FALLBACK_USER_AGENT)
+            .await
+            .expect("live advertisement loader should be available");
+        assert!(is_valid_ad_script("application/javascript", &script));
+    }
+}
+
 pub async fn start_server(
     state: Arc<TelegramState>,
     port: u16,
@@ -398,6 +701,7 @@ pub async fn start_server(
     let token_data = web::Data::new(StreamTokenData { token });
     let db_data = web::Data::new(db_pool);
     let transcode_data = web::Data::new(transcode_manager);
+    let ad_script_cache = web::Data::new(AdScriptCache::default());
     
     log::info!("Starting Streaming Server on port {}", port);
 
@@ -444,7 +748,9 @@ pub async fn start_server(
             .app_data(token_data.clone())
             .app_data(db_data.clone())
             .app_data(transcode_data.clone())
+            .app_data(ad_script_cache.clone())
             .service(ad_banner)
+            .service(ad_script)
             .service(stream_media)
             .configure(crate::share_routes::configure_share_routes)
             .configure(crate::transcode::configure_hls_routes)

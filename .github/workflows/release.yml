@@ -81,7 +81,7 @@ jobs:
         include:
           # Windows
           - platform: windows-latest
-            args: ''
+            args: '--bundles nsis'
             target: ''
           
           # Linux
@@ -132,6 +132,11 @@ jobs:
         working-directory: app
         run: npm install
 
+      - name: Prepare Windows runtime prerequisite
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: ./app/scripts/prepare-windows-runtime.ps1
+
       - name: Prepare Tauri signing key
         shell: node {0}
         env:
@@ -157,6 +162,11 @@ jobs:
           projectPath: ./app
           includeUpdaterJson: true
           args: ${{ matrix.args }}
+
+      - name: Verify Windows installer runtime
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: ./app/scripts/verify-windows-bundle.ps1
 
       - name: Patch AppImage for cross-distro EGL compatibility
         if: matrix.platform == 'ubuntu-22.04'

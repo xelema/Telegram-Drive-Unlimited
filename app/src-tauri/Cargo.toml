@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "2.2.5"
+version = "2.2.6"
 description = "Turn your Telegram account into an unlimited, secure cloud storage drive. an Open-source desktop app built with Tauri, Rust, and React."
 authors = ["Cameron Amer"]
 edition = "2021"
@@ -84,8 +84,3 @@ dav-server = { version = "0.11", features = ["actix-compat"] }
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"
 ndk-context = "0.1.1"
-
-[package.metadata.tauri.bundle.windows]
-# Embed the WebView2 bootstrapper so the app works on Windows systems
-# where the WebView2 runtime is not pre-installed (fresh installs, servers, etc.)
-webview-install-mode = "embeddir"
