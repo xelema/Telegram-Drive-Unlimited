@@ -13,6 +13,11 @@
 - Fixed blank desktop advertisement panels by relaying and validating the configured advertisement loader through the local desktop server.
 - Added resilient DNS recovery, short-term loader caching, and a clear sponsored-content fallback when the service is blocked or unavailable.
 
+### Windows Folder Sidebar
+
+- Fixed folder option and right-click menus opening without allowing actions to be selected in Windows WebView2.
+- Isolated sidebar menu pointer events from drag-and-drop handling and rendered the menu outside the draggable folder element.
+
 ### Verification
 
 - Production frontend build passed.

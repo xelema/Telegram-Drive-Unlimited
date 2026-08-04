@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { MoreVertical, Globe, Pencil, Trash2, EyeOff, Eye, Link } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useSortable } from '@dnd-kit/sortable';
@@ -31,7 +32,7 @@ export function SidebarItem({
 }: SidebarItemProps) {
     const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
     const menuRef = useRef<HTMLDivElement>(null);
-    const settingsBtnRef = useRef<HTMLDivElement>(null);
+    const settingsBtnRef = useRef<HTMLButtonElement>(null);
     const { t } = useTranslation();
 
     const {
@@ -78,15 +79,22 @@ export function SidebarItem({
         }
     }, [hasFolderActions]);
 
-    // Close context menu on outside click
+    // Close only for pointer/context events outside the menu. Using a capture
+    // listener avoids Windows WebView2 ordering differences between native
+    // window events and React click handlers.
     useEffect(() => {
         if (!contextMenu) return;
-        const handler = () => setContextMenu(null);
-        window.addEventListener('click', handler);
-        window.addEventListener('contextmenu', handler);
+        const handler = (event: Event) => {
+            const target = event.target;
+            if (!(target instanceof Node)) return;
+            if (menuRef.current?.contains(target) || settingsBtnRef.current?.contains(target)) return;
+            setContextMenu(null);
+        };
+        window.addEventListener('pointerdown', handler, true);
+        window.addEventListener('contextmenu', handler, true);
         return () => {
-            window.removeEventListener('click', handler);
-            window.removeEventListener('contextmenu', handler);
+            window.removeEventListener('pointerdown', handler, true);
+            window.removeEventListener('contextmenu', handler, true);
         };
     }, [contextMenu]);
 
@@ -130,22 +138,26 @@ export function SidebarItem({
                 <Globe className="w-3 h-3 text-emerald-400 flex-shrink-0" />
             )}
             {onDelete && !collapsed && (
-                <div
+                <button
+                    type="button"
                     ref={settingsBtnRef}
+                    onPointerDown={(e) => e.stopPropagation()}
                     onClick={openSettingsPopover}
                     className="quiet-control flex h-7 w-7 items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-app-hover focus-visible:opacity-100"
                     title={t('files.folder_settings')}
+                    aria-label={t('files.folder_settings')}
                 >
                     <MoreVertical className="w-3.5 h-3.5 text-telegram-subtext hover:text-telegram-text" />
-                </div>
+                </button>
             )}
 
             {/* Folder Context Menu */}
-            {contextMenu && (
+            {contextMenu && createPortal((
                 <div
                     ref={menuRef}
                     className="quiet-menu fixed z-[300] flex min-w-[232px] flex-col gap-1 p-1.5 animate-in fade-in duration-100"
                     style={{ left: contextMenu.x, top: contextMenu.y }}
+                    onPointerDown={(e) => e.stopPropagation()}
                     onClick={(e) => e.stopPropagation()}
                     onContextMenu={(e) => e.preventDefault()}
                 >
@@ -228,7 +240,7 @@ export function SidebarItem({
                         {t('files.delete')}
                     </button>
                 </div>
-            )}
+            ), document.body)}
         </div>
     )
 }
