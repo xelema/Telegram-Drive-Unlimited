@@ -1200,7 +1200,7 @@ pub async fn cmd_get_cached_variants(
 
 // ── Detailed cache info (per-file per-quality with sizes) ──────────
 
-#[derive(serde::Serialize)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
 pub struct CacheEntry {
     pub file_key: String,
     pub quality: String,
@@ -1215,80 +1215,143 @@ pub struct DetailedCacheInfo {
     pub max_bytes: u64,
 }
 
-#[tauri::command]
-pub async fn cmd_get_detailed_transcode_cache(
-    manager: tauri::State<'_, TranscodeManager>,
-) -> Result<DetailedCacheInfo, String> {
-    let mut entries: Vec<CacheEntry> = Vec::new();
-    let hls_root = manager.cache_root.join(HLS_DIR);
+fn scan_transcode_cache(cache_root: &Path) -> Result<Vec<CacheEntry>, String> {
+    let mut entries = Vec::new();
+    let hls_root = cache_root.join(HLS_DIR);
 
-    if let Ok(file_dirs) = std::fs::read_dir(&hls_root) {
-        for file_entry in file_dirs.flatten() {
-            let file_path = file_entry.path();
-            if !file_path.is_dir() {
-                continue;
-            }
-            let file_key = file_path.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("")
-                .to_string();
-
-            if let Ok(quality_dirs) = std::fs::read_dir(&file_path) {
-                for q_entry in quality_dirs.flatten() {
-                    let q_path = q_entry.path();
-                    if !q_path.is_dir() {
+    match std::fs::read_dir(&hls_root) {
+        Ok(file_dirs) => {
+            for file_entry in file_dirs {
+                let file_entry = match file_entry {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        log::warn!("Transcode: Could not inspect an HLS cache entry: {error}");
                         continue;
                     }
-                    let quality = q_path.file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("")
-                        .to_string();
+                };
+                let file_type = file_entry.file_type().map_err(|error| {
+                    format!("Could not inspect an HLS cache item type: {error}")
+                })?;
+                if !file_type.is_dir() {
+                    continue;
+                }
+                let file_key = file_entry.file_name().to_string_lossy().into_owned();
+                let quality_dirs = std::fs::read_dir(file_entry.path())
+                    .map_err(|error| format!("Could not read cached variants: {error}"))?;
 
-                    let playlist_exists = q_path.join("index.m3u8").exists();
-
-                    // Sum file sizes in this quality directory
+                for quality_entry in quality_dirs {
+                    let quality_entry = match quality_entry {
+                        Ok(entry) => entry,
+                        Err(error) => {
+                            log::warn!(
+                                "Transcode: Could not inspect a cached quality entry: {error}"
+                            );
+                            continue;
+                        }
+                    };
+                    let quality_type = quality_entry.file_type().map_err(|error| {
+                        format!("Could not inspect a cached variant type: {error}")
+                    })?;
+                    if !quality_type.is_dir() {
+                        continue;
+                    }
+                    let quality_path = quality_entry.path();
                     let mut size_bytes = 0u64;
-                    if let Ok(files) = std::fs::read_dir(&q_path) {
-                        for f in files.flatten() {
-                            if let Ok(meta) = f.metadata() {
-                                size_bytes += meta.len();
+                    let files = std::fs::read_dir(&quality_path)
+                        .map_err(|error| format!("Could not read a cached variant: {error}"))?;
+                    for file in files {
+                        let file = match file {
+                            Ok(entry) => entry,
+                            Err(error) => {
+                                log::warn!(
+                                    "Transcode: Could not inspect a cached segment: {error}"
+                                );
+                                continue;
                             }
+                        };
+                        let file_type = file.file_type().map_err(|error| {
+                            format!("Could not inspect a cached segment type: {error}")
+                        })?;
+                        if file_type.is_file() {
+                            let metadata = file.metadata().map_err(|error| {
+                                format!("Could not read cached segment metadata: {error}")
+                            })?;
+                            size_bytes = size_bytes.saturating_add(metadata.len());
                         }
                     }
-
                     entries.push(CacheEntry {
                         file_key: file_key.clone(),
-                        quality,
+                        quality: quality_entry.file_name().to_string_lossy().into_owned(),
                         size_bytes,
-                        playlist_exists,
+                        playlist_exists: quality_path.join("index.m3u8").is_file(),
                     });
                 }
             }
         }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("Could not read the HLS cache directory: {error}")),
     }
 
-    // Also count originals
-    let orig_root = manager.cache_root.join(ORIGINALS_DIR);
-    if let Ok(orig_files) = std::fs::read_dir(&orig_root) {
-        for of in orig_files.flatten() {
-            let path = of.path();
-            if path.is_file() {
-                let stem = path.file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("");
-                let size_bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    let originals_root = cache_root.join(ORIGINALS_DIR);
+    match std::fs::read_dir(&originals_root) {
+        Ok(originals) => {
+            for original in originals {
+                let original = match original {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        log::warn!("Transcode: Could not inspect a cached original: {error}");
+                        continue;
+                    }
+                };
+                let file_type = original.file_type().map_err(|error| {
+                    format!("Could not inspect a cached original type: {error}")
+                })?;
+                if !file_type.is_file() {
+                    continue;
+                }
+                let metadata = original
+                    .metadata()
+                    .map_err(|error| format!("Could not read cached original metadata: {error}"))?;
+                let path = original.path();
                 entries.push(CacheEntry {
-                    file_key: stem.to_string(),
+                    file_key: path
+                        .file_stem()
+                        .map(|stem| stem.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
                     quality: "original".to_string(),
-                    size_bytes,
-                    playlist_exists: path.exists(),
+                    size_bytes: metadata.len(),
+                    playlist_exists: true,
                 });
             }
         }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "Could not read the original media cache directory: {error}"
+            ))
+        }
     }
 
-    let total_bytes: u64 = entries.iter().map(|e| e.size_bytes).sum();
+    entries.sort_by(|left, right| {
+        left.file_key
+            .cmp(&right.file_key)
+            .then_with(|| left.quality.cmp(&right.quality))
+    });
+    Ok(entries)
+}
+
+#[tauri::command]
+pub async fn cmd_get_detailed_transcode_cache(
+    manager: tauri::State<'_, TranscodeManager>,
+) -> Result<DetailedCacheInfo, String> {
     let max_bytes = manager.get_max_cache_bytes().await;
+    let cache_root = manager.cache_root.clone();
+    let entries = tokio::task::spawn_blocking(move || scan_transcode_cache(&cache_root))
+        .await
+        .map_err(|error| format!("Transcode cache inspection task failed: {error}"))??;
+    let total_bytes = entries
+        .iter()
+        .fold(0u64, |total, entry| total.saturating_add(entry.size_bytes));
 
     Ok(DetailedCacheInfo {
         entries,
@@ -1299,83 +1362,130 @@ pub async fn cmd_get_detailed_transcode_cache(
 
 // ── Clear transcode cache (all, per-file, or per-variant) ──────────
 
+fn validate_cache_component(value: &str, label: &str) -> Result<(), String> {
+    if value.is_empty()
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err(format!("Invalid {label} for transcode cache operation"));
+    }
+    Ok(())
+}
+
+fn remove_cache_path(path: &Path) -> Result<bool, String> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("Could not inspect a cache item: {error}")),
+    };
+    if metadata.is_dir() && !metadata.file_type().is_symlink() {
+        std::fs::remove_dir_all(path)
+            .map_err(|error| format!("Could not remove a cache directory: {error}"))?;
+    } else {
+        std::fs::remove_file(path)
+            .map_err(|error| format!("Could not remove a cache file: {error}"))?;
+    }
+    Ok(true)
+}
+
+fn cache_directory_is_empty(path: &Path) -> Result<bool, String> {
+    match std::fs::read_dir(path) {
+        Ok(mut entries) => Ok(entries.next().is_none()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(format!("Could not inspect the remaining cache entries: {error}")),
+    }
+}
+
+fn clear_all_transcode_cache(cache_root: &Path) -> Result<String, String> {
+    let mut removed_count = 0u64;
+    let mut failures = Vec::new();
+    for directory in [cache_root.join(HLS_DIR), cache_root.join(ORIGINALS_DIR)] {
+        match std::fs::read_dir(&directory) {
+            Ok(entries) => {
+                for entry in entries {
+                    match entry {
+                        Ok(entry) => match remove_cache_path(&entry.path()) {
+                            Ok(true) => removed_count += 1,
+                            Ok(false) => {}
+                            Err(error) => failures.push(error),
+                        },
+                        Err(error) => failures.push(format!("Could not read a cache item: {error}")),
+                    }
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => failures.push(format!("Could not read a cache directory: {error}")),
+        }
+    }
+    if failures.is_empty() {
+        log::info!("Transcode: Cleared all cache ({} entries)", removed_count);
+        Ok(format!(
+            "Cleared all transcode cache ({} entries)",
+            removed_count
+        ))
+    } else {
+        Err(format!(
+            "Transcode cache was only partially cleared ({} entries removed): {}",
+            removed_count, failures[0]
+        ))
+    }
+}
+
+fn clear_file_transcode_cache(cache_root: &Path, file_key: &str) -> Result<String, String> {
+    validate_cache_component(file_key, "file key")?;
+    remove_cache_path(&cache_root.join(HLS_DIR).join(file_key))?;
+    remove_cache_path(
+        &cache_root
+            .join(ORIGINALS_DIR)
+            .join(format!("{file_key}.mp4")),
+    )?;
+    log::info!("Transcode: Cleared cache for a file");
+    Ok("Cleared cache for the selected file".to_string())
+}
+
+fn clear_variant_transcode_cache(
+    cache_root: &Path,
+    file_key: &str,
+    quality: &str,
+) -> Result<String, String> {
+    validate_cache_component(file_key, "file key")?;
+    validate_cache_component(quality, "quality")?;
+    if !QUALITY_PRESETS.iter().any(|preset| preset.label == quality) {
+        return Err("Unknown transcode quality".to_string());
+    }
+
+    let file_directory = cache_root.join(HLS_DIR).join(file_key);
+    remove_cache_path(&file_directory.join(quality))?;
+    if cache_directory_is_empty(&file_directory)? {
+        remove_cache_path(&file_directory)?;
+        remove_cache_path(
+            &cache_root
+                .join(ORIGINALS_DIR)
+                .join(format!("{file_key}.mp4")),
+        )?;
+    }
+    log::info!("Transcode: Cleared one cached quality variant");
+    Ok(format!("Cleared {quality} variant for the selected file"))
+}
+
 #[tauri::command]
 pub async fn cmd_clear_transcode_cache(
     file_key: Option<String>,
     quality: Option<String>,
     manager: tauri::State<'_, TranscodeManager>,
 ) -> Result<String, String> {
-    match (file_key, quality) {
-        // Clear everything
-        (None, None) => {
-            let hls_root = manager.cache_root.join(HLS_DIR);
-            let orig_root = manager.cache_root.join(ORIGINALS_DIR);
-            let mut removed_count = 0u64;
-
-            if hls_root.exists() {
-                if let Ok(entries) = std::fs::read_dir(&hls_root) {
-                    for entry in entries.flatten() {
-                        let _ = std::fs::remove_dir_all(entry.path());
-                        removed_count += 1;
-                    }
-                }
-            }
-            if orig_root.exists() {
-                if let Ok(entries) = std::fs::read_dir(&orig_root) {
-                    for entry in entries.flatten() {
-                        let _ = std::fs::remove_file(entry.path());
-                        removed_count += 1;
-                    }
-                }
-            }
-
-            log::info!("Transcode: Cleared all cache ({} entries)", removed_count);
-            Ok(format!("Cleared all transcode cache ({} entries)", removed_count))
+    let cache_root = manager.cache_root.clone();
+    tokio::task::spawn_blocking(move || match (file_key, quality) {
+        (None, None) => clear_all_transcode_cache(&cache_root),
+        (Some(file_key), None) => clear_file_transcode_cache(&cache_root, &file_key),
+        (Some(file_key), Some(quality)) => {
+            clear_variant_transcode_cache(&cache_root, &file_key, &quality)
         }
-        // Clear all variants for a specific file
-        (Some(fk), None) => {
-            let hls_path = manager.cache_root.join(HLS_DIR).join(&fk);
-            let orig_path = manager.cache_root.join(ORIGINALS_DIR).join(format!("{}.mp4", fk));
-
-            if hls_path.exists() {
-                let _ = std::fs::remove_dir_all(&hls_path);
-            }
-            if orig_path.exists() {
-                let _ = std::fs::remove_file(&orig_path);
-            }
-
-            log::info!("Transcode: Cleared cache for file {}", fk);
-            Ok(format!("Cleared cache for {}", fk))
-        }
-        // Clear a specific quality variant for a file
-        (Some(fk), Some(q)) => {
-            let variant_path = manager.hls_output_dir(&fk, &q);
-            if variant_path.exists() {
-                let _ = std::fs::remove_dir_all(&variant_path);
-            }
-            // If no more qualities remain for this file, also remove the parent directory
-            // and the orphaned original file.
-            let file_dir = manager.cache_root.join(HLS_DIR).join(&fk);
-            if file_dir.exists() {
-                let has_other_variants = std::fs::read_dir(&file_dir)
-                    .map(|mut d| d.any(|e| e.ok().map(|e| e.path().is_dir()).unwrap_or(false)))
-                    .unwrap_or(false);
-                if !has_other_variants {
-                    let _ = std::fs::remove_dir_all(&file_dir);
-                    // Clean up orphaned original so it doesn't linger on disk
-                    let orig_path = manager.original_path(&fk);
-                    if orig_path.exists() {
-                        let _ = std::fs::remove_file(&orig_path);
-                        log::info!("Transcode: Removed orphaned original {:?}", orig_path);
-                    }
-                }
-            }
-
-            log::info!("Transcode: Cleared variant {} for file {}", q, fk);
-            Ok(format!("Cleared {} variant for {}", q, fk))
-        }
-        (None, Some(_)) => Err("Cannot clear quality without specifying file_key".to_string()),
-    }
+        (None, Some(_)) => Err("Cannot clear quality without specifying file key".to_string()),
+    })
+    .await
+    .map_err(|error| format!("Transcode cache clear task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -1609,4 +1719,115 @@ pub fn configure_hls_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(hls_master_playlist)
        .service(hls_playlist)
        .service(hls_segment);
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    struct TestCache {
+        root: PathBuf,
+    }
+
+    impl TestCache {
+        fn new() -> Self {
+            let unique = format!(
+                "telegram-drive-transcode-test-{}-{}",
+                std::process::id(),
+                chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+            );
+            let root = std::env::temp_dir().join(unique);
+            std::fs::create_dir_all(root.join(HLS_DIR)).unwrap();
+            std::fs::create_dir_all(root.join(ORIGINALS_DIR)).unwrap();
+            Self { root }
+        }
+
+        fn add_variant(&self, file_key: &str, quality: &str, bytes: &[u8]) {
+            let variant = self.root.join(HLS_DIR).join(file_key).join(quality);
+            std::fs::create_dir_all(&variant).unwrap();
+            std::fs::write(variant.join("index.m3u8"), b"playlist").unwrap();
+            std::fs::write(variant.join("segment_000.ts"), bytes).unwrap();
+        }
+
+        fn add_original(&self, file_key: &str, bytes: &[u8]) {
+            std::fs::write(
+                self.root
+                    .join(ORIGINALS_DIR)
+                    .join(format!("{file_key}.mp4")),
+                bytes,
+            )
+            .unwrap();
+        }
+    }
+
+    impl Drop for TestCache {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn missing_or_empty_cache_is_a_valid_empty_state() {
+        let missing = std::env::temp_dir().join(format!(
+            "telegram-drive-missing-cache-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        assert!(scan_transcode_cache(&missing).unwrap().is_empty());
+        let cache = TestCache::new();
+        assert!(scan_transcode_cache(&cache.root).unwrap().is_empty());
+    }
+
+    #[test]
+    fn cache_scan_reports_variants_originals_and_exact_sizes() {
+        let cache = TestCache::new();
+        cache.add_variant("123_456", "720p", &[1, 2, 3, 4]);
+        cache.add_original("123_456", &[5, 6, 7]);
+
+        let entries = scan_transcode_cache(&cache.root).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].file_key, "123_456");
+        assert_eq!(entries[0].quality, "720p");
+        assert_eq!(entries[0].size_bytes, 12);
+        assert!(entries[0].playlist_exists);
+        assert_eq!(entries[1].quality, "original");
+        assert_eq!(entries[1].size_bytes, 3);
+    }
+
+    #[test]
+    fn variant_and_full_clear_remove_only_expected_cache_paths() {
+        let cache = TestCache::new();
+        cache.add_variant("123_456", "720p", &[1]);
+        cache.add_variant("123_456", "1080p", &[2]);
+        cache.add_original("123_456", &[3]);
+
+        clear_variant_transcode_cache(&cache.root, "123_456", "720p").unwrap();
+        assert!(!cache
+            .root
+            .join(HLS_DIR)
+            .join("123_456")
+            .join("720p")
+            .exists());
+        assert!(cache
+            .root
+            .join(HLS_DIR)
+            .join("123_456")
+            .join("1080p")
+            .exists());
+        assert!(cache
+            .root
+            .join(ORIGINALS_DIR)
+            .join("123_456.mp4")
+            .exists());
+
+        clear_all_transcode_cache(&cache.root).unwrap();
+        assert!(scan_transcode_cache(&cache.root).unwrap().is_empty());
+    }
+
+    #[test]
+    fn clear_rejects_path_traversal_and_unknown_qualities() {
+        let cache = TestCache::new();
+        assert!(clear_file_transcode_cache(&cache.root, "../outside").is_err());
+        assert!(clear_variant_transcode_cache(&cache.root, "123_456", "source").is_err());
+    }
 }

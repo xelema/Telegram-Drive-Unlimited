@@ -61,7 +61,15 @@
     "delete_group": "Delete Group",
     "enter_group_name": "Enter group name...",
     "hide_groups_desc": "Toggle folder groups display in the sidebar",
-    "delete": "삭제"
+    "delete": "삭제",
+    "recents": "최근 항목",
+    "favorites": "즐겨찾기",
+    "pinned": "고정됨",
+    "offline_files": "오프라인 파일",
+    "storage_insights": "저장 공간 분석",
+    "large_files": "대용량 파일",
+    "old_files": "오래된 파일",
+    "duplicates": "중복 파일"
   },
   "settings": {
     "concurrent_uploads": "동시 업로드 수",
@@ -366,7 +374,14 @@
     "webdav_regenerate_title": "Regenerate WebDAV link?",
     "webdav_regenerate_desc": "The current connection link will stop working immediately. You will need to reconnect every WebDAV client with the new link.",
     "webdav_enable_changes_title": "Allow WebDAV file changes?",
-    "webdav_enable_changes_confirm": "Connected WebDAV clients will be able to upload, rename, move, and delete unencrypted files. Encrypted files remain protected."
+    "webdav_enable_changes_confirm": "Connected WebDAV clients will be able to upload, rename, move, and delete unencrypted files. Encrypted files remain protected.",
+    "offline_cache": "오프라인 파일",
+    "offline_cache_desc": "최근에 연 암호화되지 않은 파일은 오프라인에서 사용할 수 있도록 이 기기에 보관됩니다.",
+    "offline_cache_usage": "파일 {{count}}개 · {{limit}} 중 {{used}}",
+    "refresh_offline_cache": "오프라인 파일 사용량 새로 고침",
+    "clear_offline_cache_title": "오프라인 파일을 지울까요?",
+    "clear_offline_cache_desc": "오프라인 사용을 위해 보관된 파일이 이 기기에서 삭제됩니다. Telegram의 사본은 영향을 받지 않습니다.",
+    "offline_cache_cleared": "오프라인 파일을 지웠습니다"
   },
   "files": {
     "download": "다운로드",
@@ -498,7 +513,26 @@
     "donate": "Donate",
     "getting_started": "Getting Started",
     "close_help": "Close help",
-    "privacy_note": "Your credentials are stored locally on your device and are never sent to any third-party servers. All data goes directly between you and Telegram."
+    "privacy_note": "Your credentials are stored locally on your device and are never sent to any third-party servers. All data goes directly between you and Telegram.",
+    "code_sent_telegram_app": "Telegram이 로그인된 기기의 인증된 Telegram 채팅으로 로그인 코드를 보냈습니다.",
+    "code_sent_sms": "Telegram이 SMS로 로그인 코드를 보냈습니다.",
+    "code_sent_call": "Telegram이 전화로 로그인 코드를 읽어 줍니다.",
+    "code_sent_flash_call": "Telegram에서 짧은 전화가 옵니다. {{hint}}와 일치하는 발신 번호를 입력하세요.",
+    "code_sent_missed_call": "Telegram에서 부재중 전화가 옵니다. {{hint}}로 시작하는 번호의 마지막 숫자를 입력하세요.",
+    "code_sent_email": "Telegram이 {{hint}}로 로그인 코드를 보냈습니다.",
+    "code_sent_fragment": "Telegram이 Fragment를 통해 코드를 전달했습니다. Fragment를 열어 확인하세요.",
+    "code_sent_sms_word": "Telegram이 {{hint}}로 시작하는 단어를 SMS로 보냈습니다. 전체 단어를 입력하세요.",
+    "code_sent_sms_phrase": "Telegram이 {{hint}}로 시작하는 문구를 SMS로 보냈습니다. 전체 문구를 입력하세요.",
+    "code_delivery_unsupported": "Telegram이 타사 데스크톱 앱에서 완료할 수 없는 전달 방식을 선택했습니다. QR 로그인을 사용하세요.",
+    "open_fragment": "Fragment 열기",
+    "fragment_url_invalid": "Telegram에서 잘못된 Fragment 로그인 링크를 반환했습니다.",
+    "code_word_placeholder": "단어 또는 문구 입력",
+    "verifying": "확인 중...",
+    "sign_in": "로그인",
+    "resending": "다시 보내는 중...",
+    "resend_in": "{{seconds}}초 후 코드 다시 보내기",
+    "resend_code": "코드 다시 보내기",
+    "use_qr_instead": "대신 QR 코드 사용"
   },
   "ads": {
     "sponsored": "Sponsored",

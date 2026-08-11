@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { check, Update } from '@tauri-apps/plugin-updater';
-import { relaunch } from '@tauri-apps/plugin-process';
+import { installVerifiedUpdate, type UpdateInstallPhase } from '../services/updateReliability';
 
 interface UpdateState {
     checking: boolean;
@@ -9,6 +9,7 @@ interface UpdateState {
     progress: number;
     error: string | null;
     version: string | null;
+    phase: UpdateInstallPhase | null;
 }
 
 export function useUpdateCheck() {
@@ -19,6 +20,7 @@ export function useUpdateCheck() {
         progress: 0,
         error: null,
         version: null,
+        phase: null,
     });
     const [update, setUpdate] = useState<Update | null>(null);
 
@@ -50,38 +52,26 @@ export function useUpdateCheck() {
     const downloadAndInstall = useCallback(async () => {
         if (!update) return;
 
-        setState(s => ({ ...s, downloading: true, progress: 0 }));
-        let downloaded = 0;
-        let contentLength = 0;
-
+        setState(s => ({ ...s, downloading: true, progress: 0, phase: 'downloading', error: null }));
         try {
-            await update.downloadAndInstall((event) => {
-                if (event.event === 'Started') {
-                    const data = event.data as { contentLength?: number };
-                    contentLength = data.contentLength || 0;
-                } else if (event.event === 'Progress') {
-                    const data = event.data as { chunkLength?: number };
-                    downloaded += data.chunkLength || 0;
-                    if (contentLength > 0) {
-                        const pct = Math.round((downloaded / contentLength) * 100);
-                        setState(s => ({ ...s, progress: Math.min(pct, 100) }));
-                    }
-                }
-            });
-
-            await relaunch();
+            await installVerifiedUpdate(
+                update,
+                (nextProgress) => setState(s => ({ ...s, progress: nextProgress })),
+                (phase) => setState(s => ({ ...s, phase })),
+            );
         } catch (err: unknown) {
             const message = err instanceof Error ? err.message : 'Failed to install update';
             setState(s => ({
                 ...s,
                 downloading: false,
+                phase: null,
                 error: message,
             }));
         }
     }, [update]);
 
     const dismissUpdate = useCallback(() => {
-        setState(s => ({ ...s, available: false }));
+        setState(s => ({ ...s, available: false, phase: null }));
         setUpdate(null);
     }, []);
 

@@ -61,7 +61,15 @@
     "delete_group": "Delete Group",
     "enter_group_name": "Enter group name...",
     "hide_groups_desc": "Toggle folder groups display in the sidebar",
-    "delete": "Hapus"
+    "delete": "Hapus",
+    "recents": "Terbaru",
+    "favorites": "Favorit",
+    "pinned": "Disematkan",
+    "offline_files": "File offline",
+    "storage_insights": "Analisis penyimpanan",
+    "large_files": "File besar",
+    "old_files": "File lama",
+    "duplicates": "Duplikat"
   },
   "settings": {
     "concurrent_uploads": "Unggahan Simultan",
@@ -366,7 +374,14 @@
     "webdav_regenerate_title": "Regenerate WebDAV link?",
     "webdav_regenerate_desc": "The current connection link will stop working immediately. You will need to reconnect every WebDAV client with the new link.",
     "webdav_enable_changes_title": "Allow WebDAV file changes?",
-    "webdav_enable_changes_confirm": "Connected WebDAV clients will be able to upload, rename, move, and delete unencrypted files. Encrypted files remain protected."
+    "webdav_enable_changes_confirm": "Connected WebDAV clients will be able to upload, rename, move, and delete unencrypted files. Encrypted files remain protected.",
+    "offline_cache": "File offline",
+    "offline_cache_desc": "File tanpa enkripsi yang baru dibuka disimpan di perangkat ini untuk akses offline.",
+    "offline_cache_usage": "{{count}} file · {{used}} dari {{limit}}",
+    "refresh_offline_cache": "Segarkan penggunaan file offline",
+    "clear_offline_cache_title": "Hapus file offline?",
+    "clear_offline_cache_desc": "File yang disimpan untuk akses offline akan dihapus dari perangkat ini. Salinan di Telegram tidak terpengaruh.",
+    "offline_cache_cleared": "File offline dihapus"
   },
   "files": {
     "download": "Unduh",
@@ -498,7 +513,26 @@
     "donate": "Donate",
     "getting_started": "Getting Started",
     "close_help": "Close help",
-    "privacy_note": "Your credentials are stored locally on your device and are never sent to any third-party servers. All data goes directly between you and Telegram."
+    "privacy_note": "Your credentials are stored locally on your device and are never sent to any third-party servers. All data goes directly between you and Telegram.",
+    "code_sent_telegram_app": "Telegram mengirim kode masuk ke obrolan Telegram terverifikasi di salah satu perangkat Anda yang sudah masuk.",
+    "code_sent_sms": "Telegram mengirim kode masuk melalui SMS.",
+    "code_sent_call": "Telegram akan menelepon dan membacakan kode masuk.",
+    "code_sent_flash_call": "Telegram akan melakukan panggilan singkat. Masukkan nomor penelepon yang cocok dengan {{hint}}.",
+    "code_sent_missed_call": "Telegram akan melakukan panggilan tak terjawab. Masukkan digit terakhir dari nomor yang diawali {{hint}}.",
+    "code_sent_email": "Telegram mengirim kode masuk ke {{hint}}.",
+    "code_sent_fragment": "Telegram mengirim kode ini melalui Fragment. Buka Fragment untuk mengambilnya.",
+    "code_sent_sms_word": "Telegram mengirim SMS berisi kata yang diawali {{hint}}. Masukkan kata lengkapnya.",
+    "code_sent_sms_phrase": "Telegram mengirim SMS berisi frasa yang diawali {{hint}}. Masukkan frasa lengkapnya.",
+    "code_delivery_unsupported": "Telegram memilih metode pengiriman yang tidak dapat diselesaikan oleh aplikasi desktop pihak ketiga. Gunakan login QR.",
+    "open_fragment": "Buka Fragment",
+    "fragment_url_invalid": "Telegram mengembalikan tautan masuk Fragment yang tidak valid.",
+    "code_word_placeholder": "Masukkan kata atau frasa",
+    "verifying": "Memverifikasi...",
+    "sign_in": "Masuk",
+    "resending": "Mengirim ulang...",
+    "resend_in": "Kirim ulang kode dalam {{seconds}} dtk",
+    "resend_code": "Kirim Ulang Kode",
+    "use_qr_instead": "Gunakan Kode QR"
   },
   "ads": {
     "sponsored": "Sponsored",

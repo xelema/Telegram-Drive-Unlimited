@@ -1,6 +1,8 @@
 # Node
 node_modules/
 dist/
+/app/test-results/
+/app/playwright-report/
 .DS_Store
 .env
 
@@ -36,9 +38,22 @@ local.properties
 /app/src-tauri/tests/android_uri_cache_tests.rs
 /app/src-tauri/gen/schemas/android-schema.json
 /app/src-tauri/icons/android/
+# Android is compiled and signed locally. Keep its reproducibility inputs and
+# local CI helpers out of the desktop-only source repository; publish APKs as
+# GitHub Release assets instead of committing them.
+/.github/workflows/android.yml
+/app/android-overrides/
+/app/scripts/apply-android-overrides.cjs
+/app/scripts/verify-android-artifacts.sh
 .freebuff/
+
+# Internal development and handoff Markdown. Product, release, privacy, REST,
+# and WebDAV documentation remains tracked.
+/DESIGN_HANDOFF.md
+/app/CurrentStreamingSetup.md
+/app/docs/adr/
+*_Full-Analysis.md
+*_Prioritized-Action-List.md
 *_IMPLEMENTATION_PLAN.md
 *_EXECUTION_REPORT.md
-
-
-
+*_DEV_NOTES.md

@@ -11,6 +11,9 @@ import { isAndroidPlatform } from '../../../utils';
 import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.mjs?url';
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 
+const PDF_CACHE_LIMIT_BYTES = 25 * 1024 * 1024;
+const PAGE_PREFETCH_ROOT_MARGIN = '1000px 0px';
+
 interface StreamInfo {
     token: string;
     base_url: string;
@@ -58,7 +61,6 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
         }
     };
 
-    // Fetch stream info once
     useEffect(() => {
         if (isAndroidPlatform) return; // skip on Android
         invoke<StreamInfo>('cmd_get_stream_info').then(setStreamInfo).catch((err) => {
@@ -67,120 +69,111 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
         });
     }, []);
 
-    // Load PDF document when stream URL is ready or file changes
     useEffect(() => {
         let cancelled = false;
+        let activeLoadingTask: pdfjsLib.PDFDocumentLoadingTask | null = null;
         setLoading(true);
         setError(null);
         setPdf(null);
         setNumPages(0);
 
-        if (isAndroidPlatform) {
-            let activeLoadingTask: any = null;
-            // Android: load via converted cache file URL
+        const finishPdfLoad = (pdfDoc: pdfjsLib.PDFDocumentProxy) => {
+            if (cancelled) {
+                void pdfDoc.destroy();
+                return;
+            }
+            if (pdfRef.current) void pdfRef.current.destroy();
+            pdfRef.current = pdfDoc;
+            setPdf(pdfDoc);
+            setNumPages(pdfDoc.numPages);
+            setLoading(false);
+        };
+
+        const loadStream = () => {
+            if (!streamInfo || cancelled) {
+                if (!streamInfo) setError("Failed to initialize stream");
+                return;
+            }
+            const folderIdParam = activeFolderId !== null ? activeFolderId.toString() : 'home';
+            const streamUrl = `${streamInfo.base_url}/stream/${folderIdParam}/${file.id}?token=${streamInfo.token}`;
+            activeLoadingTask = pdfjsLib.getDocument(streamUrl);
+            activeLoadingTask.promise.then(finishPdfLoad, (err) => {
+                if (cancelled) return;
+                console.error("Error loading PDF stream:", err);
+                setError("Failed to load PDF document.");
+                setLoading(false);
+            });
+        };
+
+        const loadLocalFile = (filePath: string) => {
+            activeLoadingTask = pdfjsLib.getDocument({
+                url: convertFileSrc(filePath),
+                disableRange: true,
+                disableStream: true,
+                disableAutoFetch: true,
+            });
+            activeLoadingTask.promise.then(finishPdfLoad, (err) => {
+                if (cancelled) return;
+                if (!isAndroidPlatform) {
+                    console.warn("Cached PDF could not be rendered; falling back to streaming:", err);
+                    loadStream();
+                    return;
+                }
+                console.error("Error loading PDF via cache URL, falling back to external opener:", err);
+                invoke('cmd_open_file_externally', { path: filePath })
+                    .then(() => {
+                        if (!cancelled) onClose();
+                    })
+                    .catch((externalError) => {
+                        if (!cancelled) {
+                            setError("Failed to render PDF in WebView or open natively: " + String(externalError));
+                            setLoading(false);
+                        }
+                    });
+            });
+        };
+
+        if (!isAndroidPlatform && !streamInfo) {
+            return;
+        }
+
+        // Small PDFs are loaded from the bounded plaintext preview cache so a
+        // recently viewed document remains available offline. Large desktop
+        // PDFs retain range-based streaming to avoid filling the cache.
+        const shouldCache = isAndroidPlatform || file.size <= PDF_CACHE_LIMIT_BYTES;
+        if (shouldCache) {
             invoke<string>('cmd_get_preview', {
                 messageId: file.id,
-                folderId: activeFolderId
+                folderId: activeFolderId,
             }).then((filePath) => {
                 if (cancelled) return;
-                if (filePath) {
-                    const url = convertFileSrc(filePath);
-                    const loadingTask = pdfjsLib.getDocument({
-                        url: url,
-                        disableRange: true,
-                        disableStream: true,
-                        disableAutoFetch: true,
-                    });
-                    activeLoadingTask = loadingTask;
-                    loadingTask.promise.then(
-                        (pdfDoc) => {
-                            if (cancelled) {
-                                pdfDoc.destroy();
-                                return;
-                            }
-                            if (pdfRef.current) {
-                                pdfRef.current.destroy();
-                            }
-                            pdfRef.current = pdfDoc;
-                            setPdf(pdfDoc);
-                            setNumPages(pdfDoc.numPages);
-                            setLoading(false);
-                        },
-                        (err) => {
-                            if (cancelled) return;
-                            console.error("Error loading PDF via cache URL, falling back to external opener:", err);
-                            invoke('cmd_open_file_externally', { path: filePath })
-                                .then(() => {
-                                    if (!cancelled) onClose();
-                                })
-                                .catch((exErr) => {
-                                    if (!cancelled) {
-                                        setError("Failed to render PDF in WebView or open natively: " + String(exErr));
-                                        setLoading(false);
-                                    }
-                                });
-                        }
-                    );
-                } else {
+                if (filePath) loadLocalFile(filePath);
+                else if (!isAndroidPlatform) loadStream();
+                else {
                     setError("Failed to fetch PDF preview path.");
                     setLoading(false);
                 }
             }).catch((err) => {
                 if (cancelled) return;
-                console.error("Error invoking PDF preview command:", err);
-                setError("Failed to load PDF.");
-                setLoading(false);
+                if (!isAndroidPlatform) {
+                    console.warn("Could not cache PDF; falling back to streaming:", err);
+                    loadStream();
+                } else {
+                    console.error("Error invoking PDF preview command:", err);
+                    setError("Failed to load PDF.");
+                    setLoading(false);
+                }
             });
-
-            return () => {
-                cancelled = true;
-                if (activeLoadingTask) {
-                    activeLoadingTask.destroy();
-                }
-                if (pdfRef.current) {
-                    pdfRef.current.destroy();
-                }
-            };
+        } else {
+            loadStream();
         }
-
-        // Desktop: stream via Actix local server
-        if (!streamInfo) return;
-
-        const folderIdParam = activeFolderId !== null ? activeFolderId.toString() : 'home';
-        const streamUrl = `${streamInfo.base_url}/stream/${folderIdParam}/${file.id}?token=${streamInfo.token}`;
-
-        const loadingTask = pdfjsLib.getDocument(streamUrl);
-
-        loadingTask.promise.then(
-             (pdfDoc) => {
-                 if (cancelled) {
-                     pdfDoc.destroy();
-                     return;
-                 }
-                 // Destroy previous document if any
-                 if (pdfRef.current) {
-                     pdfRef.current.destroy();
-                 }
-                 pdfRef.current = pdfDoc;
-                 setPdf(pdfDoc);
-                 setNumPages(pdfDoc.numPages);
-                 setLoading(false);
-             },
-             (err) => {
-                 if (cancelled) return;
-                 console.error("Error loading PDF:", err);
-                 setError("Failed to load PDF document.");
-                 setLoading(false);
-             }
-        );
 
         return () => {
             cancelled = true;
-            loadingTask.destroy();
+            void activeLoadingTask?.destroy();
         };
-    }, [streamInfo, activeFolderId, file.id]);
+    }, [streamInfo, activeFolderId, file.id, file.size]);
 
-    // Cleanup PDF document on unmount
     useEffect(() => {
         return () => {
             if (pdfRef.current) {
@@ -370,7 +363,6 @@ function PdfPage({ pageNumber, pdf, scale }: { pageNumber: number; pdf: pdfjsLib
     const containerRef = useRef<HTMLDivElement>(null);
     const [page, setPage] = useState<pdfjsLib.PDFPageProxy | null>(null);
 
-    // Intersection Observer — load page data when within 1000px of viewport
     useEffect(() => {
         const el = containerRef.current;
         if (!el) return;
@@ -379,7 +371,7 @@ function PdfPage({ pageNumber, pdf, scale }: { pageNumber: number; pdf: pdfjsLib
             (entries) => {
                 setIsVisible(entries[0].isIntersecting);
             },
-            { rootMargin: '1000px 0px' }
+            { rootMargin: PAGE_PREFETCH_ROOT_MARGIN }
         );
 
         observer.observe(el);

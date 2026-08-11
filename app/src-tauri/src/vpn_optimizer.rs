@@ -209,7 +209,9 @@ impl NetworkConfig {
     /// How many retry attempts for API calls. Default 0 (no retry) when VPN off.
     pub fn retry_attempts(&self) -> u32 {
         let vpn = self.vpn.read().unwrap();
-        if vpn.enabled { vpn.retry_attempts } else { 0 }
+        // One reliability retry is always available so mandatory Telegram
+        // FLOOD_WAIT cooling periods can resume even when VPN tuning is off.
+        if vpn.enabled { vpn.retry_attempts } else { 1 }
     }
 
     /// Base backoff duration in milliseconds for retries.
@@ -227,7 +229,9 @@ impl NetworkConfig {
     /// Whether to automatically sleep on FLOOD_WAIT errors.
     pub fn should_respect_flood_wait(&self) -> bool {
         let vpn = self.vpn.read().unwrap();
-        if vpn.enabled { vpn.flood_wait_respect } else { false }
+        // Telegram rate limits must be honored on every network. The setting
+        // remains an advanced override while VPN mode is active.
+        if vpn.enabled { vpn.flood_wait_respect } else { true }
     }
 
     /// Peer cache size. Default 500.

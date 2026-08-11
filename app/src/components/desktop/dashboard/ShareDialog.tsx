@@ -1,305 +1,132 @@
-import { useState } from 'react';
-import { Plus, Link, Copy, Check, Shield, Clock, AlertCircle, Share2 } from 'lucide-react';
-import { TelegramFile, ShareInfo } from '../../../types';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { AlertCircle, ArrowLeft, Check, Clock, Copy, ExternalLink, Globe2, KeyRound, Link, Loader2, MessageCircle, Server, Shield, X } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
-import { motion, AnimatePresence } from 'framer-motion';
+import { TelegramFile, TelegramFolder, ShareInfo } from '../../../types';
 import { nativeShareOrCopy } from '../../../utils';
-import { useTranslation } from 'react-i18next';
+import { useModalFocus } from '../../../hooks/useModalFocus';
 
 interface ShareDialogProps {
     file: TelegramFile;
+    folders?: TelegramFolder[];
+    activeFolderId?: number | null;
     onClose: () => void;
+    onOpenSettings?: () => void;
 }
 
-export function ShareDialog({ file, onClose }: ShareDialogProps) {
-    const { t } = useTranslation();
+type ShareMode = 'telegram' | 'local' | 'power';
+
+export function ShareDialog({ file, folders = [], activeFolderId = null, onClose, onOpenSettings }: ShareDialogProps) {
+    const [mode, setMode] = useState<ShareMode | null>(null);
     const [password, setPassword] = useState('');
-    const [requirePassword, setRequirePassword] = useState(false);
-    const [expiryType, setExpiryType] = useState<'never' | '1h' | '1d' | '7d' | 'custom'>('1d');
-    const [customHours, setCustomHours] = useState('24');
-    
+    const [expiryType, setExpiryType] = useState<'1h' | '1d' | '7d' | 'never'>('1d');
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [shareInfo, setShareInfo] = useState<ShareInfo | null>(null);
     const [copied, setCopied] = useState(false);
-    const [customDomain, setCustomDomain] = useState('');
+    const [webDav, setWebDav] = useState<{ supported: boolean; enabled: boolean; running: boolean; port: number; token_set: boolean } | null>(null);
+    const panelRef = useRef<HTMLDivElement>(null);
+    const close = useCallback(onClose, [onClose]);
+    useModalFocus(panelRef, close);
 
-    const handleGenerate = async () => {
+    const sourceFolderId = file.folder_id ?? activeFolderId;
+    const sourceFolder = folders.find((folder) => folder.id === sourceFolderId);
+    const telegramLink = sourceFolder?.username ? `https://t.me/${sourceFolder.username}/${file.id}` : null;
+
+    useEffect(() => {
+        if (mode !== 'power') return;
+        invoke<{ supported: boolean; enabled: boolean; running: boolean; port: number; token_set: boolean }>('cmd_get_webdav_settings')
+            .then(setWebDav)
+            .catch(() => setWebDav(null));
+    }, [mode]);
+
+    const copy = async (value: string) => {
+        await navigator.clipboard.writeText(value);
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1800);
+    };
+
+    const generateLocalLink = async () => {
+        if (password.trim().length < 4) {
+            setError('Enter a password of at least 4 characters.');
+            return;
+        }
         setLoading(true);
         setError(null);
         try {
-            let expiryHours: number | null = null;
-            if (expiryType === '1h') expiryHours = 1;
-            else if (expiryType === '1d') expiryHours = 24;
-            else if (expiryType === '7d') expiryHours = 168;
-            else if (expiryType === 'custom') {
-                const parsed = parseInt(customHours, 10);
-                if (isNaN(parsed) || parsed <= 0) {
-                    throw new Error('Please enter a valid number of hours');
-                }
-                expiryHours = parsed;
-            }
-
-            const pwdParam = requirePassword && password.trim() ? password : null;
-
-            const res = await invoke<ShareInfo>('cmd_create_share', {
-                folderId: null, // Always file-level for now
-                messageId: file.id, // In Telegram Drive, file.id is the message id
+            const expiryHours = expiryType === '1h' ? 1 : expiryType === '1d' ? 24 : expiryType === '7d' ? 168 : null;
+            const result = await invoke<ShareInfo>('cmd_create_share', {
+                folderId: sourceFolderId,
+                messageId: file.id,
                 fileName: file.name,
                 fileSize: file.size,
-                password: pwdParam,
+                password: password.trim(),
                 expiryHours,
             });
-
-            setShareInfo(res);
-        } catch (err: any) {
-            setError(err.toString());
+            setShareInfo(result);
+        } catch (reason) {
+            setError(String(reason));
         } finally {
             setLoading(false);
         }
     };
 
-    const getDisplayLink = () => {
-        if (!shareInfo) return '';
-        if (customDomain.trim()) {
-            try {
-                // Replace the host part (localhost:14201) with the custom domain
-                const url = new URL(shareInfo.link);
-                return `${url.protocol}//${customDomain.trim()}${url.pathname}`;
-            } catch {
-                return shareInfo.link;
-            }
-        }
-        return shareInfo.link;
-    };
-
-    const handleCopy = () => {
-        const link = getDisplayLink();
-        if (link) {
-            navigator.clipboard.writeText(link);
-            setCopied(true);
-            setTimeout(() => setCopied(false), 2000);
-        }
-    };
-
-    // Native Android/iOS share sheet via Web Share API
-    const handleNativeShare = () => {
-        if (!shareInfo) return;
-        nativeShareOrCopy(file.name, file.sizeStr, getDisplayLink(), () => {
-            navigator.clipboard.writeText(getDisplayLink());
-            setCopied(true);
-            setTimeout(() => setCopied(false), 2000);
-        });
-    };
+    const renderModePicker = () => (
+        <div className="space-y-3">
+            <p className="text-sm text-app-text-secondary">Choose the kind of access you want to give.</p>
+            <button disabled={!telegramLink} onClick={() => setMode('telegram')} className="quiet-surface flex w-full items-start gap-3 p-4 text-start hover:border-app-accent/40 hover:bg-app-hover disabled:cursor-not-allowed disabled:opacity-45">
+                <MessageCircle className="mt-0.5 h-5 w-5 shrink-0 text-[#2AABEE]" />
+                <span><strong className="block text-sm text-app-text">Telegram link</strong><span className="mt-1 block text-xs leading-5 text-app-text-secondary">Direct link for Telegram users. Available when the source folder is a public channel.</span>{!telegramLink && <span className="mt-1 block text-xs text-app-warning">This folder is private, so it has no Telegram link.</span>}</span>
+            </button>
+            <button onClick={() => setMode('local')} className="quiet-surface flex w-full items-start gap-3 p-4 text-start hover:border-app-accent/40 hover:bg-app-hover">
+                <KeyRound className="mt-0.5 h-5 w-5 shrink-0 text-app-success" />
+                <span><strong className="block text-sm text-app-text">Local password link</strong><span className="mt-1 block text-xs leading-5 text-app-text-secondary">Create an expiring link protected by a password you choose.</span></span>
+            </button>
+            <button onClick={() => setMode('power')} className="quiet-surface flex w-full items-start gap-3 p-4 text-start hover:border-app-accent/40 hover:bg-app-hover">
+                <Server className="mt-0.5 h-5 w-5 shrink-0 text-app-accent" />
+                <span><strong className="block text-sm text-app-text">WebDAV / REST</strong><span className="mt-1 block text-xs leading-5 text-app-text-secondary">Mount the drive or connect an automation using capability-token access.</span></span>
+            </button>
+        </div>
+    );
 
     return (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-app-overlay p-4 backdrop-blur-sm" onClick={onClose}>
-            <div className="quiet-raised flex w-[min(440px,calc(100vw-2rem))] flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150" onClick={e => e.stopPropagation()}>
-                <div className="flex items-center justify-between border-b border-app-border-subtle p-4">
-                    <h3 className="text-telegram-text font-medium flex items-center gap-2">
-                        <Link className="w-5 h-5 text-telegram-primary" />
-                        {t('share.title')}
-                    </h3>
-                    <button onClick={onClose} className="text-telegram-subtext hover:text-telegram-text">
-                        <Plus className="w-5 h-5 rotate-45" />
-                    </button>
-                </div>
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-app-overlay p-4 backdrop-blur-sm" onMouseDown={onClose}>
+            <div ref={panelRef} role="dialog" aria-modal="true" aria-labelledby="share-title" tabIndex={-1} className="quiet-raised flex w-[min(480px,calc(100vw-2rem))] max-h-[85vh] flex-col overflow-hidden" onMouseDown={(event) => event.stopPropagation()}>
+                <header className="flex items-center justify-between border-b border-app-border-subtle px-5 py-4">
+                    <div className="flex min-w-0 items-center gap-2">{mode && <button onClick={() => { setMode(null); setShareInfo(null); setError(null); }} className="quiet-control p-1.5 text-app-text-secondary hover:text-app-text" aria-label="Back to sharing options"><ArrowLeft className="h-4 w-4" /></button>}<h2 id="share-title" className="truncate text-base font-semibold text-app-text">Share “{file.name}”</h2></div>
+                    <button onClick={onClose} className="quiet-control p-2 text-app-text-secondary hover:text-app-text" aria-label="Close share dialog"><X className="h-4 w-4" /></button>
+                </header>
+                <div className="custom-scrollbar flex-1 overflow-y-auto p-5">
+                    {!mode && renderModePicker()}
 
-                <div className="p-5 flex-1 overflow-y-auto space-y-4 max-h-[75vh]">
-                    <div className="quiet-surface p-3">
-                        <div className="text-xs text-telegram-subtext uppercase font-semibold tracking-wider mb-1">{t('share.sharing_file')}</div>
-                        <div className="text-sm font-medium text-telegram-text truncate">{file.name}</div>
-                        <div className="text-xs text-telegram-subtext mt-0.5">{file.sizeStr}</div>
-                    </div>
+                    {mode === 'telegram' && telegramLink && (
+                        <div className="space-y-4">
+                            <div className="rounded-lg border border-[#2AABEE]/20 bg-[#2AABEE]/5 p-4"><MessageCircle className="mb-2 h-5 w-5 text-[#2AABEE]" /><h3 className="text-sm font-semibold text-app-text">Open in Telegram</h3><p className="mt-1 text-xs leading-5 text-app-text-secondary">Anyone who can access this public channel can open the message containing this file.</p></div>
+                            <div className="flex gap-2"><input readOnly value={telegramLink} className="quiet-control min-w-0 flex-1 border border-app-border bg-app-surface-sunken px-3 text-sm text-app-text" /><button onClick={() => void copy(telegramLink)} className="quiet-control px-3 text-app-text hover:bg-app-hover" aria-label="Copy Telegram link">{copied ? <Check className="h-4 w-4 text-app-success" /> : <Copy className="h-4 w-4" />}</button></div>
+                            {typeof navigator.share === 'function' && <button onClick={() => nativeShareOrCopy(file.name, file.sizeStr, telegramLink, () => void copy(telegramLink))} className="quiet-control flex w-full items-center justify-center gap-2 bg-[#2AABEE] px-4 py-2.5 text-sm font-medium text-white"><ExternalLink className="h-4 w-4" />Share with another app</button>}
+                        </div>
+                    )}
 
-                    {!shareInfo ? (
-                        <>
-                            {/* Security Option */}
-                            <div className="space-y-2">
-                                <div className="flex items-center justify-between py-1">
-                                    <span className="text-sm font-medium text-telegram-text flex items-center gap-2 select-none">
-                                        <Shield className="w-4 h-4 text-emerald-400" />
-                                        {t('share.password_protection')}
-                                    </span>
-                                    <button
-                                        type="button"
-                                        onClick={() => setRequirePassword(!requirePassword)}
-                                        className={`relative w-10 h-5.5 rounded-full transition-colors duration-200 shrink-0 ${
-                                            requirePassword ? 'bg-telegram-primary' : 'bg-telegram-border'
-                                        }`}
-                                    >
-                                        <span
-                                            className={`absolute top-0.5 left-0.5 w-4.5 h-4.5 rounded-full bg-white shadow transition-transform duration-200 ${
-                                                requirePassword ? 'translate-x-4.5' : 'translate-x-0'
-                                            }`}
-                                        />
-                                    </button>
-                                </div>
-                                
-                                <AnimatePresence>
-                                    {requirePassword && (
-                                        <motion.div
-                                            initial={{ height: 0, opacity: 0, marginTop: 0 }}
-                                            animate={{ height: 'auto', opacity: 1, marginTop: 8 }}
-                                            exit={{ height: 0, opacity: 0, marginTop: 0 }}
-                                            transition={{ duration: 0.2, ease: 'easeInOut' }}
-                                            className="overflow-hidden"
-                                        >
-                                            <input
-                                                type="password"
-                                                placeholder={t('share.enter_password')}
-                                                value={password}
-                                                onChange={(e) => setPassword(e.target.value)}
-                                                className="w-full bg-telegram-surface/50 border border-telegram-border rounded-lg px-3 py-2 text-sm text-telegram-text focus:outline-none focus:border-telegram-primary placeholder:text-telegram-subtext/60"
-                                                autoFocus
-                                            />
-                                        </motion.div>
-                                    )}
-                                </AnimatePresence>
-                            </div>
+                    {mode === 'local' && (
+                        <div className="space-y-4">
+                            <div className="rounded-lg border border-app-success/20 bg-app-success/5 p-4"><Shield className="mb-2 h-5 w-5 text-app-success" /><h3 className="text-sm font-semibold text-app-text">Password-protected local link</h3><p className="mt-1 text-xs leading-5 text-app-text-secondary">The recipient needs network access to this computer and the password below.</p></div>
+                            {!shareInfo ? <>
+                                <label className="block text-sm font-medium text-app-text">Password<input type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="At least 4 characters" className="quiet-control mt-2 h-10 w-full border border-app-border bg-app-surface-sunken px-3 text-sm text-app-text outline-none focus:border-app-accent" /></label>
+                                <div><span className="mb-2 flex items-center gap-2 text-sm font-medium text-app-text"><Clock className="h-4 w-4 text-app-warning" />Expires</span><div className="grid grid-cols-4 gap-2">{(['1h', '1d', '7d', 'never'] as const).map((value) => <button key={value} onClick={() => setExpiryType(value)} className={`quiet-control px-2 py-2 text-xs font-medium ${expiryType === value ? 'bg-app-selected text-app-accent' : 'text-app-text-secondary'}`}>{value === 'never' ? 'Never' : value}</button>)}</div></div>
+                                {error && <div className="flex gap-2 rounded-lg border border-app-danger/20 bg-app-danger/5 p-3 text-xs text-app-danger"><AlertCircle className="h-4 w-4 shrink-0" />{error}</div>}
+                                <button onClick={generateLocalLink} disabled={loading} className="quiet-control flex w-full items-center justify-center gap-2 bg-app-accent px-4 py-2.5 text-sm font-medium text-app-accent-contrast disabled:opacity-50">{loading && <Loader2 className="h-4 w-4 animate-spin" />}Create password link</button>
+                            </> : <>
+                                <div className="flex items-center gap-2 rounded-lg border border-app-success/20 bg-app-success/5 p-3 text-sm text-app-success"><Check className="h-4 w-4" />Link created</div>
+                                <div className="flex gap-2"><input readOnly value={shareInfo.link} className="quiet-control min-w-0 flex-1 border border-app-border bg-app-surface-sunken px-3 text-sm text-app-text" /><button onClick={() => void copy(shareInfo.link)} className="quiet-control px-3 text-app-text" aria-label="Copy local link">{copied ? <Check className="h-4 w-4 text-app-success" /> : <Copy className="h-4 w-4" />}</button></div>
+                            </>}
+                        </div>
+                    )}
 
-                            {/* Expiry Option */}
-                            <div className="space-y-2">
-                                <span className="text-sm font-medium text-telegram-text flex items-center gap-2">
-                                    <Clock className="w-4 h-4 text-amber-400" />
-                                    {t('share.expiration')}
-                                </span>
-                                <div className="grid grid-cols-3 gap-2">
-                                    {(['1h', '1d', '7d'] as const).map((type) => (
-                                        <button
-                                            key={type}
-                                            type="button"
-                                            onClick={() => setExpiryType(type)}
-                                            className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
-                                                expiryType === type 
-                                                    ? 'bg-telegram-primary border-telegram-primary text-white' 
-                                                    : 'bg-telegram-surface border-telegram-border text-telegram-text hover:bg-telegram-hover'
-                                            }`}
-                                        >
-                                            {type === '1h' ? t('share.one_hour') : type === '1d' ? t('share.one_day') : t('share.seven_days')}
-                                        </button>
-                                    ))}
-                                    <button
-                                        type="button"
-                                        onClick={() => setExpiryType('never')}
-                                        className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
-                                            expiryType === 'never' 
-                                                ? 'bg-telegram-primary border-telegram-primary text-white' 
-                                                : 'bg-telegram-surface border-telegram-border text-telegram-text hover:bg-telegram-hover'
-                                        }`}
-                                    >
-                                        {t('share.never')}
-                                    </button>
-                                    <button
-                                        type="button"
-                                        onClick={() => setExpiryType('custom')}
-                                        className={`col-span-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
-                                            expiryType === 'custom' 
-                                                ? 'bg-telegram-primary border-telegram-primary text-white' 
-                                                : 'bg-telegram-surface border-telegram-border text-telegram-text hover:bg-telegram-hover'
-                                        }`}
-                                    >
-                                        {t('share.custom_hours')}
-                                    </button>
-                                </div>
-
-                                {expiryType === 'custom' && (
-                                    <div className="flex gap-2 items-center mt-2 animate-in slide-in-from-top-1 duration-100">
-                                        <input
-                                            type="number"
-                                            min="1"
-                                            value={customHours}
-                                            onChange={(e) => setCustomHours(e.target.value)}
-                                            className="w-24 bg-telegram-surface/50 border border-telegram-border rounded-lg px-3 py-2 text-sm text-telegram-text focus:outline-none focus:border-telegram-primary"
-                                        />
-                                        <span className="text-xs text-telegram-subtext">{t('share.hours_from_now')}</span>
-                                    </div>
-                                )}
-                            </div>
-
-                            {error && (
-                                <div className="bg-red-500/10 border border-red-500/20 text-red-400 text-xs rounded-lg p-3 flex gap-2 items-start">
-                                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                                    <span>{error}</span>
-                                </div>
-                            )}
-
-                            <button
-                                onClick={handleGenerate}
-                                disabled={loading}
-                                className="w-full bg-telegram-primary hover:bg-telegram-primary-hover text-white text-sm font-medium py-2.5 rounded-lg shadow-lg hover:shadow-telegram-primary/20 transition-all flex items-center justify-center gap-2 mt-4"
-                            >
-                                {loading ? (
-                                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                                ) : t('share.generate_link')}
-                            </button>
-                        </>
-                    ) : (
-                        <div className="space-y-4 animate-in fade-in duration-200">
-                            <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs rounded-lg p-3 flex gap-2 items-center">
-                                <Check className="w-4 h-4 shrink-0" />
-                                <span>{t('share.link_created')}</span>
-                            </div>
-
-                            {/* Shareable Link Display */}
-                            <div className="space-y-1.5">
-                                <label className="text-xs font-semibold text-telegram-subtext">{t('files.share_link')}</label>
-                                <div className="flex gap-2">
-                                    <input
-                                        type="text"
-                                        readOnly
-                                        value={getDisplayLink()}
-                                        className="flex-1 bg-telegram-surface/50 border border-telegram-border rounded-lg px-3 py-2 text-sm text-telegram-text focus:outline-none select-all"
-                                    />
-                                    <button
-                                        onClick={handleCopy}
-                                        className={`px-3 py-2 rounded-lg border flex items-center justify-center transition-all ${
-                                            copied 
-                                                ? 'bg-emerald-500 border-emerald-500 text-white' 
-                                                : 'bg-telegram-hover border-telegram-border text-telegram-text hover:bg-white/10'
-                                        }`}
-                                    >
-                                        {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-                                    </button>
-                                </div>
-                            </div>
-
-                            {/* Native Share Button (Android/iOS) */}
-                            {typeof navigator !== 'undefined' && typeof navigator.share === 'function' && (
-                                <button
-                                    onClick={handleNativeShare}
-                                    className="w-full bg-telegram-primary/20 hover:bg-telegram-primary/30 text-telegram-primary text-sm font-medium py-2.5 rounded-lg border border-telegram-primary/30 transition-all flex items-center justify-center gap-2"
-                                >
-                                    <Share2 className="w-4 h-4" />
-                                    {t('share.share_via')}
-                                </button>
-                            )}
-
-                            {/* Tailscale / Network Share Customizer */}
-                            <div className="bg-telegram-hover/30 border border-telegram-border/50 rounded-lg p-3 space-y-2">
-                                <div className="text-xs font-semibold text-telegram-text flex items-center gap-1.5">
-                                    <span>🌐</span> {t('share.share_externally')}
-                                </div>
-                                <p className="text-xs text-telegram-subtext leading-relaxed">
-                                    {t('share.tailscale_help')}
-                                </p>
-                                <div className="flex gap-2 items-center">
-                                    <input
-                                        type="text"
-                                        placeholder="e.g. 100.115.22.45 or tailscale-pc:14201"
-                                        value={customDomain}
-                                        onChange={(e) => setCustomDomain(e.target.value)}
-                                        className="flex-1 bg-telegram-surface/50 border border-telegram-border rounded-lg px-3 py-1.5 text-xs text-telegram-text focus:outline-none focus:border-telegram-primary placeholder:text-telegram-subtext/40"
-                                    />
-                                </div>
-                            </div>
-
-                            <button
-                                onClick={onClose}
-                                className="w-full bg-telegram-hover hover:bg-white/10 text-telegram-text text-sm font-medium py-2 rounded-lg transition-colors border border-telegram-border"
-                            >
-                                {t('share.done')}
-                            </button>
+                    {mode === 'power' && (
+                        <div className="space-y-4">
+                            <div className="rounded-lg border border-app-accent/20 bg-app-accent/5 p-4"><Globe2 className="mb-2 h-5 w-5 text-app-accent" /><h3 className="text-sm font-semibold text-app-text">Power-user connections</h3><p className="mt-1 text-xs leading-5 text-app-text-secondary">WebDAV works with Finder and file managers. REST works with scripts and automations. Both use private capability tokens—not SMB or Guest login.</p></div>
+                            <div className="quiet-surface p-4"><div className="flex items-center justify-between"><span className="text-sm font-medium text-app-text">WebDAV</span><span className={`text-xs ${webDav?.running ? 'text-app-success' : 'text-app-text-tertiary'}`}>{webDav?.running ? `Running · port ${webDav.port}` : 'Not running'}</span></div><p className="mt-2 text-xs leading-5 text-app-text-secondary">Connect with the full generated <code>/dav/&lt;token&gt;/</code> URL. Guest access intentionally shows no files.</p></div>
+                            <div className="quiet-surface p-4"><div className="flex items-center justify-between"><span className="text-sm font-medium text-app-text">REST API</span><span className="text-xs text-app-text-tertiary">Advanced</span></div><p className="mt-2 text-xs leading-5 text-app-text-secondary">Use a generated API key with the local REST endpoint for trusted integrations.</p></div>
+                            {onOpenSettings && <button onClick={onOpenSettings} className="quiet-control flex w-full items-center justify-center gap-2 bg-app-accent px-4 py-2.5 text-sm font-medium text-app-accent-contrast"><Link className="h-4 w-4" />Open connection settings</button>}
                         </div>
                     )}
                 </div>

@@ -1,18 +1,21 @@
-import { useEffect, useRef, useState } from 'react';
 import {
     ArrowDown,
     ArrowUp,
+    ArrowUpDown,
     Download,
     FolderInput,
+    FolderPlus,
+    Filter,
     Globe,
     HardDrive,
+    HelpCircle,
     LayoutGrid,
     List,
     Moon,
     MoreHorizontal,
     Settings,
     Share2,
-    SlidersHorizontal,
+    Keyboard,
     Sun,
     Trash2,
     UploadCloud,
@@ -20,12 +23,13 @@ import {
     ZoomIn,
     ZoomOut,
 } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../../../context/ThemeContext';
 import { useSettings } from '../../../context/SettingsContext';
 import { Button, IconButton, MenuItem, MenuPanel, SearchField } from '../../ui';
 import type { SortDirection, SortField } from './FileExplorer';
+import type { FileSearchFilters } from '../../../services/fileSearch';
+import { useTopBarController } from './useTopBarController';
 
 interface TopBarProps {
     currentFolderName: string;
@@ -48,6 +52,11 @@ interface TopBarProps {
     onSearchChange: (term: string) => void;
     onSettingsClick: () => void;
     onRemoteUploadClick: () => void;
+    onNewFolderClick: () => void;
+    onShowShortcuts: () => void;
+    onShowHelp: () => void;
+    searchFilters: FileSearchFilters;
+    onSearchFiltersChange: (filters: FileSearchFilters) => void;
 }
 
 export function TopBar({
@@ -71,50 +80,29 @@ export function TopBar({
     onSearchChange,
     onSettingsClick,
     onRemoteUploadClick,
+    onNewFolderClick,
+    onShowShortcuts,
+    onShowHelp,
+    searchFilters,
+    onSearchFiltersChange,
 }: TopBarProps) {
     const { theme, toggleTheme } = useTheme();
     const { t } = useTranslation();
     const { settings } = useSettings();
-    const [proxyStatus, setProxyStatus] = useState<{ reachable: boolean; latency_ms: number } | null>(null);
-    const [showMore, setShowMore] = useState(false);
-    const [showViewOptions, setShowViewOptions] = useState(false);
-    const moreRef = useRef<HTMLDivElement>(null);
-    const viewRef = useRef<HTMLDivElement>(null);
+    const {
+        proxyStatus,
+        showMore,
+        showViewOptions,
+        showSearchFilters,
+        moreRef,
+        viewRef,
+        filterRef,
+        toggleSearchFilters,
+        toggleViewOptions,
+        toggleMore,
+        runMoreAction,
+    } = useTopBarController(settings.proxyEnabled, settings.proxyLiveStateEnabled);
     const hasSelection = selectedIds.length > 0;
-
-    useEffect(() => {
-        if (!settings.proxyEnabled || !settings.proxyLiveStateEnabled) {
-            setProxyStatus(null);
-            return;
-        }
-        const checkProxy = async () => {
-            try {
-                const status = await invoke<{ reachable: boolean; latency_ms: number }>('cmd_get_proxy_status');
-                setProxyStatus(status);
-            } catch {
-                setProxyStatus({ reachable: false, latency_ms: -1 });
-            }
-        };
-        checkProxy();
-        const interval = setInterval(checkProxy, 5000);
-        return () => clearInterval(interval);
-    }, [settings.proxyEnabled, settings.proxyLiveStateEnabled]);
-
-    useEffect(() => {
-        if (!showMore && !showViewOptions) return;
-        const close = (event: MouseEvent) => {
-            const target = event.target as Node;
-            if (!moreRef.current?.contains(target)) setShowMore(false);
-            if (!viewRef.current?.contains(target)) setShowViewOptions(false);
-        };
-        window.addEventListener('mousedown', close);
-        return () => window.removeEventListener('mousedown', close);
-    }, [showMore, showViewOptions]);
-
-    const runMoreAction = (action: () => void) => {
-        setShowMore(false);
-        action();
-    };
 
     return (
         <header
@@ -150,12 +138,51 @@ export function TopBar({
                         </h1>
                     </div>
 
-                    <SearchField
-                        containerClassName="w-full max-w-[24rem]"
-                        placeholder={t('common.search_placeholder')}
-                        value={searchTerm}
-                        onChange={(event) => onSearchChange(event.target.value)}
-                    />
+                    <div ref={filterRef} className="relative flex w-full max-w-[25rem] items-center gap-1">
+                        <SearchField
+                            data-file-search
+                            containerClassName="min-w-0 flex-1"
+                            placeholder={t('common.search_placeholder')}
+                            value={searchTerm}
+                            onChange={(event) => onSearchChange(event.target.value)}
+                        />
+                        <IconButton
+                            label="Search filters"
+                            onClick={toggleSearchFilters}
+                            aria-expanded={showSearchFilters}
+                            className={showSearchFilters || searchFilters.type !== 'all' || searchFilters.size !== 'any' || searchFilters.date !== 'any' ? 'bg-app-selected text-app-accent' : ''}
+                        >
+                            <Filter className="h-3.5 w-3.5" />
+                        </IconButton>
+                        {showSearchFilters && (
+                            <MenuPanel className="absolute end-0 top-9 z-50 w-72 space-y-3 p-3">
+                                <label className="block text-xs font-medium text-app-text-secondary">Search scope
+                                    <select value={searchFilters.scope} onChange={(event) => onSearchFiltersChange({ ...searchFilters, scope: event.target.value as FileSearchFilters['scope'] })} className="quiet-control mt-1 h-8 w-full border border-app-border bg-app-surface-sunken px-2 text-sm text-app-text">
+                                        <option value="folder">Current folder / view</option>
+                                        <option value="all">All Telegram Drive folders</option>
+                                    </select>
+                                </label>
+                                <label className="block text-xs font-medium text-app-text-secondary">File type
+                                    <select value={searchFilters.type} onChange={(event) => onSearchFiltersChange({ ...searchFilters, type: event.target.value as FileSearchFilters['type'] })} className="quiet-control mt-1 h-8 w-full border border-app-border bg-app-surface-sunken px-2 text-sm text-app-text">
+                                        <option value="all">All types</option><option value="image">Images</option><option value="video">Videos</option><option value="audio">Audio</option><option value="document">Documents</option><option value="archive">Archives</option><option value="other">Other</option>
+                                    </select>
+                                </label>
+                                <div className="grid grid-cols-2 gap-2">
+                                    <label className="block text-xs font-medium text-app-text-secondary">Size
+                                        <select value={searchFilters.size} onChange={(event) => onSearchFiltersChange({ ...searchFilters, size: event.target.value as FileSearchFilters['size'] })} className="quiet-control mt-1 h-8 w-full border border-app-border bg-app-surface-sunken px-2 text-sm text-app-text">
+                                            <option value="any">Any</option><option value="small">Under 10 MB</option><option value="medium">10–100 MB</option><option value="large">100 MB+</option>
+                                        </select>
+                                    </label>
+                                    <label className="block text-xs font-medium text-app-text-secondary">Date
+                                        <select value={searchFilters.date} onChange={(event) => onSearchFiltersChange({ ...searchFilters, date: event.target.value as FileSearchFilters['date'] })} className="quiet-control mt-1 h-8 w-full border border-app-border bg-app-surface-sunken px-2 text-sm text-app-text">
+                                            <option value="any">Any</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option><option value="1y">Last year</option>
+                                        </select>
+                                    </label>
+                                </div>
+                                <button type="button" onClick={() => onSearchFiltersChange({ scope: 'folder', type: 'all', size: 'any', date: 'any' })} className="quiet-control w-full px-3 py-2 text-xs font-medium text-app-text-secondary hover:text-app-text">Reset filters</button>
+                            </MenuPanel>
+                        )}
+                    </div>
 
                     <div className="flex flex-1 items-center justify-end gap-1.5">
                         {settings.proxyEnabled && settings.proxyLiveStateEnabled && (
@@ -185,43 +212,32 @@ export function TopBar({
                             {t('common.upload')}
                         </Button>
 
+                        <Button
+                            onClick={onNewFolderClick}
+                            leadingIcon={<FolderPlus className="h-3.5 w-3.5" />}
+                        >
+                            {t('common.create_folder')}
+                        </Button>
+
+                        <IconButton
+                            label={viewMode === 'grid' ? t('files.switch_list') : t('files.switch_grid')}
+                            onClick={() => setViewMode(viewMode === 'grid' ? 'list' : 'grid')}
+                        >
+                            {viewMode === 'grid' ? <List className="h-3.5 w-3.5" /> : <LayoutGrid className="h-3.5 w-3.5" />}
+                        </IconButton>
+
                         <div className="relative" ref={viewRef}>
                             <IconButton
-                                label={t('files.toggle_layout')}
-                                onClick={() => {
-                                    setShowViewOptions((value) => !value);
-                                    setShowMore(false);
-                                }}
+                                label="Sort files"
+                                onClick={toggleViewOptions}
                                 aria-expanded={showViewOptions}
                                 className={showViewOptions ? 'bg-app-selected text-app-accent' : ''}
                             >
-                                <SlidersHorizontal className="h-3.5 w-3.5" />
+                                <ArrowUpDown className="h-3.5 w-3.5" />
                             </IconButton>
                             {showViewOptions && (
                                 <MenuPanel className="absolute end-0 top-9 z-50 w-64">
-                                    <div className="px-2 pb-1 pt-1 text-badge font-medium text-app-text-tertiary">
-                                        {t('files.toggle_layout')}
-                                    </div>
-                                    <div className="grid grid-cols-2 gap-1">
-                                        <button
-                                            type="button"
-                                            onClick={() => setViewMode('grid')}
-                                            className={`quiet-control flex h-10 items-center justify-center gap-2 px-3 text-ui font-medium ${viewMode === 'grid' ? 'bg-app-selected text-app-accent' : 'text-app-text-secondary hover:text-app-text'}`}
-                                        >
-                                            <LayoutGrid className="h-3.5 w-3.5" />
-                                            {t('files.switch_grid')}
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => setViewMode('list')}
-                                            className={`quiet-control flex h-10 items-center justify-center gap-2 px-3 text-ui font-medium ${viewMode === 'list' ? 'bg-app-selected text-app-accent' : 'text-app-text-secondary hover:text-app-text'}`}
-                                        >
-                                            <List className="h-3.5 w-3.5" />
-                                            {t('files.switch_list')}
-                                        </button>
-                                    </div>
-
-                                    <div className="my-1 h-px bg-app-border-subtle" />
+                                    <div className="px-2 pb-2 pt-1 text-badge font-medium text-app-text-tertiary">Sort files</div>
                                     <div className="grid grid-cols-3 gap-1" role="group" aria-label="Sort files">
                                         {(['name', 'size', 'date'] as const).map((field) => (
                                             <button
@@ -277,10 +293,7 @@ export function TopBar({
                         </div>
 
                         <div className="relative" ref={moreRef}>
-                            <IconButton label={t('common.preferences')} onClick={() => {
-                                setShowMore((value) => !value);
-                                setShowViewOptions(false);
-                            }} aria-expanded={showMore}>
+                            <IconButton label={t('common.preferences')} onClick={toggleMore} aria-expanded={showMore}>
                                 <MoreHorizontal className="h-3.5 w-3.5" />
                             </IconButton>
                             {showMore && (
@@ -296,6 +309,14 @@ export function TopBar({
                                     <MenuItem onClick={() => runMoreAction(toggleTheme)}>
                                         {theme === 'dark' ? <Sun className="h-3.5 w-3.5 text-app-text-secondary" /> : <Moon className="h-3.5 w-3.5 text-app-text-secondary" />}
                                         {theme === 'dark' ? t('common.light_mode') : t('common.dark_mode')}
+                                    </MenuItem>
+                                    <MenuItem onClick={() => runMoreAction(onShowShortcuts)}>
+                                        <Keyboard className="h-3.5 w-3.5 text-app-text-secondary" />
+                                        Keyboard shortcuts
+                                    </MenuItem>
+                                    <MenuItem onClick={() => runMoreAction(onShowHelp)}>
+                                        <HelpCircle className="h-3.5 w-3.5 text-app-text-secondary" />
+                                        Help &amp; FAQ
                                     </MenuItem>
                                     <div className="my-1 h-px bg-app-border-subtle" />
                                     <MenuItem onClick={() => runMoreAction(onSettingsClick)}>

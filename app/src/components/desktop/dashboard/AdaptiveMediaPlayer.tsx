@@ -19,8 +19,6 @@ interface AdaptiveMediaPlayerProps {
     streamUrl: string;
 }
 
-// ── HLS Quality State ────────────────────────────────────────────────
-
 const STREAM_BASE_KEY = '/stream/';
 
 export function AdaptiveMediaPlayer({
@@ -88,7 +86,7 @@ export function AdaptiveMediaPlayer({
 
         (async () => {
             try {
-                const result = await invoke<{ url: string; output_file_key: string; status: string }>(
+                const remuxPreparation = await invoke<{ url: string; output_file_key: string; status: string }>(
                     'cmd_prepare_fmp4_stream',
                     {
                         messageId: file.id,
@@ -102,9 +100,8 @@ export function AdaptiveMediaPlayer({
                     return;
                 }
 
-                if (result.status === 'ready') {
-                    // Already cached — switch immediately
-                    const fullUrl = `${streamBaseRef.current}${result.url}?token=${streamTokenRef.current}`;
+                if (remuxPreparation.status === 'ready') {
+                    const fullUrl = `${streamBaseRef.current}${remuxPreparation.url}?token=${streamTokenRef.current}`;
                     logRef.current?.('fMP4 already cached, switching to:', fullUrl);
                     abortMseRef.current?.();
                     setFmp4StreamUrl(fullUrl);
@@ -114,10 +111,9 @@ export function AdaptiveMediaPlayer({
                     return;
                 }
 
-                // status === 'processing' — poll until ready
                 logRef.current?.('fMP4 remux started in background, polling status...');
-                const fileKey = result.output_file_key;
-                const fmp4Url = result.url;
+                const fileKey = remuxPreparation.output_file_key;
+                const fmp4Url = remuxPreparation.url;
 
                 const poll = async (): Promise<void> => {
                     for (let i = 0; i < 600; i++) { // max 10 minutes
@@ -148,20 +144,19 @@ export function AdaptiveMediaPlayer({
                             throw new Error(status.error || 'fMP4 remux failed');
                         }
 
-                        // status === 'processing' — continue polling
                     }
                     throw new Error('fMP4 remux timed out after 10 minutes');
                 };
 
                 await poll();
-            } catch (e: any) {
+            } catch (error: unknown) {
                 // Don't show error if the user already moved to another file.
                 if (gen !== remuxGenerationRef.current) {
                     fmp4RemuxingRef.current = false;
                     return;
                 }
-                logRef.current?.('fMP4 remux failed:', String(e));
-                setFmp4RemuxError(String(e));
+                logRef.current?.('fMP4 remux failed:', String(error));
+                setFmp4RemuxError(String(error));
                 setFmp4Remuxing(false);
                 fmp4RemuxingRef.current = false;
                 // The hook will fall back to native video since we
@@ -222,9 +217,8 @@ export function AdaptiveMediaPlayer({
         setHlsVideoReady(!!el);
     }, []);
 
-    // ── Logging helpers ─────────────────────────────────────────────
     const log = useCallback((msg: string, ...args: unknown[]) => {
-        console.log(`[AdaptivePlayer] ${msg}`, ...args);
+        if (import.meta.env.DEV) console.debug(`[AdaptivePlayer] ${msg}`, ...args);
     }, []);
     // Wire late-bound refs for the progressive handler
     logRef.current = log;
@@ -484,37 +478,36 @@ export function AdaptiveMediaPlayer({
 
         try {
             // Use activeFolderId instead of file.folder_id so we resolve the correct peer
-            const result = await invoke<TranscodePrepareResult>('cmd_prepare_transcoded_stream', {
+            const transcodePreparation = await invoke<TranscodePrepareResult>('cmd_prepare_transcoded_stream', {
                 messageId: file.id,
                 folderId: activeFolderId,
                 quality,
             });
 
-            log('cmd_prepare_transcoded_stream result', result);
+            log('cmd_prepare_transcoded_stream result', transcodePreparation);
 
-            if (result.status === 'ready') {
+            if (transcodePreparation.status === 'ready') {
                 setHlsPhase('ready');
                 setHlsProgress(1);
                 setHlsVariantStates(prev => ({ ...prev, [quality]: 'ready' }));
-                if (result.playlist_url) {
-                    const fullUrl = `${streamBaseRef.current}${result.playlist_url}?token=${streamTokenRef.current}`;
+                if (transcodePreparation.playlist_url) {
+                    const fullUrl = `${streamBaseRef.current}${transcodePreparation.playlist_url}?token=${streamTokenRef.current}`;
                     log('hlsPlaylistUrl', fullUrl);
                     setHlsPlaylistUrl(fullUrl);
                 }
-            } else if (result.status === 'error') {
+            } else if (transcodePreparation.status === 'error') {
                 setHlsPhase('failed');
                 setHlsError('Transcode failed to start');
                 setHlsVariantStates(prev => ({ ...prev, [quality]: 'failed' }));
             } else {
-                // Job started, begin polling
-                currentJobIdRef.current = result.job_id;
+                currentJobIdRef.current = transcodePreparation.job_id;
                 setHlsVariantStates(prev => ({ ...prev, [quality]: 'preparing' }));
-                pollTranscodeStatus(result.job_id, quality);
+                pollTranscodeStatus(transcodePreparation.job_id, quality);
             }
-        } catch (e: any) {
-            log('startTranscode error', String(e));
+        } catch (error: unknown) {
+            log('startTranscode error', String(error));
             setHlsPhase('failed');
-            setHlsError(String(e));
+            setHlsError(String(error));
             setHlsVariantStates(prev => ({ ...prev, [quality]: 'failed' }));
         }
     }, [file.id, activeFolderId, mseVideoRef, pollTranscodeStatus, abortMse, log]);
@@ -651,11 +644,10 @@ export function AdaptiveMediaPlayer({
         // Seek to saved position
         const savedTime = savedTimeRef.current;
 
-        // Log HLS metadata once the video loads
         const onHlsMetadata = () => {
             const v = hlsVideoRef.current;
             if (v) {
-                console.log('[AdaptivePlayer] HLS metadata', {
+                log('HLS metadata', {
                     width: v.videoWidth,
                     height: v.videoHeight,
                     src: v.currentSrc,

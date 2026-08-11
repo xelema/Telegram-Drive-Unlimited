@@ -9,6 +9,7 @@ import { useCachedVariants } from '../../../hooks/useCachedVariants';
 import { VideoMetaBadge } from '../../shared/VideoMetaBadge';
 import { Skeleton } from '../../ui';
 import { EncryptionBadge } from '../../shared/EncryptionBadge';
+import { describeFileActions } from './fileActionDescriptors';
 
 interface FileCardProps {
     file: TelegramFile;
@@ -23,6 +24,7 @@ interface FileCardProps {
     height?: number;
     onToggleSelection?: () => void;
     selectedIds?: number[];
+    disableDrag?: boolean;
 }
 
 // Check if file is an image type that can have a thumbnail
@@ -32,8 +34,9 @@ function isImageFile(filename: string): boolean {
 }
 
 
-export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSelected, onClick, onContextMenu, activeFolderId, height, onToggleSelection, selectedIds }: FileCardProps) {
-    const isFolder = file.type === 'folder';
+export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSelected, onClick, onContextMenu, activeFolderId, height, onToggleSelection, selectedIds, disableDrag = false }: FileCardProps) {
+    const actions = describeFileActions(file);
+    const { isFolder } = actions;
     const [thumbnail, setThumbnail] = useState<string | null>(null);
     const [thumbnailLoading, setThumbnailLoading] = useState(false);
     const [thumbnailReady, setThumbnailReady] = useState(false);
@@ -44,8 +47,8 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
         setNodeRef: setDraggableNodeRef,
         isDragging,
     } = useDraggable({
-        id: `telegram-file-${file.id}`,
-        disabled: isFolder,
+        id: `telegram-file-${file.folder_id ?? 'home'}-${file.id}`,
+        disabled: isFolder || disableDrag,
         data: { kind: 'telegram-files', fileIds, label: file.name },
     });
     const {
@@ -127,7 +130,7 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
                             alt={file.name}
                             loading="lazy"
                             decoding="async"
-                            className={`h-full w-full object-cover transition-opacity duration-200 ${thumbnailReady ? 'opacity-100' : 'opacity-0'}`}
+                            className={`h-full w-full object-cover transition-opacity duration-300 motion-reduce:transition-none ${thumbnailReady ? 'opacity-100' : 'opacity-0'}`}
                             onLoad={() => setThumbnailReady(true)}
                             onError={() => {
                                 forgetThumbnail(file.id, activeFolderId);
@@ -151,7 +154,10 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
                 )}
 
                 {/* Selection Checkmark */}
-                <div
+                <button
+                    type="button"
+                    aria-label={isSelected ? `Deselect ${file.name}` : `Select ${file.name}`}
+                    aria-pressed={isSelected}
                     onClick={(e) => {
                         e.stopPropagation();
                         if (onToggleSelection) onToggleSelection();
@@ -159,7 +165,7 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
                     className={`absolute start-2 top-2 z-10 flex h-[22px] w-[22px] cursor-pointer items-center justify-center rounded-full border transition-opacity ${isSelected ? 'border-app-accent bg-app-accent text-app-accent-contrast' : 'border-white/55 bg-black/35 text-white opacity-0 group-hover:opacity-100 focus-visible:opacity-100'}`}
                 >
                     {isSelected && <Check className="h-3 w-3" />}
-                </div>
+                </button>
 
                 {/* File info overlay at bottom */}
                 <div className={`file-card-info absolute inset-x-0 bottom-0 z-[1] min-h-12 overflow-hidden px-2.5 py-2 ${thumbnail ? 'text-white' : 'text-app-text'}`}>
@@ -183,18 +189,18 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
 
                 {/* Quick actions on hover */}
                 <div className="file-card-actions absolute end-2 top-2 z-10 flex max-w-[calc(100%-2.75rem)] gap-0.5 overflow-hidden rounded-control border border-white/10 bg-black/55 p-0.5 opacity-0 backdrop-blur-md transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-                    <button onClick={(e) => { e.stopPropagation(); if (onPreview) onPreview() }} className="quiet-control file-action-btn flex h-7 w-7 items-center justify-center text-white/80 hover:text-white" title="Preview">
+                    <button type="button" aria-label={`Preview ${file.name}`} onClick={(e) => { e.stopPropagation(); if (onPreview) onPreview() }} className="quiet-control file-action-btn flex h-7 w-7 items-center justify-center text-white/80 hover:text-white" title="Preview">
                         <Eye className="h-3.5 w-3.5" />
                     </button>
-                    <button onClick={(e) => { e.stopPropagation(); onDownload() }} className="quiet-control file-action-btn flex h-7 w-7 items-center justify-center text-white/80 hover:text-white" title="Download">
+                    <button type="button" aria-label={`Download ${file.name}`} onClick={(e) => { e.stopPropagation(); onDownload() }} className="quiet-control file-action-btn flex h-7 w-7 items-center justify-center text-white/80 hover:text-white" title="Download">
                         <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-3 h-3"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
                     </button>
-                    {!isFolder && onShare && (
-                        <button onClick={(e) => { e.stopPropagation(); onShare() }} className="quiet-control file-action-btn flex h-7 w-7 items-center justify-center text-white/80 hover:text-white" title="Share">
+                    {actions.canShare && onShare && (
+                        <button type="button" aria-label={`Share ${file.name}`} onClick={(e) => { e.stopPropagation(); onShare() }} className="quiet-control file-action-btn flex h-7 w-7 items-center justify-center text-white/80 hover:text-white" title="Share">
                             <Link className="h-3.5 w-3.5" />
                         </button>
                     )}
-                    <button onClick={(e) => { e.stopPropagation(); onDelete() }} className="quiet-control file-action-btn flex h-7 w-7 items-center justify-center text-white/80 hover:bg-red-500/70 hover:text-white" title="Delete">
+                    <button type="button" aria-label={`Delete ${file.name}`} onClick={(e) => { e.stopPropagation(); onDelete() }} className="quiet-control file-action-btn flex h-7 w-7 items-center justify-center text-white/80 hover:bg-red-500/70 hover:text-white" title="Delete">
                         <Trash2 className="h-3.5 w-3.5" />
                     </button>
                 </div>

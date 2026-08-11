@@ -27,6 +27,36 @@ use std::sync::Mutex;
 use tokio::sync::oneshot;
 use base64::Engine;
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TelegramCooldownPayload {
+    operation: &'static str,
+    retry_at: u64,
+    seconds: u64,
+    active: bool,
+}
+
+async fn wait_for_telegram_cooldown(app: &tauri::AppHandle, operation: &'static str, seconds: u64) {
+    let retry_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+        + seconds.saturating_mul(1_000);
+    let _ = app.emit("telegram-cooldown", TelegramCooldownPayload {
+        operation,
+        retry_at,
+        seconds,
+        active: true,
+    });
+    tokio::time::sleep(std::time::Duration::from_secs(seconds)).await;
+    let _ = app.emit("telegram-cooldown", TelegramCooldownPayload {
+        operation,
+        retry_at,
+        seconds: 0,
+        active: false,
+    });
+}
+
 #[derive(Serialize)]
 struct ProtectedFileMetadata<'a> {
     schema_version: u16,
@@ -1391,7 +1421,7 @@ async fn cmd_upload_file_inner(
                     if let Ok(secs) = err.trim_start_matches("FLOOD_WAIT_").parse::<u64>() {
                         let wait = secs.min(300);
                         log::info!("Respecting FLOOD_WAIT: sleeping {}s", wait);
-                        tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                        wait_for_telegram_cooldown(&app_handle, "Upload", wait).await;
                         last_err = err;
                         continue;
                     }
@@ -1724,7 +1754,7 @@ async fn cmd_upload_file_encrypted(
                 if respect_flood && err.starts_with("FLOOD_WAIT_") {
                     if let Ok(secs) = err.trim_start_matches("FLOOD_WAIT_").parse::<u64>() {
                         let wait = secs.min(300);
-                        tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                        wait_for_telegram_cooldown(&app_handle, "Protected upload", wait).await;
                         last_err = err;
                         continue;
                     }
@@ -2683,6 +2713,25 @@ pub async fn cmd_get_files(
         }
         map
     };
+    let activity_flags: HashMap<i32, (bool, bool)> = {
+        let conn = db_pool.lock().map_err(|_| "DB poisoned".to_string())?;
+        let folder_key = folder_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "home".to_string());
+        let mut map = HashMap::new();
+        if let Ok(mut statement) = conn.prepare(
+            "SELECT message_id, is_favorite, is_pinned FROM file_activity WHERE folder_key = ?",
+        ) {
+            let _ = statement.bind((1, folder_key.as_str()));
+            while let Ok(sqlite::State::Row) = statement.next() {
+                let message_id = statement.read::<i64, _>(0).unwrap_or(0) as i32;
+                let favorite = statement.read::<i64, _>(1).unwrap_or(0) != 0;
+                let pinned = statement.read::<i64, _>(2).unwrap_or(0) != 0;
+                map.insert(message_id, (favorite, pinned));
+            }
+        }
+        map
+    };
     
     let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
     let vault_key = crypto_state.get_current_wrapping_key().ok();
@@ -2820,10 +2869,16 @@ pub async fn cmd_get_files(
                 mime = Some("application/octet-stream".to_string());
                 ext = None;
             }
+            let (is_favorite, is_pinned) = activity_flags
+                .get(&msg_id_i32)
+                .copied()
+                .unwrap_or((false, false));
             chunk.push(FileMetadata {
                 id: file_id_i64, folder_id, name, size, mime_type: mime, file_ext: ext,
                 created_at: msg.date().to_string(), icon_type: "file".into(),
                 encryption_state: enc_state.to_string(),
+                is_favorite,
+                is_pinned,
             });
 
             if chunk.len() >= 500 {
@@ -2890,6 +2945,8 @@ fn extract_search_files(msgs: &[tl::enums::Message]) -> Vec<FileMetadata> {
                         mime_type: Some(mime), file_ext: ext,
                         created_at: m.date.to_string(), icon_type: "file".into(),
                         encryption_state: "plain".to_string(),
+                        is_favorite: false,
+                        is_pinned: false,
                     });
                 }
             }
@@ -3981,7 +4038,7 @@ pub async fn cmd_upload_from_url(
                 if respect_flood && err.starts_with("FLOOD_WAIT_") {
                     if let Ok(secs) = err.trim_start_matches("FLOOD_WAIT_").parse::<u64>() {
                         let wait = secs.min(300);
-                        tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                        wait_for_telegram_cooldown(&app_handle, "Remote upload", wait).await;
                         last_err = err;
                         continue;
                     }

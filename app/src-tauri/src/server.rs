@@ -15,6 +15,7 @@ const AD_SCRIPT_CACHE_TTL: Duration = Duration::from_secs(30 * 60);
 const AD_SCRIPT_MAX_BYTES: usize = 512 * 1024;
 const AD_SCRIPT_FALLBACK_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36";
 const AD_DOH_URL: &str = "https://cloudflare-dns.com/dns-query?name=www.highperformanceformat.com&type=A";
+const AD_BANNER_CSP: &str = "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: https://highperformanceformat.com https://*.highperformanceformat.com https://effectivecpmnetwork.com https://*.effectivecpmnetwork.com https://adsterra.com https://*.adsterra.com https://kettledroopingcontinuation.com https://*.kettledroopingcontinuation.com https://protrafficinspector.com https://*.protrafficinspector.com https://zoologyfibre.com https://*.zoologyfibre.com https://mamshirt.com https://*.mamshirt.com; connect-src 'self' https://highperformanceformat.com https://*.highperformanceformat.com https://effectivecpmnetwork.com https://*.effectivecpmnetwork.com https://adsterra.com https://*.adsterra.com https://kettledroopingcontinuation.com https://*.kettledroopingcontinuation.com https://protrafficinspector.com https://*.protrafficinspector.com https://zoologyfibre.com https://*.zoologyfibre.com https://mamshirt.com https://*.mamshirt.com; frame-src https://highperformanceformat.com https://*.highperformanceformat.com https://effectivecpmnetwork.com https://*.effectivecpmnetwork.com https://adsterra.com https://*.adsterra.com https://kettledroopingcontinuation.com https://*.kettledroopingcontinuation.com https://protrafficinspector.com https://*.protrafficinspector.com https://zoologyfibre.com https://*.zoologyfibre.com https://mamshirt.com https://*.mamshirt.com";
 
 #[derive(Clone)]
 struct CachedAdScript {
@@ -327,6 +328,9 @@ async fn ad_banner() -> impl Responder {
     HttpResponse::Ok()
         .content_type("text/html; charset=utf-8")
         .insert_header(("Cache-Control", "no-cache"))
+        .insert_header(("X-Content-Type-Options", "nosniff"))
+        .insert_header(("Referrer-Policy", "no-referrer"))
+        .insert_header(("Content-Security-Policy", AD_BANNER_CSP))
         .body(AD_BANNER_HTML)
 }
 
@@ -643,7 +647,7 @@ fn mime_type_from_media(media: &Media) -> String {
 mod ad_tests {
     use super::{
         fetch_ad_script, is_public_ad_ip, is_valid_ad_script, AD_BANNER_HTML,
-        AD_SCRIPT_FALLBACK_USER_AGENT,
+        AD_BANNER_CSP, AD_SCRIPT_FALLBACK_USER_AGENT, AD_SCRIPT_HOST, AD_SCRIPT_URL,
     };
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -655,6 +659,26 @@ mod ad_tests {
         assert!(AD_BANNER_HTML.contains("onload=\"window.telegramDriveAdLoaded()\""));
         assert!(AD_BANNER_HTML.contains("onerror=\"window.telegramDriveAdFailed()\""));
         assert!(AD_BANNER_HTML.contains("document.querySelector('iframe')"));
+    }
+
+    #[test]
+    fn ad_provider_loader_is_fixed_to_the_allowlisted_host() {
+        let parsed = reqwest::Url::parse(AD_SCRIPT_URL).expect("ad loader URL should be valid");
+        assert_eq!(parsed.scheme(), "https");
+        assert_eq!(parsed.host_str(), Some(AD_SCRIPT_HOST));
+        assert_eq!(parsed.path(), "/9cf449272b7e1c83054b82b7639c6029/invoke.js");
+        assert!(AD_BANNER_HTML.contains("reportStatus('failed')"));
+        assert!(!AD_BANNER_CSP.contains("https:;"));
+        for domain in [
+            "highperformanceformat.com",
+            "effectivecpmnetwork.com",
+            "kettledroopingcontinuation.com",
+            "protrafficinspector.com",
+            "zoologyfibre.com",
+            "mamshirt.com",
+        ] {
+            assert!(AD_BANNER_CSP.contains(domain));
+        }
     }
 
     #[test]

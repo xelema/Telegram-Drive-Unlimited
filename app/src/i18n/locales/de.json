@@ -61,7 +61,15 @@
     "delete_group": "Delete Group",
     "enter_group_name": "Enter group name...",
     "hide_groups_desc": "Toggle folder groups display in the sidebar",
-    "delete": "Löschen"
+    "delete": "Löschen",
+    "recents": "Zuletzt verwendet",
+    "favorites": "Favoriten",
+    "pinned": "Angeheftet",
+    "offline_files": "Offline-Dateien",
+    "storage_insights": "Speicheranalyse",
+    "large_files": "Große Dateien",
+    "old_files": "Alte Dateien",
+    "duplicates": "Duplikate"
   },
   "settings": {
     "concurrent_uploads": "Gleichzeitige Uploads",
@@ -366,7 +374,14 @@
     "webdav_regenerate_title": "Regenerate WebDAV link?",
     "webdav_regenerate_desc": "The current connection link will stop working immediately. You will need to reconnect every WebDAV client with the new link.",
     "webdav_enable_changes_title": "Allow WebDAV file changes?",
-    "webdav_enable_changes_confirm": "Connected WebDAV clients will be able to upload, rename, move, and delete unencrypted files. Encrypted files remain protected."
+    "webdav_enable_changes_confirm": "Connected WebDAV clients will be able to upload, rename, move, and delete unencrypted files. Encrypted files remain protected.",
+    "offline_cache": "Offline-Dateien",
+    "offline_cache_desc": "Kürzlich geöffnete unverschlüsselte Dateien werden für den Offlinezugriff auf diesem Gerät gespeichert.",
+    "offline_cache_usage": "{{count}} Dateien · {{used}} von {{limit}}",
+    "refresh_offline_cache": "Offline-Speichernutzung aktualisieren",
+    "clear_offline_cache_title": "Offline-Dateien löschen?",
+    "clear_offline_cache_desc": "Für den Offlinezugriff gespeicherte Dateien werden von diesem Gerät entfernt. Telegram-Kopien bleiben unverändert.",
+    "offline_cache_cleared": "Offline-Dateien gelöscht"
   },
   "files": {
     "download": "Herunterladen",
@@ -498,7 +513,26 @@
     "donate": "Donate",
     "getting_started": "Getting Started",
     "close_help": "Close help",
-    "privacy_note": "Your credentials are stored locally on your device and are never sent to any third-party servers. All data goes directly between you and Telegram."
+    "privacy_note": "Your credentials are stored locally on your device and are never sent to any third-party servers. All data goes directly between you and Telegram.",
+    "code_sent_telegram_app": "Telegram hat den Anmeldecode an den verifizierten Telegram-Chat auf einem deiner angemeldeten Geräte gesendet.",
+    "code_sent_sms": "Telegram hat den Anmeldecode per SMS gesendet.",
+    "code_sent_call": "Telegram ruft dich an und liest den Anmeldecode vor.",
+    "code_sent_flash_call": "Telegram führt einen kurzen Anruf durch. Gib die zu {{hint}} passende Anrufernummer ein.",
+    "code_sent_missed_call": "Telegram führt einen verpassten Anruf durch. Gib die letzten Ziffern der mit {{hint}} beginnenden Nummer ein.",
+    "code_sent_email": "Telegram hat den Anmeldecode an {{hint}} gesendet.",
+    "code_sent_fragment": "Telegram hat diesen Code über Fragment zugestellt. Öffne Fragment, um ihn abzurufen.",
+    "code_sent_sms_word": "Telegram hat eine SMS mit einem Wort gesendet, das mit {{hint}} beginnt. Gib das vollständige Wort ein.",
+    "code_sent_sms_phrase": "Telegram hat eine SMS mit einer Phrase gesendet, die mit {{hint}} beginnt. Gib die vollständige Phrase ein.",
+    "code_delivery_unsupported": "Telegram hat eine Zustellmethode gewählt, die Desktop-Apps von Drittanbietern nicht abschließen können. Verwende stattdessen die QR-Anmeldung.",
+    "open_fragment": "Fragment öffnen",
+    "fragment_url_invalid": "Telegram hat einen ungültigen Fragment-Anmeldelink zurückgegeben.",
+    "code_word_placeholder": "Wort oder Phrase eingeben",
+    "verifying": "Wird überprüft...",
+    "sign_in": "Anmelden",
+    "resending": "Wird erneut gesendet...",
+    "resend_in": "Code in {{seconds}} s erneut senden",
+    "resend_code": "Code erneut senden",
+    "use_qr_instead": "Stattdessen QR-Code verwenden"
   },
   "ads": {
     "sponsored": "Sponsored",

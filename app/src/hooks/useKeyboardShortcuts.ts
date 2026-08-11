@@ -9,6 +9,7 @@ interface UseKeyboardShortcutsProps {
     onDownload?: () => void;
     onShare?: () => void;
     onRename?: () => void;
+    onShowShortcuts?: () => void;
     enabled?: boolean;
 }
 
@@ -21,6 +22,7 @@ export function useKeyboardShortcuts({
     onDownload,
     onShare,
     onRename,
+    onShowShortcuts,
     enabled = true
 }: UseKeyboardShortcutsProps) {
 
@@ -39,6 +41,12 @@ export function useKeyboardShortcuts({
         }
 
         const isMod = e.metaKey || e.ctrlKey;
+
+        if (e.key === '?' || (e.key === '/' && e.shiftKey)) {
+            e.preventDefault();
+            onShowShortcuts?.();
+            return;
+        }
 
         // Cmd/Ctrl + A - Select All
         if (isMod && e.key === 'a') {
@@ -94,7 +102,7 @@ export function useKeyboardShortcuts({
             onShare?.();
             return;
         }
-    }, [enabled, onSelectAll, onDelete, onEscape, onSearch, onEnter, onDownload, onShare, onRename]);
+    }, [enabled, onSelectAll, onDelete, onEscape, onSearch, onEnter, onDownload, onShare, onRename, onShowShortcuts]);
 
     useEffect(() => {
         window.addEventListener('keydown', handleKeyDown);

@@ -1,9 +1,16 @@
 import { createContext, useContext, useState, ReactNode, useLayoutEffect, useCallback } from 'react';
 import { CustomTheme, applyTheme as applyThemeToDOM, removeCustomTheme as removeCustomThemeFromDOM } from '../theme/themeEngine';
 import { BUILTIN_THEMES } from '../theme/presets';
-
-type Theme = 'light' | 'dark';
-type ThemePreference = Theme | 'system' | 'default';
+import { animateThemeChange, triggerHaptic } from '../services/feedback';
+import {
+    readActiveCustomTheme,
+    readThemePreference,
+    readUserThemes,
+    writeActiveCustomTheme,
+    writeBaseTheme,
+    writeUserThemes,
+} from '../services/themePersistence';
+import type { Theme, ThemePreference } from '../types/settings';
 
 interface ThemeContextType {
     theme: Theme;
@@ -22,25 +29,6 @@ interface ThemeContextType {
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
-// Safe localStorage read: returns the value or null on any error
-function safeTryGet(key: string): string | null {
-    try {
-        return localStorage.getItem(key);
-    } catch {
-        return null;
-    }
-}
-
-// Safe localStorage write: best-effort, silently ignores errors
-function safeTrySet(key: string, value: string): void {
-    try {
-        localStorage.setItem(key, value);
-    } catch {
-        // Storage unavailable — theme still works in-memory for this session
-    }
-}
-
-// Get initial theme synchronously to prevent flash
 function getSystemTheme(): Theme {
     return typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: light)').matches
         ? 'light'
@@ -48,13 +36,7 @@ function getSystemTheme(): Theme {
 }
 
 function getInitialPreference(): ThemePreference {
-    if (typeof window !== 'undefined') {
-        const preference = safeTryGet('theme-preference') as ThemePreference | null;
-        if (preference === 'light' || preference === 'dark' || preference === 'system' || preference === 'default') return preference;
-        const saved = safeTryGet('theme') as Theme | null;
-        if (saved === 'light' || saved === 'dark') return saved;
-    }
-    return 'default';
+    return readThemePreference();
 }
 
 function resolveTheme(preference: ThemePreference, systemTheme: Theme): Theme {
@@ -63,7 +45,6 @@ function resolveTheme(preference: ThemePreference, systemTheme: Theme): Theme {
     return preference;
 }
 
-// Apply theme to DOM immediately
 function applyBaseTheme(theme: Theme) {
     const root = document.documentElement;
     if (theme === 'light') {
@@ -75,22 +56,6 @@ function applyBaseTheme(theme: Theme) {
     }
 }
 
-// Load user-created themes from localStorage
-function loadUserThemes(): CustomTheme[] {
-    const raw = safeTryGet('user-themes');
-    if (!raw) return [];
-    try {
-        return JSON.parse(raw) as CustomTheme[];
-    } catch {
-        return [];
-    }
-}
-
-function saveUserThemes(themes: CustomTheme[]): void {
-    safeTrySet('user-themes', JSON.stringify(themes));
-}
-
-// Apply theme immediately on script load (before React hydration)
 if (typeof window !== 'undefined') {
     const initialPreference = getInitialPreference();
     applyBaseTheme(resolveTheme(initialPreference, getSystemTheme()));
@@ -100,12 +65,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     const [themePreference, setThemePreferenceState] = useState<ThemePreference>(getInitialPreference);
     const [systemTheme, setSystemTheme] = useState<Theme>(getSystemTheme);
     const theme: Theme = resolveTheme(themePreference, systemTheme);
-    const [userThemes, setUserThemes] = useState<CustomTheme[]>(() => loadUserThemes());
+    const [userThemes, setUserThemes] = useState<CustomTheme[]>(() => readUserThemes());
     const [activeCustomThemeId, setActiveCustomThemeIdState] = useState<string | null>(
-        () => safeTryGet('active-custom-theme-id')
+        () => readActiveCustomTheme()
     );
 
-    // All available themes: builtins + user-created
     const allThemes = [...BUILTIN_THEMES, ...userThemes];
 
     useLayoutEffect(() => {
@@ -115,26 +79,22 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         return () => query.removeEventListener('change', handleChange);
     }, []);
 
-    // Apply base theme to DOM
     useLayoutEffect(() => {
         if (!activeCustomThemeId) {
             removeCustomThemeFromDOM();
             applyBaseTheme(theme);
         }
-        safeTrySet('theme', theme);
-        safeTrySet('theme-preference', themePreference);
+        writeBaseTheme(theme, themePreference);
     }, [theme, themePreference, activeCustomThemeId]);
 
-    // Apply custom theme to DOM
     useLayoutEffect(() => {
         if (activeCustomThemeId) {
             const found = allThemes.find(t => t.id === activeCustomThemeId);
             if (found) {
                 applyThemeToDOM(found);
             } else {
-                // Theme was deleted — clear
                 setActiveCustomThemeIdState(null);
-                safeTrySet('active-custom-theme-id', '');
+                writeActiveCustomTheme(null);
                 removeCustomThemeFromDOM();
                 applyBaseTheme(theme);
             }
@@ -142,12 +102,13 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     }, [activeCustomThemeId, allThemes, theme]);
 
     const toggleTheme = useCallback(() => {
+        animateThemeChange();
+        triggerHaptic('selection');
         if (activeCustomThemeId) {
-            // Deactivate custom theme, toggle to opposite base mode
             const activeTheme = allThemes.find(t => t.id === activeCustomThemeId);
             const nextBase: Theme = activeTheme?.isDark ? 'light' : 'dark';
             setActiveCustomThemeIdState(null);
-            safeTrySet('active-custom-theme-id', '');
+            writeActiveCustomTheme(null);
             removeCustomThemeFromDOM();
             setThemePreferenceState(nextBase);
         } else {
@@ -156,22 +117,25 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     }, [activeCustomThemeId, allThemes, theme]);
 
     const setTheme = useCallback((newTheme: Theme) => {
+        animateThemeChange();
         setActiveCustomThemeIdState(null);
-        safeTrySet('active-custom-theme-id', '');
+        writeActiveCustomTheme(null);
         removeCustomThemeFromDOM();
         setThemePreferenceState(newTheme);
     }, []);
 
     const setThemePreference = useCallback((newTheme: ThemePreference) => {
+        animateThemeChange();
         setActiveCustomThemeIdState(null);
-        safeTrySet('active-custom-theme-id', '');
+        writeActiveCustomTheme(null);
         removeCustomThemeFromDOM();
         setThemePreferenceState(newTheme);
     }, []);
 
     const setActiveCustomTheme = useCallback((id: string | null) => {
+        animateThemeChange();
         setActiveCustomThemeIdState(id);
-        safeTrySet('active-custom-theme-id', id || '');
+        writeActiveCustomTheme(id);
         if (!id) {
             removeCustomThemeFromDOM();
             applyBaseTheme(theme);
@@ -181,7 +145,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     const addCustomTheme = useCallback((t: CustomTheme) => {
         setUserThemes(prev => {
             const next = [...prev, t];
-            saveUserThemes(next);
+            writeUserThemes(next);
             return next;
         });
     }, []);
@@ -189,13 +153,12 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     const deleteCustomTheme = useCallback((id: string) => {
         setUserThemes(prev => {
             const next = prev.filter(t => t.id !== id);
-            saveUserThemes(next);
+            writeUserThemes(next);
             return next;
         });
-        // If the deleted theme was active, deactivate
         setActiveCustomThemeIdState(prev => {
             if (prev === id) {
-                safeTrySet('active-custom-theme-id', '');
+                writeActiveCustomTheme(null);
                 removeCustomThemeFromDOM();
                 applyBaseTheme(theme);
                 return null;
@@ -207,7 +170,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     const updateCustomTheme = useCallback((id: string, patch: Partial<CustomTheme>) => {
         setUserThemes(prev => {
             const next = prev.map(t => t.id === id ? { ...t, ...patch, id } : t);
-            saveUserThemes(next);
+            writeUserThemes(next);
             return next;
         });
     }, []);

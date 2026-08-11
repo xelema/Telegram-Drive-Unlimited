@@ -4,8 +4,13 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "status", content = "data")]
 pub enum AuthState {
     LoggedOut,
-    AwaitingCode { phone: String, phone_code_hash: String },
-    AwaitingPassword { phone: String },
+    AwaitingCode {
+        phone: String,
+        phone_code_hash: String,
+    },
+    AwaitingPassword {
+        phone: String,
+    },
     LoggedIn,
 }
 
@@ -16,6 +21,44 @@ pub struct AuthResult {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthCodeDelivery {
+    TelegramApp,
+    Sms,
+    Call,
+    FlashCall,
+    MissedCall,
+    Email,
+    EmailSetup,
+    Fragment,
+    Firebase,
+    SmsWord,
+    SmsPhrase,
+    Unsupported,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthCodeRequestStatus {
+    CodeRequired,
+    Authorized,
+    QrRecommended,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthCodeRequestResult {
+    pub status: AuthCodeRequestStatus,
+    pub delivery: AuthCodeDelivery,
+    pub code_length: Option<i32>,
+    pub destination_hint: Option<String>,
+    pub fragment_url: Option<String>,
+    pub resend_after_seconds: Option<i32>,
+    pub next_delivery: Option<AuthCodeDelivery>,
+    pub numeric_code: bool,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FileMetadata {
     pub id: i64,
@@ -24,11 +67,15 @@ pub struct FileMetadata {
     pub size: u64, // Updated to u64
     pub mime_type: Option<String>,
     pub file_ext: Option<String>, // Added field
-    pub created_at: String, 
+    pub created_at: String,
     pub icon_type: String,
     /// Encryption state: "plain" | "encrypted_locked" | "encrypted_unlocked" | etc.
     #[serde(default = "default_encryption_state")]
     pub encryption_state: String,
+    #[serde(default)]
+    pub is_favorite: bool,
+    #[serde(default)]
+    pub is_pinned: bool,
 }
 
 fn default_encryption_state() -> String {

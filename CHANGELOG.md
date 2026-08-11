@@ -1,3 +1,37 @@
+## [2.3.0] - 2026-08-10
+
+### Desktop Workspace
+
+- Added Recents, Favorites, Pinned, Offline, Large Files, Old Files, and Duplicate Files views with safer cross-folder behavior.
+- Added advanced search filters, deterministic fuzzy ranking, folder-sync progress, keyboard shortcut help, an onboarding tour, and an in-app help center.
+- Added pause, resume, retry, cancellation, and persistent recovery behavior for upload and download queues.
+- Added clearer startup progress, post-update release highlights, Telegram cooldown status, and session-recovery feedback.
+
+### Authentication and Settings
+
+- Hardened phone-number authentication with normalized E.164 input, resend and cancellation support, delivery-method guidance, stale-attempt protection, and QR fallback while preserving QR login.
+- Reorganized Settings into focused categories with dedicated Privacy and Advanced surfaces, reusable accessible controls, and persisted settings/theme adapters.
+- Added opt-in, crash-only diagnostics with a privacy-safe payload, explicit consent, and no file names, paths, credentials, messages, or contents.
+
+### Storage and Cache Reliability
+
+- Fixed Transcode Cache remaining indefinitely on “Loading” after a Windows filesystem or native-command failure.
+- Added explicit loading, empty, error, timeout, retry, and recovery states while keeping Clear All available when inspection fails.
+- Moved transcode cache scanning and deletion off the asynchronous runtime, made deletion failures actionable, and blocked cache path traversal.
+- Added bounded image-cache policy, offline-cache visibility, and consistent search/cache behavior.
+
+### Database Safety
+
+- Added an application-wide, checksummed SQLite migration ledger without rewriting existing user records.
+- Added recognition for released database layouts, downgrade protection, integrity checks, transactional baselining, and safe rejection of unknown or partial schemas.
+- Added verified pre-migration recovery backups with restrictive permissions before upgrading an existing database.
+
+### Architecture and Verification
+
+- Split shared utilities, domain types, authentication views, settings controls, sidebar actions, toolbar coordination, file-action policy, and persistence policy into focused modules while preserving existing APIs.
+- Added frontend regression coverage for authentication, settings persistence, sidebar actions, transfer queues, cache policies, file actions, and Transcode Cache failures.
+- Production frontend build, TypeScript validation, frontend tests, Rust tests, and desktop integration tests passed.
+
 ## [2.2.7] - 2026-08-04
 
 ### Windows Build Experience

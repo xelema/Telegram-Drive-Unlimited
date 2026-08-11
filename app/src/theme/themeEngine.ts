@@ -22,6 +22,49 @@ export interface CustomTheme {
 
 const STYLE_ID = 'dynamic-theme';
 
+function parseHex(color: string): [number, number, number] | null {
+  const value = color.trim().match(/^#([0-9a-f]{6})$/i)?.[1];
+  if (!value) return null;
+  return [0, 2, 4].map(offset => parseInt(value.slice(offset, offset + 2), 16)) as [number, number, number];
+}
+
+function relativeLuminance(color: string): number | null {
+  const rgb = parseHex(color);
+  if (!rgb) return null;
+  const linear = rgb.map(value => {
+    const channel = value / 255;
+    return channel <= 0.03928 ? channel / 12.92 : Math.pow((channel + 0.055) / 1.055, 2.4);
+  });
+  return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+}
+
+export function contrastRatio(foreground: string, background: string): number {
+  const foregroundLuminance = relativeLuminance(foreground);
+  const backgroundLuminance = relativeLuminance(background);
+  if (foregroundLuminance === null || backgroundLuminance === null) return 1;
+  const lighter = Math.max(foregroundLuminance, backgroundLuminance);
+  const darker = Math.min(foregroundLuminance, backgroundLuminance);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+function accessibleText(preferred: string, backgrounds: string[], minimum = 4.5): string {
+  if (backgrounds.every(background => contrastRatio(preferred, background) >= minimum)) return preferred;
+  const candidates = ['#ffffff', '#101114'];
+  return candidates.sort((left, right) => (
+    Math.min(...backgrounds.map(background => contrastRatio(right, background)))
+      - Math.min(...backgrounds.map(background => contrastRatio(left, background)))
+  ))[0];
+}
+
+export function ensureAccessiblePalette(palette: ThemeColorPalette): ThemeColorPalette {
+  const text = accessibleText(palette.text, [palette.bg, palette.surface]);
+  const subtext = accessibleText(palette.subtext, [palette.bg, palette.surface]);
+  const border = contrastRatio(palette.border, palette.surface) >= 3
+    ? palette.border
+    : accessibleText(palette.border, [palette.surface], 3);
+  return { ...palette, text, subtext, border };
+}
+
 function contrastText(color: string): string {
   const hex = color.trim().match(/^#([0-9a-f]{6})$/i)?.[1];
   if (!hex) return '#ffffff';
@@ -51,7 +94,8 @@ export function applyTheme(theme: CustomTheme): void {
   }
 
   // Build CSS variable overrides
-  const p = theme.palette;
+  const p = ensureAccessiblePalette(theme.palette);
+  root.dataset.themeContrastAdjusted = p.text !== theme.palette.text || p.subtext !== theme.palette.subtext || p.border !== theme.palette.border ? 'true' : 'false';
   const accentContrast = contrastText(p.primary);
   const css = `:root.custom-theme {
   --color-app-canvas: ${p.bg};
@@ -99,6 +143,7 @@ export function applyTheme(theme: CustomTheme): void {
  */
 export function removeCustomTheme(): void {
   document.documentElement.classList.remove('custom-theme');
+  delete document.documentElement.dataset.themeContrastAdjusted;
   const el = document.getElementById(STYLE_ID);
   if (el) el.remove();
 }

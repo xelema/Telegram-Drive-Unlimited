@@ -1,15 +1,20 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { motion, AnimatePresence } from "framer-motion";
-import { Phone, Key, Lock, ArrowRight, Settings, ShieldCheck, Sun, Moon, HelpCircle, ExternalLink, X, Heart, QrCode } from "lucide-react";
+import { ShieldCheck, Sun, Moon, ExternalLink, X, Heart } from "lucide-react";
 import { load } from '@tauri-apps/plugin-store';
 import { useTheme } from '../../context/ThemeContext';
 import { open } from '@tauri-apps/plugin-shell';
-import { QRCodeSVG } from 'qrcode.react';
+import {
+    AuthCodeStep,
+    AuthMethodStep,
+    AuthPasswordStep,
+    AuthSetupStep,
+    type AuthStep,
+    type CodeRequestResult,
+} from './auth/AuthSteps';
 
 import { useTranslation } from "react-i18next";
-
-type Step = "setup" | "phone" | "code" | "password";
 
 function AuthThemeToggle() {
     const { theme, toggleTheme } = useTheme();
@@ -51,7 +56,7 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
         )
     }
 
-    const [step, setStep] = useState<Step>("setup");
+    const [step, setStep] = useState<AuthStep>("setup");
     const [loading, setLoading] = useState(false);
 
     const [apiId, setApiId] = useState("");
@@ -64,8 +69,10 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
     const [floodWait, setFloodWait] = useState<number | null>(null);
     const [showHelp, setShowHelp] = useState(false);
     const [showDonate, setShowDonate] = useState(false);
-    const [loginMethod, setLoginMethod] = useState<'phone' | 'qr'>('phone');
     const isMobile = typeof navigator !== 'undefined' && /android|iphone|ipad|ipod/i.test(navigator.userAgent.toLowerCase());
+    const [loginMethod, setLoginMethod] = useState<'phone' | 'qr'>(() => isMobile ? 'phone' : 'qr');
+    const [codeDelivery, setCodeDelivery] = useState<CodeRequestResult | null>(null);
+    const [resendWait, setResendWait] = useState(0);
 
     useEffect(() => {
         if (isMobile && loginMethod !== 'phone') {
@@ -87,6 +94,14 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
         }, 1000);
         return () => clearInterval(interval);
     }, [floodWait]);
+
+    useEffect(() => {
+        if (resendWait <= 0) return;
+        const interval = setInterval(() => {
+            setResendWait((previous) => Math.max(0, previous - 1));
+        }, 1000);
+        return () => clearInterval(interval);
+    }, [resendWait]);
 
     useEffect(() => {
         const initStore = async () => {
@@ -132,9 +147,10 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
         setError(null);
         await saveCredentials();
         setStep("phone");
-        setLoginMethod('phone');
+        setLoginMethod(isMobile ? 'phone' : 'qr');
         setQrUrl(null);
         setQrPolling(false);
+        if (!isMobile) void handleQrLogin();
     };
 
     const handleQrLogin = async () => {
@@ -163,7 +179,18 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
         }
     };
 
-    // QR polling effect
+    const applyCodeRequestResult = (codeRequest: CodeRequestResult) => {
+        if (codeRequest.status === "authorized") {
+            onLogin();
+            return;
+        }
+
+        setCode("");
+        setCodeDelivery(codeRequest);
+        setResendWait(Math.max(0, codeRequest.resendAfterSeconds ?? 0));
+        setStep("code");
+    };
+
     useEffect(() => {
         if (!qrPolling) {
             if (qrPollRef.current) {
@@ -175,18 +202,17 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
 
         qrPollRef.current = setInterval(async () => {
             try {
-                const res = await invoke<{ success: boolean; next_step?: string }>("cmd_auth_qr_poll");
-                if (res.success) {
+                const pollResult = await invoke<{ success: boolean; next_step?: string }>("cmd_auth_qr_poll");
+                if (pollResult.success) {
                     setQrPolling(false);
-                    if (res.next_step === "password") {
+                    if (pollResult.next_step === "password") {
                         setStep("password");
                     } else {
                         onLogin();
                     }
                 }
-                // If next_step === "waiting", keep polling
             } catch {
-                // Polling error — keep trying silently
+                // Telegram may briefly reject a poll while rotating the QR token.
             }
         }, 3000);
 
@@ -198,6 +224,16 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
         };
     }, [qrPolling, apiId, apiHash]);
 
+    const handleAuthError = (err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        const floodMatch = message.match(/FLOOD_WAIT_(\d+)/);
+        if (floodMatch) {
+            setFloodWait(Number.parseInt(floodMatch[1], 10));
+            return;
+        }
+        setError(message);
+    };
+
     const handlePhoneSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         setLoading(true);
@@ -206,25 +242,14 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
             const idInt = parseInt(apiId, 10);
             if (isNaN(idInt)) throw new Error("API ID must be a number");
 
-            await invoke("cmd_auth_request_code", {
+            const codeRequest = await invoke<CodeRequestResult>("cmd_auth_request_code", {
                 phone,
                 apiId: idInt,
                 apiHash: apiHash
             });
-            setStep("code");
+            applyCodeRequestResult(codeRequest);
         } catch (err: unknown) {
-            const msg = err instanceof Error ? err.message : JSON.stringify(err);
-            if (msg.includes("FLOOD_WAIT_")) {
-                const parts = msg.split("FLOOD_WAIT_");
-                if (parts[1]) {
-                    const seconds = parseInt(parts[1]);
-                    if (!isNaN(seconds)) {
-                        setFloodWait(seconds);
-                        return;
-                    }
-                }
-            }
-            setError(msg);
+            handleAuthError(err);
         } finally {
             setLoading(false);
         }
@@ -235,16 +260,16 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
         setLoading(true);
         setError(null);
         try {
-            const res = await invoke<{ success: boolean; next_step?: string }>("cmd_auth_sign_in", { code });
-            if (res.success) {
+            const signInResult = await invoke<{ success: boolean; next_step?: string }>("cmd_auth_sign_in", { code });
+            if (signInResult.success) {
                 onLogin();
-            } else if (res.next_step === "password") {
+            } else if (signInResult.next_step === "password") {
                 setStep("password");
             } else {
                 setError("Unknown error");
             }
         } catch (err: unknown) {
-            setError(err instanceof Error ? err.message : String(err));
+            handleAuthError(err);
         } finally {
             setLoading(false);
         }
@@ -255,18 +280,89 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
         setLoading(true);
         setError(null);
         try {
-            const res = await invoke<{ success: boolean; next_step?: string }>("cmd_auth_check_password", { password });
-            if (res.success) {
+            const passwordResult = await invoke<{ success: boolean; next_step?: string }>("cmd_auth_check_password", { password });
+            if (passwordResult.success) {
                 onLogin();
             } else {
                 setError("Password verification failed.");
             }
         } catch (err: unknown) {
-            setError(err instanceof Error ? err.message : String(err));
+            handleAuthError(err);
         } finally {
             setLoading(false);
         }
     };
+
+    const handleResendCode = async () => {
+        if (resendWait > 0 || loading) return;
+        setLoading(true);
+        setError(null);
+        try {
+            const codeRequest = await invoke<CodeRequestResult>("cmd_auth_resend_code");
+            applyCodeRequestResult(codeRequest);
+        } catch (err: unknown) {
+            handleAuthError(err);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleChangePhone = async () => {
+        try {
+            await invoke("cmd_auth_cancel_code");
+        } catch {
+            // Cancellation is best-effort; local backend state is always cleared.
+        }
+        setCode("");
+        setCodeDelivery(null);
+        setResendWait(0);
+        setError(null);
+        setStep("phone");
+    };
+
+    const handleUseQrInstead = () => {
+        setCode("");
+        setCodeDelivery(null);
+        setResendWait(0);
+        setError(null);
+        setStep("phone");
+        setLoginMethod("qr");
+        setQrUrl(null);
+        setQrPolling(false);
+        void handleQrLogin();
+    };
+
+    const handleOpenFragment = async () => {
+        if (!codeDelivery?.fragmentUrl) return;
+        try {
+            const target = new URL(codeDelivery.fragmentUrl);
+            const isFragment = target.protocol === "https:"
+                && (target.hostname === "fragment.com" || target.hostname.endsWith(".fragment.com"));
+            if (!isFragment) throw new Error("Invalid Fragment login URL");
+            await open(target.toString());
+        } catch {
+            setError(t("auth.fragment_url_invalid"));
+        }
+    };
+
+    const deliveryMessage = (() => {
+        if (!codeDelivery) return "";
+        const hint = codeDelivery.destinationHint ?? "";
+        switch (codeDelivery.delivery) {
+            case "telegram_app": return t("auth.code_sent_telegram_app");
+            case "sms": return t("auth.code_sent_sms");
+            case "call": return t("auth.code_sent_call");
+            case "flash_call": return t("auth.code_sent_flash_call", { hint });
+            case "missed_call": return t("auth.code_sent_missed_call", { hint });
+            case "email": return t("auth.code_sent_email", { hint });
+            case "fragment": return t("auth.code_sent_fragment");
+            case "sms_word": return t("auth.code_sent_sms_word", { hint });
+            case "sms_phrase": return t("auth.code_sent_sms_phrase", { hint });
+            case "email_setup":
+            case "firebase":
+            default: return t("auth.code_delivery_unsupported");
+        }
+    })();
 
     return (
         <div className="auth-gradient relative flex h-full w-full items-center justify-center overflow-y-auto p-4 pt-[calc(1rem+env(safe-area-inset-top,24px))] text-app-text sm:p-6">
@@ -313,268 +409,58 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
                         </motion.div>
                     ) : (
                         <>
-
-
                             {step === "setup" && (
-                                <motion.form
-                                    key="setup"
-                                    initial={{ x: 20, opacity: 0 }}
-                                    animate={{ x: 0, opacity: 1 }}
-                                    exit={{ x: -20, opacity: 0 }}
+                                <AuthSetupStep
+                                    apiId={apiId}
+                                    apiHash={apiHash}
+                                    isMobile={isMobile}
+                                    onApiIdChange={setApiId}
+                                    onApiHashChange={setApiHash}
                                     onSubmit={handleSetupSubmit}
-                                    className="space-y-4"
-                                >
-                                    <div className="space-y-3">
-                                        <div>
-                                            <label className="auth-label">API ID</label>
-                                            <div className="relative">
-                                                <Key className="auth-input-icon" />
-                                                <input
-                                                    type="text"
-                                                    value={apiId}
-                                                    onChange={(e) => setApiId(e.target.value)}
-                                                    placeholder="12345678"
-                                                    className="auth-input font-mono"
-                                                />
-                                            </div>
-                                        </div>
-                                        <div>
-                                            <label className="auth-label">API Hash</label>
-                                            <div className="relative">
-                                                <Key className="auth-input-icon" />
-                                                <input
-                                                    type="text"
-                                                    value={apiHash}
-                                                    onChange={(e) => setApiHash(e.target.value)}
-                                                    placeholder="abcdef123456..."
-                                                    className="auth-input font-mono"
-                                                />
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                    <button
-                                        type="submit"
-                                        className="quiet-control auth-primary-action"
-                                    >
-                                        Configure <Settings className="w-4 h-4" />
-                                    </button>
-
-                                    <button
-                                        type="button"
-                                        onClick={() => setShowHelp(true)}
-                                        className="quiet-control auth-secondary-action w-full"
-                                    >
-                                        <HelpCircle className="w-3 h-3" />
-                                        How do I get my API credentials?
-                                    </button>
-
-                                    {import.meta.env.DEV && (
-                                        <button
-                                            type="button"
-                                            onClick={() => onLogin()}
-                                            className="quiet-control auth-secondary-action w-full text-app-danger"
-                                        >
-                                            Dev Mode
-                                        </button>
-                                    )}
-                                </motion.form>
+                                    onShowHelp={() => setShowHelp(true)}
+                                    onDevLogin={onLogin}
+                                />
                             )}
-
-
                             {step === "phone" && (
-                                <motion.div
-                                    key="phone"
-                                    initial={{ x: 20, opacity: 0 }}
-                                    animate={{ x: 0, opacity: 1 }}
-                                    exit={{ x: -20, opacity: 0 }}
-                                    className="space-y-5"
-                                >
-                                    {/* Phone / QR Toggle */}
-                                    {!isMobile && (
-                                        <div className="quiet-control flex overflow-hidden border border-app-border bg-app-surface-sunken/40 p-0.5">
-                                            <button
-                                                type="button"
-                                                onClick={() => { setLoginMethod('phone'); setQrUrl(null); setQrPolling(false); setError(null); }}
-                                                className={`quiet-control flex h-8 flex-1 items-center justify-center gap-2 text-metadata font-medium ${
-                                                    loginMethod === 'phone'
-                                                        ? 'bg-app-surface-raised text-app-text shadow-sm'
-                                                        : 'text-app-text-secondary hover:text-app-text'
-                                                }`}
-                                            >
-                                                <Phone className="w-4 h-4" /> Phone Number
-                                            </button>
-                                            <button
-                                                type="button"
-                                                onClick={() => { setLoginMethod('qr'); setError(null); handleQrLogin(); }}
-                                                className={`quiet-control flex h-8 flex-1 items-center justify-center gap-2 text-metadata font-medium ${
-                                                    loginMethod === 'qr'
-                                                        ? 'bg-app-surface-raised text-app-text shadow-sm'
-                                                        : 'text-app-text-secondary hover:text-app-text'
-                                                }`}
-                                            >
-                                                <QrCode className="w-4 h-4" /> QR Code
-                                            </button>
-                                        </div>
-                                    )}
-
-                                    {loginMethod === 'phone' ? (
-                                        <form onSubmit={handlePhoneSubmit} className="space-y-5">
-                                            <div className="space-y-2">
-                                                <label className="auth-label">Phone Number</label>
-                                                <div className="relative">
-                                                    <Phone className="auth-input-icon" />
-                                                    <input
-                                                        type="tel"
-                                                        value={phone}
-                                                        onChange={(e) => setPhone(e.target.value)}
-                                                        placeholder="+1 234 567 8900"
-                                                        className="auth-input tracking-wide"
-                                                    />
-                                                </div>
-                                            </div>
-
-                                            <div className="flex flex-col gap-3">
-                                                <button
-                                                    type="submit"
-                                                    disabled={loading}
-                                                    className="quiet-control auth-primary-action disabled:opacity-45"
-                                                >
-                                                    {loading ? "Connecting..." : <>Continue <ArrowRight className="h-4 w-4 rtl:rotate-180" /></>}
-                                                </button>
-                                                <button type="button" onClick={() => setStep("setup")} className="quiet-control auth-secondary-action w-full">
-                                                    Back to Configuration
-                                                </button>
-                                            </div>
-                                        </form>
-                                    ) : (
-                                        <div className="flex flex-col items-center gap-5">
-                                            {loading && !qrUrl && (
-                                                <div className="flex h-52 w-52 items-center justify-center rounded-container bg-app-surface-sunken/45">
-                                                    <div className="h-7 w-7 animate-spin rounded-full border-2 border-app-border border-t-app-accent" />
-                                                </div>
-                                            )}
-                                            {qrUrl && (
-                                                <>
-                                                    <div className="rounded-container bg-white p-3 shadow-[var(--shadow-raised)]">
-                                                        <QRCodeSVG
-                                                            value={qrUrl}
-                                                            size={200}
-                                                            level="M"
-                                                            bgColor="#ffffff"
-                                                            fgColor="#000000"
-                                                        />
-                                                    </div>
-                                                    <div className="text-center space-y-1">
-                                                        <p className="text-ui text-app-text">Scan with your Telegram app</p>
-                                                        <p className="text-metadata text-app-text-tertiary">Settings &gt; Devices &gt; Link Desktop Device</p>
-                                                    </div>
-                                                    {qrPolling && (
-                                                        <div className="flex items-center gap-2 text-metadata text-app-accent">
-                                                            <div className="h-3 w-3 animate-spin rounded-full border-2 border-app-border border-t-app-accent" />
-                                                            Waiting for scan...
-                                                        </div>
-                                                    )}
-                                                    <button
-                                                        type="button"
-                                                        onClick={handleQrLogin}
-                                                        className="quiet-control auth-secondary-action px-2"
-                                                    >
-                                                        Refresh QR Code
-                                                    </button>
-                                                </>
-                                            )}
-                                            <button type="button" onClick={() => { setStep("setup"); setQrPolling(false); }} className="quiet-control auth-secondary-action w-full">
-                                                Back to Configuration
-                                            </button>
-                                        </div>
-                                    )}
-                                </motion.div>
+                                <AuthMethodStep
+                                    isMobile={isMobile}
+                                    loginMethod={loginMethod}
+                                    loading={loading}
+                                    phone={phone}
+                                    qrUrl={qrUrl}
+                                    qrPolling={qrPolling}
+                                    onPhoneChange={setPhone}
+                                    onSelectPhone={() => { setLoginMethod("phone"); setQrUrl(null); setQrPolling(false); setError(null); }}
+                                    onSelectQr={() => { setLoginMethod("qr"); setError(null); void handleQrLogin(); }}
+                                    onPhoneSubmit={handlePhoneSubmit}
+                                    onQrLogin={() => { void handleQrLogin(); }}
+                                    onBack={() => { setStep("setup"); if (loginMethod === "qr") setQrPolling(false); }}
+                                />
                             )}
-
-
                             {step === "code" && (
-                                <motion.form
-                                    key="code"
-                                    initial={{ x: 20, opacity: 0 }}
-                                    animate={{ x: 0, opacity: 1 }}
-                                    exit={{ x: -20, opacity: 0 }}
+                                <AuthCodeStep
+                                    codeDelivery={codeDelivery}
+                                    deliveryMessage={deliveryMessage}
+                                    code={code}
+                                    loading={loading}
+                                    resendWait={resendWait}
+                                    isMobile={isMobile}
+                                    onCodeChange={setCode}
                                     onSubmit={handleCodeSubmit}
-                                    className="space-y-5"
-                                >
-                                    <div className="space-y-2">
-                                        <label className="auth-label">Telegram Code</label>
-                                        <div className="relative">
-                                            <Key className="auth-input-icon" />
-                                            <input
-                                                type="text"
-                                                value={code}
-                                                onChange={(e) => setCode(e.target.value)}
-                                                placeholder="1 2 3 4 5"
-                                                className="auth-input pe-3 ps-10 text-center font-mono text-base tracking-[0.4em]"
-                                            />
-                                        </div>
-                                    </div>
-
-                                    <div className="flex flex-col gap-3">
-                                        <button
-                                            type="submit"
-                                            disabled={loading}
-                                            className="quiet-control auth-primary-action disabled:opacity-45"
-                                        >
-                                            {loading ? "Verifying..." : "Sign In"}
-                                        </button>
-                                        <button type="button" onClick={() => setStep("phone")} className="quiet-control auth-secondary-action w-full">
-                                            Change Phone Number
-                                        </button>
-                                    </div>
-                                </motion.form>
+                                    onOpenFragment={() => { void handleOpenFragment(); }}
+                                    onResend={() => { void handleResendCode(); }}
+                                    onUseQr={handleUseQrInstead}
+                                    onChangePhone={() => { void handleChangePhone(); }}
+                                />
                             )}
-
-
                             {step === "password" && (
-                                <motion.form
-                                    key="password"
-                                    initial={{ x: 20, opacity: 0 }}
-                                    animate={{ x: 0, opacity: 1 }}
-                                    exit={{ x: -20, opacity: 0 }}
+                                <AuthPasswordStep
+                                    password={password}
+                                    loading={loading}
+                                    onPasswordChange={setPassword}
                                     onSubmit={handlePasswordSubmit}
-                                    className="space-y-5"
-                                >
-                                    <div className="space-y-2">
-                                        <div className="mb-4 rounded-control border border-app-accent/20 bg-app-selected p-3">
-                                            <p className="text-center text-metadata text-app-accent">
-                                                Your account has Two-Factor Authentication enabled.
-                                                Please enter your cloud password to continue.
-                                            </p>
-                                        </div>
-                                        <label className="auth-label">Cloud Password</label>
-                                        <div className="relative">
-                                            <Lock className="auth-input-icon" />
-                                            <input
-                                                type="password"
-                                                value={password}
-                                                onChange={(e) => setPassword(e.target.value)}
-                                                placeholder="Enter your password"
-                                                className="auth-input"
-                                                autoFocus
-                                            />
-                                        </div>
-                                    </div>
-
-                                    <div className="flex flex-col gap-3">
-                                        <button
-                                            type="submit"
-                                            disabled={loading || !password}
-                                            className="quiet-control auth-primary-action disabled:opacity-45"
-                                        >
-                                            {loading ? "Verifying..." : "Unlock"}
-                                        </button>
-                                        <button type="button" onClick={() => { setStep("code"); setPassword(""); setError(null); }} className="quiet-control auth-secondary-action w-full">
-                                            Back to Code Entry
-                                        </button>
-                                    </div>
-                                </motion.form>
+                                    onBack={() => { setStep("code"); setPassword(""); setError(null); }}
+                                />
                             )}
                         </>
                     )}

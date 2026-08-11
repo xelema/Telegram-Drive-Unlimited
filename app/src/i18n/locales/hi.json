@@ -61,7 +61,15 @@
     "delete_group": "Delete Group",
     "enter_group_name": "Enter group name...",
     "hide_groups_desc": "Toggle folder groups display in the sidebar",
-    "delete": "हटाएं"
+    "delete": "हटाएं",
+    "recents": "हाल के",
+    "favorites": "पसंदीदा",
+    "pinned": "पिन किए गए",
+    "offline_files": "ऑफ़लाइन फ़ाइलें",
+    "storage_insights": "स्टोरेज विश्लेषण",
+    "large_files": "बड़ी फ़ाइलें",
+    "old_files": "पुरानी फ़ाइलें",
+    "duplicates": "डुप्लिकेट"
   },
   "settings": {
     "concurrent_uploads": "समवर्ती अपलोड",
@@ -366,7 +374,14 @@
     "webdav_regenerate_title": "Regenerate WebDAV link?",
     "webdav_regenerate_desc": "The current connection link will stop working immediately. You will need to reconnect every WebDAV client with the new link.",
     "webdav_enable_changes_title": "Allow WebDAV file changes?",
-    "webdav_enable_changes_confirm": "Connected WebDAV clients will be able to upload, rename, move, and delete unencrypted files. Encrypted files remain protected."
+    "webdav_enable_changes_confirm": "Connected WebDAV clients will be able to upload, rename, move, and delete unencrypted files. Encrypted files remain protected.",
+    "offline_cache": "ऑफ़लाइन फ़ाइलें",
+    "offline_cache_desc": "हाल में खोली गई गैर-एन्क्रिप्टेड फ़ाइलें ऑफ़लाइन उपयोग के लिए इस डिवाइस पर रखी जाती हैं।",
+    "offline_cache_usage": "{{count}} फ़ाइलें · {{limit}} में से {{used}}",
+    "refresh_offline_cache": "ऑफ़लाइन फ़ाइल उपयोग रीफ़्रेश करें",
+    "clear_offline_cache_title": "ऑफ़लाइन फ़ाइलें हटाएं?",
+    "clear_offline_cache_desc": "ऑफ़लाइन उपयोग के लिए रखी गई फ़ाइलें इस डिवाइस से हटा दी जाएंगी। Telegram की प्रतियां प्रभावित नहीं होंगी।",
+    "offline_cache_cleared": "ऑफ़लाइन फ़ाइलें हटा दी गईं"
   },
   "files": {
     "download": "डाउनलोड",
@@ -498,7 +513,26 @@
     "donate": "Donate",
     "getting_started": "Getting Started",
     "close_help": "Close help",
-    "privacy_note": "Your credentials are stored locally on your device and are never sent to any third-party servers. All data goes directly between you and Telegram."
+    "privacy_note": "Your credentials are stored locally on your device and are never sent to any third-party servers. All data goes directly between you and Telegram.",
+    "code_sent_telegram_app": "Telegram ने लॉगिन कोड आपके किसी साइन-इन किए हुए डिवाइस पर सत्यापित Telegram चैट में भेजा है।",
+    "code_sent_sms": "Telegram ने लॉगिन कोड SMS से भेजा है।",
+    "code_sent_call": "Telegram आपको कॉल करके लॉगिन कोड सुनाएगा।",
+    "code_sent_flash_call": "Telegram एक छोटी कॉल करेगा। {{hint}} से मेल खाने वाला कॉलिंग नंबर दर्ज करें।",
+    "code_sent_missed_call": "Telegram एक मिस्ड कॉल करेगा। {{hint}} से शुरू होने वाले नंबर के अंतिम अंक दर्ज करें।",
+    "code_sent_email": "Telegram ने लॉगिन कोड {{hint}} पर भेजा है।",
+    "code_sent_fragment": "Telegram ने यह कोड Fragment के माध्यम से भेजा है। इसे पाने के लिए Fragment खोलें।",
+    "code_sent_sms_word": "Telegram ने {{hint}} से शुरू होने वाला शब्द SMS में भेजा है। पूरा शब्द दर्ज करें।",
+    "code_sent_sms_phrase": "Telegram ने {{hint}} से शुरू होने वाला वाक्यांश SMS में भेजा है। पूरा वाक्यांश दर्ज करें।",
+    "code_delivery_unsupported": "Telegram ने ऐसी वितरण विधि चुनी है जिसे तृतीय-पक्ष डेस्कटॉप ऐप पूरा नहीं कर सकते। इसके बजाय QR लॉगिन का उपयोग करें।",
+    "open_fragment": "Fragment खोलें",
+    "fragment_url_invalid": "Telegram ने अमान्य Fragment लॉगिन लिंक लौटाया।",
+    "code_word_placeholder": "शब्द या वाक्यांश दर्ज करें",
+    "verifying": "सत्यापित किया जा रहा है...",
+    "sign_in": "साइन इन करें",
+    "resending": "फिर से भेजा जा रहा है...",
+    "resend_in": "{{seconds}} सेकंड में कोड फिर भेजें",
+    "resend_code": "कोड फिर भेजें",
+    "use_qr_instead": "इसके बजाय QR कोड का उपयोग करें"
   },
   "ads": {
     "sponsored": "Sponsored",

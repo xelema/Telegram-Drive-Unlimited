@@ -3,6 +3,7 @@ import { usePlatform } from '../../hooks/usePlatform';
 import { open } from '@tauri-apps/plugin-shell';
 import { load } from '@tauri-apps/plugin-store';
 import { ExternalLink, X } from 'lucide-react';
+import { useSettings } from '../../context/SettingsContext';
 
 interface AdsterraBannerProps {
   visible: boolean;
@@ -14,6 +15,7 @@ const DISMISSED_KEY = 'adBannerDismissed';
 /** SmartLink clickable banner for Android. Tapping opens the offerwall in an external browser. */
 export default function AdsterraBanner({ visible }: AdsterraBannerProps) {
   const { isAndroid } = usePlatform();
+  const { settings } = useSettings();
   const [dismissed, setDismissed] = useState(false);
   const [exiting, setExiting] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -55,7 +57,7 @@ export default function AdsterraBanner({ visible }: AdsterraBannerProps) {
 
   // Don't render until store check completes, or once dismissed.
   // Using !loaded prevents a flash on restart when the banner was previously dismissed.
-  if (!isAndroid || !loaded || dismissed) {
+  if (!isAndroid || !loaded || dismissed || settings.supporterMode) {
     return null;
   }
 
@@ -66,7 +68,7 @@ export default function AdsterraBanner({ visible }: AdsterraBannerProps) {
       id="adsterra-banner-container"
       role="complementary"
       aria-label="Sponsored content"
-      className="relative flex w-full justify-center overflow-hidden border border-app-border bg-app-surface-raised shadow-[var(--shadow-raised)] transition-all duration-200 ease-out"
+      className="relative flex w-full justify-center overflow-hidden border border-app-border bg-app-surface-raised shadow-[var(--shadow-raised)] transition-all duration-200 ease-out motion-reduce:transition-none"
       style={{
         visibility: isVisible ? 'visible' : 'hidden',
         minHeight: isVisible ? 48 : 0,

@@ -1,26 +1,28 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, RotateCcw, Download, Upload, Trash2, HardDrive, Globe, Key, Copy, Check, RefreshCw, FolderArchive, Shield, Zap, Activity, Gauge, Wifi, ChevronDown, Link, Sparkles, Info, Clipboard, Monitor, Loader2, Languages, Play, Palette, Plus, Tag, Moon, Sun } from 'lucide-react';
+import { X, RotateCcw, Download, Upload, Trash2, HardDrive, Globe, Key, Copy, Check, RefreshCw, FolderArchive, Shield, Zap, Activity, Gauge, Wifi, ChevronDown, Link, Sparkles, Info, Monitor, Loader2, Languages, Play, Palette, Tag, Search, Bug, Database } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
-import { open } from '@tauri-apps/plugin-shell';
 import { toast } from 'sonner';
 import { check, Update } from '@tauri-apps/plugin-updater';
-import { relaunch } from '@tauri-apps/plugin-process';
 import { useSettings } from '../../../context/SettingsContext';
 import { useConfirm } from '../../../context/ConfirmContext';
 import { useTranslation } from 'react-i18next';
-import { EncryptionSettingsSection } from '../../shared/EncryptionSettingsSection';
-import { LANGUAGES } from '../../../i18n/languages';
-import { ShareInfo, CacheEntry, DetailedCacheInfo } from '../../../types';
+import { LANGUAGES, type LanguagePreference } from '../../../i18n/languages';
+import { ShareInfo, CacheEntry, DetailedCacheInfo, OfflineCacheStatus } from '../../../types';
 import { version as appVersion } from '../../../../package.json';
-import { useTheme } from '../../../context/ThemeContext';
-import { CustomTheme, ThemeColorPalette, generateThemeId } from '../../../theme/themeEngine';
-import { getDefaultPalette } from '../../../theme/presets';
 import { clearImageMemoryCaches } from '../../../services/imagePreviewCache';
+import { useModalFocus } from '../../../hooks/useModalFocus';
+import { AccessTransparencyDialog, type LocalAccessService } from '../../shared/AccessTransparencyDialog';
+import { installVerifiedUpdate } from '../../../services/updateReliability';
+import { getDetailedTranscodeCache, transcodeCacheErrorMessage } from '../../../services/transcodeCacheClient';
+import { formatBytes } from '../../../utils';
+import { SettingsRow, SettingsStepper, SettingsToggle } from './settings/SettingsControls';
+import { AboutSettingsTab, AdvancedSettingsTab, EncryptionSettingsTab, GeneralSettingsTab, PrivacySettingsTab, ProxySettingsTab, SharingSettingsTab, ThemeSettingsTab, VpnSettingsTab, WebDavSettingsTab } from './settings/SettingsTabs';
 
 interface SettingsModalProps {
     isOpen: boolean;
     onClose: () => void;
+    initialTab?: SettingsTab;
 }
 
 interface ApiSettings {
@@ -45,10 +47,10 @@ interface WebDavTokenResponse {
     url: string;
 }
 
-type SettingsTab = 'general' | 'webdav' | 'themes' | 'proxy' | 'vpn' | 'encryption' | 'sharing' | 'about';
+export type SettingsTab = 'general' | 'privacy' | 'advanced' | 'webdav' | 'themes' | 'proxy' | 'vpn' | 'encryption' | 'sharing' | 'about';
 
-export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
-    const { settings, updateSetting, resetSettings } = useSettings();
+export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: SettingsModalProps) {
+    const { settings, updateSetting, updateSettings, resetSettings } = useSettings();
     const { confirm } = useConfirm();
     const { t } = useTranslation();
     const [clearing, setClearing] = useState(false);
@@ -56,8 +58,24 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     // Transcode cache state
     const [transcodeCache, setTranscodeCache] = useState<DetailedCacheInfo | null>(null);
     const [cacheLoading, setCacheLoading] = useState(false);
+    const [cacheError, setCacheError] = useState<string | null>(null);
+    const cacheRequestId = useRef(0);
+    const [offlineCache, setOfflineCache] = useState<OfflineCacheStatus | null>(null);
+    const [offlineCacheLoading, setOfflineCacheLoading] = useState(false);
     const [clearingVariant, setClearingVariant] = useState<string | null>(null); // file_key:quality being cleared
     const [activeTab, setActiveTab] = useState<SettingsTab>('general');
+    const [settingsSearch, setSettingsSearch] = useState('');
+    const [showGeneralAdvanced, setShowGeneralAdvanced] = useState(false);
+    const [accessTransparency, setAccessTransparency] = useState<LocalAccessService | null>(null);
+    const modalRef = useRef<HTMLDivElement>(null);
+    useModalFocus(modalRef, onClose, isOpen && !accessTransparency);
+    useEffect(() => {
+        if (isOpen) {
+            setActiveTab(initialTab);
+        } else {
+            setAccessTransparency(null);
+        }
+    }, [initialTab, isOpen]);
     const [latencyMs, setLatencyMs] = useState<number | null>(null);
     const [vpnDetected, setVpnDetected] = useState<boolean | null>(null);
     const [proxyStatus, setProxyStatus] = useState<{ reachable: boolean; latency_ms: number } | null>(null);
@@ -105,22 +123,10 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         if (!updateAvailable) return;
         setUpdateDownloading(true);
         setUpdateProgress(0);
-        let downloaded = 0;
-        let contentLength = 0;
         try {
-            await updateAvailable.downloadAndInstall((event) => {
-                if (event.event === 'Started') {
-                    const data = event.data as { contentLength?: number };
-                    contentLength = data.contentLength || 0;
-                } else if (event.event === 'Progress') {
-                    const data = event.data as { chunkLength?: number };
-                    downloaded += data.chunkLength || 0;
-                    if (contentLength > 0) {
-                        setUpdateProgress(Math.min(Math.round((downloaded / contentLength) * 100), 100));
-                    }
-                }
+            await installVerifiedUpdate(updateAvailable, setUpdateProgress, (phase) => {
+                if (phase === 'verifying') toast.info('Verifying the signed update before installation…');
             });
-            await relaunch();
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             toast.error(t('settings.update_failed_toast', { error: msg }));
@@ -209,9 +215,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
     const fetchApiSettings = useCallback(async () => {
         try {
-            const result = await invoke<ApiSettings>('cmd_get_api_settings');
-            setApiSettings(result);
-            setApiPort(result.port.toString());
+            const apiStatus = await invoke<ApiSettings>('cmd_get_api_settings');
+            setApiSettings(apiStatus);
+            setApiPort(apiStatus.port.toString());
         } catch {
             // API settings not available
         }
@@ -219,9 +225,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
     const fetchWebDavSettings = useCallback(async (syncPort = true) => {
         try {
-            const result = await invoke<WebDavSettings>('cmd_get_webdav_settings');
-            setWebDavSettings(result);
-            if (syncPort) setWebDavPort(result.port.toString());
+            const webDavStatus = await invoke<WebDavSettings>('cmd_get_webdav_settings');
+            setWebDavSettings(webDavStatus);
+            if (syncPort) setWebDavPort(webDavStatus.port.toString());
         } catch {
             setWebDavSettings(previous => ({ ...previous, supported: false }));
         }
@@ -241,14 +247,35 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
     // Fetch transcode cache info
     const fetchTranscodeCache = useCallback(async () => {
+        const requestId = ++cacheRequestId.current;
         setCacheLoading(true);
+        setCacheError(null);
         try {
-            const info = await invoke<DetailedCacheInfo>('cmd_get_detailed_transcode_cache');
-            setTranscodeCache(info);
-        } catch {
-            setTranscodeCache(null);
+            const cacheDetails = await getDetailedTranscodeCache();
+            if (cacheRequestId.current === requestId) {
+                setTranscodeCache(cacheDetails);
+            }
+        } catch (error) {
+            if (cacheRequestId.current === requestId) {
+                setTranscodeCache(null);
+                setCacheError(transcodeCacheErrorMessage(error));
+            }
         } finally {
-            setCacheLoading(false);
+            if (cacheRequestId.current === requestId) {
+                setCacheLoading(false);
+            }
+        }
+    }, []);
+
+    const fetchOfflineCache = useCallback(async () => {
+        setOfflineCacheLoading(true);
+        try {
+            const cacheStatus = await invoke<OfflineCacheStatus>('cmd_get_offline_cache_status');
+            setOfflineCache(cacheStatus);
+        } catch {
+            setOfflineCache(null);
+        } finally {
+            setOfflineCacheLoading(false);
         }
     }, []);
 
@@ -256,8 +283,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     useEffect(() => {
         if (isOpen && activeTab === 'general') {
             fetchTranscodeCache();
+            fetchOfflineCache();
         }
-    }, [isOpen, activeTab, fetchTranscodeCache]);
+    }, [isOpen, activeTab, fetchOfflineCache, fetchTranscodeCache]);
 
     // Poll API status while modal is open and API is enabled
     useEffect(() => {
@@ -380,6 +408,16 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     }, [isOpen, activeTab]);
 
     const handleApiToggle = async () => {
+        if (!apiSettings.enabled && !settings.restPermissionExplained) {
+            const understood = await confirm({
+                title: 'Before enabling REST access',
+                message: 'The REST server opens a local automation endpoint on the port shown below. Anyone who can reach that address still needs the generated API key. Keep the key private, bind only to networks you trust, and disable the server when it is no longer needed.',
+                confirmText: 'I understand — enable',
+                variant: 'info',
+            });
+            if (!understood) return;
+            updateSetting('restPermissionExplained', true);
+        }
         setApiLoading(true);
         try {
             const port = parseInt(apiPort, 10);
@@ -388,12 +426,12 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                 setApiLoading(false);
                 return;
             }
-            const result = await invoke<ApiSettings>('cmd_update_api_settings', {
+            const updatedSettings = await invoke<ApiSettings>('cmd_update_api_settings', {
                 enabled: !apiSettings.enabled,
                 port,
             });
-            setApiSettings(result);
-            toast.success(result.enabled ? t('settings.api_server_started') : t('settings.api_server_stopped'));
+            setApiSettings(updatedSettings);
+            toast.success(updatedSettings.enabled ? t('settings.api_server_started') : t('settings.api_server_stopped'));
         } catch (e) {
             toast.error(t('settings.api_update_failed', { error: e }));
         } finally {
@@ -410,11 +448,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         if (port === apiSettings.port) return;
         setApiLoading(true);
         try {
-            const result = await invoke<ApiSettings>('cmd_update_api_settings', {
+            const updatedSettings = await invoke<ApiSettings>('cmd_update_api_settings', {
                 enabled: apiSettings.enabled,
                 port,
             });
-            setApiSettings(result);
+            setApiSettings(updatedSettings);
             toast.success(t('settings.api_port_updated', { port }));
         } catch (e) {
             toast.error(t('settings.api_port_update_failed', { error: e }));
@@ -476,12 +514,12 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         }
         setWebDavGenerating(true);
         try {
-            const result = await invoke<WebDavTokenResponse>('cmd_regenerate_webdav_token');
-            setGeneratedWebDavUrl(result.url);
+            const generatedLink = await invoke<WebDavTokenResponse>('cmd_regenerate_webdav_token');
+            setGeneratedWebDavUrl(generatedLink.url);
             setWebDavUrlCopied(false);
             setWebDavSettings(previous => ({ ...previous, token_set: true }));
             toast.success(t('settings.webdav_link_generated'));
-            return result;
+            return generatedLink;
         } catch (error) {
             toast.error(t('settings.webdav_generate_failed', { error }));
             return null;
@@ -493,19 +531,29 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const handleWebDavToggle = async () => {
         const port = parseWebDavPort();
         if (port === null || !webDavSettings.supported) return;
+        if (!webDavSettings.enabled && !settings.webdavPermissionExplained) {
+            const understood = await confirm({
+                title: 'Before enabling WebDAV access',
+                message: 'WebDAV lets Finder and file managers browse your Telegram Drive through the complete token URL. The token is the credential: Guest or anonymous login has no access. Read-only mode is safest; enabling changes also permits uploads, moves, renames, and deletes.',
+                confirmText: 'I understand — enable',
+                variant: 'info',
+            });
+            if (!understood) return;
+            updateSetting('webdavPermissionExplained', true);
+        }
         setWebDavLoading(true);
         try {
             if (!webDavSettings.enabled && !webDavSettings.token_set) {
                 const generated = await generateWebDavLink(false);
                 if (!generated) return;
             }
-            const result = await invoke<WebDavSettings>('cmd_update_webdav_settings', {
+            const updatedSettings = await invoke<WebDavSettings>('cmd_update_webdav_settings', {
                 enabled: !webDavSettings.enabled,
                 port,
                 writeEnabled: webDavSettings.write_enabled,
             });
-            setWebDavSettings(result);
-            toast.success(result.enabled ? t('settings.webdav_started') : t('settings.webdav_stopped_toast'));
+            setWebDavSettings(updatedSettings);
+            toast.success(updatedSettings.enabled ? t('settings.webdav_started') : t('settings.webdav_stopped_toast'));
         } catch (error) {
             toast.error(t('settings.webdav_update_failed', { error }));
         } finally {
@@ -518,12 +566,12 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         if (port === null || port === webDavSettings.port || !webDavSettings.supported) return;
         setWebDavLoading(true);
         try {
-            const result = await invoke<WebDavSettings>('cmd_update_webdav_settings', {
+            const updatedSettings = await invoke<WebDavSettings>('cmd_update_webdav_settings', {
                 enabled: webDavSettings.enabled,
                 port,
                 writeEnabled: webDavSettings.write_enabled,
             });
-            setWebDavSettings(result);
+            setWebDavSettings(updatedSettings);
             setGeneratedWebDavUrl(previous => {
                 if (!previous) return previous;
                 try {
@@ -559,12 +607,12 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         }
         setWebDavLoading(true);
         try {
-            const result = await invoke<WebDavSettings>('cmd_update_webdav_settings', {
+            const updatedSettings = await invoke<WebDavSettings>('cmd_update_webdav_settings', {
                 enabled: webDavSettings.enabled,
                 port,
                 writeEnabled: nextWriteEnabled,
             });
-            setWebDavSettings(result);
+            setWebDavSettings(updatedSettings);
         } catch (error) {
             toast.error(t('settings.webdav_update_failed', { error }));
         } finally {
@@ -594,6 +642,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                     onClick={onClose}
                 >
                     <motion.div
+                        ref={modalRef}
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="settings-dialog-title"
+                        tabIndex={-1}
                         layout
                         initial={{ opacity: 0, scale: 0.95, y: 10 }}
                         animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -605,8 +658,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                         {/* Header */}
                         <div className="flex min-h-16 items-center justify-between border-b border-app-border-subtle px-6 py-4">
                             <div>
-                                <h2 className="text-base font-semibold text-app-text">{t('settings.title')}</h2>
-                                <p className="mt-0.5 text-xs text-app-text-tertiary">{t(`settings.tab_${activeTab}`)}</p>
+                                <h2 id="settings-dialog-title" className="text-base font-semibold text-app-text">{t('settings.title')}</h2>
+                                <p className="mt-0.5 text-xs text-app-text-tertiary">{activeTab === 'privacy' ? 'Privacy & crash reporting' : activeTab === 'advanced' ? 'Advanced connections and integrations' : t(`settings.tab_${activeTab}`)}</p>
                             </div>
                             <button
                                 onClick={onClose}
@@ -618,21 +671,32 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
                         <div className="flex min-h-0 flex-1">
                         {/* Settings navigation */}
-                        <aside className="w-48 shrink-0 border-e border-app-border-subtle bg-app-sidebar p-3">
-                            {([['general', Globe], ['themes', Palette], ['proxy', Shield], ['vpn', Zap], ['webdav', HardDrive], ['encryption', Shield], ['sharing', Link], ['about', Info]] as const).map(([key, Icon]) => (
-                                <button
-                                    key={key}
-                                    onClick={() => setActiveTab(key as SettingsTab)}
-                                    className={`quiet-control mb-1 flex w-full items-center gap-2.5 px-3 py-2.5 text-start text-sm font-medium ${
-                                        activeTab === key
-                                            ? 'bg-app-selected text-app-text'
-                                            : 'text-app-text-secondary hover:text-app-text'
-                                    }`}
-                                >
-                                    <Icon className={`h-4 w-4 ${activeTab === key ? 'text-app-accent' : ''}`} />
-                                    {t(`settings.tab_${key}`)}
-                                </button>
-                            ))}
+                        <aside className="w-56 shrink-0 overflow-y-auto border-e border-app-border-subtle bg-app-sidebar p-3">
+                            <div className="relative mb-3">
+                                <Search className="pointer-events-none absolute start-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-app-text-tertiary" />
+                                <input value={settingsSearch} onChange={(event) => setSettingsSearch(event.target.value)} placeholder="Search settings" className="quiet-control h-9 w-full border border-app-border bg-app-surface-sunken ps-8 pe-2 text-sm text-app-text outline-none focus:border-app-accent" />
+                            </div>
+                            {([
+                                ['Essentials', [['general', Globe, 'General transfers language updates'], ['themes', Palette, 'Appearance colors themes']] as const],
+                                ['Security & Privacy', [['privacy', Bug, 'Privacy telemetry crash reports consent'], ['encryption', Shield, 'Encryption vault security auto lock']] as const],
+                                ['Connections', [['sharing', Link, 'Sharing links local server']] as const],
+                                ['Advanced', [['advanced', Gauge, 'REST API proxy VPN WebDAV network integration Finder token port']] as const],
+                                ['Support', [['about', Info, 'About diagnostics version updates']] as const],
+                            ] as const).map(([group, items]) => {
+                                const visibleItems = items.filter(([key, , keywords]) => `${key} ${keywords}`.toLowerCase().includes(settingsSearch.trim().toLowerCase()));
+                                if (visibleItems.length === 0) return null;
+                                return (
+                                    <div key={group} className="mb-3">
+                                        <div className="mb-1 px-2 text-[10px] font-semibold uppercase tracking-wider text-app-text-tertiary">{group}</div>
+                                        {visibleItems.map(([key, Icon]) => (
+                                            <button key={key} onClick={() => setActiveTab(key)} className={`quiet-control mb-0.5 flex w-full items-center gap-2.5 px-3 py-2 text-start text-sm font-medium ${activeTab === key ? 'bg-app-selected text-app-text' : 'text-app-text-secondary hover:text-app-text'}`}>
+                                                <Icon className={`h-4 w-4 ${activeTab === key ? 'text-app-accent' : ''}`} />
+                                                {key === 'privacy' ? 'Privacy' : key === 'advanced' ? 'Advanced' : t(`settings.tab_${key}`)}
+                                            </button>
+                                        ))}
+                                    </div>
+                                );
+                            })}
                         </aside>
 
                         {/* Body */}
@@ -640,14 +704,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                             <AnimatePresence mode="wait" initial={false}>
 
                                 {activeTab === 'general' && (
-                                    <motion.div
-                                        key="general"
-                                        initial={{ opacity: 0 }}
-                                        animate={{ opacity: 1 }}
-                                        exit={{ opacity: 0 }}
-                                        transition={{ duration: 0.12, ease: [0.2, 0.8, 0.2, 1] }}
-                                        className="space-y-6 w-full"
-                                    >
+                                    <GeneralSettingsTab>
 
                             {/* Transfers Section */}
                             <section className="space-y-3">
@@ -656,132 +713,27 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     {t('settings.transfers')}
                                 </h3>
 
-                                {/* Max Concurrent Uploads */}
-                                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                                    <div className="flex items-center gap-2">
-                                        <Upload className="w-4 h-4 text-telegram-subtext" />
-                                        <div>
-                                            <p className="text-sm text-telegram-text font-medium">{t('settings.concurrent_uploads')}</p>
-                                            <p className="text-xs text-telegram-subtext">{t('settings.max_uploads_desc')}</p>
-                                        </div>
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                        <button
-                                            onClick={() => updateSetting('maxConcurrentUploads', Math.max(1, settings.maxConcurrentUploads - 1))}
-                                            className="w-7 h-7 flex items-center justify-center rounded-md bg-telegram-bg text-telegram-subtext hover:text-telegram-text hover:bg-telegram-border transition text-sm font-medium"
-                                        >
-                                            -
-                                        </button>
-                                        <span className="text-sm text-telegram-text font-medium w-5 text-center">
-                                            {settings.maxConcurrentUploads}
-                                        </span>
-                                        <button
-                                            onClick={() => updateSetting('maxConcurrentUploads', Math.min(10, settings.maxConcurrentUploads + 1))}
-                                            className="w-7 h-7 flex items-center justify-center rounded-md bg-telegram-bg text-telegram-subtext hover:text-telegram-text hover:bg-telegram-border transition text-sm font-medium"
-                                        >
-                                            +
-                                        </button>
-                                    </div>
-                                </div>
+                                <SettingsRow
+                                    icon={<Upload className="h-4 w-4 text-telegram-subtext" />}
+                                    title={t('settings.concurrent_uploads')}
+                                    description={t('settings.max_uploads_desc')}
+                                    control={<SettingsStepper value={settings.maxConcurrentUploads} minimum={1} maximum={10} label={t('settings.concurrent_uploads')} onChange={value => updateSetting('maxConcurrentUploads', value)} />}
+                                />
 
-                                {/* Max Concurrent Downloads */}
-                                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                                    <div className="flex items-center gap-2">
-                                        <Download className="w-4 h-4 text-telegram-subtext" />
-                                        <div>
-                                            <p className="text-sm text-telegram-text font-medium">{t('settings.concurrent_downloads')}</p>
-                                            <p className="text-xs text-telegram-subtext">{t('settings.max_downloads_desc')}</p>
-                                        </div>
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                        <button
-                                            onClick={() => updateSetting('maxConcurrentDownloads', Math.max(1, settings.maxConcurrentDownloads - 1))}
-                                            className="w-7 h-7 flex items-center justify-center rounded-md bg-telegram-bg text-telegram-subtext hover:text-telegram-text hover:bg-telegram-border transition text-sm font-medium"
-                                        >
-                                            -
-                                        </button>
-                                        <span className="text-sm text-telegram-text font-medium w-5 text-center">
-                                            {settings.maxConcurrentDownloads}
-                                        </span>
-                                        <button
-                                            onClick={() => updateSetting('maxConcurrentDownloads', Math.min(10, settings.maxConcurrentDownloads + 1))}
-                                            className="w-7 h-7 flex items-center justify-center rounded-md bg-telegram-bg text-telegram-subtext hover:text-telegram-text hover:bg-telegram-border transition text-sm font-medium"
-                                        >
-                                            +
-                                        </button>
-                                    </div>
-                                </div>
+                                <SettingsRow
+                                    icon={<Download className="h-4 w-4 text-telegram-subtext" />}
+                                    title={t('settings.concurrent_downloads')}
+                                    description={t('settings.max_downloads_desc')}
+                                    control={<SettingsStepper value={settings.maxConcurrentDownloads} minimum={1} maximum={10} label={t('settings.concurrent_downloads')} onChange={value => updateSetting('maxConcurrentDownloads', value)} />}
+                                />
 
-                                {/* Zip Folders */}
-                                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                                    <div className="flex items-center gap-2">
-                                        <FolderArchive className="w-4 h-4 text-telegram-subtext" />
-                                        <div>
-                                            <p className="text-sm text-telegram-text font-medium">{t('settings.zip_before_upload')}</p>
-                                            <p className="text-xs text-telegram-subtext">{t('settings.zip_folders_desc')}</p>
-                                        </div>
-                                    </div>
-                                    <button
-                                        onClick={() => updateSetting('zipFolders', !settings.zipFolders)}
-                                        className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${settings.zipFolders ? 'bg-telegram-primary' : 'bg-telegram-border'}`}
-                                    >
-                                        <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.zipFolders ? 'translate-x-5' : 'translate-x-0'}`} />
-                                    </button>
-                                </div>
+                                <SettingsRow icon={<FolderArchive className="h-4 w-4 text-telegram-subtext" />} title={t('settings.zip_before_upload')} description={t('settings.zip_folders_desc')} control={<SettingsToggle checked={settings.zipFolders} label={t('settings.zip_before_upload')} onChange={() => updateSetting('zipFolders', !settings.zipFolders)} />} />
 
-                                {/* Hide Folder Groups */}
-                                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                                    <div className="flex items-center gap-2">
-                                        <Tag className="w-4 h-4 text-telegram-subtext" />
-                                        <div>
-                                            <p className="text-sm text-telegram-text font-medium">{t('common.hide_groups')}</p>
-                                            <p className="text-xs text-telegram-subtext">{t('common.hide_groups_desc')}</p>
-                                        </div>
-                                    </div>
-                                    <button
-                                        onClick={() => updateSetting('hideGroups', !settings.hideGroups)}
-                                        className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${settings.hideGroups ? 'bg-telegram-primary' : 'bg-telegram-border'}`}
-                                    >
-                                        <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.hideGroups ? 'translate-x-5' : 'translate-x-0'}`} />
-                                    </button>
-                                </div>
+                                <SettingsRow icon={<Tag className="h-4 w-4 text-telegram-subtext" />} title={t('common.hide_groups')} description={t('common.hide_groups_desc')} control={<SettingsToggle checked={settings.hideGroups} label={t('common.hide_groups')} onChange={() => updateSetting('hideGroups', !settings.hideGroups)} />} />
 
-                                {/* Performance Mode */}
-                                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                                    <div className="flex items-center gap-2">
-                                        <Zap className="w-4 h-4 text-telegram-subtext" />
-                                        <div>
-                                            <p className="text-sm text-telegram-text font-medium">{t('settings.performance_mode')}</p>
-                                            <p className="text-xs text-telegram-subtext">{t('settings.performance_mode_desc')}</p>
-                                        </div>
-                                    </div>
-                                    <button
-                                        onClick={() => updateSetting('performanceMode', !settings.performanceMode)}
-                                        className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${settings.performanceMode ? 'bg-telegram-primary' : 'bg-telegram-border'}`}
-                                    >
-                                        <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.performanceMode ? 'translate-x-5' : 'translate-x-0'}`} />
-                                    </button>
-                                </div>
+                                <SettingsRow icon={<Zap className="h-4 w-4 text-telegram-subtext" />} title={t('settings.performance_mode')} description={t('settings.performance_mode_desc')} control={<SettingsToggle checked={settings.performanceMode} label={t('settings.performance_mode')} onChange={() => updateSetting('performanceMode', !settings.performanceMode)} />} />
 
-                                {/* Linux Rendering Fix */}
-                                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                                    <div className="flex items-center gap-2">
-                                        <Monitor className="w-4 h-4 text-telegram-subtext" />
-                                        <div>
-                                            <p className="text-sm text-telegram-text font-medium">{t('settings.linux_rendering_fix')}</p>
-                                            <p className="text-xs text-telegram-subtext">{t('settings.linux_rendering_desc')}</p>
-                                        </div>
-                                    </div>
-                                    <button
-                                        onClick={() => {
-                                            updateSetting('linuxRenderingFix', !settings.linuxRenderingFix);
-                                            toast.info(t('settings.restart_app_toast'), { duration: 5000 });
-                                        }}
-                                        className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${settings.linuxRenderingFix ? 'bg-telegram-primary' : 'bg-telegram-border'}`}
-                                    >
-                                        <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.linuxRenderingFix ? 'translate-x-5' : 'translate-x-0'}`} />
-                                    </button>
-                                </div>
+                                <SettingsRow icon={<Monitor className="h-4 w-4 text-telegram-subtext" />} title={t('settings.linux_rendering_fix')} description={t('settings.linux_rendering_desc')} control={<SettingsToggle checked={settings.linuxRenderingFix} label={t('settings.linux_rendering_fix')} onChange={() => { updateSetting('linuxRenderingFix', !settings.linuxRenderingFix); toast.info(t('settings.restart_app_toast'), { duration: 5000 }); }} />} />
                             </section>
 
                             {/* Language & Region Section */}
@@ -802,7 +754,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     <div className="relative">
                                         <select
                                             value={settings.language}
-                                            onChange={e => updateSetting('language', e.target.value as any)}
+                                            onChange={event => updateSetting('language', event.target.value as LanguagePreference)}
                                             className="appearance-none bg-telegram-bg border border-telegram-border rounded-md pl-3 pr-8 py-1.5 text-sm text-telegram-text focus:outline-none focus:border-telegram-primary/50 transition cursor-pointer"
                                         >
                                             {LANGUAGES.map(lang => (
@@ -816,8 +768,12 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                 </div>
                             </section>
 
+                            {!showGeneralAdvanced && (
+                                <button type="button" onClick={() => setActiveTab('advanced')} className="quiet-surface flex w-full items-center justify-between p-4 text-start hover:border-app-accent/30 hover:bg-app-hover"><span><strong className="block text-sm text-app-text">Advanced settings</strong><span className="mt-1 block text-xs text-app-text-secondary">REST API, WebDAV, proxy, VPN, and network tuning</span></span><Gauge className="h-5 w-5 text-app-accent" /></button>
+                            )}
+
                             {/* REST API Section */}
-                            <section className="space-y-3">
+                            <section className={`${showGeneralAdvanced ? '' : 'hidden'} space-y-3`}>
                                 <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
                                     <Globe className="w-3.5 h-3.5" />
                                     {t('settings.rest_api')}
@@ -835,11 +791,12 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         </div>
                                     </div>
                                     <button
+                                        type="button" role="switch" aria-checked={apiSettings.enabled} aria-label={t('settings.enable_api_server')}
                                         onClick={handleApiToggle}
                                         disabled={apiLoading}
                                         className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${apiSettings.enabled ? 'bg-telegram-primary' : 'bg-telegram-border'} disabled:opacity-50`}
                                     >
-                                        <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${apiSettings.enabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                                        <span className={`absolute top-0.5 start-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${apiSettings.enabled ? 'translate-x-5 rtl:-translate-x-5' : 'translate-x-0'}`} />
                                     </button>
                                 </div>
 
@@ -905,6 +862,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         </div>
                                     )}
                                 </div>
+                                <button type="button" onClick={() => setAccessTransparency('rest')} className="quiet-control flex w-full items-center justify-center gap-2 border border-app-border-subtle px-3 py-2 text-xs font-medium text-app-accent"><Info className="h-3.5 w-3.5" aria-hidden="true" />Understand REST permissions</button>
                             </section>
 
                             {/* Storage Section */}
@@ -935,6 +893,63 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
                                 </div>
 
+                                <div className="flex items-center justify-between gap-3 rounded-lg bg-telegram-hover/50 p-3">
+                                    <div className="flex min-w-0 items-center gap-2">
+                                        <Database className="h-4 w-4 shrink-0 text-telegram-subtext" />
+                                        <div className="min-w-0">
+                                            <p className="text-sm font-medium text-telegram-text">{t('settings.offline_cache')}</p>
+                                            <p className="text-xs text-telegram-subtext">{t('settings.offline_cache_desc')}</p>
+                                            <p className="mt-1 text-xs font-mono text-telegram-primary">
+                                                {offlineCache
+                                                    ? t('settings.offline_cache_usage', {
+                                                        count: offlineCache.file_count,
+                                                        used: formatBytes(offlineCache.total_bytes),
+                                                        limit: formatBytes(offlineCache.max_bytes),
+                                                    })
+                                                    : t('common.loading')}
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <div className="flex shrink-0 items-center gap-1.5">
+                                        <button
+                                            type="button"
+                                            onClick={fetchOfflineCache}
+                                            disabled={offlineCacheLoading}
+                                            className="rounded-md p-1.5 text-telegram-subtext transition hover:bg-telegram-hover hover:text-telegram-text disabled:opacity-50"
+                                            title={t('settings.refresh_offline_cache')}
+                                        >
+                                            <RefreshCw className={`h-3.5 w-3.5 ${offlineCacheLoading ? 'animate-spin' : ''}`} />
+                                        </button>
+                                        <button
+                                            type="button"
+                                            disabled={offlineCacheLoading || !offlineCache || offlineCache.file_count === 0}
+                                            onClick={async () => {
+                                                const ok = await confirm({
+                                                    title: t('settings.clear_offline_cache_title'),
+                                                    message: t('settings.clear_offline_cache_desc'),
+                                                    confirmText: t('settings.clear'),
+                                                    variant: 'danger',
+                                                });
+                                                if (!ok) return;
+                                                setOfflineCacheLoading(true);
+                                                try {
+                                                    await invoke('cmd_clean_preview_cache');
+                                                    clearImageMemoryCaches();
+                                                    await fetchOfflineCache();
+                                                    toast.success(t('settings.offline_cache_cleared'));
+                                                } catch {
+                                                    toast.error(t('settings.cache_clear_failed'));
+                                                } finally {
+                                                    setOfflineCacheLoading(false);
+                                                }
+                                            }}
+                                            className="rounded-lg bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-400 transition hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                                        >
+                                            {t('settings.clear')}
+                                        </button>
+                                    </div>
+                                </div>
+
                                 <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
                                     <div className="flex items-center gap-2">
                                         <Trash2 className="w-4 h-4 text-telegram-subtext" />
@@ -957,6 +972,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                             try {
                                                 await invoke('cmd_clean_cache');
                                                 clearImageMemoryCaches();
+                                                await fetchOfflineCache();
                                                 toast.success(t('settings.cache_cleared'));
                                             } catch {
                                                 toast.error(t('settings.cache_clear_failed'));
@@ -980,21 +996,25 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                 <p className="text-xs text-telegram-subtext">
                                                     {transcodeCache
                                                         ? `${(transcodeCache.total_bytes / 1048576).toFixed(1)} MB / ${(transcodeCache.max_bytes / 1073741824).toFixed(1)} GB`
-                                                        : t('common.loading')}
+                                                        : cacheLoading
+                                                            ? t('common.loading')
+                                                            : cacheError
+                                                                ? t('settings.failed_prefix', { error: cacheError })
+                                                                : t('settings.no_transcoded_cached')}
                                                 </p>
                                             </div>
                                         </div>
                                         <div className="flex items-center gap-1.5">
                                             <button
                                                 onClick={fetchTranscodeCache}
-                                                disabled={cacheLoading}
+                                                disabled={cacheLoading || clearingVariant !== null}
                                                 className="p-1.5 rounded-md hover:bg-telegram-hover text-telegram-subtext hover:text-telegram-text transition"
                                                 title={t('settings.refresh_links')}
                                             >
                                                 <RefreshCw className={`w-3 h-3 ${cacheLoading ? 'animate-spin' : ''}`} />
                                             </button>
                                             <button
-                                                disabled={!transcodeCache || transcodeCache.entries.length === 0}
+                                                disabled={cacheLoading || clearingVariant !== null || (!cacheError && (!transcodeCache || transcodeCache.entries.length === 0))}
                                                 onClick={async () => {
                                                     const ok = await confirm({
                                                         title: t('settings.clear_transcode_title'),
@@ -1007,7 +1027,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                     try {
                                                         const msg = await invoke<string>('cmd_clear_transcode_cache', {});
                                                         toast.success(msg);
-                                                        fetchTranscodeCache();
+                                                        await fetchTranscodeCache();
                                                     } catch (e) {
                                                         toast.error(t('settings.failed_prefix', { error: e }));
                                                     } finally {
@@ -1022,7 +1042,19 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     </div>
 
                                     {/* Cache entries list */}
-                                    {transcodeCache && transcodeCache.entries.length > 0 ? (
+                                    {cacheLoading ? (
+                                        <div className="flex items-center justify-center py-2" role="status" aria-label={t('common.loading')}>
+                                            <RefreshCw className="w-3 h-3 text-telegram-subtext animate-spin" />
+                                        </div>
+                                    ) : cacheError ? (
+                                        <div className="rounded-md border border-red-500/20 bg-red-500/5 p-2.5 text-center" role="alert">
+                                            <p className="break-words text-[11px] text-red-300">{t('settings.failed_prefix', { error: cacheError })}</p>
+                                            <button type="button" onClick={fetchTranscodeCache} className="quiet-control mt-2 px-2.5 py-1 text-[10px] text-app-text">
+                                                <RefreshCw className="h-3 w-3" />
+                                                {t('settings.retry_encryption_check')}
+                                            </button>
+                                        </div>
+                                    ) : transcodeCache && transcodeCache.entries.length > 0 ? (
                                         <div className="space-y-1.5 max-h-[200px] overflow-y-auto pr-1 custom-scrollbar">
                                             {/* Group HLS variants by file_key (exclude originals, which are cleared via per-file Clear or Clear All) */}
                                             {(() => {
@@ -1046,7 +1078,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                                     try {
                                                                         const msg = await invoke<string>('cmd_clear_transcode_cache', { fileKey });
                                                                         toast.success(msg);
-                                                                        fetchTranscodeCache();
+                                                                        await fetchTranscodeCache();
                                                                     } catch (e) {
                                                                         toast.error(t('settings.failed_prefix', { error: e }));
                                                                     } finally {
@@ -1070,7 +1102,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                                         try {
                                                                             const msg = await invoke<string>('cmd_clear_transcode_cache', { fileKey: e.file_key, quality: e.quality });
                                                                             toast.success(msg);
-                                                                            fetchTranscodeCache();
+                                                                            await fetchTranscodeCache();
                                                                         } catch (err) {
                                                                             toast.error(t('settings.failed_prefix', { error: err }));
                                                                         } finally {
@@ -1095,11 +1127,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         </div>
                                     ) : transcodeCache && transcodeCache.entries.length === 0 ? (
                                         <p className="text-[11px] text-telegram-subtext/50 text-center py-2">{t('settings.no_transcoded_cached')}</p>
-                                    ) : (
-                                        <div className="flex items-center justify-center py-2">
-                                            <RefreshCw className="w-3 h-3 text-telegram-subtext animate-spin" />
-                                        </div>
-                                    )}
+                                    ) : null}
                                 </div>
                             </section>
 
@@ -1156,18 +1184,29 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                 </div>
                             </section>
 
-                                    </motion.div>
+                                    </GeneralSettingsTab>
+                                )}
+
+                                {activeTab === 'privacy' && (
+                                    <PrivacySettingsTab
+                                        crashReportingEnabled={settings.crashReportingEnabled}
+                                        supporterMode={settings.supporterMode}
+                                        onCrashReportingChange={() => updateSettings({ crashReportingEnabled: !settings.crashReportingEnabled, crashReportingConsentSeen: true })}
+                                        onSupporterModeChange={() => updateSetting('supporterMode', !settings.supporterMode)}
+                                    />
+                                )}
+
+                                {activeTab === 'advanced' && (
+                                    <AdvancedSettingsTab
+                                        onOpenApi={() => { setShowGeneralAdvanced(true); setActiveTab('general'); }}
+                                        onOpenWebDav={() => setActiveTab('webdav')}
+                                        onOpenProxy={() => setActiveTab('proxy')}
+                                        onOpenVpn={() => setActiveTab('vpn')}
+                                    />
                                 )}
 
                                 {activeTab === 'proxy' && (
-                                    <motion.section
-                                        key="proxy"
-                                        initial={{ opacity: 0 }}
-                                        animate={{ opacity: 1 }}
-                                        exit={{ opacity: 0 }}
-                                        transition={{ duration: 0.12, ease: [0.2, 0.8, 0.2, 1] }}
-                                        className="space-y-3 w-full"
-                                    >
+                                    <ProxySettingsTab>
                                 <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
                                     <Shield className="w-3.5 h-3.5" />
                                     {t('settings.proxy_config')}
@@ -1204,10 +1243,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         </div>
                                     </div>
                                     <button
+                                        type="button" role="switch" aria-checked={settings.proxyEnabled} aria-label={t('common.enable_proxy')}
                                         onClick={() => updateSetting('proxyEnabled', !settings.proxyEnabled)}
                                         className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${settings.proxyEnabled ? 'bg-telegram-primary' : 'bg-telegram-border'}`}
                                     >
-                                        <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.proxyEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                                        <span className={`absolute top-0.5 start-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.proxyEnabled ? 'translate-x-5 rtl:-translate-x-5' : 'translate-x-0'}`} />
                                     </button>
                                 </div>
 
@@ -1219,10 +1259,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                             <p className="text-xs text-telegram-subtext">{t('settings.live_state_desc') || 'Periodically check connectivity and display latency'}</p>
                                         </div>
                                         <button
+                                            type="button" role="switch" aria-checked={settings.proxyLiveStateEnabled} aria-label={t('settings.live_state')}
                                             onClick={() => updateSetting('proxyLiveStateEnabled', !settings.proxyLiveStateEnabled)}
                                             className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${settings.proxyLiveStateEnabled ? 'bg-telegram-primary' : 'bg-telegram-border'}`}
                                         >
-                                            <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.proxyLiveStateEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                                            <span className={`absolute top-0.5 start-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.proxyLiveStateEnabled ? 'translate-x-5 rtl:-translate-x-5' : 'translate-x-0'}`} />
                                         </button>
                                     </div>
                                 )}
@@ -1380,18 +1421,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         </button>
                                     </div>
                                 </div>
-                            </motion.section>
+                            </ProxySettingsTab>
                         )}
 
                         {activeTab === 'vpn' && (
-                                    <motion.section
-                                        key="vpn"
-                                        initial={{ opacity: 0 }}
-                                        animate={{ opacity: 1 }}
-                                        exit={{ opacity: 0 }}
-                                        transition={{ duration: 0.12, ease: [0.2, 0.8, 0.2, 1] }}
-                                        className="space-y-3 w-full"
-                                    >
+                                    <VpnSettingsTab>
                                 <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
                                     <Zap className="w-3.5 h-3.5" />
                                     {t('settings.vpn_optimizer')}
@@ -1418,10 +1452,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         </div>
                                     </div>
                                     <button
+                                        type="button" role="switch" aria-checked={settings.vpnMode} aria-label={t('settings.vpn_mode')}
                                         onClick={() => updateSetting('vpnMode', !settings.vpnMode)}
                                         className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${settings.vpnMode ? 'bg-emerald-500' : 'bg-telegram-border'}`}
                                     >
-                                        <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.vpnMode ? 'translate-x-5' : 'translate-x-0'}`} />
+                                        <span className={`absolute top-0.5 start-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.vpnMode ? 'translate-x-5 rtl:-translate-x-5' : 'translate-x-0'}`} />
                                     </button>
                                 </div>
 
@@ -1481,10 +1516,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                 <p className="text-xs text-telegram-subtext">{t('settings.adaptive_polling_desc')}</p>
                                             </div>
                                             <button
+                                                type="button" role="switch" aria-checked={settings.adaptivePolling} aria-label={t('settings.adaptive_polling')}
                                                 onClick={() => updateSetting('adaptivePolling', !settings.adaptivePolling)}
                                                 className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${settings.adaptivePolling ? 'bg-telegram-primary' : 'bg-telegram-border'}`}
                                             >
-                                                <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.adaptivePolling ? 'translate-x-5' : 'translate-x-0'}`} />
+                                                <span className={`absolute top-0.5 start-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.adaptivePolling ? 'translate-x-5 rtl:-translate-x-5' : 'translate-x-0'}`} />
                                             </button>
                                         </div>
                                         {settings.adaptivePolling && (<>
@@ -1549,10 +1585,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                             <p className="text-xs text-telegram-subtext">{t('settings.respect_flood_desc')}</p>
                                         </div>
                                         <button
+                                            type="button" role="switch" aria-checked={settings.floodWaitRespect} aria-label={t('settings.respect_flood')}
                                             onClick={() => updateSetting('floodWaitRespect', !settings.floodWaitRespect)}
                                             className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${settings.floodWaitRespect ? 'bg-telegram-primary' : 'bg-telegram-border'}`}
                                         >
-                                            <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.floodWaitRespect ? 'translate-x-5' : 'translate-x-0'}`} />
+                                            <span className={`absolute top-0.5 start-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.floodWaitRespect ? 'translate-x-5 rtl:-translate-x-5' : 'translate-x-0'}`} />
                                         </button>
                                     </div>
 
@@ -1660,33 +1697,29 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                             </div>
                                         </div>
                                         <button
+                                            type="button" role="switch" aria-checked={settings.autoDetectVpn} aria-label={t('settings.auto_detect_vpn')}
                                             onClick={() => updateSetting('autoDetectVpn', !settings.autoDetectVpn)}
                                             className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${settings.autoDetectVpn ? 'bg-telegram-primary' : 'bg-telegram-border'}`}
                                         >
-                                            <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.autoDetectVpn ? 'translate-x-5' : 'translate-x-0'}`} />
+                                            <span className={`absolute top-0.5 start-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.autoDetectVpn ? 'translate-x-5 rtl:-translate-x-5' : 'translate-x-0'}`} />
                                         </button>
                                     </div>
                                 </>)}
-                                    </motion.section>
+                                    </VpnSettingsTab>
                                 )}
 
                                 {activeTab === 'webdav' && (
-                                    <motion.section
-                                        key="webdav"
-                                        initial={{ opacity: 0 }}
-                                        animate={{ opacity: 1 }}
-                                        exit={{ opacity: 0 }}
-                                        transition={{ duration: 0.12, ease: [0.2, 0.8, 0.2, 1] }}
-                                        className="space-y-4 w-full"
-                                    >
+                                    <WebDavSettingsTab>
                                         <div className="flex items-start gap-3 rounded-lg border border-telegram-primary/20 bg-telegram-primary/5 p-3">
                                             <HardDrive className="mt-0.5 h-4 w-4 shrink-0 text-telegram-primary" />
                                             <div>
                                                 <h3 className="text-sm font-semibold text-telegram-text">{t('settings.webdav_title')}</h3>
                                                 <p className="mt-1 text-xs leading-relaxed text-telegram-subtext">{t('settings.webdav_description')}</p>
                                                 <p className="mt-1 text-[11px] text-telegram-primary">{t('settings.webdav_local_only')}</p>
+                                                <p className="mt-2 text-xs leading-relaxed text-telegram-subtext"><strong className="text-telegram-text">Use WebDAV, not SMB.</strong> Connect with the complete generated <code>/dav/&lt;token&gt;/</code> URL. Finder's Guest/anonymous login has no token and will show an empty location; no guest account is created.</p>
                                             </div>
                                         </div>
+                                        <button type="button" onClick={() => setAccessTransparency('webdav')} className="quiet-control flex w-full items-center justify-center gap-2 border border-app-border-subtle px-3 py-2 text-xs font-medium text-app-accent"><Info className="h-3.5 w-3.5" aria-hidden="true" />Understand WebDAV permissions</button>
 
                                         {!webDavSettings.supported ? (
                                             <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-4 text-sm text-amber-300">
@@ -1713,12 +1746,15 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                         </div>
                                                     </div>
                                                     <button
+                                                        type="button"
+                                                        role="switch"
+                                                        aria-checked={webDavSettings.enabled}
                                                         onClick={handleWebDavToggle}
                                                         disabled={webDavLoading || webDavGenerating}
                                                         aria-label={t('settings.enable_webdav')}
                                                         className={`relative h-6 w-11 rounded-full transition-colors duration-200 ${webDavSettings.enabled ? 'bg-telegram-primary' : 'bg-telegram-border'} disabled:opacity-50`}
                                                     >
-                                                        <span className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform duration-200 ${webDavSettings.enabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                                                        <span className={`absolute start-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform duration-200 ${webDavSettings.enabled ? 'translate-x-5 rtl:-translate-x-5' : 'translate-x-0'}`} />
                                                     </button>
                                                 </div>
 
@@ -1752,12 +1788,15 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                         <p className="text-xs text-telegram-subtext">{t('settings.webdav_allow_changes_desc')}</p>
                                                     </div>
                                                     <button
+                                                        type="button"
+                                                        role="switch"
+                                                        aria-checked={webDavSettings.write_enabled}
                                                         onClick={handleWebDavWriteToggle}
                                                         disabled={webDavLoading || webDavGenerating}
                                                         aria-label={t('settings.webdav_allow_changes')}
                                                         className={`relative h-6 w-11 shrink-0 rounded-full transition-colors duration-200 ${webDavSettings.write_enabled ? 'bg-telegram-primary' : 'bg-telegram-border'} disabled:opacity-50`}
                                                     >
-                                                        <span className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform duration-200 ${webDavSettings.write_enabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                                                        <span className={`absolute start-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform duration-200 ${webDavSettings.write_enabled ? 'translate-x-5 rtl:-translate-x-5' : 'translate-x-0'}`} />
                                                     </button>
                                                 </div>
 
@@ -1820,30 +1859,13 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                 )}
                                             </>
                                         )}
-                                    </motion.section>
+                                    </WebDavSettingsTab>
                                 )}
 
-                                {activeTab === 'encryption' && (
-                                    <motion.section
-                                        key="encryption"
-                                        initial={{ opacity: 0 }}
-                                        animate={{ opacity: 1 }}
-                                        exit={{ opacity: 0 }}
-                                        transition={{ duration: 0.12, ease: [0.2, 0.8, 0.2, 1] }}
-                                    >
-                                        <EncryptionSettingsSection />
-                                    </motion.section>
-                                )}
+                                {activeTab === 'encryption' && <EncryptionSettingsTab />}
 
                                 {activeTab === 'sharing' && (
-                                    <motion.section
-                                        key="sharing"
-                                        initial={{ opacity: 0 }}
-                                        animate={{ opacity: 1 }}
-                                        exit={{ opacity: 0 }}
-                                        transition={{ duration: 0.12, ease: [0.2, 0.8, 0.2, 1] }}
-                                        className="space-y-4 w-full"
-                                    >
+                                    <SharingSettingsTab>
                                         <div className="flex items-center justify-between">
                                             <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
                                                 <Link className="w-3.5 h-3.5 text-telegram-primary" />
@@ -1940,91 +1962,27 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                 })}
                                             </div>
                                         )}
-                                    </motion.section>
+                                    </SharingSettingsTab>
                                 )}
-                                {activeTab === 'themes' && (
-                                    <ThemesTab />
-                                )}
+                                {activeTab === 'themes' && <ThemeSettingsTab />}
                                 {activeTab === 'about' && (
-                                    <motion.section
-                                        key="about"
-                                        initial={{ opacity: 0 }}
-                                        animate={{ opacity: 1 }}
-                                        exit={{ opacity: 0 }}
-                                        transition={{ duration: 0.12, ease: [0.2, 0.8, 0.2, 1] }}
-                                        className="space-y-4 w-full"
-                                    >
-                                        <div className="flex flex-col items-center py-6 space-y-5">
-                                            {/* Logo */}
-                                            <img src="/logo.svg" className="w-16 h-16 drop-shadow-lg" alt="Telegram Drive Logo" />
-                                            
-                                            {/* App Name & Version */}
-                                            <div className="text-center">
-                                                <h3 className="text-base font-bold text-telegram-text">Telegram Drive</h3>
-                                                <p className="text-xs text-telegram-subtext mt-0.5">v{appVersion}</p>
-                                            </div>
-
-                                            {/* Divider */}
-                                            <div className="w-12 h-px bg-telegram-border" />
-
-                                            {/* Diagnostics */}
-                                            <button
-                                                onClick={async () => {
-                                                    setDiagLoading(true);
-                                                    try {
-                                                        const info = await invoke<string>('cmd_get_system_diagnostics');
-                                                        await navigator.clipboard.writeText(info);
-                                                        toast.success(t('settings.diagnostics_copied'));
-                                                    } catch (e) {
-                                                        toast.error(t('settings.diagnostics_copy_failed', { error: e }));
-                                                    } finally {
-                                                        setDiagLoading(false);
-                                                    }
-                                                }}
-                                                disabled={diagLoading}
-                                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-telegram-hover border border-telegram-border text-telegram-subtext hover:text-telegram-text hover:bg-telegram-border/30 transition disabled:opacity-50"
-                                            >
-                                                {diagLoading ? (
-                                                    <Loader2 className="w-3 h-3 animate-spin" />
-                                                ) : (
-                                                    <Clipboard className="w-3 h-3" />
-                                                )}
-                                                {t('settings.copy_diagnostics')}
-                                            </button>
-
-                                            {/* Creator Info */}
-                                            <div className="text-center space-y-3">
-                                                <div>
-                                                    <p className="text-sm font-semibold text-telegram-text">Cameron Amer</p>
-                                                </div>
-
-                                                {/* Website Link */}
-                                                <button
-                                                    onClick={(e) => { e.preventDefault(); open('https://www.cameronamer.com'); }}
-                                                    className="flex items-center justify-center gap-1.5 text-xs text-telegram-primary hover:text-telegram-primary/80 transition-colors cursor-pointer"
-                                                >
-                                                    <Globe className="w-3.5 h-3.5" />
-                                                    www.cameronamer.com
-                                                </button>
-
-                                                {/* GitHub Link */}
-                                                <button
-                                                    onClick={(e) => { e.preventDefault(); open('https://github.com/caamer20/telegram-drive'); }}
-                                                    className="flex items-center justify-center gap-1.5 text-xs text-telegram-primary hover:text-telegram-primary/80 transition-colors cursor-pointer"
-                                                >
-                                                    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
-                                                        <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
-                                                    </svg>
-                                                    github.com/caamer20/telegram-drive
-                                                </button>
-                                            </div>
-
-                                            {/* Tagline */}
-                                            <p className="text-[11px] text-telegram-subtext/60 leading-relaxed max-w-[280px] text-center">
-                                                {t('settings.tagline')}
-                                            </p>
-                                        </div>
-                                    </motion.section>
+                                    <AboutSettingsTab
+                                        appVersion={appVersion}
+                                        diagnosticsLoading={diagLoading}
+                                        t={t}
+                                        onCopyDiagnostics={async () => {
+                                            setDiagLoading(true);
+                                            try {
+                                                const diagnostics = await invoke<string>('cmd_get_system_diagnostics');
+                                                await navigator.clipboard.writeText(diagnostics);
+                                                toast.success(t('settings.diagnostics_copied'));
+                                            } catch (error) {
+                                                toast.error(t('settings.diagnostics_copy_failed', { error }));
+                                            } finally {
+                                                setDiagLoading(false);
+                                            }
+                                        }}
+                                    />
                                 )}
                             </AnimatePresence>
                         </div>
@@ -2049,318 +2007,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                     </motion.div>
                 </motion.div>
             )}
+            {isOpen && accessTransparency && <AccessTransparencyDialog service={accessTransparency} onClose={() => setAccessTransparency(null)} />}
         </AnimatePresence>
-    );
-}
-
-// ── Themes Tab ──────────────────────────────────────────────────────
-// Inline component (follows the pattern of the other tabs in this file).
-
-const PALETTE_KEYS: { key: keyof ThemeColorPalette; labelKey: string; defaultLabel: string }[] = [
-    { key: 'bg', labelKey: 'settings.color_bg', defaultLabel: 'Canvas' },
-    { key: 'surface', labelKey: 'settings.color_surface', defaultLabel: 'Surface' },
-    { key: 'primary', labelKey: 'settings.color_primary', defaultLabel: 'Accent' },
-    { key: 'secondary', labelKey: 'settings.color_secondary', defaultLabel: 'Information' },
-    { key: 'text', labelKey: 'settings.color_text', defaultLabel: 'Text' },
-    { key: 'subtext', labelKey: 'settings.color_subtext', defaultLabel: 'Secondary text' },
-    { key: 'border', labelKey: 'settings.color_border', defaultLabel: 'Border' },
-    { key: 'hover', labelKey: 'settings.color_hover', defaultLabel: 'Hover' },
-];
-
-function ThemesTab() {
-    const { t } = useTranslation();
-    const {
-        customThemes,
-        themePreference,
-        setThemePreference,
-        activeCustomThemeId,
-        setActiveCustomTheme,
-        addCustomTheme,
-        deleteCustomTheme,
-        updateCustomTheme,
-    } = useTheme();
-    const { confirm } = useConfirm();
-
-    const [editingId, setEditingId] = useState<string | null>(null);
-
-    const builtinThemes = customThemes.filter(t => t.isBuiltin);
-    const userThemes = customThemes.filter(t => !t.isBuiltin);
-    const editingTheme = editingId ? customThemes.find(t => t.id === editingId) : null;
-
-    const handleCreateTheme = () => {
-        const id = generateThemeId();
-        const newTheme: CustomTheme = {
-            id,
-            name: 'My Theme',
-            isDark: true,
-            palette: getDefaultPalette(true),
-        };
-        addCustomTheme(newTheme);
-        setEditingId(id);
-        setActiveCustomTheme(id);
-    };
-
-    const handleSelectTheme = (theme: CustomTheme) => {
-        if (activeCustomThemeId === theme.id) {
-            // Deselect → reset to default
-            setActiveCustomTheme(null);
-            setEditingId(null);
-        } else {
-            setActiveCustomTheme(theme.id);
-            if (!theme.isBuiltin) {
-                setEditingId(theme.id);
-            } else {
-                setEditingId(null);
-            }
-        }
-    };
-
-    const handleDeleteTheme = async (id: string) => {
-        const ok = await confirm({
-            title: t('settings.delete_theme'),
-            message: t('settings.delete_theme_confirm'),
-            confirmText: t('common.delete'),
-            variant: 'danger',
-        });
-        if (!ok) return;
-        deleteCustomTheme(id);
-        if (editingId === id) setEditingId(null);
-    };
-
-    const handlePaletteChange = (key: keyof ThemeColorPalette, value: string) => {
-        if (!editingTheme || editingTheme.isBuiltin) return;
-        const newPalette = { ...editingTheme.palette, [key]: value };
-        updateCustomTheme(editingTheme.id, { palette: newPalette });
-    };
-
-    const handleBaseToggle = (isDark: boolean) => {
-        if (!editingTheme || editingTheme.isBuiltin) return;
-        updateCustomTheme(editingTheme.id, { isDark });
-    };
-
-    const handleNameChange = (name: string) => {
-        if (!editingTheme || editingTheme.isBuiltin) return;
-        updateCustomTheme(editingTheme.id, { name });
-    };
-
-    return (
-        <motion.section
-            key="themes"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.12, ease: [0.2, 0.8, 0.2, 1] }}
-            className="w-full space-y-6"
-        >
-            <div className="space-y-2">
-                <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-app-text-secondary">
-                    <Monitor className="h-3.5 w-3.5" />
-                    {t('common.theme')}
-                </h3>
-                <div className="grid grid-cols-4 gap-2 rounded-container border border-app-border-subtle bg-app-surface-sunken/30 p-2">
-                    {([
-                        ['default', Sparkles, t('common.default', { defaultValue: 'Default' })],
-                        ['system', Monitor, 'System'],
-                        ['light', Sun, t('common.light_mode')],
-                        ['dark', Moon, t('common.dark_mode')],
-                    ] as const).map(([preference, Icon, label]) => (
-                        <button
-                            key={preference}
-                            onClick={() => setThemePreference(preference)}
-                            className={`quiet-control flex items-center justify-center gap-2 border px-3 py-2 text-xs font-medium ${
-                                !activeCustomThemeId && themePreference === preference
-                                    ? 'border-app-accent/40 bg-app-selected text-app-accent'
-                                    : 'border-transparent text-app-text-secondary hover:text-app-text'
-                            }`}
-                        >
-                            <Icon className="h-3.5 w-3.5" />
-                            {label}
-                        </button>
-                    ))}
-                </div>
-                <p className="text-xs leading-relaxed text-app-text-tertiary">
-                    Default restores the Quiet Utility theme. System follows your device, while presets and custom themes override these standard modes.
-                </p>
-            </div>
-
-            {/* Presets */}
-            <div className="space-y-2">
-                <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
-                    <Palette className="w-3.5 h-3.5" />
-                    {t('settings.presets')}
-                </h3>
-                <div className="grid grid-cols-4 gap-3">
-                    {builtinThemes.map(theme => (
-                        <button
-                            key={theme.id}
-                            onClick={() => handleSelectTheme(theme)}
-                            className={`relative rounded-container border p-1.5 transition-colors ${
-                                activeCustomThemeId === theme.id
-                                    ? 'border-app-accent bg-app-selected'
-                                    : 'border-app-border-subtle hover:border-app-border-strong'
-                            }`}
-                            title={theme.name}
-                        >
-                            {/* Color preview swatch */}
-                            <div className="flex h-12 overflow-hidden rounded-control">
-                                <div className="flex-1" style={{ background: theme.palette.bg }} />
-                                <div className="flex-1" style={{ background: theme.palette.surface }} />
-                                <div className="flex-1" style={{ background: theme.palette.primary }} />
-                            </div>
-                            <p className="mt-1.5 truncate text-center text-[10px] text-app-text-secondary">
-                                {theme.name}
-                            </p>
-                            {activeCustomThemeId === theme.id && (
-                                <div className="absolute -end-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-app-accent">
-                                    <Check className="h-2.5 w-2.5 text-app-accent-contrast" />
-                                </div>
-                            )}
-                        </button>
-                    ))}
-                </div>
-            </div>
-
-            {/* Custom Themes */}
-            <div className="space-y-2">
-                <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
-                    <Sparkles className="w-3.5 h-3.5" />
-                    {t('settings.custom_themes')}
-                </h3>
-
-                {userThemes.length > 0 && (
-                    <div className="grid grid-cols-4 gap-3">
-                        {userThemes.map(theme => (
-                            <button
-                                key={theme.id}
-                                onClick={() => handleSelectTheme(theme)}
-                                className={`relative rounded-container border p-1.5 transition-colors ${
-                                    activeCustomThemeId === theme.id
-                                        ? 'border-app-accent bg-app-selected'
-                                        : 'border-app-border-subtle hover:border-app-border-strong'
-                                }`}
-                                title={theme.name}
-                            >
-                                <div className="flex h-12 overflow-hidden rounded-control">
-                                    <div className="flex-1" style={{ background: theme.palette.bg }} />
-                                    <div className="flex-1" style={{ background: theme.palette.surface }} />
-                                    <div className="flex-1" style={{ background: theme.palette.primary }} />
-                                </div>
-                                <p className="mt-1.5 truncate text-center text-[10px] text-app-text-secondary">
-                                    {theme.name}
-                                </p>
-                                {activeCustomThemeId === theme.id && (
-                                    <div className="absolute -end-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-app-accent">
-                                        <Check className="h-2.5 w-2.5 text-app-accent-contrast" />
-                                    </div>
-                                )}
-                            </button>
-                        ))}
-                    </div>
-                )}
-
-                <button
-                    onClick={handleCreateTheme}
-                    className="quiet-control flex w-full items-center justify-center gap-2 border border-dashed border-app-border px-3 py-2.5 text-xs text-app-text-secondary hover:border-app-accent/50 hover:text-app-accent"
-                >
-                    <Plus className="w-3.5 h-3.5" />
-                    {t('settings.create_theme')}
-                </button>
-            </div>
-
-            {/* Editor (shown when a custom theme is selected) */}
-            {editingTheme && !editingTheme.isBuiltin && (
-                <div className="quiet-surface space-y-4 p-4">
-                    <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider">
-                        {t('settings.edit_theme')}
-                    </h3>
-
-                    {/* Theme Name */}
-                    <div className="flex items-center gap-2">
-                        <label className="text-xs text-telegram-subtext w-16 shrink-0">{t('settings.theme_name')}</label>
-                        <input
-                            type="text"
-                            value={editingTheme.name}
-                            onChange={e => handleNameChange(e.target.value)}
-                            className="flex-1 px-2 py-1.5 rounded-md text-xs bg-telegram-surface border border-telegram-border text-telegram-text focus:border-telegram-primary outline-none transition"
-                            maxLength={32}
-                        />
-                    </div>
-
-                    {/* Base Mode Toggle */}
-                    <div className="flex items-center gap-2">
-                        <label className="text-xs text-telegram-subtext w-16 shrink-0">{t('settings.base_mode')}</label>
-                        <div className="flex gap-1">
-                            <button
-                                onClick={() => handleBaseToggle(true)}
-                                className={`px-3 py-1 rounded-md text-xs font-medium transition ${
-                                    editingTheme.isDark
-                                        ? 'bg-telegram-primary text-white'
-                                        : 'bg-telegram-hover text-telegram-subtext hover:text-telegram-text'
-                                }`}
-                            >
-                                Dark
-                            </button>
-                            <button
-                                onClick={() => handleBaseToggle(false)}
-                                className={`px-3 py-1 rounded-md text-xs font-medium transition ${
-                                    !editingTheme.isDark
-                                        ? 'bg-telegram-primary text-white'
-                                        : 'bg-telegram-hover text-telegram-subtext hover:text-telegram-text'
-                                }`}
-                            >
-                                Light
-                            </button>
-                        </div>
-                    </div>
-
-                    {/* Color Pickers */}
-                    <div className="space-y-2">
-                        {PALETTE_KEYS.map(({ key, labelKey, defaultLabel }) => (
-                            <div key={key} className="flex items-center gap-2">
-                                <label className="w-24 shrink-0 text-xs text-telegram-subtext">{t(labelKey, { defaultValue: defaultLabel })}</label>
-                                <div className="flex items-center gap-1.5 flex-1">
-                                    <input
-                                        type="color"
-                                        value={editingTheme.palette[key].startsWith('rgba') ? '#888888' : editingTheme.palette[key]}
-                                        onChange={e => handlePaletteChange(key, e.target.value)}
-                                        className="w-7 h-7 rounded-md border border-telegram-border cursor-pointer p-0.5 bg-transparent"
-                                    />
-                                    <input
-                                        type="text"
-                                        value={editingTheme.palette[key]}
-                                        onChange={e => handlePaletteChange(key, e.target.value)}
-                                        className="flex-1 px-2 py-1 rounded-md text-xs bg-telegram-surface border border-telegram-border text-telegram-text focus:border-telegram-primary outline-none transition font-mono"
-                                        maxLength={30}
-                                    />
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-
-                    {/* Delete Button */}
-                    <button
-                        onClick={() => handleDeleteTheme(editingTheme.id)}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-red-400 hover:bg-red-500/10 transition"
-                    >
-                        <Trash2 className="w-3.5 h-3.5" />
-                        {t('settings.delete_theme')}
-                    </button>
-                </div>
-            )}
-
-            {/* Reset to Default */}
-            {activeCustomThemeId && (
-                <button
-                    onClick={() => {
-                        setThemePreference('default');
-                        setEditingId(null);
-                    }}
-                    className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium text-telegram-subtext hover:text-telegram-text bg-telegram-hover/50 hover:bg-telegram-hover transition"
-                >
-                    <RotateCcw className="w-3.5 h-3.5" />
-                    {t('settings.reset_default')}
-                </button>
-            )}
-        </motion.section>
     );
 }

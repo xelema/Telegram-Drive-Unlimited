@@ -1,6 +1,8 @@
 import { Plus, HardDrive, Folder } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { TelegramFolder } from '../../../types';
+import { useRef } from 'react';
+import { useModalFocus } from '../../../hooks/useModalFocus';
 
 interface MoveToFolderModalProps {
     folders: TelegramFolder[];
@@ -12,10 +14,12 @@ interface MoveToFolderModalProps {
 
 export function MoveToFolderModal({ folders, onClose, onSelect, activeFolderId, fileName }: MoveToFolderModalProps) {
     const { t } = useTranslation();
+    const panelRef = useRef<HTMLDivElement>(null);
+    useModalFocus(panelRef, onClose);
 
     return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-app-overlay p-4 backdrop-blur-sm" onClick={onClose}>
-            <div className="quiet-raised flex max-h-[80vh] w-80 flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div ref={panelRef} role="dialog" aria-modal="true" tabIndex={-1} className="quiet-raised flex max-h-[80vh] w-80 flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
                 <div className="p-4 border-b border-telegram-border flex justify-between items-center">
                     <h3 className="text-telegram-text font-medium truncate max-w-[220px]">
                         {fileName ? t('files.move_file_to_folder', { name: fileName }) : t('files.move_to_folder')}

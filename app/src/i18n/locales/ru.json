@@ -61,7 +61,15 @@
     "delete_group": "Delete Group",
     "enter_group_name": "Enter group name...",
     "hide_groups_desc": "Toggle folder groups display in the sidebar",
-    "delete": "Удалить"
+    "delete": "Удалить",
+    "recents": "Недавние",
+    "favorites": "Избранное",
+    "pinned": "Закреплённые",
+    "offline_files": "Офлайн-файлы",
+    "storage_insights": "Анализ хранилища",
+    "large_files": "Большие файлы",
+    "old_files": "Старые файлы",
+    "duplicates": "Дубликаты"
   },
   "settings": {
     "concurrent_uploads": "Параллельные загрузки",
@@ -366,7 +374,14 @@
     "webdav_regenerate_title": "Regenerate WebDAV link?",
     "webdav_regenerate_desc": "The current connection link will stop working immediately. You will need to reconnect every WebDAV client with the new link.",
     "webdav_enable_changes_title": "Allow WebDAV file changes?",
-    "webdav_enable_changes_confirm": "Connected WebDAV clients will be able to upload, rename, move, and delete unencrypted files. Encrypted files remain protected."
+    "webdav_enable_changes_confirm": "Connected WebDAV clients will be able to upload, rename, move, and delete unencrypted files. Encrypted files remain protected.",
+    "offline_cache": "Офлайн-файлы",
+    "offline_cache_desc": "Недавно открытые незашифрованные файлы сохраняются на этом устройстве для доступа без сети.",
+    "offline_cache_usage": "Файлов: {{count}} · {{used}} из {{limit}}",
+    "refresh_offline_cache": "Обновить данные об офлайн-файлах",
+    "clear_offline_cache_title": "Удалить офлайн-файлы?",
+    "clear_offline_cache_desc": "Файлы для доступа без сети будут удалены с этого устройства. Копии в Telegram не изменятся.",
+    "offline_cache_cleared": "Офлайн-файлы удалены"
   },
   "files": {
     "download": "Скачать",
@@ -514,7 +529,26 @@
     "donate": "Пожертвовать",
     "getting_started": "Начало работы",
     "close_help": "Закрыть справку",
-    "privacy_note": "Ваши учетные данные хранятся локально на вашем устройстве."
+    "privacy_note": "Ваши учетные данные хранятся локально на вашем устройстве.",
+    "code_sent_telegram_app": "Telegram отправил код входа в подтверждённый чат Telegram на одном из устройств, где выполнен вход.",
+    "code_sent_sms": "Telegram отправил код входа по SMS.",
+    "code_sent_call": "Telegram позвонит вам и продиктует код входа.",
+    "code_sent_flash_call": "Telegram выполнит короткий звонок. Введите номер звонящего, соответствующий {{hint}}.",
+    "code_sent_missed_call": "Telegram выполнит пропущенный звонок. Введите последние цифры номера, начинающегося с {{hint}}.",
+    "code_sent_email": "Telegram отправил код входа на {{hint}}.",
+    "code_sent_fragment": "Telegram доставил этот код через Fragment. Откройте Fragment, чтобы получить его.",
+    "code_sent_sms_word": "Telegram отправил SMS со словом, начинающимся с {{hint}}. Введите слово полностью.",
+    "code_sent_sms_phrase": "Telegram отправил SMS с фразой, начинающейся с {{hint}}. Введите фразу полностью.",
+    "code_delivery_unsupported": "Telegram выбрал способ доставки, который сторонние приложения для компьютера не поддерживают. Используйте вход по QR-коду.",
+    "open_fragment": "Открыть Fragment",
+    "fragment_url_invalid": "Telegram вернул недействительную ссылку для входа через Fragment.",
+    "code_word_placeholder": "Введите слово или фразу",
+    "verifying": "Проверка...",
+    "sign_in": "Войти",
+    "resending": "Повторная отправка...",
+    "resend_in": "Отправить код снова через {{seconds}} с",
+    "resend_code": "Отправить код снова",
+    "use_qr_instead": "Использовать QR-код"
   },
   "ads": {
     "sponsored": "Спонсор",

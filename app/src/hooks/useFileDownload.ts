@@ -1,13 +1,18 @@
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { save, open } from '@tauri-apps/plugin-dialog';
-import { listen, UnlistenFn } from '@tauri-apps/api/event';
+import { emit, listen, UnlistenFn } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
 import { DownloadItem, FileEncryptionInfo, TelegramFile, VaultStatus } from '../types';
 import { isAndroidPlatform, showFileDialogFallback, pickWithFallback, sanitizeFilename } from '../utils';
 import { useSettings } from '../context/SettingsContext';
 import type { Store } from '@tauri-apps/plugin-store';
 import { useTranslation } from 'react-i18next';
+import { revealItemInDir } from '@tauri-apps/plugin-opener';
+import { useConfirm } from '../context/ConfirmContext';
+import { formatBytes } from '../utils';
+import { triggerHaptic } from '../services/feedback';
+import { restoreDownloadQueue, serializeDownloadQueue } from '../services/transferQueuePolicy';
 
 interface ProgressPayload {
     id: string;
@@ -22,8 +27,27 @@ export function useFileDownload(store: Store | null) {
     const [downloadQueue, setDownloadQueue] = useState<DownloadItem[]>([]);
     const [initialized, setInitialized] = useState(false);
     const cancelledRef = useRef<Set<string>>(new Set());
+    const pausedRef = useRef<Set<string>>(new Set());
     const activeCountRef = useRef(0);
-    const { settings } = useSettings();
+    const { settings, updateSetting } = useSettings();
+    const { confirm } = useConfirm();
+    const lastDownloadDirectoryRef = useRef<string | null>(null);
+    const webDavTipShownRef = useRef(settings.downloadWebdavTipSeen);
+
+    useEffect(() => {
+        webDavTipShownRef.current = settings.downloadWebdavTipSeen;
+    }, [settings.downloadWebdavTipSeen]);
+
+    const directoryFromPath = (path: string) => {
+        const separator = path.includes('\\') ? '\\' : '/';
+        const index = path.lastIndexOf(separator);
+        return index > 0 ? path.slice(0, index) : path;
+    };
+
+    const joinPath = (directory: string, filename: string) => {
+        const separator = directory.includes('\\') ? '\\' : '/';
+        return directory.endsWith(separator) ? `${directory}${filename}` : `${directory}${separator}${filename}`;
+    };
 
     // Listen for progress events from Rust
     useEffect(() => {
@@ -47,9 +71,7 @@ export function useFileDownload(store: Store | null) {
         if (!store || initialized) return;
         store.get<DownloadItem[]>('downloadQueue').then((saved) => {
             if (saved && saved.length > 0) {
-                const pending = saved
-                    .filter(i => i.status === 'pending' || i.status === 'waiting_for_unlock')
-                    .map(i => ({ ...i, promptToken: undefined }));
+                const pending = restoreDownloadQueue(saved);
                 if (pending.length > 0) {
                     setDownloadQueue(pending);
                     toast.info(`Restored ${pending.length} pending downloads`);
@@ -62,9 +84,7 @@ export function useFileDownload(store: Store | null) {
     // Save queue when it changes (only pending items)
     useEffect(() => {
         if (!store || !initialized) return;
-        const pending = downloadQueue
-            .filter(i => i.status === 'pending' || i.status === 'waiting_for_unlock')
-            .map(i => ({ ...i, promptToken: undefined }));
+        const pending = serializeDownloadQueue(downloadQueue);
         store.set('downloadQueue', pending).then(() => store.save());
     }, [store, downloadQueue, initialized]);
 
@@ -124,6 +144,7 @@ export function useFileDownload(store: Store | null) {
             // to public Downloads via MediaStore. Passing the original filename ensures the
             // correct file extension is preserved instead of getting a numeric document ID.
             let savePath: string | null = item.savePath || null;
+            let selectedSavePathNow = false;
             if (!savePath) {
                 if (isAndroidPlatform) {
                     savePath = item.filename;
@@ -137,10 +158,31 @@ export function useFileDownload(store: Store | null) {
                     );
                     if (!savePath) {
                         setDownloadQueue(q => q.filter(i => i.id !== item.id));
-                        activeCountRef.current--;
                         return;
                     }
+                    selectedSavePathNow = true;
+                    lastDownloadDirectoryRef.current = directoryFromPath(savePath);
                 }
+            }
+
+            if (!isAndroidPlatform && selectedSavePathNow && savePath) {
+                const accepted = await confirm({
+                    title: 'Confirm download',
+                    message: `1 file · ${formatBytes(item.totalBytes || 0)} → ${directoryFromPath(savePath)}`,
+                    confirmText: 'Download',
+                    variant: 'info',
+                });
+                if (!accepted) {
+                    setDownloadQueue(q => q.filter(i => i.id !== item.id));
+                    return;
+                }
+            }
+
+            // Pause can be requested while metadata, credentials, or a save
+            // destination are being resolved, before the backend transfer exists.
+            if (pausedRef.current.has(item.id)) {
+                pausedRef.current.delete(item.id);
+                return;
             }
 
             await invoke('cmd_download_file', {
@@ -153,16 +195,48 @@ export function useFileDownload(store: Store | null) {
                 }
             });
 
+            // A successful backend return wins over a late pause request; the
+            // destination already contains the complete file and must not be
+            // downloaded again on resume.
+            pausedRef.current.delete(item.id);
             if (cancelledRef.current.has(item.id)) {
                 cancelledRef.current.delete(item.id);
             } else {
                 setDownloadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'success', progress: 100 } : i));
-                toast.success(`Downloaded: ${item.filename}`);
+                triggerHaptic('success');
+                toast.success(`Downloaded: ${item.filename}`, !isAndroidPlatform && savePath ? {
+                    action: {
+                        label: 'Show in folder',
+                        onClick: () => { void revealItemInDir(savePath as string); },
+                    },
+                } : undefined);
+                if (!isAndroidPlatform && !webDavTipShownRef.current) {
+                    webDavTipShownRef.current = true;
+                    updateSetting('downloadWebdavTipSeen', true);
+                    window.setTimeout(() => toast.info('Tip: browse the same files directly in Finder or File Explorer with WebDAV.', {
+                        action: {
+                            label: 'WebDAV settings',
+                            onClick: () => window.dispatchEvent(new CustomEvent('telegram-drive-open-settings', { detail: { tab: 'webdav' } })),
+                        },
+                    }), 900);
+                }
             }
         } catch (e) {
-            if (!cancelledRef.current.has(item.id)) {
+            if (pausedRef.current.has(item.id)) {
+                pausedRef.current.delete(item.id);
+            } else if (!cancelledRef.current.has(item.id)) {
                 const errMsg = String(e);
-                if (errMsg.includes('Transfer cancelled')) {
+                const floodWait = errMsg.match(/FLOOD_WAIT_(\d+)/i);
+                if (floodWait) {
+                    const seconds = Math.min(300, Math.max(1, Number(floodWait[1]) || 60));
+                    const retryAt = Date.now() + seconds * 1000;
+                    setDownloadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'cooldown', error: `Telegram cooling down (${seconds}s)` } : i));
+                    void emit('telegram-cooldown', { operation: 'Download', retryAt, seconds, active: true });
+                    window.setTimeout(() => {
+                        void emit('telegram-cooldown', { operation: 'Download', retryAt, seconds: 0, active: false });
+                        setDownloadQueue(q => q.map(i => i.id === item.id && i.status === 'cooldown' ? { ...i, status: 'pending', error: undefined } : i));
+                    }, seconds * 1000);
+                } else if (errMsg.includes('Transfer cancelled')) {
                     setDownloadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'cancelled' } : i));
                 } else if (errMsg.includes('VAULT_LOCKED') || errMsg.includes('KEY_REQUIRED')) {
                     setDownloadQueue(q => q.map(i => i.id === item.id ? {
@@ -176,21 +250,39 @@ export function useFileDownload(store: Store | null) {
                     setDownloadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'error', error: errMsg } : i));
                     toast.error(`Download failed: ${item.filename}`);
                 }
-            } else {
+            } else if (cancelledRef.current.has(item.id)) {
                 cancelledRef.current.delete(item.id);
             }
         } finally {
             activeCountRef.current--;
+            // Ensure pending work is reconsidered after the active slot is freed,
+            // including a transfer resumed while cancellation was unwinding.
+            setDownloadQueue(q => [...q]);
         }
     };
 
-    const queueDownload = (messageId: number, filename: string, folderId: number | null) => {
+    const queueDownload = async (messageId: number, filename: string, folderId: number | null, fileSize?: number) => {
+        const cleanName = sanitizeFilename(filename);
+        let savePath: string | undefined;
+        if (!isAndroidPlatform && lastDownloadDirectoryRef.current) {
+            const destination = lastDownloadDirectoryRef.current;
+            const accepted = await confirm({
+                title: 'Download file',
+                message: `1 file · ${formatBytes(fileSize || 0)} → ${destination}`,
+                confirmText: 'Download',
+                cancelText: 'Choose another location',
+                variant: 'info',
+            });
+            if (accepted) savePath = joinPath(destination, cleanName);
+        }
         const newItem: DownloadItem = {
             id: Math.random().toString(36).substr(2, 9),
             messageId,
-            filename: sanitizeFilename(filename),
+            filename: cleanName,
             folderId,
-            status: 'pending'
+            status: 'pending',
+            totalBytes: fileSize,
+            savePath,
         };
         setDownloadQueue(prev => [...prev, newItem]);
     };
@@ -204,7 +296,7 @@ export function useFileDownload(store: Store | null) {
                 id: Math.random().toString(36).substr(2, 9),
                 messageId: file.id,
                 filename: sanitizeFilename(file.name),
-                folderId,
+                folderId: file.folder_id ?? folderId,
                 status: 'pending' as const,
             }));
             setDownloadQueue(prev => [...prev, ...newItems]);
@@ -220,7 +312,7 @@ export function useFileDownload(store: Store | null) {
                     id: Math.random().toString(36).substr(2, 9),
                     messageId: file.id,
                     filename: sanitizedName,
-                    folderId,
+                    folderId: file.folder_id ?? folderId,
                     status: 'pending' as const,
                     savePath: dir.endsWith(separator) ? `${dir}${sanitizedName}` : `${dir}${separator}${sanitizedName}`
                 };
@@ -228,6 +320,22 @@ export function useFileDownload(store: Store | null) {
             setDownloadQueue(prev => [...prev, ...newItems]);
             toast.info(`Queued ${files.length} files for download`);
         };
+
+        const totalSize = files.reduce((sum, file) => sum + (file.size || 0), 0);
+        if (lastDownloadDirectoryRef.current) {
+            const destination = lastDownloadDirectoryRef.current;
+            const accepted = await confirm({
+                title: 'Download files',
+                message: `${files.length} file${files.length === 1 ? '' : 's'} · ${formatBytes(totalSize)} → ${destination}`,
+                confirmText: 'Download',
+                cancelText: 'Choose another location',
+                variant: 'info',
+            });
+            if (accepted) {
+                enqueueFiles(destination);
+                return;
+            }
+        }
 
         const dirPath = await pickWithFallback(
             () => open({ directory: true, multiple: false, title: "Select Download Destination" }),
@@ -243,7 +351,14 @@ export function useFileDownload(store: Store | null) {
             },
         );
         if (!dirPath) return;
-
+        const accepted = await confirm({
+            title: 'Confirm download',
+            message: `${files.length} file${files.length === 1 ? '' : 's'} · ${formatBytes(totalSize)} → ${dirPath}`,
+            confirmText: 'Download',
+            variant: 'info',
+        });
+        if (!accepted) return;
+        lastDownloadDirectoryRef.current = dirPath;
         enqueueFiles(dirPath);
     };
 
@@ -253,27 +368,48 @@ export function useFileDownload(store: Store | null) {
 
     const cancelAll = () => {
         setDownloadQueue(q => {
-            const downloading = q.find(i => i.status === 'downloading');
-            if (downloading) {
-                cancelledRef.current.add(downloading.id);
-                invoke('cmd_cancel_transfer', { transferId: downloading.id }).catch(() => {});
+            const active = q.filter(i => i.status === 'downloading' || i.status === 'decrypting' || i.status === 'verifying');
+            for (const item of active) {
+                cancelledRef.current.add(item.id);
+                invoke('cmd_cancel_transfer', { transferId: item.id }).catch(() => {});
             }
             return q
-                .filter(i => i.status !== 'pending')
-                .map(i => i.status === 'downloading' ? { ...i, status: 'cancelled' as const } : i);
+                .filter(i => i.status !== 'pending' && i.status !== 'paused' && i.status !== 'cooldown')
+                .map(i => active.some(activeItem => activeItem.id === i.id) ? { ...i, status: 'cancelled' as const } : i);
         });
         toast.info('All downloads cancelled');
+    };
+
+    const pauseAll = () => {
+        setDownloadQueue(q => q.map(item => {
+            if (item.status === 'downloading' || item.status === 'decrypting' || item.status === 'verifying') {
+                pausedRef.current.add(item.id);
+                invoke('cmd_cancel_transfer', { transferId: item.id }).catch(() => {});
+                return { ...item, status: 'paused' as const, error: undefined };
+            }
+            return item.status === 'pending' || item.status === 'cooldown'
+                ? { ...item, status: 'paused' as const, error: undefined }
+                : item;
+        }));
+        toast.info('Downloads paused. Active items will restart safely when resumed.');
+    };
+
+    const resumeAll = () => {
+        setDownloadQueue(q => q.map(item => item.status === 'paused'
+            ? { ...item, status: 'pending' as const, error: undefined }
+            : item));
+        toast.info('Downloads resumed');
     };
 
     const cancelItem = (id: string) => {
         setDownloadQueue(q => {
             const item = q.find(i => i.id === id);
-            if (item?.status === 'downloading') {
+            if (item && ['downloading', 'decrypting', 'verifying'].includes(item.status)) {
                 cancelledRef.current.add(id);
                 invoke('cmd_cancel_transfer', { transferId: id }).catch(() => {});
                 return q.map(i => i.id === id ? { ...i, status: 'cancelled' as const } : i);
             }
-            if (item?.status === 'pending') {
+            if (item?.status === 'pending' || item?.status === 'paused' || item?.status === 'cooldown') {
                 return q.filter(i => i.id !== id);
             }
             return q;
@@ -294,6 +430,8 @@ export function useFileDownload(store: Store | null) {
         queueBulkDownload,
         clearFinished,
         cancelAll,
+        pauseAll,
+        resumeAll,
         cancelItem,
         retryItem,
     };

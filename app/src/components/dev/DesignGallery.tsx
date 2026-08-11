@@ -1,6 +1,8 @@
 import { useState } from 'react';
-import { ChevronLeft, Download, ExternalLink, Folder, Key, MoreHorizontal, UploadCloud, X } from 'lucide-react';
+import { ChevronLeft, Database, Download, ExternalLink, Folder, Key, MoreHorizontal, RefreshCw, UploadCloud, X } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { useTheme } from '../../context/ThemeContext';
+import { getLanguageInfo, type SupportedLanguage } from '../../i18n/languages';
 import {
   Badge,
   Button,
@@ -19,13 +21,21 @@ import {
 
 export default function DesignGallery() {
   const { themePreference, setThemePreference, customThemes, activeCustomThemeId, setActiveCustomTheme } = useTheme();
+  const { t } = useTranslation();
   const [enabled, setEnabled] = useState(true);
   const [density, setDensity] = useState<'comfortable' | 'compact'>('comfortable');
   const [direction, setDirection] = useState<'ltr' | 'rtl'>('ltr');
+  const [auditLanguage, setAuditLanguage] = useState<SupportedLanguage>('de');
+  const localeStress = new URLSearchParams(window.location.search).has('locale-stress');
+  const activeDirection = localeStress ? getLanguageInfo(auditLanguage).dir : direction;
+
+  const changeAuditLanguage = (language: SupportedLanguage) => {
+    setAuditLanguage(language);
+  };
 
   return (
-    <main dir={direction} className="h-screen overflow-y-auto bg-app-canvas p-4 text-app-text sm:p-8">
-      <div className="mx-auto max-w-5xl space-y-8">
+    <main dir={activeDirection} data-density={density} className="h-screen overflow-y-auto bg-app-canvas p-4 text-app-text sm:p-8">
+      <div className={`mx-auto max-w-5xl ${density === 'compact' ? 'space-y-4' : 'space-y-8'}`}>
         <header className="flex flex-col items-start justify-between gap-5 sm:flex-row">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.14em] text-app-accent">Development fixture</p>
@@ -54,7 +64,46 @@ export default function DesignGallery() {
           </div>
         </header>
 
-        <Surface className="grid gap-6 p-4 sm:p-6 md:grid-cols-2">
+        {localeStress && (
+          <Surface className="p-4 sm:p-6" data-testid="locale-stress-fixture">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <h2 className="text-sm font-semibold">Localized offline storage fixture</h2>
+                <p className="mt-1 max-w-xl text-xs text-app-text-secondary">Narrow-width review for long strings, RTL direction, and CJK line breaking.</p>
+              </div>
+              <label className="text-xs font-medium text-app-text-secondary">
+                Audit language
+                <select
+                  aria-label="Audit language"
+                  className="quiet-control ms-2 h-8 border border-app-border bg-app-surface px-2 text-ui text-app-text"
+                  value={auditLanguage}
+                  onChange={(event) => changeAuditLanguage(event.target.value as SupportedLanguage)}
+                >
+                  <option value="de">Deutsch</option>
+                  <option value="ar">العربية</option>
+                  <option value="zh-CN">简体中文</option>
+                  <option value="ja">日本語</option>
+                  <option value="ko">한국어</option>
+                  <option value="vi">Tiếng Việt</option>
+                </select>
+              </label>
+            </div>
+            <div className="mt-4 w-full max-w-[22rem] rounded-lg bg-app-surface-sunken/50 p-3" data-testid="localized-offline-card">
+              <div className="flex min-w-0 items-start gap-2">
+                <Database className="mt-0.5 h-4 w-4 shrink-0 text-app-text-secondary" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium text-app-text">{t('settings.offline_cache', { lng: auditLanguage })}</p>
+                  <p className="mt-1 text-xs text-app-text-secondary">{t('settings.offline_cache_desc', { lng: auditLanguage })}</p>
+                  <p className="mt-1 text-xs font-mono text-app-accent">{t('settings.offline_cache_usage', { lng: auditLanguage, count: 12, used: '84 MB', limit: '256 MB' })}</p>
+                </div>
+                <button className="quiet-control shrink-0 p-1.5" title={t('settings.refresh_offline_cache', { lng: auditLanguage })} aria-label={t('settings.refresh_offline_cache', { lng: auditLanguage })}><RefreshCw className="h-3.5 w-3.5" /></button>
+                <button className="quiet-control shrink-0 px-2.5 py-1.5 text-xs text-red-400">{t('settings.clear', { lng: auditLanguage })}</button>
+              </div>
+            </div>
+          </Surface>
+        )}
+
+        <Surface className={`grid p-4 md:grid-cols-2 ${density === 'compact' ? 'gap-3' : 'gap-6 sm:p-6'}`}>
           <section className="space-y-4">
             <h2 className="text-sm font-semibold">Actions</h2>
             <div className="flex flex-wrap gap-2">
@@ -90,7 +139,7 @@ export default function DesignGallery() {
         <Surface className="overflow-hidden">
           <div className="grid grid-cols-[2rem_minmax(0,2fr)_6rem_8rem] gap-4 border-b border-app-border-subtle bg-app-surface-sunken/30 px-4 py-3 text-xs text-app-text-secondary"><span>#</span><span>Name</span><span className="text-end">Size</span><span className="text-end">Date</span></div>
           {['Quarterly archive.zip', 'Product walkthrough.mp4', 'Translations.csv'].map((name, index) => (
-            <div key={name} className="grid min-h-12 grid-cols-[2rem_minmax(0,2fr)_6rem_8rem] items-center gap-4 border-b border-app-border-subtle px-4 text-sm last:border-b-0 hover:bg-app-hover"><span className="text-app-accent">{index + 1}</span><span className="truncate">{name}</span><span className="text-end text-xs text-app-text-secondary">24 MB</span><span className="text-end text-xs text-app-text-tertiary">Today</span></div>
+            <div key={name} className={`grid grid-cols-[2rem_minmax(0,2fr)_6rem_8rem] items-center gap-4 border-b border-app-border-subtle px-4 text-sm last:border-b-0 hover:bg-app-hover ${density === 'compact' ? 'min-h-9' : 'min-h-12'}`}><span className="text-app-accent">{index + 1}</span><span className="truncate">{name}</span><span className="text-end text-xs text-app-text-secondary">24 MB</span><span className="text-end text-xs text-app-text-tertiary">Today</span></div>
           ))}
         </Surface>
 

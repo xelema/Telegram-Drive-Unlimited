@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { AnimatePresence } from 'framer-motion';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { invoke } from '@tauri-apps/api/core';
@@ -18,7 +18,7 @@ import {
 } from '@dnd-kit/core';
 import { arrayMove, sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 
-import { TelegramFile, BandwidthStats, ShareInfo } from '../../types';
+import { TelegramFile, BandwidthStats, ShareInfo, type SmartView, type StorageInsightResult } from '../../types';
 import { formatBytes, isMediaFile, isPdfFile, isArchiveFile, nativeShareOrCopy, copyToClipboard } from '../../utils';
 
 // Components
@@ -32,12 +32,15 @@ import { MediaPlayer } from './dashboard/MediaPlayer';
 import { ExternalDropBlocker } from './dashboard/ExternalDropBlocker';
 import { PdfViewer } from './dashboard/PdfViewer';
 import { ArchiveViewerModal } from './dashboard/ArchiveViewerModal';
-import { SettingsModal } from './dashboard/SettingsModal';
+import { SettingsModal, type SettingsTab } from './dashboard/SettingsModal';
 import { ShareDialog } from './dashboard/ShareDialog';
 import { RenameFolderModal } from './dashboard/RenameFolderModal';
 import { RenameFileModal } from './dashboard/RenameFileModal';
 import { DesktopAdBanner } from './dashboard/DesktopAdBanner';
 import { RemoteUploadModal } from './dashboard/RemoteUploadModal';
+import { KeyboardShortcutsDialog } from './dashboard/KeyboardShortcutsDialog';
+import { DriveConceptTour } from './dashboard/DriveConceptTour';
+import { HelpCenterDialog } from './dashboard/HelpCenterDialog';
 import { Files, Link, Copy, Check, X, Loader2, Share2 } from 'lucide-react';
 
 // Hooks
@@ -48,6 +51,11 @@ import { useFileDownload } from '../../hooks/useFileDownload';
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts';
 import { useSettings } from '../../context/SettingsContext';
 import { useConfirm } from '../../context/ConfirmContext';
+import { DEFAULT_SEARCH_FILTERS, filterAndRankFiles, type FileSearchFilters } from '../../services/fileSearch';
+
+const sameFile = (left: TelegramFile, right: TelegramFile) => (
+    left.id === right.id && (left.folder_id ?? null) === (right.folder_id ?? null)
+);
 
 export function Dashboard({ onLogout }: { onLogout: () => void }) {
     const queryClient = useQueryClient();
@@ -63,8 +71,17 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     } = useTelegramConnection(onLogout);
 
 
-    const { settings, updateSetting } = useSettings();
+    const { settings, updateSetting, isLoaded: settingsLoaded } = useSettings();
     const { confirm } = useConfirm();
+
+    useEffect(() => {
+        if (sessionStorage.getItem('telegram-drive-recovered-session') !== 'true') return;
+        sessionStorage.removeItem('telegram-drive-recovered-session');
+        const timer = window.setTimeout(() => {
+            toast.success('We recovered your session — transfers are still queued.');
+        }, 500);
+        return () => window.clearTimeout(timer);
+    }, []);
     const viewMode = settings.viewMode;
     const setViewMode = (mode: 'grid' | 'list') => updateSetting('viewMode', mode);
 
@@ -72,9 +89,16 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     const [selectedIds, setSelectedIds] = useState<number[]>([]);
     const [showMoveModal, setShowMoveModal] = useState(false);
     const [showSettings, setShowSettings] = useState(false);
+    const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>('general');
+    const [showShortcuts, setShowShortcuts] = useState(false);
+    const [showHelp, setShowHelp] = useState(false);
+    const [createFolderRequest, setCreateFolderRequest] = useState(0);
+    const [activeSmartView, setActiveSmartView] = useState<SmartView | null>('recents');
     const [searchTerm, setSearchTerm] = useState("");
     const [searchResults, setSearchResults] = useState<TelegramFile[]>([]);
+    const [searchFilters, setSearchFilters] = useState<FileSearchFilters>(DEFAULT_SEARCH_FILTERS);
     const [isSearching, setIsSearching] = useState(false);
+    const [folderSyncProgress, setFolderSyncProgress] = useState({ active: false, count: 0 });
     const [cardScale, setCardScale] = useState(1.0);
     const [sortField, setSortField] = useState<SortField>('name');
     const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
@@ -106,11 +130,38 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     const [moveFileTarget, setMoveFileTarget] = useState<TelegramFile | null>(null);
     const [renameFileTarget, setRenameFileTarget] = useState<TelegramFile | null>(null);
 
+    useEffect(() => {
+        const openSettings = (event: Event) => {
+            const tab = (event as CustomEvent<{ tab?: SettingsTab }>).detail?.tab ?? 'general';
+            setSettingsInitialTab(tab);
+            setShowSettings(true);
+        };
+        window.addEventListener('telegram-drive-open-settings', openSettings);
+        return () => window.removeEventListener('telegram-drive-open-settings', openSettings);
+    }, []);
+
     const { data: allFiles = [], isLoading, error } = useQuery({
-        queryKey: ['files', activeFolderId],
+        queryKey: ['files', activeSmartView ?? 'folder', activeFolderId],
         queryFn: async () => {
+            if (activeSmartView) {
+                if (activeSmartView === 'offline') {
+                    const localFiles = await invoke<TelegramFile[]>('cmd_get_offline_files', { limit: 250 });
+                    return localFiles.map((file) => ({ ...file, sizeStr: formatBytes(file.size), type: 'file' as const }));
+                }
+                if (activeSmartView === 'large' || activeSmartView === 'old' || activeSmartView === 'duplicates') {
+                    const insight = await invoke<StorageInsightResult>('cmd_get_storage_insight', {
+                        view: activeSmartView,
+                        largeThresholdBytes: 100 * 1024 * 1024,
+                        oldFileDays: 365,
+                    });
+                    return insight.files.map((file) => ({ ...file, sizeStr: formatBytes(file.size), type: 'file' as const }));
+                }
+                const localFiles = await invoke<TelegramFile[]>('cmd_get_file_activity', { view: activeSmartView, limit: 250 });
+                return localFiles.map((file) => ({ ...file, sizeStr: formatBytes(file.size), type: 'file' as const }));
+            }
+            setFolderSyncProgress({ active: true, count: 0 });
             const accumulatedFiles = new Map<number, TelegramFile>();
-            queryClient.setQueryData(['files', activeFolderId], []);
+            queryClient.setQueryData(['files', 'folder', activeFolderId], []);
 
             const unlisten = await listen<any>('folder-load-chunk', (event) => {
                 const payload = event.payload;
@@ -121,7 +172,8 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                         type: (f.icon_type as TelegramFile['type']) || 'file'
                     }));
                     newChunk.forEach((file) => accumulatedFiles.set(file.id, file));
-                    queryClient.setQueryData(['files', activeFolderId], Array.from(accumulatedFiles.values()));
+                    setFolderSyncProgress({ active: true, count: accumulatedFiles.size });
+                    queryClient.setQueryData(['files', 'folder', activeFolderId], Array.from(accumulatedFiles.values()));
                 }
             });
 
@@ -130,14 +182,20 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                 return Array.from(accumulatedFiles.values());
             } finally {
                 unlisten();
+                setFolderSyncProgress((progress) => ({ ...progress, active: false }));
             }
         },
         enabled: !!store,
     });
 
-    const displayedFiles = searchTerm.length > 2
-        ? searchResults
-        : allFiles.filter((f: TelegramFile) => f.name.toLowerCase().includes(searchTerm.toLowerCase()));
+    const displayedFiles = useMemo(() => {
+        const source = searchTerm.trim().length >= 2 && searchFilters.scope === 'all'
+            ? [...allFiles, ...searchResults].filter((file, index, values) => values.findIndex((candidate) => candidate.id === file.id && candidate.folder_id === file.folder_id) === index)
+            : allFiles;
+        return filterAndRankFiles(source, searchTerm, searchFilters);
+    }, [allFiles, searchResults, searchTerm, searchFilters]);
+    const isCrossFolderView = activeSmartView !== null
+        || (searchFilters.scope === 'all' && searchTerm.trim().length >= 2);
 
     const { data: bandwidth } = useQuery({
         queryKey: ['bandwidth'],
@@ -147,8 +205,8 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     });
 
 
-    const { uploadQueue, setUploadQueue, handleManualUpload, handleFolderUpload, handleDropUpload, handleUrlUpload, cancelAll: cancelUploads, cancelItem: cancelUploadItem, retryItem: retryUploadItem } = useFileUpload(activeFolderId, store);
-    const { downloadQueue, queueDownload, queueBulkDownload, clearFinished: clearDownloads, cancelAll: cancelDownloads, cancelItem: cancelDownloadItem, retryItem: retryDownloadItem } = useFileDownload(store);
+    const { uploadQueue, setUploadQueue, handleManualUpload, handleFolderUpload, handleDropUpload, handleUrlUpload, cancelAll: cancelUploads, pauseAll: pauseUploads, resumeAll: resumeUploads, cancelItem: cancelUploadItem, retryItem: retryUploadItem } = useFileUpload(activeFolderId, store);
+    const { downloadQueue, queueDownload, queueBulkDownload, clearFinished: clearDownloads, cancelAll: cancelDownloads, pauseAll: pauseDownloads, resumeAll: resumeDownloads, cancelItem: cancelDownloadItem, retryItem: retryDownloadItem } = useFileDownload(store);
 
     const {
         handleDelete, handleBulkDelete, handleBulkDownload,
@@ -171,7 +229,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                 shareFiles.map(async (file) => {
                     try {
                         const info = await invoke<ShareInfo>('cmd_create_share', {
-                            folderId: null,
+                            folderId: file.folder_id ?? activeFolderId,
                             messageId: file.id,
                             fileName: file.name,
                             fileSize: file.size,
@@ -196,7 +254,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
         } finally {
             setBulkShareLoading(false);
         }
-    }, [displayedFiles, selectedIds]);
+    }, [displayedFiles, selectedIds, activeFolderId]);
 
     const handleCopyBulkLink = useCallback((link: string) => {
         navigator.clipboard.writeText(link);
@@ -210,8 +268,12 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
 
 
     const handleSelectAll = useCallback(() => {
+        if (isCrossFolderView) {
+            toast.info('Open a folder to select multiple files safely.');
+            return;
+        }
         setSelectedIds(displayedFiles.map(f => f.id));
-    }, [displayedFiles]);
+    }, [displayedFiles, isCrossFolderView]);
 
     const handleKeyboardDelete = useCallback(() => {
         if (selectedIds.length > 0) {
@@ -230,7 +292,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     }, []);
 
     const handleFocusSearch = useCallback(() => {
-        const searchInput = document.querySelector('input[placeholder="Search files..."]') as HTMLInputElement;
+        const searchInput = document.querySelector('input[data-file-search]') as HTMLInputElement;
         if (searchInput) {
             searchInput.focus();
             searchInput.select();
@@ -263,24 +325,24 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
         setPreviewContextFiles([]);
         setPreviewContextIndex(-1);
         setArchiveViewFile(null);
-    }, [activeFolderId]);
+    }, [activeFolderId, activeSmartView]);
 
 
     useEffect(() => {
-        if (searchTerm.length <= 2) {
+        if (searchTerm.trim().length < 2 || searchFilters.scope === 'folder') {
             setSearchResults([]);
             return;
         }
 
         const timer = setTimeout(async () => {
             setIsSearching(true);
-            const results = await handleGlobalSearch(searchTerm);
-            setSearchResults(results);
+            const results = await handleGlobalSearch(searchTerm.trim());
+            setSearchResults(results.map((file) => ({ ...file, sizeStr: formatBytes(file.size), type: 'file' })));
             setIsSearching(false);
         }, 500);
 
         return () => clearTimeout(timer);
-    }, [searchTerm, handleGlobalSearch]);
+    }, [searchTerm, searchFilters.scope, handleGlobalSearch]);
 
 
 
@@ -292,10 +354,22 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
         setSelectedIds([]);
     }, []);
 
-    const handleFileClick = (e: React.MouseEvent, id: number, orderedFiles: TelegramFile[] = []) => {
+    const handleFileClick = (e: React.MouseEvent, file: TelegramFile, orderedFiles: TelegramFile[] = []) => {
         e.stopPropagation();
         const filesSource = orderedFiles.length > 0 ? orderedFiles : displayedFiles;
-        const currentIndex = filesSource.findIndex(f => f.id === id);
+        if (isCrossFolderView) {
+            clearSelection();
+            if (file.type === 'folder') {
+                setActiveSmartView(null);
+                setActiveFolderId(file.id);
+            } else {
+                handlePreview(file, filesSource);
+            }
+            return;
+        }
+
+        const id = file.id;
+        const currentIndex = filesSource.findIndex(candidate => sameFile(candidate, file));
 
         if (e.shiftKey && lastClickedIndexRef.current >= 0) {
             // Shift+Click: range select from last clicked to current
@@ -332,10 +406,10 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
         try {
             await invoke('cmd_rename_file', {
                 messageId: renameFileTarget.id,
-                folderId: activeFolderId,
+                folderId: renameFileTarget.folder_id ?? activeFolderId,
                 newName,
             });
-            queryClient.invalidateQueries({ queryKey: ['files', activeFolderId] });
+            queryClient.invalidateQueries({ queryKey: ['files'] });
             toast.success(`Renamed to "${newName}"`);
         } catch (e) {
             toast.error(`Failed to rename: ${e}`);
@@ -373,12 +447,27 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
         onDownload: handleKeyboardDownload,
         onShare: handleKeyboardShare,
         onRename: handleKeyboardRename,
-        enabled: !previewFile && !playingFile && !pdfFile && !archiveViewFile && !showMoveModal
+        onShowShortcuts: () => setShowShortcuts(true),
+        enabled: !previewFile && !playingFile && !pdfFile && !archiveViewFile
+            && !showMoveModal && !showSettings && !showShortcuts && !showHelp
+            && !showRemoteUpload && !shareFile && !bulkShareLinks
+            && settings.driveTourSeen
     });
 
     const handlePreview = (file: TelegramFile, orderedFiles?: TelegramFile[]) => {
+        const sourceFolderId = file.folder_id ?? activeFolderId;
+        void invoke('cmd_record_file_opened', {
+            folderId: sourceFolderId,
+            messageId: file.id,
+            fileName: file.name,
+            fileSize: file.size,
+            mimeType: file.mime_type ?? null,
+            fileExt: file.file_ext ?? null,
+            createdAt: file.created_at ?? null,
+            encryptionState: file.encryption_state ?? 'plain',
+        }).then(() => queryClient.invalidateQueries({ queryKey: ['files', 'recents'] })).catch(() => {});
         const contextFiles = (orderedFiles || displayedFiles).filter((f) => f.type !== 'folder');
-        const contextIndex = contextFiles.findIndex((f) => f.id === file.id);
+        const contextIndex = contextFiles.findIndex((candidate) => sameFile(candidate, file));
 
         setPreviewContextFiles(contextFiles);
         setPreviewContextIndex(contextIndex);
@@ -465,12 +554,12 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
             return { nextFile: null as TelegramFile | null, prevFile: null as TelegramFile | null };
         }
 
-        const currentFileId = previewFile?.id ?? playingFile?.id ?? pdfFile?.id ?? archiveViewFile?.id;
-        if (!currentFileId) {
+        const currentFile = previewFile ?? playingFile ?? pdfFile ?? archiveViewFile;
+        if (!currentFile) {
             return { nextFile: null as TelegramFile | null, prevFile: null as TelegramFile | null };
         }
 
-        const currentIdx = previewContextFiles.findIndex((f) => f.id === currentFileId);
+        const currentIdx = previewContextFiles.findIndex((file) => sameFile(file, currentFile));
         if (currentIdx === -1) {
             return { nextFile: null as TelegramFile | null, prevFile: null as TelegramFile | null };
         }
@@ -486,7 +575,13 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
 
     const handleMoveFilesToFolder = async (idsToMove: number[], targetFolderId: number | null) => {
         if (idsToMove.length === 0) return;
-        if (activeFolderId === targetFolderId) {
+        const sourceFolders = new Set(displayedFiles.filter(file => idsToMove.includes(file.id)).map(file => file.folder_id ?? activeFolderId));
+        if (sourceFolders.size > 1) {
+            toast.info('Move files from one source folder at a time.');
+            return;
+        }
+        const sourceFolderId = sourceFolders.values().next().value ?? activeFolderId;
+        if (sourceFolderId === targetFolderId) {
             toast.info('File is already in this folder');
             return;
         }
@@ -504,16 +599,16 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
         try {
             await invoke('cmd_move_files', {
                 messageIds: idsToMove,
-                sourceFolderId: activeFolderId,
+                sourceFolderId,
                 targetFolderId: targetFolderId
             });
             // Clean up stale thumbnail and preview cache entries for the old message IDs
             await Promise.all(idsToMove.flatMap(id => [
-                invoke('cmd_delete_image_thumbnail', { messageId: id, folderId: activeFolderId }).catch(() => {}),
-                invoke('cmd_delete_preview_for_message', { messageId: id, folderId: activeFolderId }).catch(() => {}),
+                invoke('cmd_delete_image_thumbnail', { messageId: id, folderId: sourceFolderId }).catch(() => {}),
+                invoke('cmd_delete_preview_for_message', { messageId: id, folderId: sourceFolderId }).catch(() => {}),
             ]));
 
-            queryClient.invalidateQueries({ queryKey: ['files', activeFolderId] });
+            queryClient.invalidateQueries({ queryKey: ['files'] });
             setSelectedIds([]);
             toast.success(`Moved ${idsToMove.length} file(s).`);
         } catch {
@@ -589,6 +684,37 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     const currentFolderName = activeFolderId === null
         ? t('common.saved_messages')
         : folders.find(f => f.id === activeFolderId)?.name || t('common.folders');
+    const currentViewName = activeSmartView
+        ? ({
+            recents: t('common.recents'),
+            favorites: t('common.favorites'),
+            pinned: t('common.pinned'),
+            offline: t('common.offline_files'),
+            large: t('common.large_files'),
+            old: t('common.old_files'),
+            duplicates: t('common.duplicates'),
+        } as const)[activeSmartView]
+        : currentFolderName;
+
+    const updateActivityFlag = useCallback(async (file: TelegramFile, flag: 'favorite' | 'pinned') => {
+        const nextValue = flag === 'favorite' ? !file.is_favorite : !file.is_pinned;
+        await invoke('cmd_set_file_activity_flag', {
+            folderId: file.folder_id ?? activeFolderId,
+            messageId: file.id,
+            fileName: file.name,
+            fileSize: file.size,
+            mimeType: file.mime_type ?? null,
+            fileExt: file.file_ext ?? null,
+            createdAt: file.created_at ?? null,
+            encryptionState: file.encryption_state ?? 'plain',
+            flag,
+            value: nextValue,
+        });
+        await queryClient.invalidateQueries({ queryKey: ['files'] });
+        toast.success(flag === 'favorite'
+            ? (nextValue ? 'Added to Favorites' : 'Removed from Favorites')
+            : (nextValue ? 'Pinned' : 'Unpinned'));
+    }, [activeFolderId, queryClient]);
 
 
     const previewNeighbors = previewNeighborFiles();
@@ -604,7 +730,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
             <div className="desktop-shell relative flex h-screen w-full overflow-hidden bg-app-canvas">
 
             <ExternalDropBlocker
-                currentFolderName={currentFolderName}
+                currentFolderName={currentViewName}
                 enabled={isConnected}
                 onFilesDropped={handleDropUpload}
                 onUploadClick={handleManualUpload}
@@ -621,13 +747,13 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                                 try {
                                     await invoke('cmd_move_files', {
                                         messageIds: [moveFileTarget.id],
-                                        sourceFolderId: activeFolderId,
+                                        sourceFolderId: moveFileTarget.folder_id ?? activeFolderId,
                                         targetFolderId,
                                     });
                                     // Clean up stale thumbnail and preview cache for the old message ID
                                     await Promise.all([
-                                        invoke('cmd_delete_image_thumbnail', { messageId: moveFileTarget.id, folderId: activeFolderId }).catch(() => {}),
-                                        invoke('cmd_delete_preview_for_message', { messageId: moveFileTarget.id, folderId: activeFolderId }).catch(() => {}),
+                                        invoke('cmd_delete_image_thumbnail', { messageId: moveFileTarget.id, folderId: moveFileTarget.folder_id ?? activeFolderId }).catch(() => {}),
+                                        invoke('cmd_delete_preview_for_message', { messageId: moveFileTarget.id, folderId: moveFileTarget.folder_id ?? activeFolderId }).catch(() => {}),
                                     ]);
                                     queryClient.invalidateQueries({ queryKey: ['files', activeFolderId] });
                                     toast.success(`Moved "${moveFileTarget.name}"`);
@@ -640,7 +766,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                                 handleBulkMove(targetFolderId, () => setShowMoveModal(false));
                             }
                         }}
-                        activeFolderId={activeFolderId}
+                        activeFolderId={moveFileTarget?.folder_id ?? activeFolderId}
                         key="move-modal"
                     />
                 )}
@@ -652,7 +778,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                         onPrev={handlePrevPreview}
                         currentIndex={previewContextIndex}
                         totalItems={previewContextFiles.length}
-                        activeFolderId={activeFolderId}
+                        activeFolderId={playingFile.folder_id ?? activeFolderId}
                         key={playingFile.id}
                     />
                 )}
@@ -664,7 +790,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                         onPrev={handlePrevPreview}
                         currentIndex={previewContextIndex}
                         totalItems={previewContextFiles.length}
-                        activeFolderId={activeFolderId}
+                        activeFolderId={pdfFile.folder_id ?? activeFolderId}
                         key="pdf-viewer"
                     />
                 )}
@@ -713,11 +839,14 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                 onCreateGroup={handleCreateGroup}
                 onUpdateGroup={handleUpdateGroup}
                 onDeleteGroup={handleDeleteGroup}
+                createFolderRequest={createFolderRequest}
+                activeSmartView={activeSmartView}
+                onSmartViewChange={setActiveSmartView}
             />
 
             <main className="flex min-w-0 flex-1 flex-col">
                 <TopBar
-                    currentFolderName={currentFolderName}
+                    currentFolderName={currentViewName}
                     selectedIds={selectedIds}
                     onShowMoveModal={() => setShowMoveModal(true)}
                     onBulkDownload={handleBulkDownload}
@@ -735,13 +864,18 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                     onSortChange={handleSortChange}
                     searchTerm={searchTerm}
                     onSearchChange={setSearchTerm}
+                    searchFilters={searchFilters}
+                    onSearchFiltersChange={setSearchFilters}
                     onSettingsClick={() => setShowSettings(true)}
                     onRemoteUploadClick={() => setShowRemoteUpload(true)}
+                    onNewFolderClick={() => setCreateFolderRequest((value) => value + 1)}
+                    onShowShortcuts={() => setShowShortcuts(true)}
+                    onShowHelp={() => setShowHelp(true)}
                 />
-                {searchTerm.length > 2 && (
+                {(searchTerm.trim().length > 0 || searchFilters.type !== 'all' || searchFilters.size !== 'any' || searchFilters.date !== 'any') && (
                     <div className="px-5 pb-0 pt-3">
                         <h2 className="text-ui font-medium text-app-text-secondary">
-                            Search Results for <span className="text-app-accent">"{searchTerm}"</span>
+                            {displayedFiles.length.toLocaleString()} result{displayedFiles.length === 1 ? '' : 's'}{searchTerm.trim() ? <> for <span className="text-app-accent">"{searchTerm}"</span></> : null}
                         </h2>
                     </div>
                 )}
@@ -755,7 +889,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                     activeFolderId={activeFolderId}
                     onFileClick={handleFileClick}
                     onDelete={handleDelete}
-                    onDownload={(id, name) => queueDownload(id, name, activeFolderId)}
+                    onDownload={(file) => queueDownload(file.id, file.name, file.folder_id ?? activeFolderId, file.size)}
                     onPreview={handlePreview}
                     onManualUpload={handleManualUpload}
                     onFolderUpload={handleFolderUpload}
@@ -768,13 +902,17 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                     sortField={sortField}
                     sortDirection={sortDirection}
                     onSortChange={handleSortChange}
+                    onToggleFavorite={(file) => void updateActivityFlag(file, 'favorite')}
+                    onTogglePinned={(file) => void updateActivityFlag(file, 'pinned')}
+                    syncProgress={folderSyncProgress}
+                    selectionDisabled={isCrossFolderView}
                 />
             </main>
 
             {previewFile && (
                 <PreviewModal
                     file={previewFile}
-                    activeFolderId={activeFolderId}
+                    activeFolderId={previewFile.folder_id ?? activeFolderId}
                     onClose={() => setPreviewFile(null)}
                     onNext={handleNextPreview}
                     onPrev={handlePrevPreview}
@@ -788,7 +926,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
             {archiveViewFile && (
                 <ArchiveViewerModal
                     file={archiveViewFile}
-                    activeFolderId={activeFolderId}
+                    activeFolderId={archiveViewFile.folder_id ?? activeFolderId}
                     folders={folders}
                     onClose={() => setArchiveViewFile(null)}
                     onNext={handleNextPreview}
@@ -806,10 +944,14 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                 downloads={downloadQueue}
                 onClearUploads={() => setUploadQueue(q => q.filter(i => i.status !== 'success' && i.status !== 'error' && i.status !== 'cancelled'))}
                 onCancelUploads={cancelUploads}
+                onPauseUploads={pauseUploads}
+                onResumeUploads={resumeUploads}
                 onCancelUpload={cancelUploadItem}
                 onRetryUpload={retryUploadItem}
                 onClearDownloads={clearDownloads}
                 onCancelDownloads={cancelDownloads}
+                onPauseDownloads={pauseDownloads}
+                onResumeDownloads={resumeDownloads}
                 onCancelDownload={cancelDownloadItem}
                 onRetryDownload={retryDownloadItem}
             />
@@ -817,14 +959,36 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
             <SettingsModal
                 isOpen={showSettings}
                 onClose={() => setShowSettings(false)}
+                initialTab={settingsInitialTab}
             />
 
-            <DesktopAdBanner />
+            {showShortcuts && <KeyboardShortcutsDialog onClose={() => setShowShortcuts(false)} />}
+
+            {settingsLoaded && !settings.driveTourSeen && (
+                <DriveConceptTour
+                    onFinish={() => updateSetting('driveTourSeen', true)}
+                    onOpenHelp={() => { updateSetting('driveTourSeen', true); setShowHelp(true); }}
+                />
+            )}
+
+            {showHelp && <HelpCenterDialog onClose={() => setShowHelp(false)} />}
+
+            <DesktopAdBanner
+                suppressed={
+                    uploadQueue.some(item => ['pending', 'uploading', 'downloading', 'encrypting', 'verifying'].includes(item.status))
+                    || downloadQueue.some(item => ['pending', 'cooldown', 'downloading', 'decrypting', 'verifying'].includes(item.status))
+                    || Boolean(previewFile || playingFile || pdfFile || archiveViewFile || showSettings || showMoveModal || shareFile || showRemoteUpload || showHelp || !settings.driveTourSeen)
+                }
+                onSupport={() => { setSettingsInitialTab('privacy'); setShowSettings(true); }}
+            />
 
             {shareFile && (
                 <ShareDialog
                     file={shareFile}
                     onClose={() => setShareFile(null)}
+                    folders={folders}
+                    activeFolderId={activeFolderId}
+                    onOpenSettings={() => { setShareFile(null); setSettingsInitialTab('webdav'); setShowSettings(true); }}
                 />
             )}
 

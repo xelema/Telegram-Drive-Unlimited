@@ -9,6 +9,9 @@ import { isAndroidPlatform, showFileDialogFallback, pickWithFallback } from '../
 import { useSettings } from '../context/SettingsContext';
 import type { Store } from '@tauri-apps/plugin-store';
 import { useTranslation } from 'react-i18next';
+import { useUploadChoice, type UploadChoice } from '../context/UploadChoiceContext';
+import { triggerHaptic } from '../services/feedback';
+import { restoreUploadQueue, serializeUploadQueue } from '../services/transferQueuePolicy';
 
 interface ProgressPayload {
     id: string;
@@ -31,9 +34,11 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
     const { t } = useTranslation();
     const queryClient = useQueryClient();
     const { settings } = useSettings();
+    const { chooseUploadProtection } = useUploadChoice();
     const [uploadQueue, setUploadQueue] = useState<QueueItem[]>([]);
     const [initialized, setInitialized] = useState(false);
     const cancelledRef = useRef<Set<string>>(new Set());
+    const pausedRef = useRef<Set<string>>(new Set());
     const activeCountRef = useRef(0);
 
     // Listen for progress events from Rust
@@ -55,7 +60,7 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
 
         listen<RemoteProgressPayload>('remote-upload-progress', (event) => {
             setUploadQueue(q => q.map(i =>
-                i.id === event.payload.id ? {
+                i.id === event.payload.id && i.status !== 'paused' && i.status !== 'cancelled' ? {
                     ...i,
                     status: event.payload.phase,
                     progress: event.payload.percent,
@@ -76,15 +81,7 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
         if (!store || initialized) return;
         store.get<QueueItem[]>('uploadQueue').then((saved) => {
             if (saved && saved.length > 0) {
-                const pending = saved
-                    .filter(i => i.status === 'pending' || i.status === 'waiting_for_unlock')
-                    .map(i => ({
-                        ...i,
-                        status: i.protection?.mode === 'passphrase' || i.protection?.mode === 'vault_and_passphrase'
-                            ? 'waiting_for_unlock' as const
-                            : i.status,
-                        protection: i.protection ? { ...i.protection, promptToken: undefined } : undefined,
-                    }));
+                const pending = restoreUploadQueue(saved);
                 if (pending.length > 0) {
                     setUploadQueue(pending);
                     toast.info(`Restored ${pending.length} pending uploads`);
@@ -96,12 +93,7 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
 
     useEffect(() => {
         if (!store || !initialized) return;
-        const pending = uploadQueue
-            .filter(i => i.status === 'pending' || i.status === 'waiting_for_unlock')
-            .map(i => ({
-                ...i,
-                protection: i.protection ? { ...i.protection, promptToken: undefined } : undefined,
-            }));
+        const pending = serializeUploadQueue(uploadQueue);
         store.set('uploadQueue', pending).then(() => store.save());
     }, [store, uploadQueue, initialized]);
 
@@ -140,6 +132,7 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
     };
 
     const processItem = async (item: QueueItem) => {
+        let keepTemporaryFileForResume = false;
         const protection: UploadProtectionIntent = item.protection ?? {
             mode: settings.encryptionDefaultMode,
             protectMetadata: settings.encryptionProtectMetadata,
@@ -180,16 +173,24 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
                 });
             }
             // Check if cancelled during upload
+            // A resolved backend invocation means the upload completed even if a
+            // late pause request raced with its final bytes. Mark it successful
+            // so resume cannot create a duplicate Telegram message.
+            pausedRef.current.delete(item.id);
             if (cancelledRef.current.has(item.id)) {
                 cancelledRef.current.delete(item.id);
             } else {
                 setUploadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'success', progress: 100 } : i));
+                triggerHaptic('success');
                 queryClient.invalidateQueries({ queryKey: ['files', item.folderId] });
             }
             // Clean up temp zip on success
-            await cleanupTempZip(item);
+            if (!keepTemporaryFileForResume) await cleanupTempZip(item);
         } catch (e) {
-            if (!cancelledRef.current.has(item.id)) {
+            if (pausedRef.current.has(item.id)) {
+                pausedRef.current.delete(item.id);
+                keepTemporaryFileForResume = true;
+            } else if (!cancelledRef.current.has(item.id)) {
                 const errMsg = String(e);
                 if (errMsg.includes('Transfer cancelled')) {
                     setUploadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'cancelled' } : i));
@@ -209,13 +210,16 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
                     setUploadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'error', error: errMsg } : i));
                     toast.error(`Upload failed for ${displayPath.split('/').pop()}: ${e}`);
                 }
-            } else {
+            } else if (cancelledRef.current.has(item.id)) {
                 cancelledRef.current.delete(item.id);
             }
             // Clean up temp zip even on failure
-            await cleanupTempZip(item);
+            if (!keepTemporaryFileForResume) await cleanupTempZip(item);
         } finally {
             activeCountRef.current--;
+            // A quickly resumed item may already be pending while the cancelled
+            // invocation unwinds. Trigger a pass after releasing the slot.
+            setUploadQueue(q => [...q]);
         }
     };
 
@@ -258,13 +262,25 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
         }
     };
 
+    const chooseAndStageProtection = async (count: number): Promise<UploadProtectionIntent[] | null> => {
+        const choice: UploadChoice | null = await chooseUploadProtection(count);
+        if (!choice) return null;
+        if (choice === 'store') {
+            return stageProtectionForFiles(count, 'standard');
+        }
+        const protectedMode = settings.encryptionDefaultMode === 'standard'
+            ? 'vault'
+            : settings.encryptionDefaultMode;
+        return stageProtectionForFiles(count, protectedMode);
+    };
+
     /** Queues a set of file paths with an explicit, non-secret protection intent. */
     const queueFiles = async (
         paths: string[],
         destinationFolderId: number | null = activeFolderId,
     ): Promise<number> => {
         if (!paths || paths.length === 0) return 0;
-        const protection = await stageProtectionForFiles(paths.length);
+        const protection = await chooseAndStageProtection(paths.length);
         if (!protection) return 0;
         const newItems: QueueItem[] = paths.map((path: string, index) => ({
             id: Math.random().toString(36).substr(2, 9),
@@ -356,7 +372,7 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
             toast.info(`Zipping "${folderName}"...`);
             try {
                 const zipPath = await invoke<string>('cmd_zip_folder', { folderPath });
-                const protection = await stageProtectionForFiles(1);
+                const protection = await chooseAndStageProtection(1);
                 if (!protection) {
                     await invoke('cmd_delete_temp_zip', { path: zipPath }).catch(() => {});
                     return;
@@ -382,28 +398,47 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
 
     const cancelAll = () => {
         setUploadQueue(q => {
-            const activeItems = q.filter(i => i.status === 'uploading' || i.status === 'downloading');
+            const activeItems = q.filter(i => ['uploading', 'downloading', 'encrypting', 'verifying'].includes(i.status));
             for (const item of activeItems) {
                 cancelledRef.current.add(item.id);
                 invoke('cmd_cancel_transfer', { transferId: item.id }).catch(() => {});
             }
             return q
-                .filter(i => i.status !== 'pending')
-                .map(i => (i.status === 'uploading' || i.status === 'downloading') ? { ...i, status: 'cancelled' as const } : i);
+                .filter(i => i.status !== 'pending' && i.status !== 'paused')
+                .map(i => activeItems.some(active => active.id === i.id) ? { ...i, status: 'cancelled' as const } : i);
         });
         toast.info('All uploads cancelled');
+    };
+
+    const pauseAll = () => {
+        setUploadQueue(q => q.map(item => {
+            if (['uploading', 'downloading', 'encrypting', 'verifying'].includes(item.status)) {
+                pausedRef.current.add(item.id);
+                invoke('cmd_cancel_transfer', { transferId: item.id }).catch(() => {});
+                return { ...item, status: 'paused' as const, error: undefined };
+            }
+            return item.status === 'pending' ? { ...item, status: 'paused' as const } : item;
+        }));
+        toast.info('Uploads paused. Active items will restart safely when resumed.');
+    };
+
+    const resumeAll = () => {
+        setUploadQueue(q => q.map(item => item.status === 'paused'
+            ? { ...item, status: 'pending' as const, error: undefined }
+            : item));
+        toast.info('Uploads resumed');
     };
 
     const cancelItem = (id: string) => {
         setUploadQueue(q => {
             const item = q.find(i => i.id === id);
-            if (item?.status === 'uploading' || item?.status === 'downloading') {
+            if (item && ['uploading', 'downloading', 'encrypting', 'verifying'].includes(item.status)) {
                 cancelledRef.current.add(id);
                 invoke('cmd_cancel_transfer', { transferId: id }).catch(() => {});
                 return q.map(i => i.id === id ? { ...i, status: 'cancelled' as const } : i);
             }
             // Remove pending items directly
-            if (item?.status === 'pending') {
+            if (item?.status === 'pending' || item?.status === 'paused') {
                 return q.filter(i => i.id !== id);
             }
             return q;
@@ -434,7 +469,7 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
         } catch {
             filename = url.split('/').pop() || 'remote_file';
         }
-        const protection = await stageProtectionForFiles(1);
+        const protection = await chooseAndStageProtection(1);
         if (!protection) return;
         const item: QueueItem = {
             id: Math.random().toString(36).substr(2, 9),
@@ -456,6 +491,8 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
         handleDropUpload,
         handleUrlUpload,
         cancelAll,
+        pauseAll,
+        resumeAll,
         cancelItem,
         retryItem,
     };

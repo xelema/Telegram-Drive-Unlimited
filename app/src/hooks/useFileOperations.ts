@@ -17,21 +17,26 @@ export function useFileOperations(
     const queryClient = useQueryClient();
     const { confirm } = useConfirm();
 
-    // Refs to keep callbacks stable even when selection/file list changes
+    // Callbacks read current selection data without being recreated for every click.
     const selectedIdsRef = useRef(selectedIds);
     selectedIdsRef.current = selectedIds;
     const displayedFilesRef = useRef(displayedFiles);
     displayedFilesRef.current = displayedFiles;
 
-    const handleDelete = useCallback(async (id: number) => {
+    const handleDelete = useCallback(async (target: TelegramFile | number) => {
         if (!await confirm({ title: "Delete File", message: "Are you sure you want to delete this file?", confirmText: "Delete", variant: 'danger' })) return;
+        const file = typeof target === 'number'
+            ? displayedFilesRef.current.find(candidate => candidate.id === target)
+            : target;
+        const id = typeof target === 'number' ? target : target.id;
+        const sourceFolderId = file?.folder_id ?? activeFolderId;
         try {
-            await invoke('cmd_delete_file', { messageId: id, folderId: activeFolderId });
+            await invoke('cmd_delete_file', { messageId: id, folderId: sourceFolderId });
             await Promise.all([
-                invoke('cmd_delete_image_thumbnail', { messageId: id, folderId: activeFolderId }).catch(() => {}),
-                invoke('cmd_delete_preview_for_message', { messageId: id, folderId: activeFolderId }).catch(() => {}),
+                invoke('cmd_delete_image_thumbnail', { messageId: id, folderId: sourceFolderId }).catch(() => {}),
+                invoke('cmd_delete_preview_for_message', { messageId: id, folderId: sourceFolderId }).catch(() => {}),
             ]);
-            queryClient.invalidateQueries({ queryKey: ['files', activeFolderId] });
+            queryClient.invalidateQueries({ queryKey: ['files'] });
             toast.success("File deleted");
         } catch (e) {
             toast.error(`Delete failed: ${e}`);
@@ -46,11 +51,12 @@ export function useFileOperations(
         let success = 0;
         let fail = 0;
         for (const id of ids) {
+            const sourceFolderId = displayedFilesRef.current.find(file => file.id === id)?.folder_id ?? activeFolderId;
             try {
-                await invoke('cmd_delete_file', { messageId: id, folderId: activeFolderId });
+                await invoke('cmd_delete_file', { messageId: id, folderId: sourceFolderId });
                 await Promise.all([
-                    invoke('cmd_delete_image_thumbnail', { messageId: id, folderId: activeFolderId }).catch(() => {}),
-                    invoke('cmd_delete_preview_for_message', { messageId: id, folderId: activeFolderId }).catch(() => {}),
+                    invoke('cmd_delete_image_thumbnail', { messageId: id, folderId: sourceFolderId }).catch(() => {}),
+                    invoke('cmd_delete_preview_for_message', { messageId: id, folderId: sourceFolderId }).catch(() => {}),
                 ]);
                 success++;
             } catch {
@@ -58,7 +64,7 @@ export function useFileOperations(
             }
         }
         setSelectedIds([]);
-        queryClient.invalidateQueries({ queryKey: ['files', activeFolderId] });
+        queryClient.invalidateQueries({ queryKey: ['files'] });
         if (success > 0) toast.success(`Deleted ${success} files.`);
         if (fail > 0) toast.error(`Failed to delete ${fail} files.`);
     }, [activeFolderId, confirm, queryClient, setSelectedIds]);
@@ -74,7 +80,6 @@ export function useFileOperations(
             setSelectedIds([]);
             return;
         }
-        // Fallback: direct download if queue not provided
         const downloadToDir = async (dirPath: string) => {
             let successCount = 0;
             const sep = dirPath.includes('\\') ? '\\' : '/';
@@ -84,7 +89,7 @@ export function useFileOperations(
                 try {
                     await invoke('cmd_download_file', { req: { message_id: file.id, save_path: filePath, folder_id: activeFolderId } });
                     successCount++;
-                } catch (e) { }
+                } catch { }
             }
             toast.success(`Downloaded ${successCount} files.`);
             setSelectedIds([]);
@@ -113,21 +118,27 @@ export function useFileOperations(
     const handleBulkMove = useCallback(async (targetFolderId: number | null, onSuccess?: () => void) => {
         const ids = selectedIdsRef.current;
         if (ids.length === 0) return;
+        const sourceFolders = new Set(displayedFilesRef.current.filter(file => ids.includes(file.id)).map(file => file.folder_id ?? activeFolderId));
+        if (sourceFolders.size > 1) {
+            toast.info('Move files from one source folder at a time.');
+            return;
+        }
+        const sourceFolderId = sourceFolders.values().next().value ?? activeFolderId;
         try {
             await invoke('cmd_move_files', {
                 messageIds: ids,
-                sourceFolderId: activeFolderId,
+                sourceFolderId,
                 targetFolderId: targetFolderId
             });
             // Clean up stale thumbnail and preview cache entries for the old message IDs.
             // After a move (forward+delete), the message gets a new ID in the
             // target folder, so old cached thumbnails are orphaned.
             await Promise.all(ids.flatMap(id => [
-                invoke('cmd_delete_image_thumbnail', { messageId: id, folderId: activeFolderId }).catch(() => {}),
-                invoke('cmd_delete_preview_for_message', { messageId: id, folderId: activeFolderId }).catch(() => {}),
+                invoke('cmd_delete_image_thumbnail', { messageId: id, folderId: sourceFolderId }).catch(() => {}),
+                invoke('cmd_delete_preview_for_message', { messageId: id, folderId: sourceFolderId }).catch(() => {}),
             ]));
             toast.success(`Moved ${ids.length} files.`);
-            queryClient.invalidateQueries({ queryKey: ['files', activeFolderId] });
+            queryClient.invalidateQueries({ queryKey: ['files'] });
             setSelectedIds([]);
             if (onSuccess) onSuccess();
         } catch {
@@ -145,7 +156,6 @@ export function useFileOperations(
             queueBulkDownload(files, activeFolderId);
             return;
         }
-        // Fallback: direct download if queue not provided
         const downloadToDir = async (dirPath: string) => {
             let successCount = 0;
             toast.info(`Downloading folder contents (${files.length} files)...`);
@@ -156,7 +166,7 @@ export function useFileOperations(
                 try {
                     await invoke('cmd_download_file', { req: { message_id: file.id, save_path: filePath, folder_id: activeFolderId } });
                     successCount++;
-                } catch (e) { }
+                } catch { }
             }
             toast.success(`Folder Download Complete: ${successCount} files.`);
         };

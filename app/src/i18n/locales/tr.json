@@ -61,7 +61,15 @@
     "delete_group": "Delete Group",
     "enter_group_name": "Enter group name...",
     "hide_groups_desc": "Toggle folder groups display in the sidebar",
-    "delete": "Sil"
+    "delete": "Sil",
+    "recents": "Son kullanılanlar",
+    "favorites": "Favoriler",
+    "pinned": "Sabitlenenler",
+    "offline_files": "Çevrimdışı dosyalar",
+    "storage_insights": "Depolama analizi",
+    "large_files": "Büyük dosyalar",
+    "old_files": "Eski dosyalar",
+    "duplicates": "Yinelenenler"
   },
   "settings": {
     "concurrent_uploads": "Eşzamanlı Yüklemeler",
@@ -366,7 +374,14 @@
     "webdav_regenerate_title": "Regenerate WebDAV link?",
     "webdav_regenerate_desc": "The current connection link will stop working immediately. You will need to reconnect every WebDAV client with the new link.",
     "webdav_enable_changes_title": "Allow WebDAV file changes?",
-    "webdav_enable_changes_confirm": "Connected WebDAV clients will be able to upload, rename, move, and delete unencrypted files. Encrypted files remain protected."
+    "webdav_enable_changes_confirm": "Connected WebDAV clients will be able to upload, rename, move, and delete unencrypted files. Encrypted files remain protected.",
+    "offline_cache": "Çevrimdışı dosyalar",
+    "offline_cache_desc": "Yakın zamanda açılan şifrelenmemiş dosyalar çevrimdışı erişim için bu cihazda tutulur.",
+    "offline_cache_usage": "{{count}} dosya · {{limit}} sınırının {{used}} kadarı",
+    "refresh_offline_cache": "Çevrimdışı dosya kullanımını yenile",
+    "clear_offline_cache_title": "Çevrimdışı dosyalar temizlensin mi?",
+    "clear_offline_cache_desc": "Çevrimdışı erişim için tutulan dosyalar bu cihazdan kaldırılacak. Telegram kopyaları etkilenmeyecek.",
+    "offline_cache_cleared": "Çevrimdışı dosyalar temizlendi"
   },
   "files": {
     "download": "İndir",
@@ -498,7 +513,26 @@
     "donate": "Donate",
     "getting_started": "Getting Started",
     "close_help": "Close help",
-    "privacy_note": "Your credentials are stored locally on your device and are never sent to any third-party servers. All data goes directly between you and Telegram."
+    "privacy_note": "Your credentials are stored locally on your device and are never sent to any third-party servers. All data goes directly between you and Telegram.",
+    "code_sent_telegram_app": "Telegram, giriş kodunu oturum açık cihazlarınızdan birindeki doğrulanmış Telegram sohbetine gönderdi.",
+    "code_sent_sms": "Telegram giriş kodunu SMS ile gönderdi.",
+    "code_sent_call": "Telegram sizi arayacak ve giriş kodunu sesli olarak okuyacak.",
+    "code_sent_flash_call": "Telegram kısa bir arama yapacak. {{hint}} ile eşleşen arayan numarayı girin.",
+    "code_sent_missed_call": "Telegram cevapsız bir arama yapacak. {{hint}} ile başlayan numaranın son rakamlarını girin.",
+    "code_sent_email": "Telegram giriş kodunu {{hint}} adresine gönderdi.",
+    "code_sent_fragment": "Telegram bu kodu Fragment üzerinden iletti. Kodu almak için Fragment'ı açın.",
+    "code_sent_sms_word": "Telegram, {{hint}} ile başlayan bir kelime içeren SMS gönderdi. Kelimenin tamamını girin.",
+    "code_sent_sms_phrase": "Telegram, {{hint}} ile başlayan bir ifade içeren SMS gönderdi. İfadenin tamamını girin.",
+    "code_delivery_unsupported": "Telegram, üçüncü taraf masaüstü uygulamalarının tamamlayamadığı bir teslim yöntemi seçti. Bunun yerine QR ile giriş yapın.",
+    "open_fragment": "Fragment'ı Aç",
+    "fragment_url_invalid": "Telegram geçersiz bir Fragment giriş bağlantısı döndürdü.",
+    "code_word_placeholder": "Kelimeyi veya ifadeyi girin",
+    "verifying": "Doğrulanıyor...",
+    "sign_in": "Giriş Yap",
+    "resending": "Yeniden gönderiliyor...",
+    "resend_in": "Kodu {{seconds}} sn sonra yeniden gönder",
+    "resend_code": "Kodu Yeniden Gönder",
+    "use_qr_instead": "Bunun Yerine QR Kod Kullan"
   },
   "ads": {
     "sponsored": "Sponsored",

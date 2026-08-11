@@ -61,7 +61,15 @@
     "delete_group": "Delete Group",
     "enter_group_name": "Enter group name...",
     "hide_groups_desc": "Toggle folder groups display in the sidebar",
-    "delete": "削除"
+    "delete": "削除",
+    "recents": "最近使用した項目",
+    "favorites": "お気に入り",
+    "pinned": "ピン留め",
+    "offline_files": "オフラインファイル",
+    "storage_insights": "ストレージ分析",
+    "large_files": "大きなファイル",
+    "old_files": "古いファイル",
+    "duplicates": "重複ファイル"
   },
   "settings": {
     "concurrent_uploads": "同時アップロード数",
@@ -366,7 +374,14 @@
     "webdav_regenerate_title": "Regenerate WebDAV link?",
     "webdav_regenerate_desc": "The current connection link will stop working immediately. You will need to reconnect every WebDAV client with the new link.",
     "webdav_enable_changes_title": "Allow WebDAV file changes?",
-    "webdav_enable_changes_confirm": "Connected WebDAV clients will be able to upload, rename, move, and delete unencrypted files. Encrypted files remain protected."
+    "webdav_enable_changes_confirm": "Connected WebDAV clients will be able to upload, rename, move, and delete unencrypted files. Encrypted files remain protected.",
+    "offline_cache": "オフラインファイル",
+    "offline_cache_desc": "最近開いた暗号化されていないファイルは、オフラインアクセス用にこのデバイスに保存されます。",
+    "offline_cache_usage": "{{count}} ファイル · {{limit}} 中 {{used}}",
+    "refresh_offline_cache": "オフラインファイルの使用量を更新",
+    "clear_offline_cache_title": "オフラインファイルを消去しますか？",
+    "clear_offline_cache_desc": "オフラインアクセス用のファイルがこのデバイスから削除されます。Telegram 上のコピーには影響しません。",
+    "offline_cache_cleared": "オフラインファイルを消去しました"
   },
   "files": {
     "download": "ダウンロード",
@@ -498,7 +513,26 @@
     "donate": "Donate",
     "getting_started": "Getting Started",
     "close_help": "Close help",
-    "privacy_note": "Your credentials are stored locally on your device and are never sent to any third-party servers. All data goes directly between you and Telegram."
+    "privacy_note": "Your credentials are stored locally on your device and are never sent to any third-party servers. All data goes directly between you and Telegram.",
+    "code_sent_telegram_app": "Telegramは、ログイン済みデバイスの認証済みTelegramチャットにログインコードを送信しました。",
+    "code_sent_sms": "TelegramはログインコードをSMSで送信しました。",
+    "code_sent_call": "Telegramから電話があり、ログインコードが読み上げられます。",
+    "code_sent_flash_call": "Telegramから短い着信があります。{{hint}}に一致する発信元番号を入力してください。",
+    "code_sent_missed_call": "Telegramから不在着信があります。{{hint}}で始まる番号の末尾の数字を入力してください。",
+    "code_sent_email": "Telegramはログインコードを{{hint}}に送信しました。",
+    "code_sent_fragment": "TelegramはFragment経由でコードを配信しました。Fragmentを開いて確認してください。",
+    "code_sent_sms_word": "Telegramは{{hint}}で始まる単語をSMSで送信しました。単語全体を入力してください。",
+    "code_sent_sms_phrase": "Telegramは{{hint}}で始まるフレーズをSMSで送信しました。フレーズ全体を入力してください。",
+    "code_delivery_unsupported": "Telegramが、サードパーティ製デスクトップアプリでは完了できない配信方法を選択しました。QRログインを使用してください。",
+    "open_fragment": "Fragmentを開く",
+    "fragment_url_invalid": "Telegramから無効なFragmentログインリンクが返されました。",
+    "code_word_placeholder": "単語またはフレーズを入力",
+    "verifying": "確認中...",
+    "sign_in": "サインイン",
+    "resending": "再送信中...",
+    "resend_in": "{{seconds}}秒後にコードを再送信",
+    "resend_code": "コードを再送信",
+    "use_qr_instead": "代わりにQRコードを使用"
   },
   "ads": {
     "sponsored": "Sponsored",

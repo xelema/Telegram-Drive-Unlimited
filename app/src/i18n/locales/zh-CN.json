@@ -61,7 +61,15 @@
     "delete_group": "Delete Group",
     "enter_group_name": "Enter group name...",
     "hide_groups_desc": "Toggle folder groups display in the sidebar",
-    "delete": "删除"
+    "delete": "删除",
+    "recents": "最近使用",
+    "favorites": "收藏",
+    "pinned": "已置顶",
+    "offline_files": "离线文件",
+    "storage_insights": "存储分析",
+    "large_files": "大文件",
+    "old_files": "旧文件",
+    "duplicates": "重复文件"
   },
   "settings": {
     "concurrent_uploads": "并发上传数",
@@ -366,7 +374,14 @@
     "webdav_regenerate_title": "Regenerate WebDAV link?",
     "webdav_regenerate_desc": "The current connection link will stop working immediately. You will need to reconnect every WebDAV client with the new link.",
     "webdav_enable_changes_title": "Allow WebDAV file changes?",
-    "webdav_enable_changes_confirm": "Connected WebDAV clients will be able to upload, rename, move, and delete unencrypted files. Encrypted files remain protected."
+    "webdav_enable_changes_confirm": "Connected WebDAV clients will be able to upload, rename, move, and delete unencrypted files. Encrypted files remain protected.",
+    "offline_cache": "离线文件",
+    "offline_cache_desc": "最近打开的未加密文件会保存在此设备上，以便离线访问。",
+    "offline_cache_usage": "{{count}} 个文件 · 已用 {{used}}，上限 {{limit}}",
+    "refresh_offline_cache": "刷新离线文件用量",
+    "clear_offline_cache_title": "清除离线文件？",
+    "clear_offline_cache_desc": "此设备上用于离线访问的文件将被删除。Telegram 中的副本不会受到影响。",
+    "offline_cache_cleared": "离线文件已清除"
   },
   "files": {
     "download": "下载",
@@ -498,7 +513,26 @@
     "donate": "Donate",
     "getting_started": "Getting Started",
     "close_help": "Close help",
-    "privacy_note": "Your credentials are stored locally on your device and are never sent to any third-party servers. All data goes directly between you and Telegram."
+    "privacy_note": "Your credentials are stored locally on your device and are never sent to any third-party servers. All data goes directly between you and Telegram.",
+    "code_sent_telegram_app": "Telegram 已将登录验证码发送到您某台已登录设备上的已验证 Telegram 对话中。",
+    "code_sent_sms": "Telegram 已通过短信发送登录验证码。",
+    "code_sent_call": "Telegram 将致电并语音播报登录验证码。",
+    "code_sent_flash_call": "Telegram 将拨打一个短暂电话。请输入与 {{hint}} 匹配的来电号码。",
+    "code_sent_missed_call": "Telegram 将拨打一个未接来电。请输入以 {{hint}} 开头号码的最后几位。",
+    "code_sent_email": "Telegram 已将登录验证码发送到 {{hint}}。",
+    "code_sent_fragment": "Telegram 已通过 Fragment 发送此验证码。请打开 Fragment 获取验证码。",
+    "code_sent_sms_word": "Telegram 已发送一条包含以 {{hint}} 开头单词的短信。请输入完整单词。",
+    "code_sent_sms_phrase": "Telegram 已发送一条包含以 {{hint}} 开头短语的短信。请输入完整短语。",
+    "code_delivery_unsupported": "Telegram 选择了第三方桌面应用无法完成的发送方式。请改用二维码登录。",
+    "open_fragment": "打开 Fragment",
+    "fragment_url_invalid": "Telegram 返回了无效的 Fragment 登录链接。",
+    "code_word_placeholder": "输入单词或短语",
+    "verifying": "正在验证...",
+    "sign_in": "登录",
+    "resending": "正在重新发送...",
+    "resend_in": "{{seconds}} 秒后重新发送验证码",
+    "resend_code": "重新发送验证码",
+    "use_qr_instead": "改用二维码"
   },
   "ads": {
     "sponsored": "Sponsored",

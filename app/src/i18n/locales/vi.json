@@ -61,7 +61,15 @@
     "delete_group": "Xóa nhóm",
     "enter_group_name": "Nhập tên nhóm...",
     "hide_groups_desc": "Bật hoặc tắt hiển thị nhóm thư mục trong thanh bên",
-    "delete": "Xóa"
+    "delete": "Xóa",
+    "recents": "Gần đây",
+    "favorites": "Yêu thích",
+    "pinned": "Đã ghim",
+    "offline_files": "Tệp ngoại tuyến",
+    "storage_insights": "Phân tích bộ nhớ",
+    "large_files": "Tệp lớn",
+    "old_files": "Tệp cũ",
+    "duplicates": "Tệp trùng lặp"
   },
   "settings": {
     "title": "Cài đặt",
@@ -366,7 +374,14 @@
     "encryption_capabilities": "Khả năng mã hóa",
     "core_available": "Lõi khả dụng",
     "vault_exists": "Kho khóa tồn tại",
-    "max_file_size": "Kích thước tệp tối đa"
+    "max_file_size": "Kích thước tệp tối đa",
+    "offline_cache": "Tệp ngoại tuyến",
+    "offline_cache_desc": "Các tệp không mã hóa được mở gần đây sẽ được lưu trên thiết bị này để truy cập ngoại tuyến.",
+    "offline_cache_usage": "{{count}} tệp · {{used}} trên {{limit}}",
+    "refresh_offline_cache": "Làm mới dung lượng tệp ngoại tuyến",
+    "clear_offline_cache_title": "Xóa tệp ngoại tuyến?",
+    "clear_offline_cache_desc": "Các tệp được lưu để truy cập ngoại tuyến sẽ bị xóa khỏi thiết bị này. Bản sao trên Telegram không bị ảnh hưởng.",
+    "offline_cache_cleared": "Đã xóa tệp ngoại tuyến"
   },
   "files": {
     "download": "Tải xuống",
@@ -498,7 +513,26 @@
     "donate": "Ủng hộ",
     "getting_started": "Bắt đầu",
     "close_help": "Đóng trợ giúp",
-    "privacy_note": "Thông tin xác thực của bạn được lưu cục bộ trên thiết bị và không bao giờ được gửi đến máy chủ bên thứ ba. Mọi dữ liệu được truyền trực tiếp giữa bạn và Telegram."
+    "privacy_note": "Thông tin xác thực của bạn được lưu cục bộ trên thiết bị và không bao giờ được gửi đến máy chủ bên thứ ba. Mọi dữ liệu được truyền trực tiếp giữa bạn và Telegram.",
+    "code_sent_telegram_app": "Telegram đã gửi mã đăng nhập đến cuộc trò chuyện Telegram đã xác minh trên một thiết bị đang đăng nhập của bạn.",
+    "code_sent_sms": "Telegram đã gửi mã đăng nhập qua SMS.",
+    "code_sent_call": "Telegram sẽ gọi và đọc mã đăng nhập cho bạn.",
+    "code_sent_flash_call": "Telegram sẽ thực hiện một cuộc gọi ngắn. Nhập số gọi đến khớp với {{hint}}.",
+    "code_sent_missed_call": "Telegram sẽ thực hiện cuộc gọi nhỡ. Nhập các chữ số cuối của số bắt đầu bằng {{hint}}.",
+    "code_sent_email": "Telegram đã gửi mã đăng nhập đến {{hint}}.",
+    "code_sent_fragment": "Telegram đã gửi mã này qua Fragment. Mở Fragment để nhận mã.",
+    "code_sent_sms_word": "Telegram đã gửi SMS chứa một từ bắt đầu bằng {{hint}}. Nhập đầy đủ từ đó.",
+    "code_sent_sms_phrase": "Telegram đã gửi SMS chứa một cụm từ bắt đầu bằng {{hint}}. Nhập đầy đủ cụm từ đó.",
+    "code_delivery_unsupported": "Telegram đã chọn phương thức gửi mà ứng dụng máy tính bên thứ ba không thể hoàn tất. Hãy dùng đăng nhập bằng QR.",
+    "open_fragment": "Mở Fragment",
+    "fragment_url_invalid": "Telegram trả về liên kết đăng nhập Fragment không hợp lệ.",
+    "code_word_placeholder": "Nhập từ hoặc cụm từ",
+    "verifying": "Đang xác minh...",
+    "sign_in": "Đăng nhập",
+    "resending": "Đang gửi lại...",
+    "resend_in": "Gửi lại mã sau {{seconds}} giây",
+    "resend_code": "Gửi lại mã",
+    "use_qr_instead": "Dùng mã QR thay thế"
   },
   "ads": {
     "sponsored": "Được tài trợ",

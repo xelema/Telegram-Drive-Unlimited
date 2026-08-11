@@ -61,7 +61,15 @@
     "delete_group": "Elimina gruppo",
     "enter_group_name": "Inserisci il nome del gruppo...",
     "hide_groups_desc": "Mostra o nasconde i gruppi di cartelle nella barra laterale",
-    "delete": "Elimina"
+    "delete": "Elimina",
+    "recents": "Recenti",
+    "favorites": "Preferiti",
+    "pinned": "In evidenza",
+    "offline_files": "File offline",
+    "storage_insights": "Analisi archiviazione",
+    "large_files": "File di grandi dimensioni",
+    "old_files": "File meno recenti",
+    "duplicates": "Duplicati"
   },
   "settings": {
     "title": "Impostazioni",
@@ -366,7 +374,14 @@
     "encryption_capabilities": "Funzionalità di crittografia",
     "core_available": "Core disponibile",
     "vault_exists": "Vault esistente",
-    "max_file_size": "Dimensione massima file"
+    "max_file_size": "Dimensione massima file",
+    "offline_cache": "File offline",
+    "offline_cache_desc": "I file non crittografati aperti di recente vengono conservati su questo dispositivo per l’accesso offline.",
+    "offline_cache_usage": "{{count}} file · {{used}} di {{limit}}",
+    "refresh_offline_cache": "Aggiorna utilizzo dei file offline",
+    "clear_offline_cache_title": "Cancellare i file offline?",
+    "clear_offline_cache_desc": "I file conservati per l’accesso offline verranno rimossi da questo dispositivo. Le copie su Telegram non saranno interessate.",
+    "offline_cache_cleared": "File offline cancellati"
   },
   "files": {
     "download": "Scarica",
@@ -498,7 +513,26 @@
     "donate": "Dona",
     "getting_started": "Per iniziare",
     "close_help": "Chiudi guida",
-    "privacy_note": "Le tue credenziali sono archiviate localmente sul dispositivo e non vengono mai inviate a server di terze parti. Tutti i dati passano direttamente tra te e Telegram."
+    "privacy_note": "Le tue credenziali sono archiviate localmente sul dispositivo e non vengono mai inviate a server di terze parti. Tutti i dati passano direttamente tra te e Telegram.",
+    "code_sent_telegram_app": "Telegram ha inviato il codice di accesso alla chat verificata di Telegram su uno dei tuoi dispositivi connessi.",
+    "code_sent_sms": "Telegram ha inviato il codice di accesso tramite SMS.",
+    "code_sent_call": "Telegram ti chiamerà e leggerà ad alta voce il codice di accesso.",
+    "code_sent_flash_call": "Telegram effettuerà una breve chiamata. Inserisci il numero chiamante che corrisponde a {{hint}}.",
+    "code_sent_missed_call": "Telegram effettuerà una chiamata persa. Inserisci le ultime cifre del numero che inizia con {{hint}}.",
+    "code_sent_email": "Telegram ha inviato il codice di accesso a {{hint}}.",
+    "code_sent_fragment": "Telegram ha consegnato questo codice tramite Fragment. Apri Fragment per recuperarlo.",
+    "code_sent_sms_word": "Telegram ha inviato un SMS contenente una parola che inizia con {{hint}}. Inserisci la parola completa.",
+    "code_sent_sms_phrase": "Telegram ha inviato un SMS contenente una frase che inizia con {{hint}}. Inserisci la frase completa.",
+    "code_delivery_unsupported": "Telegram ha selezionato un metodo di consegna che le app desktop di terze parti non possono completare. Usa invece l'accesso tramite QR.",
+    "open_fragment": "Apri Fragment",
+    "fragment_url_invalid": "Telegram ha restituito un link di accesso Fragment non valido.",
+    "code_word_placeholder": "Inserisci la parola o la frase",
+    "verifying": "Verifica in corso...",
+    "sign_in": "Accedi",
+    "resending": "Reinvio in corso...",
+    "resend_in": "Reinvia il codice tra {{seconds}} s",
+    "resend_code": "Reinvia codice",
+    "use_qr_instead": "Usa invece il codice QR"
   },
   "ads": {
     "sponsored": "Sponsorizzato",

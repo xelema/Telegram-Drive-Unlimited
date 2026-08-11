@@ -1,11 +1,13 @@
 import { motion, AnimatePresence } from 'framer-motion';
 import { Download, X, RefreshCw, Sparkles } from 'lucide-react';
+import type { UpdateInstallPhase } from '../../services/updateReliability';
 
 interface UpdateBannerProps {
     available: boolean;
     version: string | null;
     downloading: boolean;
     progress: number;
+    phase: UpdateInstallPhase | null;
     onUpdate: () => void;
     onDismiss: () => void;
 }
@@ -15,6 +17,7 @@ export function UpdateBanner({
     version,
     downloading,
     progress,
+    phase,
     onUpdate,
     onDismiss
 }: UpdateBannerProps) {
@@ -32,7 +35,7 @@ export function UpdateBanner({
 
                         <span className="text-white font-medium">
                             {downloading ? (
-                                <>Downloading update... {progress}%</>
+                                <>{phase === 'verifying' ? 'Verifying signed update…' : phase === 'installing' ? 'Installing update…' : `Downloading update… ${progress}%`}</>
                             ) : (
                                 <>A new version ({version}) is available!</>
                             )}

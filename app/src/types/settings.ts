@@ -1,0 +1,56 @@
+import type { LanguagePreference } from '../i18n/languages';
+
+export interface Settings {
+  viewMode: 'grid' | 'list';
+  autoUpdate: boolean;
+  maxConcurrentUploads: number;
+  maxConcurrentDownloads: number;
+  zipFolders: boolean;
+  language: LanguagePreference;
+  crashReportingEnabled: boolean;
+  crashReportingConsentSeen: boolean;
+  supporterMode: boolean;
+  driveTourSeen: boolean;
+  vaultRecoveryDrillCompleted: boolean;
+  webdavPermissionExplained: boolean;
+  restPermissionExplained: boolean;
+  downloadWebdavTipSeen: boolean;
+  proxyEnabled: boolean;
+  proxyType: 'socks5' | 'http' | 'https';
+  proxyHost: string;
+  proxyPort: number;
+  proxyUsername: string;
+  proxyPassword: string;
+  proxyLiveStateEnabled: boolean;
+  sidebarCollapsed: boolean;
+  hideGroups: boolean;
+  vpnMode: boolean;
+  timeoutMultiplier: number;
+  retryAttempts: number;
+  retryBaseBackoffSec: number;
+  retryMaxBackoffSec: number;
+  adaptivePolling: boolean;
+  pollingMinSec: number;
+  pollingMaxSec: number;
+  preferredDC: 'auto' | 'dc1' | 'dc2' | 'dc3' | 'dc4' | 'dc5';
+  dcFallbackAttempts: number;
+  floodWaitRespect: boolean;
+  peerCacheSize: number;
+  bandwidthLimitUpKBs: number;
+  bandwidthLimitDownKBs: number;
+  chunkSizeKb: number;
+  keepAliveIntervalSec: number;
+  autoDetectVpn: boolean;
+  archiveMaxBytes: number;
+  performanceMode: boolean;
+  linuxRenderingFix: boolean;
+  transcodeCacheMaxGb: number;
+  encryptionDefaultMode: 'standard' | 'vault' | 'passphrase' | 'vault_and_passphrase';
+  encryptionProtectMetadata: boolean;
+  encryptionAutoLockMinutes: number;
+  encryptionLockOnSleep: boolean;
+  encryptionTempPolicy: 'balanced' | 'strict';
+}
+
+export type Theme = 'light' | 'dark';
+export type ThemePreference = Theme | 'system' | 'default';

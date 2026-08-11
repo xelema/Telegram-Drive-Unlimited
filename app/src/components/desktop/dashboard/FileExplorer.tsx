@@ -26,9 +26,9 @@ interface FileExplorerProps {
     viewMode: 'grid' | 'list';
     selectedIds: number[];
     activeFolderId: number | null;
-    onFileClick: (e: React.MouseEvent, id: number, orderedFiles: TelegramFile[]) => void;
-    onDelete: (id: number) => void;
-    onDownload: (id: number, name: string) => void;
+    onFileClick: (e: React.MouseEvent, file: TelegramFile, orderedFiles: TelegramFile[]) => void;
+    onDelete: (file: TelegramFile) => void;
+    onDownload: (file: TelegramFile) => void;
     onPreview: (file: TelegramFile, orderedFiles?: TelegramFile[]) => void;
     onManualUpload: () => void;
     onFolderUpload: () => void;
@@ -42,6 +42,10 @@ interface FileExplorerProps {
     sortField: SortField;
     sortDirection: SortDirection;
     onSortChange: (field: SortField) => void;
+    onToggleFavorite?: (file: TelegramFile) => void;
+    onTogglePinned?: (file: TelegramFile) => void;
+    syncProgress?: { active: boolean; count: number };
+    selectionDisabled?: boolean;
 }
 
 
@@ -80,7 +84,7 @@ function useGridColumns(containerRef: React.RefObject<HTMLDivElement | null>) {
 export function FileExplorer({
     files, loading, error, viewMode, selectedIds, activeFolderId,
     onFileClick, onDelete, onDownload, onPreview, onManualUpload, onFolderUpload, showFolderUpload, onToggleSelection, onShare, onRename, onFileMove,
-    folders, cardScale, sortField, sortDirection, onSortChange
+    folders, cardScale, sortField, sortDirection, onSortChange, onToggleFavorite, onTogglePinned, syncProgress, selectionDisabled = false
 }: FileExplorerProps) {
     const [contextMenu, setContextMenu] = useState<{ x: number; y: number; file: TelegramFile } | null>(null);
     const { t } = useTranslation();
@@ -227,6 +231,12 @@ export function FileExplorer({
             ref={parentRef}
             className="custom-scrollbar flex-1 overflow-auto p-5"
         >
+            {syncProgress?.active && syncProgress.count > 0 && (
+                <div className="sticky top-0 z-10 mx-auto mb-3 flex w-fit items-center gap-2 rounded-full border border-app-accent/20 bg-app-surface-raised px-3 py-1.5 text-xs text-app-text-secondary shadow-lg" role="status" aria-live="polite">
+                    <span className="h-2 w-2 animate-pulse rounded-full bg-app-accent" />
+                    Syncing {syncProgress.count.toLocaleString()} messages…
+                </div>
+            )}
             {viewMode === 'grid' ? (
                 <>
                     <div
@@ -276,19 +286,20 @@ export function FileExplorer({
                                         const file = item;
                                         return (
                                             <FileCard
-                                                key={file.id}
+                                                key={`${file.folder_id ?? 'home'}:${file.id}`}
                                                 file={file}
                                                 isSelected={selectedIds.includes(file.id)}
-                                                onClick={(e) => onFileClick(e, file.id, sortedFiles)}
+                                                onClick={(e) => onFileClick(e, file, sortedFiles)}
                                                 onContextMenu={(e) => handleContextMenu(e, file)}
-                                                onDelete={() => onDelete(file.id)}
-                                                onDownload={() => onDownload(file.id, file.name)}
+                                                onDelete={() => onDelete(file)}
+                                                onDownload={() => onDownload(file)}
                                                 onPreview={() => handlePreviewRequest(file)}
-                                                activeFolderId={activeFolderId}
+                                                activeFolderId={file.folder_id ?? activeFolderId}
                                                 height={cardHeight}
                                                 onToggleSelection={() => onToggleSelection(file.id)}
                                                 onShare={onShare ? () => onShare(file) : undefined}
                                                 selectedIds={selectedIds}
+                                                disableDrag={selectionDisabled}
                                             />
                                         );
                                     })}
@@ -356,15 +367,16 @@ export function FileExplorer({
                             const file = item;
                             return (
                                 <div
-                                    key={file.id}
+                                    key={`${file.folder_id ?? 'home'}:${file.id}`}
                                     className="absolute top-0 left-0 w-full"
                                     style={{ transform: `translateY(${virtualItem.start}px)` }}
                                 >
                                     <FileListItem
                                         file={file}
                                         selectedIds={selectedIds}
-                                        onFileClick={(e, id) => onFileClick(e, id, sortedFiles)}
+                                        onFileClick={(e, clickedFile) => onFileClick(e, clickedFile, sortedFiles)}
                                         handleContextMenu={handleContextMenu}
+                                        disableDrag={selectionDisabled}
                                     />
                                 </div>
                             );
@@ -380,16 +392,16 @@ export function FileExplorer({
                     file={contextMenu.file}
                     onClose={() => setContextMenu(null)}
                     onDownload={() => {
-                        onDownload(contextMenu.file.id, contextMenu.file.name);
+                        onDownload(contextMenu.file);
                         setContextMenu(null);
                     }}
                     onDelete={() => {
-                        onDelete(contextMenu.file.id);
+                        onDelete(contextMenu.file);
                         setContextMenu(null);
                     }}
                     onPreview={() => {
                         if (contextMenu.file.type === 'folder') {
-                             onFileClick({ preventDefault: () => { }, stopPropagation: () => { } } as React.MouseEvent, contextMenu.file.id, sortedFiles);
+                             onFileClick({ preventDefault: () => { }, stopPropagation: () => { } } as React.MouseEvent, contextMenu.file, sortedFiles);
                         } else {
                             handlePreviewRequest(contextMenu.file);
                         }
@@ -409,6 +421,14 @@ export function FileExplorer({
                     } : undefined}
                     folders={folders}
                     activeFolderId={activeFolderId}
+                    onToggleFavorite={onToggleFavorite ? () => {
+                        onToggleFavorite(contextMenu.file);
+                        setContextMenu(null);
+                    } : undefined}
+                    onTogglePinned={onTogglePinned ? () => {
+                        onTogglePinned(contextMenu.file);
+                        setContextMenu(null);
+                    } : undefined}
                 />
             )}
         </div>

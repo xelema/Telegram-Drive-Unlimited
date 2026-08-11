@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { SUPPORTED_LOCALES, loadLocale, loadInvariantAllowlist } = require('./shared.cjs');
+const copiedEnglishBaseline = require('../../src/i18n/copied-english-baseline.json');
 
 const ALLOWED_PLURAL_SUFFIXES = {
   ar: ['_zero', '_one', '_two', '_few', '_many', '_other'],
@@ -16,6 +17,7 @@ const ALLOWED_PLURAL_SUFFIXES = {
   tr: ['_one', '_other'],
   ja: ['_other'],
   ko: ['_other'],
+  vi: ['_other'],
   'zh-CN': ['_other']
 };
 
@@ -28,6 +30,7 @@ function extractVariables(text) {
 function validate() {
   const errors = [];
   const warnings = [];
+  const copiedEnglishCounts = {};
   const invariantAllowlist = loadInvariantAllowlist();
   const allowKeys = new Set(invariantAllowlist.keys || []);
   const allowTokens = new Set(invariantAllowlist.tokens || []);
@@ -54,6 +57,7 @@ function validate() {
     }
 
     const targetKeys = new Set(Object.keys(target.flat));
+    copiedEnglishCounts[locale] = 0;
     const validSuffixes = ALLOWED_PLURAL_SUFFIXES[locale] || ALLOWED_PLURAL_SUFFIXES[locale.replace('-', '_')] || ['_one', '_other'];
 
     // Check missing / unexpected keys
@@ -111,7 +115,7 @@ function validate() {
         // 10. Copied English check
         if (enVal === targetVal && typeof enVal === 'string' && enVal.trim().length > 0) {
           if (!allowKeys.has(key) && !allowTokens.has(enVal)) {
-            warnings.push(`[${locale}] [copied_english] ${key} — value "${enVal}" is identical to English`);
+            copiedEnglishCounts[locale] += 1;
           }
         }
       }
@@ -130,6 +134,17 @@ function validate() {
         }
         errors.push(`[${locale}] [unexpected_key] ${key} — not found in English base resource`);
       }
+    }
+  }
+
+  for (const [locale, count] of Object.entries(copiedEnglishCounts)) {
+    const baseline = copiedEnglishBaseline[locale];
+    if (typeof baseline !== 'number') {
+      errors.push(`[${locale}] [baseline_missing] copied-English baseline is not defined`);
+    } else if (count > baseline) {
+      errors.push(`[${locale}] [copied_english_regression] ${count} copied-English values exceed the approved baseline of ${baseline}`);
+    } else if (count > 0) {
+      warnings.push(`[${locale}] [copied_english_debt] ${count} values remain identical to English (baseline ${baseline})`);
     }
   }
 

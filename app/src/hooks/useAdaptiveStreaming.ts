@@ -10,7 +10,14 @@ import {
 import { useStreamingSettings } from './useStreamingSettings';
 import { getCachedMoov, setCachedMoov, extractCacheKey } from './moovCache';
 
-// ── Types ────────────────────────────────────────────────────────────
+function debugAdaptiveStreaming(...args: unknown[]): void {
+    if (import.meta.env.DEV) console.debug(...args);
+}
+
+function getErrorName(error: unknown): string | undefined {
+    if (typeof error !== 'object' || error === null || !('name' in error)) return undefined;
+    return typeof error.name === 'string' ? error.name : undefined;
+}
 
 interface Mp4Track {
     id: number;
@@ -60,7 +67,6 @@ const MOOV_TAIL_BYTES = 524288;        // 512KB — tail fetch for moov-at-end f
 const MOOV_FALLBACK_TIMEOUT_MS = 3000;
 const PROGRESSIVE_CACHE_WARM_BYTES = 3145728; // 3MB — pre-warm HTTP cache for native <video> moov discovery
 
-// ── Pre-warm browser HTTP cache for progressive MP4 moov tail ─────
 // When a progressive (non-fragmented) MP4 is detected and we fall back to
 // native <video>, the native player must make a Range request to the end
 // of the file to find the moov atom. This round-trip through the backend
@@ -74,22 +80,20 @@ function warmProgressiveMoovCache(streamUrl: string, fileSize: number): void {
     const warmBytes = Math.min(PROGRESSIVE_CACHE_WARM_BYTES, fileSize);
     const tailStart = Math.max(0, fileSize - warmBytes);
 
-    console.log('[AdaptiveStreaming] 🔥 warmProgressiveMoovCache: pre-fetching last', warmBytes, 'bytes from offset', tailStart);
+    debugAdaptiveStreaming('[AdaptiveStreaming] 🔥 warmProgressiveMoovCache: pre-fetching last', warmBytes, 'bytes from offset', tailStart);
 
     fetch(streamUrl, {
         headers: { Range: `bytes=${tailStart}-` },
-        // Fire-and-forget: we don't need the result — only need the
-        // browser's HTTP cache to be populated for the native <video>
-        // element that will mount moments later.
+        // This request exists only to populate the browser cache before the
+        // native video element asks for the same tail range.
         cache: 'default',
     }).then(() => {
-        console.log('[AdaptiveStreaming] 🔥 warmProgressiveMoovCache: cache warmed successfully');
+        debugAdaptiveStreaming('[AdaptiveStreaming] 🔥 warmProgressiveMoovCache: cache warmed successfully');
     }).catch(() => {
-        // Best-effort: failure is non-critical
+        // Native playback can still perform its own range request.
     });
 }
 
-// ── Extract just the moov atom from raw MP4 bytes ──────────────────
 // Scans for the 'moov' box fourcc, validates its size, and returns
 // the isolated box data with its absolute file offset. Used for
 // moov-at-end files to avoid feeding non-contiguous mdat fragments
@@ -241,7 +245,7 @@ export function useAdaptiveStreaming(
         const kbps = QUALITY_THROTTLE_MAP[settings.quality];
         const bps = kbps > 0 ? kbps * 1024 : 0;
         throttleBpsRef.current = bps;
-        console.log('[AdaptiveStreaming] throttle updated', {
+        debugAdaptiveStreaming('[AdaptiveStreaming] throttle updated', {
             quality: settings.quality,
             throttleBps: bps,
             throttleKbps: kbps,
@@ -271,11 +275,11 @@ export function useAdaptiveStreaming(
         if (!queue || queue.length === 0) return;
         try {
             sb.appendBuffer(queue.shift()!);
-        } catch (e: any) {
-            if (e.name === 'QuotaExceededError') {
+        } catch (error: unknown) {
+            if (getErrorName(error) === 'QuotaExceededError') {
                 sb.addEventListener('updateend', () => drainAppendQueue(trackId), { once: true });
             } else {
-                console.warn(`[AdaptiveStreaming] appendBuffer error for track ${trackId}:`, e);
+                console.warn(`[AdaptiveStreaming] appendBuffer error for track ${trackId}:`, error);
             }
         }
     }, []);
@@ -326,7 +330,7 @@ export function useAdaptiveStreaming(
     const startDownload = useCallback((fromOffset: number) => {
         if (!streamUrl || !mp4boxRef.current) return;
 
-        console.log('[AdaptiveStreaming] ⬇️ startDownload from offset=', fromOffset);
+        debugAdaptiveStreaming('[AdaptiveStreaming] ⬇️ startDownload from offset=', fromOffset);
         abortFetch();
         const mp4boxfile = mp4boxRef.current;
         const abortController = new AbortController();
@@ -355,7 +359,7 @@ export function useAdaptiveStreaming(
 
                 if (!response.body) throw new Error('No response body');
 
-                console.log('[AdaptiveStreaming] ⬇️ download started, reading stream...');
+                debugAdaptiveStreaming('[AdaptiveStreaming] ⬇️ download started, reading stream...');
                 const reader = response.body.getReader();
                 const downloadStartTime = performance.now();
                 totalFetchedRef.current = 0;
@@ -363,7 +367,7 @@ export function useAdaptiveStreaming(
 
                 while (true) {
                     const { done, value } = await reader.read();
-                    if (done) { console.log('[AdaptiveStreaming] ⬇️ stream complete'); break; }
+                    if (done) { debugAdaptiveStreaming('[AdaptiveStreaming] ⬇️ stream complete'); break; }
                     if (abortController.signal.aborted) break;
 
                     const chunkBuffer = value.buffer.slice(
@@ -424,17 +428,17 @@ export function useAdaptiveStreaming(
                     // Flush mp4box to emit any remaining partial segment,
                     // critical for short videos where the last segment may be incomplete.
                     try { mp4boxfile.flush(); } catch { /* best-effort */ }
-                    console.log('[AdaptiveStreaming] ⬇️ download complete, mp4box flushed');
+                    debugAdaptiveStreaming('[AdaptiveStreaming] ⬇️ download complete, mp4box flushed');
                     // Do NOT set phase to 'ended' — download completion ≠ playback completion.
                     // The <video> element's 'ended' event or MediaSource 'sourceended' handles that.
                     setState(s => ({ ...s, loadProgress: 100 }));
                 }
-            } catch (err: any) {
-                if (err?.name === 'AbortError') return;
-                console.error('[AdaptiveStreaming] Download error:', err);
+            } catch (error: unknown) {
+                if (getErrorName(error) === 'AbortError') return;
+                console.error('[AdaptiveStreaming] Download error:', error);
                 if (playerPhaseRef.current !== 'error') {
                     playerPhaseRef.current = 'error';
-                    setState(s => ({ ...s, phase: 'error', error: String(err) }));
+                    setState(s => ({ ...s, phase: 'error', error: String(error) }));
                     // Fall back to native <video> — download stream failed
                     setDynamicFallback(true);
                 }
@@ -444,13 +448,13 @@ export function useAdaptiveStreaming(
 
     // ── Quick moov discovery: fetch first 128KB to trigger onReady fast ──
     const discoverMoov = useCallback(async (mp4boxfile: ISOFile, signal: AbortSignal) => {
-        console.log('[AdaptiveStreaming] 🔍 discoverMoov: fetching first 128KB...');
+        debugAdaptiveStreaming('[AdaptiveStreaming] 🔍 discoverMoov: fetching first 128KB...');
         try {
             const resp = await fetch(streamUrl, {
                 headers: { Range: `bytes=0-${MOOV_DISCOVERY_BYTES - 1}` },
                 signal,
             });
-            console.log('[AdaptiveStreaming] 🔍 discoverMoov: response status=', resp.status, 'ok=', resp.ok);
+            debugAdaptiveStreaming('[AdaptiveStreaming] 🔍 discoverMoov: response status=', resp.status, 'ok=', resp.ok);
             if (!resp.ok || !resp.body || signal.aborted) return;
 
             // Extract file size from Content-Range header
@@ -469,26 +473,26 @@ export function useAdaptiveStreaming(
             const data = await resp.arrayBuffer();
             if (signal.aborted || onReadyCalledRef.current) return;
 
-            console.log('[AdaptiveStreaming] 🔍 discoverMoov: got', data.byteLength, 'bytes, feeding to mp4box...');
+            debugAdaptiveStreaming('[AdaptiveStreaming] 🔍 discoverMoov: got', data.byteLength, 'bytes, feeding to mp4box...');
             const mp4boxBuffer = MP4BoxBuffer.fromArrayBuffer(data, 0);
             const nextOffset = mp4boxfile.appendBuffer(mp4boxBuffer);
-            console.log('[AdaptiveStreaming] 🔍 discoverMoov: mp4box nextOffset=', nextOffset);
+            debugAdaptiveStreaming('[AdaptiveStreaming] 🔍 discoverMoov: mp4box nextOffset=', nextOffset);
             moovEndOffsetRef.current = nextOffset > 0 ? nextOffset : MOOV_DISCOVERY_BYTES;
             // Save original bytes for the fresh playback file
             discoveryPrefixRef.current = data.slice(0);
             discoveryNextOffsetRef.current = nextOffset || data.byteLength;
-        } catch (err: any) {
-            if (err?.name !== 'AbortError') {
-                console.warn('[AdaptiveStreaming] Moov discovery error:', err);
+        } catch (error: unknown) {
+            if (getErrorName(error) !== 'AbortError') {
+                console.warn('[AdaptiveStreaming] Moov discovery error:', error);
             }
         }
     }, [streamUrl]);
 
     // ── Retry moov discovery: extend to 512KB when first 128KB fails ──
     const discoverMoovRetry = useCallback(async (mp4boxfile: ISOFile, signal: AbortSignal) => {
-        console.log('[AdaptiveStreaming] 🔄 discoverMoovRetry: extending range from 128KB to 512KB...');
+        debugAdaptiveStreaming('[AdaptiveStreaming] 🔄 discoverMoovRetry: extending range from 128KB to 512KB...');
         if (fileSizeRef.current > 0 && fileSizeRef.current <= MOOV_DISCOVERY_BYTES) {
-            console.log('[AdaptiveStreaming] 🔄 discoverMoovRetry: file too small for retry, skipping');
+            debugAdaptiveStreaming('[AdaptiveStreaming] 🔄 discoverMoovRetry: file too small for retry, skipping');
             return;
         }
         try {
@@ -496,13 +500,13 @@ export function useAdaptiveStreaming(
                 headers: { Range: `bytes=${MOOV_DISCOVERY_BYTES}-${MOOV_RETRY_BYTES - 1}` },
                 signal,
             });
-            console.log('[AdaptiveStreaming] 🔄 discoverMoovRetry: response status=', resp.status, 'ok=', resp.ok);
+            debugAdaptiveStreaming('[AdaptiveStreaming] 🔄 discoverMoovRetry: response status=', resp.status, 'ok=', resp.ok);
             if (!resp.ok || signal.aborted || onReadyCalledRef.current) return;
 
             const data = await resp.arrayBuffer();
             if (signal.aborted || onReadyCalledRef.current) return;
 
-            console.log('[AdaptiveStreaming] 🔄 discoverMoovRetry: got', data.byteLength, 'gap bytes, feeding to mp4box at offset', MOOV_DISCOVERY_BYTES);
+            debugAdaptiveStreaming('[AdaptiveStreaming] 🔄 discoverMoovRetry: got', data.byteLength, 'gap bytes, feeding to mp4box at offset', MOOV_DISCOVERY_BYTES);
             const mp4boxBuffer = MP4BoxBuffer.fromArrayBuffer(data, MOOV_DISCOVERY_BYTES);
             mp4boxfile.appendBuffer(mp4boxBuffer);
 
@@ -515,43 +519,43 @@ export function useAdaptiveStreaming(
                 discoveryPrefixRef.current = combined.buffer;
             }
             discoveryNextOffsetRef.current = MOOV_RETRY_BYTES;
-        } catch (err: any) {
-            if (err?.name !== 'AbortError') {
-                console.warn('[AdaptiveStreaming] Moov retry error:', err);
+        } catch (error: unknown) {
+            if (getErrorName(error) !== 'AbortError') {
+                console.warn('[AdaptiveStreaming] Moov retry error:', error);
             }
         }
     }, [streamUrl]);
 
     // ── Tail moov discovery: fetch last 512KB to find moov-at-end ───
     const discoverMoovTail = useCallback(async (mp4boxfile: ISOFile, signal: AbortSignal) => {
-        console.log('[AdaptiveStreaming] 🦊 discoverMoovTail: fileSize=', fileSizeRef.current);
+        debugAdaptiveStreaming('[AdaptiveStreaming] 🦊 discoverMoovTail: fileSize=', fileSizeRef.current);
         if (fileSizeRef.current <= MOOV_DISCOVERY_BYTES + MOOV_TAIL_BYTES) {
-            console.log('[AdaptiveStreaming] 🦊 discoverMoovTail: file too small, skipping');
+            debugAdaptiveStreaming('[AdaptiveStreaming] 🦊 discoverMoovTail: file too small, skipping');
             return;
         }
         try {
             const tailStart = Math.max(0, fileSizeRef.current - MOOV_TAIL_BYTES);
-            console.log('[AdaptiveStreaming] 🦊 discoverMoovTail: fetching bytes', tailStart, '- end');
+            debugAdaptiveStreaming('[AdaptiveStreaming] 🦊 discoverMoovTail: fetching bytes', tailStart, '- end');
             const resp = await fetch(streamUrl, {
                 headers: { Range: `bytes=${tailStart}-` },
                 signal,
             });
-            console.log('[AdaptiveStreaming] 🦊 discoverMoovTail: response status=', resp.status, 'ok=', resp.ok);
+            debugAdaptiveStreaming('[AdaptiveStreaming] 🦊 discoverMoovTail: response status=', resp.status, 'ok=', resp.ok);
             if (!resp.ok || !resp.body || signal.aborted || onReadyCalledRef.current) return;
 
             const data = await resp.arrayBuffer();
             if (signal.aborted || onReadyCalledRef.current) return;
 
-            console.log('[AdaptiveStreaming] 🦊 discoverMoovTail: got', data.byteLength, 'bytes, feeding to mp4box at offset', tailStart);
+            debugAdaptiveStreaming('[AdaptiveStreaming] 🦊 discoverMoovTail: got', data.byteLength, 'bytes, feeding to mp4box at offset', tailStart);
             const mp4boxBuffer = MP4BoxBuffer.fromArrayBuffer(data, tailStart);
             mp4boxfile.appendBuffer(mp4boxBuffer);
             // Save tail data for the fresh playback file (needed for moov-at-end)
             discoverySuffixRef.current = data.slice(0);
             discoverySuffixOffsetRef.current = tailStart;
             moovEndOffsetRef.current = 0;
-        } catch (err: any) {
-            if (err?.name !== 'AbortError') {
-                console.warn('[AdaptiveStreaming] Moov tail discovery error:', err);
+        } catch (error: unknown) {
+            if (getErrorName(error) !== 'AbortError') {
+                console.warn('[AdaptiveStreaming] Moov tail discovery error:', error);
             }
         }
     }, [streamUrl]);
@@ -559,7 +563,7 @@ export function useAdaptiveStreaming(
     // ── Initialize segments callback ─────────────────────────────────
     const initSegments = useCallback((mp4boxfile: ISOFile) => {
         const tracks = tracksRef.current;
-        console.log('[AdaptiveStreaming] 📐 initSegments starting for tracks:', tracks.map(t => t.id));
+        debugAdaptiveStreaming('[AdaptiveStreaming] 📐 initSegments starting for tracks:', tracks.map(t => t.id));
 
         // ── Register onSegment BEFORE initializeSegmentation ──────────
         // mp4box docs require onSegment to be set before segmentation starts.
@@ -571,7 +575,7 @@ export function useAdaptiveStreaming(
                 return;
             }
 
-            console.log('[AdaptiveStreaming] 📐 onSegment: track=', id, 'sample=', sampleNum, 'bytes=', buffer.byteLength);
+            debugAdaptiveStreaming('[AdaptiveStreaming] 📐 onSegment: track=', id, 'sample=', sampleNum, 'bytes=', buffer.byteLength);
             
             if (!appendQueuesRef.current[id]) {
                 appendQueuesRef.current[id] = [];
@@ -583,12 +587,12 @@ export function useAdaptiveStreaming(
             } else {
                 try {
                     currentSb.appendBuffer(buffer);
-                } catch (e: any) {
-                    if (e.name === 'QuotaExceededError') {
+                } catch (error: unknown) {
+                    if (getErrorName(error) === 'QuotaExceededError') {
                         queue.unshift(buffer);
                         currentSb.addEventListener('updateend', () => drainAppendQueue(id), { once: true });
                     } else {
-                        console.warn(`[AdaptiveStreaming] appendBuffer failed for track ${id}:`, e);
+                        console.warn(`[AdaptiveStreaming] appendBuffer failed for track ${id}:`, error);
                     }
                 }
             }
@@ -610,16 +614,16 @@ export function useAdaptiveStreaming(
             }
             (mp4boxfile as any).isFragmentationInitialized = false;
 
-            console.log('[AdaptiveStreaming] 📐 initSegments: generating isolated options for track id=', track.id);
+            debugAdaptiveStreaming('[AdaptiveStreaming] 📐 initSegments: generating isolated options for track id=', track.id);
             mp4boxfile.setSegmentOptions(track.id, sb as unknown as object, {
                 nbSamples: 30,
                 rapAlignement: true,
             });
 
             try {
-                const res = (mp4boxfile as any).initializeSegmentation();
-                if (res && res.buffer) {
-                    initBuffers[track.id] = res.buffer;
+                const segmentationResult = (mp4boxfile as any).initializeSegmentation();
+                if (segmentationResult && segmentationResult.buffer) {
+                    initBuffers[track.id] = segmentationResult.buffer;
                     hasInitializedAny = true;
                 }
             } catch (e) {
@@ -688,7 +692,7 @@ export function useAdaptiveStreaming(
 
     // ── Build MSE pipeline (shared by onReady and cache-hit paths) ───
     const buildMsePipeline = useCallback((mp4boxfile: ISOFile, tracks: VideoTrackInfo[]) => {
-        console.log('[AdaptiveStreaming] 🏗️ buildMsePipeline: creating MediaSource, videoRef.current=', !!videoRef.current);
+        debugAdaptiveStreaming('[AdaptiveStreaming] 🏗️ buildMsePipeline: creating MediaSource, videoRef.current=', !!videoRef.current);
         const ms = new MediaSource();
         mediaSourceRef.current = ms;
 
@@ -702,10 +706,10 @@ export function useAdaptiveStreaming(
         }, 15000);
 
         ms.addEventListener('sourceopen', () => {
-            console.log('[AdaptiveStreaming] 🏗️ sourceopen fired!');
+            debugAdaptiveStreaming('[AdaptiveStreaming] 🏗️ sourceopen fired!');
             clearTimeout(openTimeout);
             const videoTrack = tracks.find(t => t.type === 'video');
-            console.log('[AdaptiveStreaming] 🏗️ videoTrack:', videoTrack ? `id=${videoTrack.id} codec=${videoTrack.codec}` : 'NOT FOUND');
+            debugAdaptiveStreaming('[AdaptiveStreaming] 🏗️ videoTrack:', videoTrack ? `id=${videoTrack.id} codec=${videoTrack.codec}` : 'NOT FOUND');
             if (!videoTrack?.codec) {
                 console.error('[AdaptiveStreaming] 🏗️ No video codec!');
                 playerPhaseRef.current = 'error';
@@ -771,13 +775,13 @@ export function useAdaptiveStreaming(
             // Set onReady BEFORE feeding data — mp4box may fire it synchronously
             // during appendBuffer, so the callback must be registered first.
             playbackFile.onReady = () => {
-                console.log('[AdaptiveStreaming] 🏗️ fresh file onReady — setting up segmentation');
+                debugAdaptiveStreaming('[AdaptiveStreaming] 🏗️ fresh file onReady — setting up segmentation');
                 // Patch missing mehd on the *playback* file (the scout file
                 // was patched earlier, but this is a fresh mp4box instance
                 // with its own moov parsed from the discovery bytes).
                 const pbMoov = (playbackFile as any).moov;
                 if (pbMoov?.mvex && !pbMoov.mvex.mehd) {
-                    console.log('[AdaptiveStreaming] 🏗️ Patching missing mehd on playback file');
+                    debugAdaptiveStreaming('[AdaptiveStreaming] 🏗️ Patching missing mehd on playback file');
                     pbMoov.mvex.mehd = { fragment_duration: 0 };
                 }
                 initSegments(playbackFile);
@@ -792,7 +796,7 @@ export function useAdaptiveStreaming(
                 // For moov-at-end: resume from byte 0 to fill contiguously.
                 // For moov-in-header: resume from where the prefix ended.
                 const resumeOffset = isMoovInTail ? 0 : (discoveryNextOffsetRef.current || (prefix?.byteLength ?? 0));
-                console.log('[AdaptiveStreaming] 🏗️ starting download from offset=', resumeOffset, 'isMoovInTail=', isMoovInTail);
+                debugAdaptiveStreaming('[AdaptiveStreaming] 🏗️ starting download from offset=', resumeOffset, 'isMoovInTail=', isMoovInTail);
                 startDownload(resumeOffset);
             };
 
@@ -804,7 +808,7 @@ export function useAdaptiveStreaming(
                 // on platforms with different WebView fetch behavior (e.g. Windows).
                 const moovAtom = extractMoovAtom(suffix, suffixOffset);
                 if (moovAtom) {
-                    console.log('[AdaptiveStreaming] 🏗️ moov-at-end: feeding moov atom at offset', moovAtom.moovOffset, 'size', moovAtom.moovData.byteLength);
+                    debugAdaptiveStreaming('[AdaptiveStreaming] 🏗️ moov-at-end: feeding moov atom at offset', moovAtom.moovOffset, 'size', moovAtom.moovData.byteLength);
                     playbackFile.appendBuffer(MP4BoxBuffer.fromArrayBuffer(moovAtom.moovData, moovAtom.moovOffset));
                 } else {
                     // Fallback: couldn't isolate moov — feed entire suffix (existing behavior)
@@ -814,7 +818,7 @@ export function useAdaptiveStreaming(
                 discoverySuffixRef.current = null;
             } else if (prefix) {
                 // ── Moov-in-header: feed contiguous prefix bytes ──────
-                console.log('[AdaptiveStreaming] 🏗️ feeding', prefix.byteLength, 'original bytes at offset 0');
+                debugAdaptiveStreaming('[AdaptiveStreaming] 🏗️ feeding', prefix.byteLength, 'original bytes at offset 0');
                 playbackFile.appendBuffer(MP4BoxBuffer.fromArrayBuffer(prefix.slice(0), 0));
             }
 
@@ -835,7 +839,7 @@ export function useAdaptiveStreaming(
                     setState(s => ({ ...s, phase: 'ended' }));
                 }
             });
-            console.log('[AdaptiveStreaming] 🏗️ MediaSource blob URL set on video element');
+            debugAdaptiveStreaming('[AdaptiveStreaming] 🏗️ MediaSource blob URL set on video element');
         } else {
             console.error('[AdaptiveStreaming] 🏗️ videoRef.current is NULL — cannot set MediaSource src!');
         }
@@ -906,7 +910,7 @@ export function useAdaptiveStreaming(
             // Log measured speed separately from throttle cap
             const throttleBps = throttleBpsRef.current;
             if (throttleBps > 0 || kbps > 0) {
-                console.log('[AdaptiveStreaming] speed sample', {
+                debugAdaptiveStreaming('[AdaptiveStreaming] speed sample', {
                     measuredKbps: kbps,
                     throttleCapKbps: throttleBps > 0 ? Math.round(throttleBps / 1024) : 0,
                     quality: settings.quality,
@@ -921,7 +925,7 @@ export function useAdaptiveStreaming(
                 for (const t of ADAPTIVE_THRESHOLDS) {
                     if (kbps >= t.minKbps) {
                         if (settings.quality !== t.quality) {
-                            console.log('[AdaptiveStreaming] auto-quality', { from: settings.quality, to: t.quality, measuredKbps: kbps });
+                            debugAdaptiveStreaming('[AdaptiveStreaming] auto-quality', { from: settings.quality, to: t.quality, measuredKbps: kbps });
                             setQuality(t.quality);
                         }
                         break;
@@ -935,11 +939,11 @@ export function useAdaptiveStreaming(
     // ── Main initialization effect ───────────────────────────────────
     useEffect(() => {
         if (useFallback || !streamUrl) {
-            console.log('[AdaptiveStreaming] 🚫 Skipping MSE: useFallback=', useFallback, 'streamUrl=', !!streamUrl);
+            debugAdaptiveStreaming('[AdaptiveStreaming] 🚫 Skipping MSE: useFallback=', useFallback, 'streamUrl=', !!streamUrl);
             return;
         }
 
-        console.log('[AdaptiveStreaming] 🚀 Starting initialization for:', fileName);
+        debugAdaptiveStreaming('[AdaptiveStreaming] 🚀 Starting initialization for:', fileName);
         playerPhaseRef.current = 'loading';
         onReadyCalledRef.current = false;
         moovEndOffsetRef.current = 0;
@@ -964,14 +968,14 @@ export function useAdaptiveStreaming(
         };
 
         mp4boxfile.onReady = (info: unknown) => {
-            console.log('[AdaptiveStreaming] 📦 onReady FIRED!');
-            if (onReadyCalledRef.current) { console.log('[AdaptiveStreaming] 📦 onReady already called, ignoring'); return; }
+            debugAdaptiveStreaming('[AdaptiveStreaming] 📦 onReady FIRED!');
+            if (onReadyCalledRef.current) { debugAdaptiveStreaming('[AdaptiveStreaming] 📦 onReady already called, ignoring'); return; }
             onReadyCalledRef.current = true;
             if (fallbackTimer) { clearTimeout(fallbackTimer); fallbackTimer = null; }
             abortDiscovery();
 
             const movieInfo = info as Mp4MovieInfo;
-            console.log('[AdaptiveStreaming] 📦 movieInfo:', movieInfo ? `tracks=${movieInfo.tracks?.length} duration=${movieInfo.duration}/${movieInfo.timescale}` : 'NULL');
+            debugAdaptiveStreaming('[AdaptiveStreaming] 📦 movieInfo:', movieInfo ? `tracks=${movieInfo.tracks?.length} duration=${movieInfo.duration}/${movieInfo.timescale}` : 'NULL');
             if (!movieInfo || !Array.isArray(movieInfo.tracks)) {
                 console.error('[AdaptiveStreaming] 📦 Unexpected mp4box response — falling back to native video');
                 playerPhaseRef.current = 'error';
@@ -992,14 +996,14 @@ export function useAdaptiveStreaming(
                     duration: movieInfo.duration / movieInfo.timescale,
                 });
             }
-            console.log('[AdaptiveStreaming] 📦 parsed', tracks.length, 'tracks:', tracks.map(t => `${t.type}:${t.codec}`).join(', '));
+            debugAdaptiveStreaming('[AdaptiveStreaming] 📦 parsed', tracks.length, 'tracks:', tracks.map(t => `${t.type}:${t.codec}`).join(', '));
             tracksRef.current = tracks;
             setState(s => ({ ...s, tracks, loadProgress: 100 }));
 
             // Progressive (non-fragmented) MP4: mp4box can't segment these files
             // (initializeSegmentation crashes on missing mvex/mehd). Use native <video>.
             if (!movieInfo.isFragmented) {
-                console.log('[AdaptiveStreaming] 📦 Progressive MP4 detected — warming moov cache, then falling back to native <video>');
+                debugAdaptiveStreaming('[AdaptiveStreaming] 📦 Progressive MP4 detected — warming moov cache, then falling back to native <video>');
                 // Pre-fetch tail to warm the browser's HTTP cache so the native
                 // <video> element finds the moov atom instantly.
                 if (fileSizeRef.current > 0) {
@@ -1023,7 +1027,7 @@ export function useAdaptiveStreaming(
             // segment timestamps (same as DASH/CMAF live streams).
             const moov = (mp4boxfile as any).moov;
             if (moov?.mvex && !moov.mvex.mehd) {
-                console.log('[AdaptiveStreaming] 📦 Patching missing mehd on fragmented MP4');
+                debugAdaptiveStreaming('[AdaptiveStreaming] 📦 Patching missing mehd on fragmented MP4');
                 moov.mvex.mehd = { fragment_duration: 0 };
             }
 
@@ -1072,24 +1076,24 @@ export function useAdaptiveStreaming(
             discoverMoov(mp4boxfile, ctrl.signal);
 
             fallbackTimer = setTimeout(async () => {
-                console.log('[AdaptiveStreaming] ⏰ Fallback timer fired! onReadyCalled=', onReadyCalledRef.current, 'fileSize=', fileSizeRef.current);
+                debugAdaptiveStreaming('[AdaptiveStreaming] ⏰ Fallback timer fired! onReadyCalled=', onReadyCalledRef.current, 'fileSize=', fileSizeRef.current);
                 if (onReadyCalledRef.current) return;
 
                 // Stage 1: Retry with larger range (512KB) before giving up on the header
                 const retryCtrl = new AbortController();
                 discoveryAbortRef.current = retryCtrl;
                 await discoverMoovRetry(mp4boxfile, retryCtrl.signal);
-                console.log('[AdaptiveStreaming] ⏰ Retry complete, onReadyCalled=', onReadyCalledRef.current);
+                debugAdaptiveStreaming('[AdaptiveStreaming] ⏰ Retry complete, onReadyCalled=', onReadyCalledRef.current);
                 if (onReadyCalledRef.current) return;
 
                 // Stage 2: Try tail for moov-at-end files
                 const tailCtrl = new AbortController();
                 discoveryAbortRef.current = tailCtrl;
                 await discoverMoovTail(mp4boxfile, tailCtrl.signal);
-                console.log('[AdaptiveStreaming] ⏰ Tail discovery complete, onReadyCalled=', onReadyCalledRef.current);
+                debugAdaptiveStreaming('[AdaptiveStreaming] ⏰ Tail discovery complete, onReadyCalled=', onReadyCalledRef.current);
                 if (!onReadyCalledRef.current) {
                     // Still no moov — download from beginning as last resort
-                    console.log('[AdaptiveStreaming] ⏰ Still no moov, starting full download from byte 0');
+                    debugAdaptiveStreaming('[AdaptiveStreaming] ⏰ Still no moov, starting full download from byte 0');
                     startDownload(0);
                 }
             }, MOOV_FALLBACK_TIMEOUT_MS);

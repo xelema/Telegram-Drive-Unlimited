@@ -1,9 +1,9 @@
-import { useState } from 'react';
-import { HardDrive, Folder, Plus, RefreshCw, LogOut, ChevronLeft, ChevronRight, Settings2, Trash2, Check, X, Eye, EyeOff } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { HardDrive, Folder, Plus, RefreshCw, LogOut, ChevronLeft, ChevronRight, Settings2, Trash2, Check, X, Eye, EyeOff, Clock3, Star, Pin, FileWarning, CalendarClock, Copy, Database } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { SidebarItem } from './SidebarItem';
 import { BandwidthWidget } from './BandwidthWidget';
-import { TelegramFolder, BandwidthStats, FolderGroup } from '../../../types';
+import { TelegramFolder, BandwidthStats, FolderGroup, type SmartView } from '../../../types';
 import { useSettings } from '../../../context/SettingsContext';
 import {
     SortableContext,
@@ -13,6 +13,7 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { quietMetrics } from '../../../design/contracts';
+import { CreateFolderDialog } from './CreateFolderDialog';
 
 const PRESET_COLORS = [
     '#3B82F6', // Blue
@@ -110,15 +111,17 @@ interface SidebarProps {
     onCreateGroup: (name: string, colorHex: string) => Promise<void>;
     onUpdateGroup: (groupId: number, name: string, colorHex: string) => Promise<void>;
     onDeleteGroup: (groupId: number) => Promise<void>;
+    createFolderRequest?: number;
+    activeSmartView?: SmartView | null;
+    onSmartViewChange?: (view: SmartView | null) => void;
 }
 
 export function Sidebar({
     folders, groups = [], activeFolderId, setActiveFolderId, onDelete, onRename, onToggleVisibility, onExportInvite, onCreate,
     isSyncing, isConnected, onSync, onLogout, bandwidth,
-    onAssignFolderToGroup, onCreateGroup, onUpdateGroup, onDeleteGroup
+    onAssignFolderToGroup, onCreateGroup, onUpdateGroup, onDeleteGroup, createFolderRequest = 0, activeSmartView = null, onSmartViewChange
 }: SidebarProps) {
     const [showNewFolderInput, setShowNewFolderInput] = useState(false);
-    const [newFolderName, setNewFolderName] = useState("");
     const { t } = useTranslation();
     const { settings, updateSetting } = useSettings();
 
@@ -129,16 +132,9 @@ export function Sidebar({
     const [groupName, setGroupName] = useState("");
     const [groupColor, setGroupColor] = useState("#3B82F6");
 
-    const submitCreate = async () => {
-        if (!newFolderName.trim()) return;
-        try {
-            await onCreate(newFolderName);
-            setNewFolderName("");
-            setShowNewFolderInput(false);
-        } catch {
-            // handled by parent
-        }
-    };
+    useEffect(() => {
+        if (createFolderRequest > 0) setShowNewFolderInput(true);
+    }, [createFolderRequest]);
 
     const handleSaveGroup = async () => {
         if (!groupName.trim()) return;
@@ -346,11 +342,48 @@ export function Sidebar({
 
                 {/* Scrollable folder list */}
                 <nav className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 py-2">
+                    {([
+                        ['recents', Clock3, t('common.recents')],
+                        ['favorites', Star, t('common.favorites')],
+                        ['pinned', Pin, t('common.pinned')],
+                        ['offline', Database, t('common.offline_files')],
+                    ] as const).map(([view, Icon, label]) => (
+                        <button
+                            key={view}
+                            type="button"
+                            onClick={() => onSmartViewChange?.(view)}
+                            title={label}
+                            aria-current={activeSmartView === view ? 'page' : undefined}
+                            className={`quiet-control flex h-8 w-full items-center ${settings.sidebarCollapsed ? 'justify-center' : 'gap-2 px-2.5'} text-ui font-medium ${activeSmartView === view ? 'bg-app-selected text-app-accent' : 'text-app-text-secondary hover:text-app-text'}`}
+                        >
+                            <Icon className="h-4 w-4 shrink-0" />
+                            {!settings.sidebarCollapsed && <span>{label}</span>}
+                        </button>
+                    ))}
+                    {!settings.sidebarCollapsed && <p className="px-2.5 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-app-text-tertiary">{t('common.storage_insights')}</p>}
+                    {([
+                        ['large', FileWarning, t('common.large_files')],
+                        ['old', CalendarClock, t('common.old_files')],
+                        ['duplicates', Copy, t('common.duplicates')],
+                    ] as const).map(([view, Icon, label]) => (
+                        <button
+                            key={view}
+                            type="button"
+                            onClick={() => onSmartViewChange?.(view)}
+                            title={label}
+                            aria-current={activeSmartView === view ? 'page' : undefined}
+                            className={`quiet-control flex h-8 w-full items-center ${settings.sidebarCollapsed ? 'justify-center' : 'gap-2 px-2.5'} text-ui font-medium ${activeSmartView === view ? 'bg-app-selected text-app-accent' : 'text-app-text-secondary hover:text-app-text'}`}
+                        >
+                            <Icon className="h-4 w-4 shrink-0" />
+                            {!settings.sidebarCollapsed && <span>{label}</span>}
+                        </button>
+                    ))}
+                    {!settings.sidebarCollapsed && <div className="my-2 h-px bg-app-border-subtle" />}
                     <SidebarItem
                         icon={HardDrive}
                         label={t('common.saved_messages')}
-                        active={activeFolderId === null}
-                        onClick={() => setActiveFolderId(null)}
+                        active={activeFolderId === null && !activeSmartView}
+                        onClick={() => { onSmartViewChange?.(null); setActiveFolderId(null); }}
                         folderId={null}
                         collapsed={settings.sidebarCollapsed}
                     />
@@ -363,8 +396,8 @@ export function Sidebar({
                                 key={folder.id}
                                 icon={Folder}
                                 label={folder.name}
-                                active={activeFolderId === folder.id}
-                                onClick={() => setActiveFolderId(folder.id)}
+                                active={activeFolderId === folder.id && !activeSmartView}
+                                onClick={() => { onSmartViewChange?.(null); setActiveFolderId(folder.id); }}
                                 onDelete={() => onDelete(folder.id, folder.name)}
                                 onRename={() => onRename(folder.id, folder.name)}
                                 onToggleVisibility={() => onToggleVisibility(folder.id, folder.name, !!(folder.is_public || folder.username))}
@@ -381,29 +414,18 @@ export function Sidebar({
             {/* Sticky Create Folder section — always visible above the footer */}
             {!settings.sidebarCollapsed && (
                 <div className="border-t border-app-border-subtle px-2 py-2">
-                    {showNewFolderInput ? (
-                        <div className="px-1 py-1">
-                            <input
-                                autoFocus
-                                type="text"
-                                className="quiet-control h-8 w-full border border-app-border bg-app-surface-sunken/50 px-2 text-ui text-app-text outline-none"
-                                placeholder={t('common.folder_name_placeholder')}
-                                value={newFolderName}
-                                onChange={e => setNewFolderName(e.target.value)}
-                                onKeyDown={e => e.key === 'Enter' && submitCreate()}
-                                onBlur={() => !newFolderName && setShowNewFolderInput(false)}
-                            />
-                        </div>
-                    ) : (
-                        <button
-                            onClick={() => setShowNewFolderInput(true)}
-                            className="quiet-control flex h-8 w-full items-center gap-2 border border-dashed border-app-border px-2.5 text-ui font-medium text-app-text-secondary hover:border-app-border-strong hover:text-app-text"
-                        >
-                            <Plus className="w-4 h-4" />
-                            {t('common.create_folder')}
-                        </button>
-                    )}
+                    <button
+                        onClick={() => setShowNewFolderInput(true)}
+                        className="quiet-control flex h-9 w-full items-center gap-2 border border-dashed border-app-border px-3 text-ui font-medium text-app-text-secondary hover:border-app-border-strong hover:text-app-text"
+                    >
+                        <Plus className="w-4 h-4" />
+                        {t('common.create_folder')}
+                    </button>
                 </div>
+            )}
+
+            {showNewFolderInput && (
+                <CreateFolderDialog onClose={() => setShowNewFolderInput(false)} onCreate={onCreate} />
             )}
 
             <div className={`flex flex-col border-t border-app-border-subtle p-2 ${settings.sidebarCollapsed ? 'items-center gap-2' : 'gap-2'}`}>

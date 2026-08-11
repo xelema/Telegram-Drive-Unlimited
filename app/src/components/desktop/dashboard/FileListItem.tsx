@@ -7,19 +7,21 @@ import { useVideoMetadata } from '../../../hooks/useVideoMetadata';
 import { useCachedVariants } from '../../../hooks/useCachedVariants';
 import { VideoMetaBadge } from '../../shared/VideoMetaBadge';
 import { EncryptionBadge } from '../../shared/EncryptionBadge';
+import { describeFileActions } from './fileActionDescriptors';
 
 
 interface FileListItemProps {
     file: TelegramFile;
     selectedIds: number[];
-    onFileClick: (e: React.MouseEvent, id: number) => void;
+    onFileClick: (e: React.MouseEvent, file: TelegramFile) => void;
     handleContextMenu: (e: React.MouseEvent, file: TelegramFile) => void;
+    disableDrag?: boolean;
 }
 
 export function FileListItem({
-    file, selectedIds, onFileClick, handleContextMenu
+    file, selectedIds, onFileClick, handleContextMenu, disableDrag = false
 }: FileListItemProps) {
-    const isFolder = file.type === 'folder';
+    const { isFolder } = describeFileActions(file);
     const fileIds = selectedIds.includes(file.id) ? selectedIds : [file.id];
     const {
         attributes,
@@ -27,8 +29,8 @@ export function FileListItem({
         setNodeRef: setDraggableNodeRef,
         isDragging,
     } = useDraggable({
-        id: `telegram-file-${file.id}`,
-        disabled: isFolder,
+        id: `telegram-file-${file.folder_id ?? 'home'}-${file.id}`,
+        disabled: isFolder || disableDrag,
         data: { kind: 'telegram-files', fileIds, label: file.name },
     });
     const {
@@ -64,7 +66,7 @@ export function FileListItem({
     return (
         <div
             ref={setNodeRef}
-            onClick={(e) => onFileClick(e, file.id)}
+            onClick={(e) => onFileClick(e, file)}
             onContextMenu={(e) => handleContextMenu(e, file)}
             style={{ opacity: isDragging ? 0.45 : undefined }}
             {...(!isFolder ? attributes : {})}

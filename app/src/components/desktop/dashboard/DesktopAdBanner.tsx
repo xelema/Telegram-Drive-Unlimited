@@ -1,122 +1,47 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { open } from '@tauri-apps/plugin-shell';
-
-
-const AD_INTERVAL_MS = 1000 * 60 * 45; // 45 minutes
-const AUTO_DISMISS_SECONDS = 10; // auto-close after 10s
-const DISMISSED_AT_KEY = 'desktopAdDismissedAt';
+import { Heart, X } from 'lucide-react';
+import { useSettings } from '../../../context/SettingsContext';
 
 const AD_CLICK_URL = 'https://www.effectivecpmnetwork.com/nk8qy01t0g?key=a6c132f628973ad13b326e57e4a92f40';
-
-// "localhost" is treated as a trustworthy loopback origin by WebView2. Using
-// 127.0.0.1 here can be blocked as mixed content when the Windows frontend is
-// served from https://tauri.localhost.
 const AD_IFRAME_ORIGIN = 'http://localhost:14201';
 const AD_IFRAME_URL = `${AD_IFRAME_ORIGIN}/ad-banner`;
 const AD_STATUS_MESSAGE = 'telegram-drive:ad-banner-status';
-const AD_LOAD_TIMEOUT_MS = 6_500;
 
-type AdLoadStatus = 'loading' | 'loaded' | 'fallback';
-
-
-// Safe localStorage wrappers — prevent crashes in restricted webview environments
-function safeTryGet(key: string): string | null {
-  try { return localStorage.getItem(key); } catch { return null; }
-}
-function safeTryRemove(key: string): void {
-  try { localStorage.removeItem(key); } catch { /* unavailable */ }
-}
-function safeTrySet(key: string, value: string): void {
-  try { localStorage.setItem(key, value); } catch { /* unavailable */ }
+interface DesktopAdBannerProps {
+  suppressed?: boolean;
+  onSupport?: () => void;
 }
 
-/**
- * Periodic ad banner for the desktop dashboard (every 45 minutes).
- *
- * Renders a 300×250 ad inside a **sandboxed iframe** so the external ad
- * script cannot attach global event listeners or pollute the main document.
- * Without this sandbox, the ad network's scripts can install document-level
- * click handlers that open popups/popunders on random clicks anywhere in
- * the app — especially noticeable on Windows WebView2.
- *
- * Clicks on the ad are handled by our own onClick wrapper which opens the
- * ad network URL in the system browser via @tauri-apps/plugin-shell.
- * This avoids the complexity of sandbox navigation interception.
- *
- * Sandbox permissions:
- *   allow-scripts              → ad script can execute
- *   allow-same-origin          → iframe keeps its real origin
- *                              (localhost) instead of
- *                              opaque origin — needed for cookies,
- *                              localStorage, and XHR/fetch.
- *   allow-popups               → ad clicks can open popups
- *   allow-popups-to-escape-sandbox → popups open as full browser windows
- *
- * Dismissal:
- * The ad auto-closes after AUTO_DISMISS_SECONDS (10 s). The countdown
- * pauses while the user hovers over the panel. Manual dismissal is disabled
- * during the countdown to ensure the full ad impression is served.
- */
-export function DesktopAdBanner() {
+/** A quiet, static sponsor placement. It never interrupts a workflow. */
+export function DesktopAdBanner({ suppressed = false, onSupport }: DesktopAdBannerProps) {
+  const { settings } = useSettings();
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const [visible, setVisible] = useState(false);
-  const [exiting, setExiting] = useState(false);
-  const [countdown, setCountdown] = useState(AUTO_DISMISS_SECONDS);
-  const [isHovering, setIsHovering] = useState(false);
-  const [adLoadStatus, setAdLoadStatus] = useState<AdLoadStatus>('loading');
-  const mountedRef = useRef(true);
+  const [dismissed, setDismissed] = useState(false);
+  const [loaded, setLoaded] = useState(false);
 
-  // Clear dismissed state on mount so it shows on every reload
   useEffect(() => {
-    safeTryRemove(DISMISSED_AT_KEY);
-  }, []);
-
-  // ── Check dismissal interval ─────────────────────────────────────────
-  useEffect(() => {
-    mountedRef.current = true;
-
-    const check = () => {
-      if (!mountedRef.current) return;
-      const raw = safeTryGet(DISMISSED_AT_KEY);
-      if (!raw) {
-        setVisible(true);
-        return;
-      }
-      const dismissedAt = parseInt(raw, 10);
-      if (isNaN(dismissedAt) || Date.now() - dismissedAt >= AD_INTERVAL_MS) {
-        safeTryRemove(DISMISSED_AT_KEY);
-        setVisible(true);
+    if (suppressed || settings.supporterMode || dismissed) return;
+    setLoaded(false);
+    const timeout = window.setTimeout(() => setLoaded(false), 6500);
+    const receiveStatus = (event: MessageEvent<unknown>) => {
+      if (event.origin !== AD_IFRAME_ORIGIN || event.source !== iframeRef.current?.contentWindow) return;
+      if (!event.data || typeof event.data !== 'object') return;
+      const message = event.data as { type?: unknown; status?: unknown };
+      if (message.type !== AD_STATUS_MESSAGE) return;
+      if (message.status === 'loaded') {
+        window.clearTimeout(timeout);
+        setLoaded(true);
       }
     };
-
-    check();
-
-    let interval: ReturnType<typeof setInterval> | undefined;
-    if (!visible) {
-      interval = setInterval(check, 30_000);
-    }
+    window.addEventListener('message', receiveStatus);
     return () => {
-      mountedRef.current = false;
-      if (interval) clearInterval(interval);
+      window.clearTimeout(timeout);
+      window.removeEventListener('message', receiveStatus);
     };
-  }, [visible]);
-  // ── Internal dismiss ──
-  const handleDismissInternal = useCallback(() => {
-    // Clear the iframe src to stop scripts
-    if (iframeRef.current) {
-      iframeRef.current.src = 'about:blank';
-    }
-    safeTrySet(DISMISSED_AT_KEY, Date.now().toString());
-    setExiting(true);
-    setCountdown(0);
-    setTimeout(() => {
-      setVisible(false);
-      setExiting(false);
-    }, 300);
-  }, []);
+  }, [dismissed, settings.supporterMode, suppressed]);
 
-  // ── Handle ad click — open SmartLink in system browser ──────────────
-  const handleAdClick = useCallback(async () => {
+  const openSponsor = useCallback(async () => {
     try {
       await open(AD_CLICK_URL);
     } catch {
@@ -124,134 +49,44 @@ export function DesktopAdBanner() {
     }
   }, []);
 
-  // The local banner page reports whether the third-party script actually
-  // injected a creative. The iframe's own load event is not enough because it
-  // still fires when the external ad script is blocked by DNS or an ad blocker.
-  useEffect(() => {
-    if (!visible) return;
-
-    setAdLoadStatus('loading');
-    const loadTimeout = setTimeout(() => {
-      setAdLoadStatus(current => current === 'loading' ? 'fallback' : current);
-    }, AD_LOAD_TIMEOUT_MS);
-
-    const handleBannerStatus = (event: MessageEvent<unknown>) => {
-      if (event.origin !== AD_IFRAME_ORIGIN) return;
-      if (event.source !== iframeRef.current?.contentWindow) return;
-      if (!event.data || typeof event.data !== 'object') return;
-
-      const message = event.data as { type?: unknown; status?: unknown };
-      if (message.type !== AD_STATUS_MESSAGE) return;
-
-      if (message.status === 'loaded') {
-        clearTimeout(loadTimeout);
-        setAdLoadStatus('loaded');
-      } else if (message.status === 'failed') {
-        setAdLoadStatus('fallback');
-      }
-    };
-
-    window.addEventListener('message', handleBannerStatus);
-    return () => {
-      clearTimeout(loadTimeout);
-      window.removeEventListener('message', handleBannerStatus);
-    };
-  }, [visible]);
-
-  // ── Auto-dismiss after 10 seconds ─────────────────────────────────────
-  useEffect(() => {
-    if (!visible) {
-      setCountdown(AUTO_DISMISS_SECONDS);
-      return;
-    }
-    if (countdown <= 0) {
-      if (!exiting) handleDismissInternal();
-      return;
-    }
-    // Give the relayed service loader time to resolve before consuming the
-    // ten-second impression window. The fallback timeout guarantees this does
-    // not pause indefinitely on an unavailable network.
-    if (isHovering || adLoadStatus === 'loading') return;
-    const timer = setTimeout(() => setCountdown(c => c - 1), 1000);
-    return () => clearTimeout(timer);
-  }, [visible, countdown, exiting, isHovering, adLoadStatus, handleDismissInternal]);
-
-  if (!visible) return null;
+  if (suppressed || settings.supporterMode || dismissed) return null;
 
   return (
-    <>
-      {/* Ad panel */}
-      <div
-        role="complementary"
-        aria-label="Sponsored advertisement — closes automatically after 10 seconds"
-        onMouseEnter={() => setIsHovering(true)}
-        onMouseLeave={() => setIsHovering(false)}
-        className={`
-          fixed bottom-20 end-5 z-[100] flex w-[300px] flex-col overflow-hidden rounded-container border border-app-border bg-app-surface-raised shadow-[var(--shadow-floating)]
-          transition-all duration-200 ease-out
-          ${exiting ? 'translate-y-2 opacity-0' : 'opacity-100'}
-        `}
-      >
-        {/* Countdown display — shows seconds remaining until auto-close */}
-        <div
-          className="
-            absolute end-3 top-3 z-20
-            p-1 rounded-md text-[10px] font-medium
-            flex items-center justify-center min-w-[24px] h-[20px]
-            bg-app-surface-sunken/70 text-app-text-secondary border border-app-border
-          "
-          aria-label={`Advertisement closes in ${countdown} seconds`}
-        >
-          {countdown}s
-        </div>
-
-        {/* Header bar with dismiss countdown text */}
-        <div className="flex items-center border-b border-app-border-subtle px-3 py-2.5 pe-12 select-none">
-          <span className="sponsored-label border-0 px-0">
-            Sponsored · closes in <span className="ms-1 font-semibold tabular-nums text-app-accent">{countdown}</span>s
-          </span>
-        </div>
-
-        {/* Screen-reader countdown announcements */}
-        <div aria-live="polite" className="sr-only">
-          {countdown > 0
-            ? `Advertisement closes in ${countdown} ${countdown === 1 ? 'second' : 'seconds'}`
-            : 'Advertisement closed'}
-        </div>
-
-        {/* Clickable ad wrapper — opens SmartLink in system browser on click.
-            pointer-events-none prevents ad script popunders while letting clicks
-            pass through to this wrapper. Fallback button is decorative — clicks
-            anywhere on the ad area open the SmartLink. */}
-        <button
-          onClick={handleAdClick}
-          className="relative m-0 block h-[250px] w-[300px] cursor-pointer border-0 bg-transparent p-0"
-          aria-label="Click to open sponsored content in browser"
-        >
-          <div
-            className={`absolute inset-0 flex flex-col items-center justify-center gap-2 bg-app-surface-sunken/50 px-6 text-center transition-opacity duration-200 ${adLoadStatus === 'loaded' ? 'opacity-0' : 'opacity-100'}`}
-          >
-            <span className="sponsored-label">Sponsored</span>
-            <span className="text-ui font-medium text-app-text-secondary">
-              {adLoadStatus === 'loading' ? 'Loading advertisement…' : 'Sponsored content unavailable'}
-            </span>
-            {adLoadStatus === 'fallback' && (
-              <span className="text-metadata text-app-accent">Open sponsor</span>
-            )}
-          </div>
-          <iframe
-            ref={iframeRef}
-            src={AD_IFRAME_URL}
-            sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
-            title="Advertisement"
-            width={300}
-            height={250}
-            style={{ border: 'none', overflow: 'hidden', pointerEvents: 'none' }}
-            onError={() => setAdLoadStatus('fallback')}
-            className={`relative bg-transparent transition-opacity duration-200 ${adLoadStatus === 'loaded' ? 'opacity-100' : 'opacity-0'}`}
-          />
+    <aside
+      role="complementary"
+      aria-label="Sponsored content"
+      className="fixed bottom-4 end-4 z-40 w-[300px] overflow-hidden rounded-container border border-app-border bg-app-surface-raised shadow-[var(--shadow-floating)] motion-reduce:transition-none"
+    >
+      <header className="flex min-h-10 items-center gap-2 border-b border-app-border-subtle px-3 py-2">
+        <span className="sponsored-label border-0 px-0">Sponsored</span>
+        <span className="min-w-0 flex-1 truncate text-metadata text-app-text-secondary">Supports Telegram Drive development</span>
+        {onSupport && (
+          <button type="button" onClick={onSupport} className="quiet-control p-1.5 text-app-accent" aria-label="Support development and hide ads">
+            <Heart className="h-3.5 w-3.5" />
+          </button>
+        )}
+        <button type="button" onClick={() => setDismissed(true)} className="quiet-control p-1.5 text-app-text-secondary" aria-label="Dismiss sponsor banner for this session">
+          <X className="h-3.5 w-3.5" />
         </button>
-      </div>
-    </>
+      </header>
+      <button type="button" onClick={openSponsor} className="relative block h-[250px] w-[300px] bg-app-surface-sunken/40" aria-label="Open sponsored content in browser">
+        {!loaded && (
+          <span className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-5 text-center">
+            <span className="sponsored-label">Sponsored</span>
+            <span className="text-ui text-app-text-secondary">Open sponsor</span>
+          </span>
+        )}
+        <iframe
+          ref={iframeRef}
+          src={AD_IFRAME_URL}
+          sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+          title="Sponsored advertisement"
+          width={300}
+          height={250}
+          className={`pointer-events-none relative border-0 bg-transparent ${loaded ? 'opacity-100' : 'opacity-0'}`}
+          onError={() => setLoaded(false)}
+        />
+      </button>
+    </aside>
   );
 }

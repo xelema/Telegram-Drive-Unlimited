@@ -38,7 +38,9 @@ i18n
       vi: { translation: vi },
     },
     lng: 'en',
-    fallbackLng: 'en',
+    // Every shipped locale is structurally complete and CI rejects missing keys.
+    // Do not silently mask localization regressions with English at runtime.
+    fallbackLng: false,
     interpolation: {
       escapeValue: false, // React already safeguards from XSS
     },

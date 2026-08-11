@@ -1,18 +1,21 @@
 {
   "name": "app",
   "private": true,
-  "version": "2.2.7",
+  "version": "2.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "test": "vitest run",
     "preview": "vite preview",
     "tauri": "node scripts/tauri-cli.cjs",
     "i18n:validate": "node scripts/i18n/validate-locales.cjs",
     "i18n:scan": "node scripts/i18n/scan-ui-literals.cjs",
     "i18n:types": "node scripts/i18n/generate-key-types.cjs",
     "i18n:pseudo": "node scripts/i18n/generate-pseudo-locales.cjs",
-    "i18n:check": "npm run i18n:types && npm run i18n:validate && npm run i18n:scan"
+    "i18n:check": "npm run i18n:types && npm run i18n:validate && npm run i18n:scan",
+    "visual:test": "playwright test",
+    "visual:update": "playwright test --update-snapshots"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
@@ -42,15 +45,21 @@
     "sonner": "^2.0.7"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@tailwindcss/postcss": "^4.1.18",
     "@tauri-apps/cli": "^2",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.3",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
     "autoprefixer": "^10.4.23",
+    "axe-core": "^4.13.0",
+    "jsdom": "^29.1.1",
     "postcss": "^8.5.6",
     "tailwindcss": "^4.1.18",
     "typescript": "~5.8.3",
-    "vite": "^7.0.4"
+    "vite": "^7.0.4",
+    "vitest": "^4.1.10"
   }
 }

@@ -3,7 +3,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { load } from "@tauri-apps/plugin-store";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AuthWizard } from "./components/shared/AuthWizard";
-import { AdGateway } from "./components/shared/AdGateway";
 import { ErrorBoundary } from "./components/shared/ErrorBoundary";
 import { UpdateBanner } from "./components/shared/UpdateBanner";
 import { useUpdateCheck } from "./hooks/useUpdateCheck";
@@ -18,29 +17,56 @@ const MobileDashboard = React.lazy(() => import("./components/mobile/MobileDashb
 const DesignGallery = import.meta.env.DEV
   ? React.lazy(() => import("./components/dev/DesignGallery"))
   : null;
+const AccessibilityAudit = import.meta.env.DEV
+  ? React.lazy(() => import("./components/dev/AccessibilityAudit"))
+  : null;
 
 import { Toaster, toast } from "sonner";
 import { ConfirmProvider } from "./context/ConfirmContext";
 import { ThemeProvider, useTheme } from "./context/ThemeContext";
 import { SettingsProvider } from "./context/SettingsContext";
+import { UploadChoiceProvider } from "./context/UploadChoiceContext";
+import { CrashReportingConsent } from "./components/shared/CrashReportingConsent";
+import { configureCrashTelemetry } from "./services/crashTelemetry";
+import { TelegramCooldownBanner } from "./components/shared/TelegramCooldownBanner";
+import { WhatsNewDialog } from "./components/shared/WhatsNewDialog";
 import { EncryptionProvider } from "./hooks/useEncryption.tsx";
 import { useSettings } from "./context/SettingsContext";
 import { useTranslation } from "react-i18next";
 
 import { getLanguageInfo } from "./i18n/languages";
 import { resolveLanguagePreference } from "./i18n/resolveLanguage";
+import { version as appVersion } from "../package.json";
+import { consumeWhatsNew, type WhatsNewDetails } from "./services/updateReliability";
 
 const queryClient = new QueryClient();
 
-type AuthStatus = "loading" | "authenticated" | "unauthenticated" | "ad-gateway";
+type AuthStatus = "loading" | "authenticated" | "unauthenticated";
+
+interface StartupProgress {
+  label: string;
+  detail: string;
+  percent: number;
+}
 
 function AppContent() {
   const [authStatus, setAuthStatus] = useState<AuthStatus>("loading");
+  const [startupProgress, setStartupProgress] = useState<StartupProgress>({
+    label: "Starting Telegram Drive",
+    detail: "Preparing local services…",
+    percent: 8,
+  });
+  const [whatsNew, setWhatsNew] = useState<WhatsNewDetails | null>(() => consumeWhatsNew(appVersion));
   const { theme } = useTheme();
-  const { available, version, downloading, progress, downloadAndInstall, dismissUpdate } = useUpdateCheck();
+  const { available, version, downloading, progress, phase, downloadAndInstall, dismissUpdate } = useUpdateCheck();
   const { isMobile } = usePlatform();
   const { settings, updateSetting, isLoaded } = useSettings();
   const { i18n } = useTranslation();
+
+  useEffect(() => {
+    if (!isLoaded) return;
+    configureCrashTelemetry(settings.crashReportingEnabled);
+  }, [isLoaded, settings.crashReportingEnabled]);
 
   // Handle active language and RTL direction changes
   useEffect(() => {
@@ -83,33 +109,35 @@ function AppContent() {
   useEffect(() => {
     const checkSession = async () => {
       try {
+        setStartupProgress({ label: "Checking local services", detail: "Verifying the database and streaming runtime…", percent: 18 });
+        await invoke("cmd_get_startup_health");
+        setStartupProgress({ label: "Restoring your session", detail: "Reading the saved Telegram account…", percent: 38 });
         const store = await load("config.json");
         const savedId = await store.get<string>("api_id");
 
         if (!savedId) {
+          setStartupProgress({ label: "Ready to sign in", detail: "No saved session was found.", percent: 100 });
           setAuthStatus("unauthenticated");
           return;
         }
 
         const apiId = parseInt(savedId, 10);
         if (isNaN(apiId)) {
+          setStartupProgress({ label: "Ready to sign in", detail: "The saved session needs attention.", percent: 100 });
           setAuthStatus("unauthenticated");
           return;
         }
 
         // Initialize the client with the saved API ID
+        setStartupProgress({ label: "Starting Telegram", detail: "Initializing the secure desktop client…", percent: 58 });
         await invoke("cmd_connect", { apiId });
 
         // Verify the session is still valid with Telegram servers
+        setStartupProgress({ label: "Checking your account", detail: "Confirming the session with Telegram…", percent: 82 });
         const ok = await invoke<boolean>("cmd_check_connection");
         if (ok) {
-          // Check if user already passed the ad gateway — skip it if so
-          const gatewayPassed = await store.get<boolean>("ad_gateway_passed");
-          if (gatewayPassed) {
-            setAuthStatus("authenticated");
-          } else {
-            setAuthStatus("ad-gateway");
-          }
+          setStartupProgress({ label: "Opening your drive", detail: "Everything is ready.", percent: 100 });
+          setAuthStatus("authenticated");
         } else {
           setAuthStatus("unauthenticated");
         }
@@ -159,13 +187,19 @@ function AppContent() {
     return () => clearTimeout(timer);
   }, [authStatus]);
 
-  // Styled splash screen while verifying the session
+  // Warm-up screen driven by actual Rust health and Telegram session steps.
   if (authStatus === "loading") {
     return (
       <main className="h-screen w-screen flex items-center justify-center bg-telegram-bg">
-        <div className="flex flex-col items-center gap-4">
+        <div className="flex w-full max-w-sm flex-col items-center gap-5 px-8" role="status" aria-live="polite">
           <img src="/logo.svg" className="w-16 h-16 drop-shadow-lg animate-pulse" alt="Telegram Drive" />
-          <p className="text-sm text-telegram-subtext tracking-wide">Restoring session...</p>
+          <div className="w-full text-center">
+            <p className="text-sm font-semibold text-telegram-text">{startupProgress.label}</p>
+            <p className="mt-1 text-xs text-telegram-subtext">{startupProgress.detail}</p>
+          </div>
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10" aria-label={`${startupProgress.percent}% complete`}>
+            <div className="h-full rounded-full bg-telegram-primary transition-[width] duration-300" style={{ width: `${startupProgress.percent}%` }} />
+          </div>
         </div>
       </main>
     );
@@ -178,13 +212,14 @@ function AppContent() {
         version={version}
         downloading={downloading}
         progress={progress}
+        phase={phase}
         onUpdate={downloadAndInstall}
         onDismiss={dismissUpdate}
       />
       <Toaster theme={theme} position="bottom-center" />
-      {authStatus === "ad-gateway" && (
-        <AdGateway onContinue={() => setAuthStatus("authenticated")} />
-      )}
+      <TelegramCooldownBanner />
+      {whatsNew && <WhatsNewDialog details={whatsNew} onClose={() => setWhatsNew(null)} />}
+      {isLoaded && <CrashReportingConsent />}
       {authStatus === "authenticated" && (
         <Suspense fallback={
           <div className="h-screen w-screen flex flex-col items-center justify-center bg-telegram-bg">
@@ -203,7 +238,7 @@ function AppContent() {
         </Suspense>
       )}
       {authStatus === "unauthenticated" && (
-        <AuthWizard onLogin={() => setAuthStatus("ad-gateway")} />
+        <AuthWizard onLogin={() => setAuthStatus("authenticated")} />
       )}
     </main>
   );
@@ -221,7 +256,11 @@ function App() {
         <QueryClientProvider client={queryClient}>
           <ConfirmProvider>
             <SettingsProvider>
+              <UploadChoiceProvider>
               <EncryptionProvider>
+              {AccessibilityAudit && (
+                <Suspense fallback={null}><AccessibilityAudit /></Suspense>
+              )}
               {showDesignGallery && DesignGallery ? (
                 <Suspense fallback={<div className="h-screen bg-app-canvas" />}>
                   <DesignGallery />
@@ -230,6 +269,7 @@ function App() {
                 <AppContent />
               )}
               </EncryptionProvider>
+              </UploadChoiceProvider>
             </SettingsProvider>
           </ConfirmProvider>
         </QueryClientProvider>

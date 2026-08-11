@@ -1,20 +1,36 @@
 use std::sync::Arc;
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 use tokio::sync::Mutex;
-use grammers_client::{Client};
-use grammers_client::types::{LoginToken, PasswordToken, Peer};
+use grammers_client::Client;
+use grammers_client::types::{PasswordToken, Peer};
+use grammers_session::storages::SqliteSession;
+
+use crate::models::AuthCodeRequestResult;
+
+#[derive(Clone)]
+pub struct PhoneLoginState {
+    pub attempt_id: u64,
+    pub phone: String,
+    pub phone_code_hash: String,
+    pub delivery: AuthCodeRequestResult,
+    pub resend_available_at: Instant,
+    pub request_in_flight: bool,
+}
 
 /// Tracks the lifecycle of the Telegram connection
-/// 
+///
 /// IMPORTANT: The `runner_shutdown` field is critical for preventing stack overflow.
 /// When reconnecting, we MUST shutdown the old runner before spawning a new one.
 /// Without this, runner tasks accumulate and exhaust the thread stack.
 #[derive(Clone)]
 pub struct TelegramState {
     pub client: Arc<Mutex<Option<Client>>>,
-    pub login_token: Arc<Mutex<Option<LoginToken>>>,
+    pub session: Arc<Mutex<Option<Arc<SqliteSession>>>>,
+    pub phone_login: Arc<Mutex<Option<PhoneLoginState>>>,
     pub password_token: Arc<Mutex<Option<PasswordToken>>>,
     pub api_id: Arc<Mutex<Option<i32>>>,
+    pub auth_attempt_counter: Arc<std::sync::atomic::AtomicU64>,
     /// Send to this channel to request runner shutdown.
     /// Uses std::sync::Mutex (not tokio) so it can be locked from synchronous
     /// contexts like the RunEvent::Exit handler.
@@ -43,6 +59,10 @@ pub mod sharing;
 pub mod video_metadata;
 pub mod archive;
 pub mod folder_groups;
+pub mod file_activity;
+pub mod startup;
+pub mod storage_insights;
+pub mod crash_reporting;
 
 pub use auth::*;
 pub use fs::*;
@@ -56,3 +76,7 @@ pub use sharing::*;
 pub use video_metadata::*;
 pub use archive::*;
 pub use folder_groups::*;
+pub use file_activity::*;
+pub use startup::*;
+pub use storage_insights::*;
+pub use crash_reporting::*;

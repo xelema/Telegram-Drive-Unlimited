@@ -1,8 +1,8 @@
 use crate::bandwidth::BandwidthManager;
 use crate::commands::utils::{media_size, resolve_peer};
+use crate::db::DbConnection;
 use crate::vpn_optimizer::NetworkConfig;
 use crate::TelegramState;
-use crate::db::DbConnection;
 use grammers_client::types::{Media, Peer};
 use image::codecs::jpeg::JpegEncoder;
 use rand::Rng;
@@ -40,8 +40,12 @@ fn is_registered_encrypted(
     let mut statement = connection
         .prepare("SELECT 1 FROM encrypted_files WHERE folder_key = ? AND message_id = ? AND record_state = 'active'")
         .map_err(|error| error.to_string())?;
-    statement.bind((1, folder_key.as_str())).map_err(|error| error.to_string())?;
-    statement.bind((2, i64::from(message_id))).map_err(|error| error.to_string())?;
+    statement
+        .bind((1, folder_key.as_str()))
+        .map_err(|error| error.to_string())?;
+    statement
+        .bind((2, i64::from(message_id)))
+        .map_err(|error| error.to_string())?;
     Ok(matches!(statement.next(), Ok(sqlite::State::Row)))
 }
 
@@ -206,36 +210,201 @@ async fn prune_preview_cache(
             Ok(entries) => entries,
             Err(_) => return,
         };
-        let mut files: Vec<(std::path::PathBuf, std::time::SystemTime, u64)> = Vec::new();
+        let mut files: Vec<(std::path::PathBuf, std::time::SystemTime, u64, bool)> = Vec::new();
         for entry in read_dir.flatten() {
             let path = entry.path();
             if !path.is_file() {
                 continue;
             }
-            if preserve_path
+            let preserved = preserve_path
                 .as_ref()
-                .is_some_and(|preserve| preserve == &path)
-            {
-                continue;
-            }
+                .is_some_and(|preserve| preserve == &path);
             if let Ok(meta) = entry.metadata() {
                 let modified = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                files.push((path, modified, meta.len()));
+                files.push((path, modified, meta.len(), preserved));
             }
         }
-        files.sort_by_key(|(_, modified, _)| *modified);
-        let mut total_bytes: u64 = files.iter().map(|(_, _, len)| *len).sum();
+        files.sort_by_key(|(_, modified, _, _)| *modified);
+        let mut total_bytes: u64 = files.iter().map(|(_, _, len, _)| *len).sum();
         while files.len() > PREVIEW_CACHE_MAX_FILES || total_bytes > PREVIEW_CACHE_MAX_TOTAL_BYTES {
-            if let Some((path, _, len)) = files.first().cloned() {
+            if let Some(index) = files.iter().position(|(_, _, _, preserved)| !preserved) {
+                let (path, _, len, _) = files.remove(index);
                 let _ = std::fs::remove_file(&path);
                 total_bytes = total_bytes.saturating_sub(len);
-                files.remove(0);
             } else {
                 break;
             }
         }
     })
     .await;
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OfflineFile {
+    pub id: i64,
+    pub folder_id: Option<i64>,
+    pub name: String,
+    pub size: u64,
+    pub mime_type: Option<String>,
+    pub file_ext: Option<String>,
+    pub created_at: String,
+    pub icon_type: String,
+    pub encryption_state: String,
+    pub is_favorite: bool,
+    pub is_pinned: bool,
+    pub last_opened_at: i64,
+    pub offline_available: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OfflineCacheStatus {
+    pub file_count: usize,
+    pub total_bytes: u64,
+    pub max_files: usize,
+    pub max_bytes: u64,
+}
+
+async fn preview_cache_status(cache_dir: &Path) -> OfflineCacheStatus {
+    let mut status = OfflineCacheStatus {
+        file_count: 0,
+        total_bytes: 0,
+        max_files: PREVIEW_CACHE_MAX_FILES,
+        max_bytes: PREVIEW_CACHE_MAX_TOTAL_BYTES,
+    };
+    let Ok(mut entries) = tokio::fs::read_dir(cache_dir).await else {
+        return status;
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) == Some("part") {
+            continue;
+        }
+        if let Ok(metadata) = entry.metadata().await {
+            if metadata.is_file() && metadata.len() > 0 {
+                status.file_count += 1;
+                status.total_bytes = status.total_bytes.saturating_add(metadata.len());
+            }
+        }
+    }
+    status
+}
+
+#[tauri::command]
+pub async fn cmd_get_offline_cache_status(
+    app_handle: tauri::AppHandle,
+) -> Result<OfflineCacheStatus, String> {
+    let cache_dir = app_handle
+        .path()
+        .app_cache_dir()
+        .map_err(|error: tauri::Error| error.to_string())?
+        .join("previews");
+    Ok(preview_cache_status(&cache_dir).await)
+}
+
+#[tauri::command]
+pub async fn cmd_get_offline_files(
+    app_handle: tauri::AppHandle,
+    db_pool: State<'_, DbConnection>,
+    limit: Option<i64>,
+) -> Result<Vec<OfflineFile>, String> {
+    let cache_dir = app_handle
+        .path()
+        .app_cache_dir()
+        .map_err(|error: tauri::Error| error.to_string())?
+        .join("previews");
+    let rows = {
+        let connection = db_pool.lock().map_err(|_| "DB poisoned".to_string())?;
+        let mut statement = connection
+            .prepare(
+                "SELECT message_id, folder_id, file_name, file_size, mime_type, file_ext,
+                        created_at, encryption_state, is_favorite, is_pinned, last_opened_at
+                 FROM file_activity
+                 WHERE open_count > 0 AND encryption_state = 'plain'
+                   AND NOT EXISTS (
+                       SELECT 1 FROM encrypted_files
+                       WHERE encrypted_files.folder_key = file_activity.folder_key
+                         AND encrypted_files.message_id = file_activity.message_id
+                         AND encrypted_files.record_state = 'active'
+                   )
+                 ORDER BY last_opened_at DESC LIMIT ?",
+            )
+            .map_err(|error| error.to_string())?;
+        statement
+            .bind((1, limit.unwrap_or(250).clamp(1, 1_000)))
+            .map_err(|error| error.to_string())?;
+        let mut rows = Vec::new();
+        while let sqlite::State::Row = statement.next().map_err(|error| error.to_string())? {
+            rows.push((
+                statement
+                    .read::<i64, _>(0)
+                    .map_err(|error| error.to_string())?,
+                statement.read::<Option<i64>, _>(1).ok().flatten(),
+                statement
+                    .read::<String, _>(2)
+                    .map_err(|error| error.to_string())?,
+                statement.read::<i64, _>(3).unwrap_or(0).max(0) as u64,
+                statement.read::<Option<String>, _>(4).ok().flatten(),
+                statement.read::<Option<String>, _>(5).ok().flatten(),
+                statement.read::<String, _>(6).unwrap_or_default(),
+                statement
+                    .read::<String, _>(7)
+                    .unwrap_or_else(|_| "plain".to_string()),
+                statement.read::<i64, _>(8).unwrap_or(0) != 0,
+                statement.read::<i64, _>(9).unwrap_or(0) != 0,
+                statement.read::<i64, _>(10).unwrap_or(0),
+            ));
+        }
+        rows
+    };
+
+    let mut files = Vec::new();
+    for (
+        id,
+        folder_id,
+        name,
+        recorded_size,
+        mime_type,
+        file_ext,
+        created_at,
+        encryption_state,
+        is_favorite,
+        is_pinned,
+        last_opened_at,
+    ) in rows
+    {
+        let Ok(message_id) = i32::try_from(id) else {
+            continue;
+        };
+        let stem = cache_stem(folder_id, message_id);
+        let Some(path) = find_cached_file(&cache_dir, &stem).await else {
+            continue;
+        };
+        let cached_size = tokio::fs::metadata(path)
+            .await
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        let size = if recorded_size > 0 {
+            recorded_size
+        } else {
+            cached_size
+        };
+        files.push(OfflineFile {
+            id,
+            folder_id,
+            name,
+            size,
+            mime_type,
+            file_ext,
+            created_at,
+            icon_type: "file".to_string(),
+            encryption_state,
+            is_favorite,
+            is_pinned,
+            last_opened_at,
+            offline_available: true,
+        });
+    }
+    Ok(files)
 }
 
 async fn prune_thumbnail_cache(cache_dir: PathBuf, preserve_path: Option<PathBuf>) {
@@ -939,6 +1108,36 @@ pub async fn cmd_delete_image_thumbnail(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn offline_cache_pruning_counts_preserved_file_and_removes_parts() {
+        let test_dir = std::env::temp_dir().join(format!(
+            "telegram_drive_offline_cache_test_{}",
+            rand::rng().random::<u64>()
+        ));
+        std::fs::create_dir_all(&test_dir).unwrap();
+        let preserved = test_dir.join("home_1.txt");
+        std::fs::write(&preserved, b"preserve").unwrap();
+        for index in 2..=31 {
+            std::fs::write(test_dir.join(format!("home_{index}.txt")), b"cached").unwrap();
+        }
+        std::fs::write(test_dir.join("home_32.txt.part"), b"partial").unwrap();
+
+        prune_preview_cache(test_dir.clone(), Some(preserved.clone())).await;
+        let status = preview_cache_status(&test_dir).await;
+
+        assert!(preserved.exists());
+        assert!(!test_dir.join("home_32.txt.part").exists());
+        assert_eq!(status.file_count, PREVIEW_CACHE_MAX_FILES);
+        assert!(status.total_bytes <= PREVIEW_CACHE_MAX_TOTAL_BYTES);
+        let _ = std::fs::remove_dir_all(test_dir);
+    }
+
+    #[test]
+    fn cache_keys_are_stable_across_saved_messages_and_folders() {
+        assert_eq!(cache_stem(None, 42), "home_42");
+        assert_eq!(cache_stem(Some(-100123), 42), "-100123_42");
+    }
 
     #[tokio::test]
     async fn generated_thumbnail_is_bounded_and_readable() {

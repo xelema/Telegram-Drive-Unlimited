@@ -20,7 +20,7 @@ interface DownloadQueueProps {
 export function DownloadQueue({ items, onClearFinished, onCancelAll, onCancelItem, onRetryItem }: DownloadQueueProps) {
     if (items.length === 0) return null;
 
-    const activeCount = items.filter(i => i.status === 'pending' || i.status === 'downloading').length;
+    const activeCount = items.filter(i => i.status === 'pending' || i.status === 'cooldown' || i.status === 'downloading').length;
     const completedCount = items.filter(i => i.status === 'success').length;
 
     return (
@@ -52,6 +52,7 @@ export function DownloadQueue({ items, onClearFinished, onCancelAll, onCancelIte
                         <div className="flex items-center gap-3 text-sm">
                             <div className="flex-shrink-0">
                                 {item.status === 'pending' && <div className="w-4 h-4 rounded-full bg-yellow-500/20 flex items-center justify-center"><div className="w-2 h-2 bg-yellow-500 rounded-full" /></div>}
+                                {item.status === 'cooldown' && <div className="w-4 h-4 rounded-full bg-amber-500/20 flex items-center justify-center"><div className="w-2 h-2 bg-amber-500 animate-pulse rounded-full" /></div>}
                                 {item.status === 'downloading' && <div className="w-4 h-4 rounded-full border-2 border-telegram-secondary border-t-transparent animate-spin" />}
                                 {item.status === 'success' && <div className="w-4 h-4 rounded-full bg-green-500/20 flex items-center justify-center"><Check className="w-3 h-3 text-green-500" /></div>}
                                 {item.status === 'error' && <div className="w-4 h-4 rounded-full bg-red-500/20 flex items-center justify-center"><X className="w-3 h-3 text-red-500" /></div>}
@@ -70,6 +71,7 @@ export function DownloadQueue({ items, onClearFinished, onCancelAll, onCancelIte
                                     <X className="w-3.5 h-3.5" />
                                 </button>
                             )}
+                            {item.status === 'cooldown' && <div className="text-xs text-amber-400 mt-0.5">Telegram cooling down — resumes automatically</div>}
                             {(item.status === 'error' || item.status === 'cancelled') && (
                                 <button onClick={() => onRetryItem(item.id)} className="text-gray-400 hover:text-blue-400 transition-colors flex-shrink-0" title="Retry">
                                     <RotateCcw className="w-3.5 h-3.5" />

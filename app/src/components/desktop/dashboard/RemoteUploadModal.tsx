@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { X, Globe, ChevronDown } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { TelegramFolder } from '../../../types';
 import { toast } from 'sonner';
+import { useModalFocus } from '../../../hooks/useModalFocus';
 
 interface RemoteUploadModalProps {
     isOpen: boolean;
@@ -15,6 +16,8 @@ export function RemoteUploadModal({ isOpen, onClose, folders, onUpload }: Remote
     const [url, setUrl] = useState('');
     const [folderId, setFolderId] = useState<number | null>(null);
     const { t } = useTranslation();
+    const panelRef = useRef<HTMLFormElement>(null);
+    useModalFocus(panelRef, onClose, isOpen);
 
     if (!isOpen) return null;
 
@@ -37,6 +40,10 @@ export function RemoteUploadModal({ isOpen, onClose, folders, onUpload }: Remote
     return (
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-app-overlay p-4 backdrop-blur-sm" onClick={onClose}>
             <form
+                ref={panelRef}
+                role="dialog"
+                aria-modal="true"
+                tabIndex={-1}
                 onSubmit={handleSubmit}
                 className="quiet-raised flex w-[min(440px,calc(100vw-2rem))] flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150"
                 onClick={e => e.stopPropagation()}

@@ -1,0 +1,38 @@
+name: Visual regression
+
+on:
+  pull_request:
+    paths:
+      - 'app/src/**'
+      - 'app/tests/visual/**'
+      - 'app/playwright.config.ts'
+      - 'app/package.json'
+      - 'app/package-lock.json'
+      - '.github/workflows/visual-regression.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  design-gallery:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run visual:test
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: visual-regression-report
+          path: app/test-results
+          if-no-files-found: ignore

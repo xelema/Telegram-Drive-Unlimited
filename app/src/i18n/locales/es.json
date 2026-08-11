@@ -61,7 +61,15 @@
     "delete_group": "Delete Group",
     "enter_group_name": "Enter group name...",
     "hide_groups_desc": "Toggle folder groups display in the sidebar",
-    "delete": "Eliminar"
+    "delete": "Eliminar",
+    "recents": "Recientes",
+    "favorites": "Favoritos",
+    "pinned": "Fijados",
+    "offline_files": "Archivos sin conexión",
+    "storage_insights": "Análisis de almacenamiento",
+    "large_files": "Archivos grandes",
+    "old_files": "Archivos antiguos",
+    "duplicates": "Duplicados"
   },
   "settings": {
     "concurrent_uploads": "Subidas concurrentes",
@@ -366,7 +374,14 @@
     "webdav_regenerate_title": "Regenerate WebDAV link?",
     "webdav_regenerate_desc": "The current connection link will stop working immediately. You will need to reconnect every WebDAV client with the new link.",
     "webdav_enable_changes_title": "Allow WebDAV file changes?",
-    "webdav_enable_changes_confirm": "Connected WebDAV clients will be able to upload, rename, move, and delete unencrypted files. Encrypted files remain protected."
+    "webdav_enable_changes_confirm": "Connected WebDAV clients will be able to upload, rename, move, and delete unencrypted files. Encrypted files remain protected.",
+    "offline_cache": "Archivos sin conexión",
+    "offline_cache_desc": "Los archivos sin cifrar abiertos recientemente se guardan en este dispositivo para usarlos sin conexión.",
+    "offline_cache_usage": "{{count}} archivos · {{used}} de {{limit}}",
+    "refresh_offline_cache": "Actualizar uso de archivos sin conexión",
+    "clear_offline_cache_title": "¿Borrar los archivos sin conexión?",
+    "clear_offline_cache_desc": "Los archivos guardados para usarlos sin conexión se eliminarán de este dispositivo. Las copias de Telegram no se modificarán.",
+    "offline_cache_cleared": "Archivos sin conexión borrados"
   },
   "files": {
     "download": "Descargar",
@@ -498,7 +513,26 @@
     "donate": "Donar",
     "getting_started": "Primeros pasos",
     "close_help": "Cerrar ayuda",
-    "privacy_note": "Sus credenciales se almacenan localmente en su dispositivo y nunca se envían a servidores de terceros."
+    "privacy_note": "Sus credenciales se almacenan localmente en su dispositivo y nunca se envían a servidores de terceros.",
+    "code_sent_telegram_app": "Telegram envió el código de inicio de sesión al chat verificado de Telegram en uno de tus dispositivos conectados.",
+    "code_sent_sms": "Telegram envió el código de inicio de sesión por SMS.",
+    "code_sent_call": "Telegram te llamará y leerá el código de inicio de sesión en voz alta.",
+    "code_sent_flash_call": "Telegram realizará una llamada breve. Introduce el número que llama y que coincide con {{hint}}.",
+    "code_sent_missed_call": "Telegram realizará una llamada perdida. Introduce los últimos dígitos del número que comienza por {{hint}}.",
+    "code_sent_email": "Telegram envió el código de inicio de sesión a {{hint}}.",
+    "code_sent_fragment": "Telegram entregó este código mediante Fragment. Abre Fragment para obtenerlo.",
+    "code_sent_sms_word": "Telegram envió un SMS con una palabra que comienza por {{hint}}. Introduce la palabra completa.",
+    "code_sent_sms_phrase": "Telegram envió un SMS con una frase que comienza por {{hint}}. Introduce la frase completa.",
+    "code_delivery_unsupported": "Telegram seleccionó un método de entrega que las aplicaciones de escritorio de terceros no pueden completar. Usa el inicio de sesión por QR.",
+    "open_fragment": "Abrir Fragment",
+    "fragment_url_invalid": "Telegram devolvió un enlace de inicio de sesión de Fragment no válido.",
+    "code_word_placeholder": "Introduce la palabra o frase",
+    "verifying": "Verificando...",
+    "sign_in": "Iniciar sesión",
+    "resending": "Reenviando...",
+    "resend_in": "Reenviar código en {{seconds}} s",
+    "resend_code": "Reenviar código",
+    "use_qr_instead": "Usar código QR"
   },
   "ads": {
     "sponsored": "Patrocinado",

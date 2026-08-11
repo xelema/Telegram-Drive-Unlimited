@@ -60,6 +60,7 @@ pub mod api_routes;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod webdav;
 pub mod db;
+mod db_migrations;
 pub mod share_routes;
 pub mod upload_service;
 pub mod jni_cache;
@@ -677,9 +678,11 @@ pub fn run() {
 
             app.manage(TelegramState {
                 client: Arc::new(Mutex::new(None)),
-                login_token: Arc::new(Mutex::new(None)),
+                session: Arc::new(Mutex::new(None)),
+                phone_login: Arc::new(Mutex::new(None)),
                 password_token: Arc::new(Mutex::new(None)),
                 api_id: Arc::new(Mutex::new(None)),
+                auth_attempt_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 runner_shutdown: Arc::new(std::sync::Mutex::new(None)),
                 runner_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
                 peer_cache: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
@@ -840,6 +843,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::cmd_auth_request_code,
+            commands::cmd_auth_resend_code,
+            commands::cmd_auth_cancel_code,
             commands::cmd_auth_sign_in,
             commands::cmd_auth_check_password,
             commands::cmd_get_files,
@@ -863,9 +868,17 @@ pub fn run() {
             commands::cmd_delete_preview_for_message,
             commands::cmd_get_preview,
             commands::cmd_clean_preview_cache,
+            commands::cmd_get_offline_cache_status,
+            commands::cmd_get_offline_files,
             commands::cmd_logout,
             commands::cmd_scan_folders,
             commands::cmd_search_global,
+            commands::cmd_record_file_opened,
+            commands::cmd_set_file_activity_flag,
+            commands::cmd_get_file_activity,
+            commands::cmd_get_startup_health,
+            commands::cmd_get_storage_insight,
+            commands::cmd_submit_crash_report,
             commands::cmd_check_connection,
             commands::cmd_is_network_available,
             commands::cmd_test_proxy_traffic,

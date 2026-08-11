@@ -61,7 +61,15 @@
     "delete_group": "Delete Group",
     "enter_group_name": "Enter group name...",
     "hide_groups_desc": "Toggle folder groups display in the sidebar",
-    "delete": "حذف"
+    "delete": "حذف",
+    "recents": "الأخيرة",
+    "favorites": "المفضلة",
+    "pinned": "المثبتة",
+    "offline_files": "ملفات بلا اتصال",
+    "storage_insights": "تحليل التخزين",
+    "large_files": "الملفات الكبيرة",
+    "old_files": "الملفات القديمة",
+    "duplicates": "الملفات المكررة"
   },
   "settings": {
     "concurrent_uploads": "الرفع المتزامن",
@@ -266,6 +274,7 @@
     "encryption_safety_pause_body": "تظل عمليات النقل العادية متاحة. تم تعطيل الرفع المشفر وفك التشفير حتى يصبح تنسيق الملفات المصحح والخزنة الدائمة جاهزين.",
     "encryption_disabled": "التشفير متوقف. تظل عمليات النقل العادية متاحة.",
     "encryption_experimental_inventory_one": "يوجد ملف تجريبي مشفر واحد مفهرس محليًا، وقد تم الاحتفاظ بنصه المشفر.",
+    "encryption_experimental_inventory_two": "يوجد ملفان تجريبيان مشفران مفهرسان محليًا، وقد تم الاحتفاظ بنصيهما المشفرين.",
     "encryption_experimental_inventory_other": "يوجد {{count}} من الملفات التجريبية المشفرة مفهرسة محليًا، وقد تم الاحتفاظ بنصوصها المشفرة.",
     "encryption_disclaimer_title": "حافظ على أمان بيانات اعتماد التشفير",
     "encryption_disclaimer_body": "لا يستطيع Telegram Drive استعادة أو إعادة تعيين عبارات المرور أو مفاتيح التشفير أو مواد الاسترداد المنسية. إذا فقدت كل بيانات الاعتماد القادرة على فتح ملف، فقد يتعذر الوصول إليه نهائيًا. خزّن مواد الاسترداد بأمان، واحتفظ بنسخة احتياطية تم التحقق منها، ولا تشارك بيانات الاعتماد مع أي شخص لا تثق به.",
@@ -366,7 +375,14 @@
     "webdav_regenerate_title": "Regenerate WebDAV link?",
     "webdav_regenerate_desc": "The current connection link will stop working immediately. You will need to reconnect every WebDAV client with the new link.",
     "webdav_enable_changes_title": "Allow WebDAV file changes?",
-    "webdav_enable_changes_confirm": "Connected WebDAV clients will be able to upload, rename, move, and delete unencrypted files. Encrypted files remain protected."
+    "webdav_enable_changes_confirm": "Connected WebDAV clients will be able to upload, rename, move, and delete unencrypted files. Encrypted files remain protected.",
+    "offline_cache": "ملفات بلا اتصال",
+    "offline_cache_desc": "تُحفظ الملفات غير المشفرة التي فُتحت مؤخرًا على هذا الجهاز للوصول إليها بلا اتصال.",
+    "offline_cache_usage": "{{count}} ملف · {{used}} من {{limit}}",
+    "refresh_offline_cache": "تحديث استخدام الملفات بلا اتصال",
+    "clear_offline_cache_title": "مسح الملفات بلا اتصال؟",
+    "clear_offline_cache_desc": "ستُزال الملفات المحفوظة للوصول بلا اتصال من هذا الجهاز. لن تتأثر النسخ الموجودة في Telegram.",
+    "offline_cache_cleared": "تم مسح الملفات بلا اتصال"
   },
   "files": {
     "download": "تنزيل",
@@ -530,7 +546,26 @@
     "donate": "Donate",
     "getting_started": "Getting Started",
     "close_help": "Close help",
-    "privacy_note": "Your credentials are stored locally on your device and are never sent to any third-party servers. All data goes directly between you and Telegram."
+    "privacy_note": "Your credentials are stored locally on your device and are never sent to any third-party servers. All data goes directly between you and Telegram.",
+    "code_sent_telegram_app": "أرسل تيليجرام رمز تسجيل الدخول إلى محادثة تيليجرام الموثقة على أحد أجهزتك المسجّل دخولها.",
+    "code_sent_sms": "أرسل تيليجرام رمز تسجيل الدخول عبر رسالة نصية.",
+    "code_sent_call": "سيتصل بك تيليجرام ويقرأ رمز تسجيل الدخول بصوت مسموع.",
+    "code_sent_flash_call": "سيجري تيليجرام مكالمة قصيرة. أدخل رقم المتصل المطابق لـ {{hint}}.",
+    "code_sent_missed_call": "سيجري تيليجرام مكالمة فائتة. أدخل الأرقام الأخيرة من الرقم الذي يبدأ بـ {{hint}}.",
+    "code_sent_email": "أرسل تيليجرام رمز تسجيل الدخول إلى {{hint}}.",
+    "code_sent_fragment": "سلّم تيليجرام هذا الرمز عبر Fragment. افتح Fragment لاستلامه.",
+    "code_sent_sms_word": "أرسل تيليجرام رسالة نصية تحتوي على كلمة تبدأ بـ {{hint}}. أدخل الكلمة كاملة.",
+    "code_sent_sms_phrase": "أرسل تيليجرام رسالة نصية تحتوي على عبارة تبدأ بـ {{hint}}. أدخل العبارة كاملة.",
+    "code_delivery_unsupported": "اختار تيليجرام طريقة تسليم لا تستطيع تطبيقات سطح المكتب التابعة لجهات خارجية إكمالها. استخدم تسجيل الدخول برمز QR.",
+    "open_fragment": "فتح Fragment",
+    "fragment_url_invalid": "أعاد تيليجرام رابط تسجيل دخول غير صالح لـ Fragment.",
+    "code_word_placeholder": "أدخل الكلمة أو العبارة",
+    "verifying": "جارٍ التحقق...",
+    "sign_in": "تسجيل الدخول",
+    "resending": "جارٍ إعادة الإرسال...",
+    "resend_in": "إعادة إرسال الرمز خلال {{seconds}} ث",
+    "resend_code": "إعادة إرسال الرمز",
+    "use_qr_instead": "استخدام رمز QR بدلاً من ذلك"
   },
   "ads": {
     "sponsored": "Sponsored",
