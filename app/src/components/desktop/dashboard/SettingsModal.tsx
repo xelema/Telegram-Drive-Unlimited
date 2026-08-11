@@ -1190,9 +1190,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                                 {activeTab === 'privacy' && (
                                     <PrivacySettingsTab
                                         crashReportingEnabled={settings.crashReportingEnabled}
-                                        supporterMode={settings.supporterMode}
                                         onCrashReportingChange={() => updateSettings({ crashReportingEnabled: !settings.crashReportingEnabled, crashReportingConsentSeen: true })}
-                                        onSupporterModeChange={() => updateSetting('supporterMode', !settings.supporterMode)}
                                     />
                                 )}
 

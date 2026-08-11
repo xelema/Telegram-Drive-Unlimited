@@ -1,10 +1,12 @@
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { motion } from 'framer-motion';
-import { Bug, Cloud, Database, Globe, HardDrive, Heart, Megaphone, Shield, Zap, Clipboard, Loader2 } from 'lucide-react';
+import { AlertTriangle, Bug, Cloud, Database, Globe, HardDrive, Heart, Megaphone, Shield, Zap, Clipboard, Loader2 } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-shell';
+import { toast } from 'sonner';
 import type { TFunction } from 'i18next';
 import { EncryptionSettingsSection } from '../../../shared/EncryptionSettingsSection';
 import { ThemesTab } from '../ThemesTab';
+import { useSupporter } from '../../../../context/SupporterContext';
 
 const tabMotion = {
   initial: { opacity: 0 },
@@ -39,12 +41,124 @@ export function SharingSettingsTab({ children }: SettingsTabFrameProps) {
 
 interface PrivacySettingsTabProps {
   crashReportingEnabled: boolean;
-  supporterMode: boolean;
   onCrashReportingChange: () => void;
-  onSupporterModeChange: () => void;
 }
 
-export function PrivacySettingsTab({ crashReportingEnabled, supporterMode, onCrashReportingChange, onSupporterModeChange }: PrivacySettingsTabProps) {
+function SupporterSettingsSection() {
+  const { status, beginCheckout, pollCheckout, activate, refreshEntitlement } = useSupporter();
+  const [acceptedTerms, setAcceptedTerms] = useState(false);
+  const [checkoutPending, setCheckoutPending] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [recoveryCode, setRecoveryCode] = useState('');
+  const [newRecoveryCode, setNewRecoveryCode] = useState('');
+  const termsUrl = status.terms_url ?? 'https://github.com/caamer20/Telegram-Drive/blob/main/SUPPORTER_TERMS.md';
+
+  const checkPayment = async (quiet = false) => {
+    try {
+      const result = await pollCheckout();
+      if (result.status === 'completed') {
+        setCheckoutPending(false);
+        if (result.recovery_code) setNewRecoveryCode(result.recovery_code);
+        toast.success('Payment verified. Ad-free supporter access is active.');
+      } else if (!quiet) {
+        toast.info(result.message);
+      }
+    } catch (error) {
+      if (!quiet) toast.error(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  useEffect(() => {
+    if (!checkoutPending) return;
+    const interval = window.setInterval(() => void checkPayment(true), 3_000);
+    return () => window.clearInterval(interval);
+  }, [checkoutPending]);
+
+  const startCheckout = async () => {
+    setBusy(true);
+    try {
+      const checkout = await beginCheckout(status.terms_version);
+      setCheckoutPending(true);
+      await open(checkout.approval_url);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const recoverPurchase = async () => {
+    if (!recoveryCode.trim()) return;
+    setBusy(true);
+    try {
+      await activate(recoveryCode.trim(), status.terms_version);
+      setRecoveryCode('');
+      toast.success('Supporter purchase restored on this device.');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="rounded-lg border border-app-accent/20 bg-app-accent/5 p-4" aria-labelledby="supporter-settings-title">
+      <div className="flex items-start gap-3">
+        <Heart className="mt-0.5 h-5 w-5 shrink-0 text-app-accent" aria-hidden="true" />
+        <div className="min-w-0 flex-1">
+          <h3 id="supporter-settings-title" className="text-sm font-semibold text-app-text">Supporter · verified one-time ad-free access</h3>
+          <p className="mt-1 text-xs leading-5 text-app-text-secondary">A $5 USD one-time PayPal payment removes sponsor placements on up to three desktop devices. Activation is verified; entering payment details alone does not unlock ads.</p>
+          <div className={`mt-3 rounded-lg border p-3 text-xs leading-5 ${status.ad_free ? 'border-app-success/25 bg-app-success/5 text-app-text-secondary' : status.state === 'revoked' ? 'border-app-danger/25 bg-app-danger/5 text-app-text-secondary' : 'border-app-border-subtle bg-app-surface-sunken/25 text-app-text-secondary'}`}>
+            <strong className={status.ad_free ? 'text-app-success' : status.state === 'revoked' ? 'text-app-danger' : 'text-app-text'}>{status.state === 'loading' ? 'Checking activation' : status.ad_free ? 'Ad-free access active' : status.state === 'revoked' ? 'Activation revoked' : 'Ad-free access not active'}</strong>
+            <span className="mt-1 block">{status.message}</span>
+            {status.ad_free && <span className="mt-1 block">Normal Telegram Drive updates reuse this device credential and do not require reactivation.</span>}
+          </div>
+        </div>
+      </div>
+
+      {newRecoveryCode && (
+        <div className="mt-4 rounded-lg border border-app-warning/30 bg-app-warning/5 p-3 text-xs leading-5 text-app-text-secondary">
+          <strong className="text-app-text">Save this recovery code now</strong>
+          <code className="mt-2 block select-all break-all rounded bg-app-surface-sunken px-3 py-2 font-mono text-sm text-app-text">{newRecoveryCode}</code>
+          <p className="mt-2">It is stored in this device’s secure credential manager, but you should also keep an offline copy. Telegram Drive does not store your email and cannot reconstruct a lost code.</p>
+        </div>
+      )}
+
+      <div className="mt-4 rounded-lg border border-app-warning/25 bg-app-warning/5 p-3 text-xs leading-5 text-app-text-secondary">
+        <div className="flex gap-2"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-app-warning" /><p><strong className="text-app-text">Before paying:</strong> refunds are not automatic and are not guaranteed except where required by law. A refund, reversal, chargeback, or upheld dispute revokes ad-free access. Payment and activation depend on PayPal, internet access, and secure credential storage; keep your recovery code.</p></div>
+      </div>
+
+      {!status.ad_free && status.state !== 'revoked' && (
+        <label className="mt-4 flex cursor-pointer items-start gap-3 text-xs leading-5 text-app-text-secondary">
+          <input type="checkbox" checked={acceptedTerms} onChange={event => setAcceptedTerms(event.target.checked)} className="mt-1 accent-[var(--color-app-accent)]" />
+          <span>I understand the activation requirements, recovery responsibility, device limit, and refund/reversal policy, and I accept the <button type="button" onClick={event => { event.preventDefault(); void open(termsUrl); }} className="text-app-accent underline underline-offset-2">Supporter Terms</button>.</span>
+        </label>
+      )}
+
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        {!status.ad_free && status.state !== 'revoked' && (
+          <button type="button" disabled={!acceptedTerms || busy || status.state === 'loading' || status.state === 'unavailable'} onClick={() => void startCheckout()} className="quiet-control bg-app-accent px-4 py-2.5 text-xs font-semibold text-app-accent-contrast disabled:cursor-not-allowed disabled:opacity-50">{busy ? 'Preparing checkout…' : 'Support once with PayPal · $5'}</button>
+        )}
+        {checkoutPending && <button type="button" onClick={() => void checkPayment()} className="quiet-control px-4 py-2.5 text-xs font-medium text-app-text">Check payment</button>}
+        {status.ad_free && <button type="button" onClick={() => void refreshEntitlement().then(() => toast.success('Supporter verification refreshed.')).catch(error => toast.error(String(error)))} className="quiet-control px-4 py-2.5 text-xs font-medium text-app-text">Refresh verification</button>}
+        <button type="button" onClick={() => void open(termsUrl)} className="quiet-control px-3 py-2.5 text-xs text-app-text-secondary">Read full terms</button>
+      </div>
+
+      {!status.ad_free && (
+        <details className="mt-4 rounded-lg border border-app-border-subtle bg-app-surface-sunken/20 p-3">
+          <summary className="cursor-pointer text-xs font-medium text-app-text">Already supported? Restore with a recovery code</summary>
+          <p className="mt-2 text-xs leading-5 text-app-text-secondary">Restoring a new device also requires acceptance of the current terms and counts toward the three-device limit.</p>
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+            <input value={recoveryCode} onChange={event => setRecoveryCode(event.target.value)} placeholder="XXXXX-XXXXX-XXXXX-XXXXX" autoComplete="off" spellCheck={false} className="min-w-0 flex-1 rounded-control border border-app-border bg-app-surface px-3 py-2 text-xs text-app-text outline-none focus:border-app-accent" />
+            <button type="button" disabled={!acceptedTerms || !recoveryCode.trim() || busy} onClick={() => void recoverPurchase()} className="quiet-control px-4 py-2 text-xs font-medium text-app-text disabled:opacity-50">Restore purchase</button>
+          </div>
+        </details>
+      )}
+    </section>
+  );
+}
+
+export function PrivacySettingsTab({ crashReportingEnabled, onCrashReportingChange }: PrivacySettingsTabProps) {
   return (
     <motion.section key="privacy" {...tabMotion} className="space-y-4">
       <div className="flex items-start gap-3 rounded-lg border border-app-accent/20 bg-app-accent/5 p-4">
@@ -69,13 +183,7 @@ export function PrivacySettingsTab({ crashReportingEnabled, supporterMode, onCra
         </div>
         <p className="rounded-lg border border-app-border-subtle p-3 text-xs leading-5 text-app-text-secondary"><strong className="text-app-text">Privacy policy summary:</strong> Telegram Drive does not sell personal data, inspect file contents for analytics, or operate a cloud account database. Revoking a share or disabling a local server stops that access immediately.</p>
       </section>
-      <section className="rounded-lg border border-app-accent/20 bg-app-accent/5 p-4">
-        <div className="flex items-start gap-3"><Heart className="mt-0.5 h-5 w-5 text-app-accent" aria-hidden="true" /><div><h3 className="text-sm font-semibold text-app-text">Supporter · one-time ad-free</h3><p className="mt-1 text-xs leading-5 text-app-text-secondary">Support development once, then enable the local supporter switch to hide sponsor placements on this device. No recurring account or tracking is required.</p></div></div>
-        <div className="mt-4 flex flex-wrap items-center gap-3">
-          <button type="button" onClick={() => void open('https://www.paypal.me/Caamer20')} className="quiet-control bg-app-accent px-4 py-2 text-xs font-semibold text-app-accent-contrast">Support once</button>
-          <button type="button" role="switch" aria-checked={supporterMode} onClick={onSupporterModeChange} className="quiet-control flex items-center gap-2 px-3 py-2 text-xs text-app-text"><span className={`h-2.5 w-2.5 rounded-full ${supporterMode ? 'bg-app-success' : 'bg-app-text-tertiary'}`} />{supporterMode ? 'Ad-free supporter mode is on' : "I've supported — hide ads"}</button>
-        </div>
-      </section>
+      <SupporterSettingsSection />
     </motion.section>
   );
 }

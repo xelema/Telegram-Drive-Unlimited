@@ -15,7 +15,7 @@ const AD_SCRIPT_CACHE_TTL: Duration = Duration::from_secs(30 * 60);
 const AD_SCRIPT_MAX_BYTES: usize = 512 * 1024;
 const AD_SCRIPT_FALLBACK_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36";
 const AD_DOH_URL: &str = "https://cloudflare-dns.com/dns-query?name=www.highperformanceformat.com&type=A";
-const AD_BANNER_CSP: &str = "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: https://highperformanceformat.com https://*.highperformanceformat.com https://effectivecpmnetwork.com https://*.effectivecpmnetwork.com https://adsterra.com https://*.adsterra.com https://kettledroopingcontinuation.com https://*.kettledroopingcontinuation.com https://protrafficinspector.com https://*.protrafficinspector.com https://zoologyfibre.com https://*.zoologyfibre.com https://mamshirt.com https://*.mamshirt.com; connect-src 'self' https://highperformanceformat.com https://*.highperformanceformat.com https://effectivecpmnetwork.com https://*.effectivecpmnetwork.com https://adsterra.com https://*.adsterra.com https://kettledroopingcontinuation.com https://*.kettledroopingcontinuation.com https://protrafficinspector.com https://*.protrafficinspector.com https://zoologyfibre.com https://*.zoologyfibre.com https://mamshirt.com https://*.mamshirt.com; frame-src https://highperformanceformat.com https://*.highperformanceformat.com https://effectivecpmnetwork.com https://*.effectivecpmnetwork.com https://adsterra.com https://*.adsterra.com https://kettledroopingcontinuation.com https://*.kettledroopingcontinuation.com https://protrafficinspector.com https://*.protrafficinspector.com https://zoologyfibre.com https://*.zoologyfibre.com https://mamshirt.com https://*.mamshirt.com";
+const AD_BANNER_CSP: &str = "default-src 'none'; script-src 'unsafe-inline' http://localhost:14201/ad-script https:; style-src 'unsafe-inline'; img-src data: https:; connect-src https:; frame-src https:; object-src 'none'; base-uri 'none'; form-action 'none'";
 
 #[derive(Clone)]
 struct CachedAdScript {
@@ -42,7 +42,10 @@ struct DnsJsonAnswer {
 }
 
 /// Ad banner HTML matching the working cameronamer.com/ad-banner.html structure.
-/// Served from the streaming server so the iframe gets a real http://localhost origin.
+/// Served from the streaming server so the relayed loader remains available even when
+/// external DNS filtering blocks the provider. The parent iframe deliberately omits
+/// `allow-same-origin`, so the creative receives an opaque origin and cannot call other
+/// local server routes.
 /// The external loader is relayed through `/ad-script` because some DNS security
 /// services rewrite the Adsterra loader hostname to a private address. The resulting
 /// creative remains isolated inside this sandboxed page. The page also reports whether
@@ -662,23 +665,17 @@ mod ad_tests {
     }
 
     #[test]
-    fn ad_provider_loader_is_fixed_to_the_allowlisted_host() {
+    fn ad_provider_loader_is_fixed_and_rotating_creatives_stay_sandboxed() {
         let parsed = reqwest::Url::parse(AD_SCRIPT_URL).expect("ad loader URL should be valid");
         assert_eq!(parsed.scheme(), "https");
         assert_eq!(parsed.host_str(), Some(AD_SCRIPT_HOST));
         assert_eq!(parsed.path(), "/9cf449272b7e1c83054b82b7639c6029/invoke.js");
         assert!(AD_BANNER_HTML.contains("reportStatus('failed')"));
-        assert!(!AD_BANNER_CSP.contains("https:;"));
-        for domain in [
-            "highperformanceformat.com",
-            "effectivecpmnetwork.com",
-            "kettledroopingcontinuation.com",
-            "protrafficinspector.com",
-            "zoologyfibre.com",
-            "mamshirt.com",
-        ] {
-            assert!(AD_BANNER_CSP.contains(domain));
-        }
+        assert!(AD_BANNER_CSP.contains("script-src 'unsafe-inline' http://localhost:14201/ad-script https:"));
+        assert!(!AD_BANNER_CSP.contains("connect-src 'self'"));
+        assert!(AD_BANNER_CSP.contains("frame-src https:"));
+        assert!(AD_BANNER_CSP.contains("object-src 'none'"));
+        assert_eq!(AD_BANNER_CSP.matches("http://").count(), 1);
     }
 
     #[test]

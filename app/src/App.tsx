@@ -38,6 +38,7 @@ import { getLanguageInfo } from "./i18n/languages";
 import { resolveLanguagePreference } from "./i18n/resolveLanguage";
 import { version as appVersion } from "../package.json";
 import { consumeWhatsNew, type WhatsNewDetails } from "./services/updateReliability";
+import { SupporterProvider } from "./context/SupporterContext";
 
 const queryClient = new QueryClient();
 
@@ -256,6 +257,7 @@ function App() {
         <QueryClientProvider client={queryClient}>
           <ConfirmProvider>
             <SettingsProvider>
+              <SupporterProvider>
               <UploadChoiceProvider>
               <EncryptionProvider>
               {AccessibilityAudit && (
@@ -270,6 +272,7 @@ function App() {
               )}
               </EncryptionProvider>
               </UploadChoiceProvider>
+              </SupporterProvider>
             </SettingsProvider>
           </ConfirmProvider>
         </QueryClientProvider>

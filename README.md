@@ -73,6 +73,13 @@ These viewers currently operate on standard, unencrypted files. See [Encryption 
 - Desktop builds for Windows, Linux, macOS Intel, and macOS Apple Silicon.
 - Android support with touch-oriented navigation, the Android share sheet, foreground transfers, native file publication, and Android API 24+ configuration.
 
+### Optional ad-free supporter access
+
+The desktop app offers an optional, verified **$5 USD one-time PayPal payment** that removes sponsor placements on up to three desktop devices. Start checkout only from **Settings → Privacy → Supporter**. The app creates no supporter email profile: activation uses PayPal transaction identifiers, a random entitlement, and device cryptographic keys. Normal app updates reuse the same operating-system credential and do not require reactivation.
+
+> [!WARNING]
+> Payment alone does not bypass verification. Save the recovery code shown after activation. Refunds are not automatic and are not guaranteed except where required by law. A refund, payment reversal, chargeback, or upheld dispute revokes the associated ad-free entitlement. Read the [Supporter Terms](SUPPORTER_TERMS.md) before paying.
+
 ## Encryption mode (opt-in alpha)
 
 Version 2.0.0 includes client-side encrypted transfers using the versioned **TDENC2** envelope. Standard uploads remain the default, and users can turn encryption on or off for future uploads from Settings or choose protection for an individual upload.
@@ -149,6 +156,7 @@ Localization is still being completed: some non-English entries currently fall b
 - The optional REST API binds only to loopback and stores only a hash of its generated API key. The plaintext API key is shown when generated and cannot be retrieved later.
 - Local share links depend on the app's local streaming server and the app remaining open and connected.
 - A configured proxy routes traffic according to the selected proxy settings. Review and trust your own proxy provider.
+- Optional ad-free activation contacts the Telegram Drive supporter verification service. It stores no purchaser email and receives no Telegram credentials or file activity; see the [Privacy Policy](PRIVACY.md) and [Supporter Terms](SUPPORTER_TERMS.md).
 
 ## Android beta (pre-built unsigned APK)
 
@@ -271,6 +279,8 @@ cd src-tauri && cargo test --lib
 ## Project documentation
 
 - [Changelog](CHANGELOG.md)
+- [Supporter terms](SUPPORTER_TERMS.md)
+- [Supporter service operations](SUPPORTER_SERVICE.md)
 - [REST API endpoint reference](REST_API_Documentation.md)
 - [Quiet Utility implementation plan](QUIET_UTILITY_IMPLEMENTATION_PLAN.md)
 - [Language support implementation plan](LANGUAGE_SUPPORT_IMPLEMENTATION_PLAN.md)
@@ -288,12 +298,7 @@ This checkout does not currently contain a `LICENSE` file. Earlier README versio
 *Telegram Drive is not affiliated with Telegram FZ-LLC. Use it responsibly and in accordance with Telegram's terms and applicable laws.*
 
 <div align="center">
-  <div style="margin: 15px 0;">
-    <a href="https://www.paypal.me/Caamer20">
-      <img src="https://raw.githubusercontent.com/stefan-niedermann/paypal-donate-button/master/paypal-donate-button.png" alt="Donate with PayPal" width="200">
-    </a>
-    <div style="font-size: 14px; margin-top: 8px;">paypal.me/Caamer20</div>
-  </div>
+  <p><strong>Want to support development and remove desktop ads?</strong><br>Use the verified PayPal checkout in Settings → Privacy → Supporter. Direct tips and cryptocurrency donations do not activate ad-free access.</p>
 
   <div style="margin: 15px 0;">
     <a href="litecoin:ltc1q6wkr5ac4u0pxx4hx7xgwn0gsaku25ws0df73rp">

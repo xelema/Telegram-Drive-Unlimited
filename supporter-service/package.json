@@ -1,0 +1,20 @@
+{
+  "name": "telegram-drive-supporter-service",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:migrate:local": "wrangler d1 migrations apply telegram-drive-supporter --local",
+    "db:migrate:remote": "wrangler d1 migrations apply telegram-drive-supporter --remote"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260811.1",
+    "typescript": "~5.8.3",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.30.0"
+  }
+}

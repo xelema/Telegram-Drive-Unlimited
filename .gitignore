@@ -3,6 +3,8 @@ node_modules/
 dist/
 /app/test-results/
 /app/playwright-report/
+/supporter-service/.dev.vars
+/supporter-service/.wrangler/
 .DS_Store
 .env
 

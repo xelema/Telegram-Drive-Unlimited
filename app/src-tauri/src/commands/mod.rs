@@ -63,6 +63,8 @@ pub mod file_activity;
 pub mod startup;
 pub mod storage_insights;
 pub mod crash_reporting;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub mod supporter;
 
 pub use auth::*;
 pub use fs::*;
@@ -80,3 +82,5 @@ pub use file_activity::*;
 pub use startup::*;
 pub use storage_insights::*;
 pub use crash_reporting::*;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub use supporter::*;

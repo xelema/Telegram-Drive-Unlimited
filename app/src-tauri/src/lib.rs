@@ -879,6 +879,16 @@ pub fn run() {
             commands::cmd_get_startup_health,
             commands::cmd_get_storage_insight,
             commands::cmd_submit_crash_report,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            commands::cmd_get_supporter_status,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            commands::cmd_begin_supporter_checkout,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            commands::cmd_poll_supporter_checkout,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            commands::cmd_activate_supporter,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            commands::cmd_refresh_supporter,
             commands::cmd_check_connection,
             commands::cmd_is_network_available,
             commands::cmd_test_proxy_traffic,

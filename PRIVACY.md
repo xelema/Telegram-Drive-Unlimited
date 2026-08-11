@@ -1,8 +1,8 @@
 # Telegram Drive Privacy Policy
 
-Last updated: August 9, 2026
+Last updated: August 11, 2026
 
-Telegram Drive is a self-hosted desktop and Android client. It does not operate a separate cloud account service and does not sell personal information.
+Telegram Drive is a self-hosted desktop and Android client. It does not operate a file-storage or Telegram account service and does not sell personal information. The optional desktop supporter feature uses a narrowly scoped verification service described below.
 
 ## Data stored on your device
 
@@ -26,10 +26,14 @@ WebDAV, REST, and password-protected local links are disabled until enabled by t
 
 ## Supporter mode
 
-Supporter mode is a local preference that hides sponsor placements. Telegram Drive does not create a supporter profile or transmit that preference.
+Desktop ad-free access is activated only after the supporter service verifies a one-time PayPal order. Telegram Drive does not request or store the purchaser's PayPal email address. The service stores a PayPal order ID and capture ID, payment amount and currency, entitlement status, the accepted supporter-terms version, and cryptographic hashes/public keys used to enforce the device limit and refresh access. It does not receive Telegram credentials, phone numbers, file names, file contents, folder information, or application activity.
+
+The device private key, recovery code, and short-lived checkout secret are stored in the operating system's secure credential manager. A signed entitlement token and non-secret checkout metadata are stored in the application's local data directory. Normal application updates reuse these stable credentials and do not require reactivation.
+
+PayPal processes the payment under PayPal's own terms and privacy policy. Cloudflare processes network requests needed to operate the verification service under Cloudflare's privacy and security terms. Telegram Drive does not add IP addresses or raw PayPal webhook payloads to its D1 entitlement records. Verified PayPal refund and reversal notifications revoke the associated ad-free entitlement. See the [Supporter Terms](SUPPORTER_TERMS.md) for activation, recovery, device-limit, refund, reversal, dispute, availability, and liability conditions.
 
 ## User control
 
-Users can clear caches, disable crash reporting, stop local servers, revoke share links, lock the encryption vault, and remove local settings. Files stored in Telegram remain governed by the user's Telegram account until the user deletes them.
+Users can clear caches, disable crash reporting, stop local servers, revoke share links, lock the encryption vault, and remove local settings. Files stored in Telegram remain governed by the user's Telegram account until the user deletes them. Payment records that must be retained for fraud prevention, entitlement enforcement, refunds, disputes, accounting, or legal obligations are kept only as long as reasonably necessary for those purposes.
 
 Security reports should not include credentials or private file data. Contact the maintainer through [cameronamer.com](https://www.cameronamer.com) to arrange private disclosure.

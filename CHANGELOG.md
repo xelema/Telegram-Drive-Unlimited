@@ -1,3 +1,32 @@
+## [2.4.0] - 2026-08-11
+
+### Sponsor Display
+
+- Restored the desktop sponsor creative and its visible 10-second countdown.
+- Pauses the countdown while the pointer is over the sponsor, supports manual dismissal, and brings the placement back after 45 minutes.
+- Keeps sponsor content inside an opaque-origin local sandbox, blocks popups and access to other localhost routes, and falls back to a clear sponsor link when the network or provider blocks the image.
+
+### Verified Ad-Free Supporter Access
+
+- Replaced the self-declared ad-free switch with a verified $5 USD one-time PayPal checkout for up to three desktop devices.
+- Added payment-status polling, recovery-code restoration, signed device-bound entitlements, 30-day verification tokens, and a seven-day offline grace period.
+- Stores the device key and recovery code in macOS Keychain, Windows Credential Manager, or Linux Secret Service using a stable credential name, so normal application updates do not require reactivation.
+- Added automatic verification refresh on startup. Confirmed PayPal refunds and reversals revoke the matching ad-free entitlement when the app reconnects.
+- Added a first-run introduction to the optional supporter feature and a complete activation/recovery surface in Settings → Privacy.
+
+### Payment Privacy and Terms
+
+- Added a minimal Cloudflare Worker and D1 verification service that stores PayPal transaction IDs, entitlement state, terms acceptance, and cryptographic device identifiers without requesting or storing purchaser email addresses.
+- Added versioned Supporter Terms with clear activation, device-limit, recovery, availability, refund, reversal, chargeback, and dispute disclosures.
+- Requires the purchaser to accept the current terms before checkout or recovery activation. Refunds are not described as automatic or guaranteed except where applicable law requires otherwise.
+- Clarified that direct tips and cryptocurrency donations do not activate ad-free access.
+
+### Verification
+
+- Cloudflare Worker TypeScript checks, unit tests, and the Wrangler production-bundle dry run passed.
+- PayPal sandbox checkout, immediate return verification, signed activation, second-device recovery, entitlement refresh, refund webhook, and post-refund denial passed end to end.
+- Production frontend build, frontend regression tests, the live ad-loader check, and the complete desktop Rust test suite passed.
+
 ## [2.3.0] - 2026-08-10
 
 ### Desktop Workspace

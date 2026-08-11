@@ -968,6 +968,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                 <DriveConceptTour
                     onFinish={() => updateSetting('driveTourSeen', true)}
                     onOpenHelp={() => { updateSetting('driveTourSeen', true); setShowHelp(true); }}
+                    onOpenSupporter={() => { updateSetting('driveTourSeen', true); setSettingsInitialTab('privacy'); setShowSettings(true); }}
                 />
             )}
 

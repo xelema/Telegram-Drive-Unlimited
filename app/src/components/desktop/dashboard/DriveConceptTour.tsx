@@ -1,19 +1,21 @@
 import { useRef, useState } from 'react';
-import { ArrowRight, FolderLock, HardDrive, ShieldCheck, X } from 'lucide-react';
+import { ArrowRight, FolderLock, HardDrive, Heart, ShieldCheck, X } from 'lucide-react';
 import { useModalFocus } from '../../../hooks/useModalFocus';
 
 const steps = [
   { icon: HardDrive, title: 'Your Telegram account becomes the drive', body: 'Saved Messages is your home storage. Telegram Drive reads and writes files directly through your Telegram session.' },
   { icon: FolderLock, title: 'Folders are private channels', body: 'Creating a folder creates a private Telegram channel owned by your account. The app presents those channels as a familiar drive.' },
   { icon: ShieldCheck, title: 'Store normally or protect first', body: 'Every upload can be stored normally or protected locally before it reaches Telegram. Sharing and WebDAV remain explicit, opt-in actions.' },
+  { icon: Heart, title: 'Support once to remove sponsor ads', body: 'Telegram Drive stays usable for free. An optional verified $5 PayPal payment removes sponsor placements on up to three desktop devices, survives normal app updates, and includes a recovery code. Refunds are not automatic or guaranteed except where required by law; refunds and payment reversals revoke ad-free access.' },
 ];
 
 interface DriveConceptTourProps {
   onFinish: () => void;
   onOpenHelp: () => void;
+  onOpenSupporter?: () => void;
 }
 
-export function DriveConceptTour({ onFinish, onOpenHelp }: DriveConceptTourProps) {
+export function DriveConceptTour({ onFinish, onOpenHelp, onOpenSupporter }: DriveConceptTourProps) {
   const [index, setIndex] = useState(0);
   const panelRef = useRef<HTMLDivElement>(null);
   useModalFocus(panelRef, onFinish);
@@ -30,7 +32,7 @@ export function DriveConceptTour({ onFinish, onOpenHelp }: DriveConceptTourProps
           <p className="mx-auto mt-3 max-w-md text-sm leading-6 text-app-text-secondary">{step.body}</p>
           <div className="mt-6 flex justify-center gap-2" aria-label="Introduction progress">{steps.map((_, stepIndex) => <span key={stepIndex} className={`h-1.5 rounded-full transition-all motion-reduce:transition-none ${stepIndex === index ? 'w-7 bg-app-accent' : 'w-1.5 bg-app-border'}`} />)}</div>
         </div>
-        <footer className="flex items-center justify-between border-t border-app-border-subtle px-5 py-4"><button type="button" onClick={onOpenHelp} className="quiet-control px-3 py-2 text-xs font-medium text-app-text-secondary">Open Help &amp; FAQ</button><button type="button" onClick={() => index === steps.length - 1 ? onFinish() : setIndex(value => value + 1)} className="quiet-control flex items-center gap-2 bg-app-accent px-4 py-2 text-sm font-semibold text-app-accent-contrast">{index === steps.length - 1 ? 'Open my drive' : 'Next'}<ArrowRight className="h-4 w-4 rtl:rotate-180" /></button></footer>
+        <footer className="flex items-center justify-between border-t border-app-border-subtle px-5 py-4"><button type="button" onClick={index === steps.length - 1 ? onFinish : onOpenHelp} className="quiet-control px-3 py-2 text-xs font-medium text-app-text-secondary">{index === steps.length - 1 ? 'Not now' : 'Open Help & FAQ'}</button><button type="button" onClick={() => index === steps.length - 1 ? (onOpenSupporter ?? onFinish)() : setIndex(value => value + 1)} className="quiet-control flex items-center gap-2 bg-app-accent px-4 py-2 text-sm font-semibold text-app-accent-contrast">{index === steps.length - 1 ? 'View supporter option' : 'Next'}<ArrowRight className="h-4 w-4 rtl:rotate-180" /></button></footer>
       </div>
     </div>
   );
