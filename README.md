@@ -289,10 +289,6 @@ cd src-tauri && cargo test --lib
 - [Encryption execution report](ENCRYPTION_REMEDIATION_EXECUTION_REPORT.md)
 - [TDENC2 architecture decision](app/docs/adr/ADR-0002-encrypted-file-envelope-v2.md)
 
-## License status
-
-This checkout does not currently contain a `LICENSE` file. Earlier README versions described the project as MIT-licensed, but that statement cannot be verified from the repository contents. The intended license should be added as a repository license file before users rely on a particular grant of permission for copying, modification, or redistribution.
-
 ---
 
 *Telegram Drive is not affiliated with Telegram FZ-LLC. Use it responsibly and in accordance with Telegram's terms and applicable laws.*
