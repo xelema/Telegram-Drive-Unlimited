@@ -298,8 +298,10 @@ This checkout does not currently contain a `LICENSE` file. Earlier README versio
 *Telegram Drive is not affiliated with Telegram FZ-LLC. Use it responsibly and in accordance with Telegram's terms and applicable laws.*
 
 <div align="center">
-  <p><strong>Want to support development and remove desktop ads?</strong><br>Use the verified PayPal checkout in Settings → Privacy → Supporter. Direct tips and cryptocurrency donations do not activate ad-free access.</p>
-
+  
+**Want to support development and remove desktop ads?**  
+Use the verified PayPal checkout in Settings → Privacy → Supporter. Direct tips and cryptocurrency donations do not activate ad-free access.
+ 
   <div style="margin: 15px 0;">
     <a href="litecoin:ltc1q6wkr5ac4u0pxx4hx7xgwn0gsaku25ws0df73rp">
       <img src="https://img.shields.io/badge/Donate-LTC-345D9D?style=for-the-badge&logo=litecoin&logoColor=white" alt="Donate LTC">
