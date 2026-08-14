@@ -1,4 +1,10 @@
-## [2.5.0] - 2026-08-13
+## [2.5.0] - 2026-08-14
+
+### Sponsor Banner Reliability
+
+- Restored sponsor artwork in the desktop banner when an embedded WebView does not reliably paint the provider’s nested frame.
+- Confirms the 300 × 250 creative image has loaded before displaying it, while retaining the isolated sandbox, popup blocking, and `unsafe-eval` protection.
+- Keeps the existing 10-second countdown, manual dismissal, and 45-minute return interval unchanged.
 
 ### Encrypted Settings Sync
 

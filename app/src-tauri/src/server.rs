@@ -94,10 +94,32 @@ const AD_BANNER_HTML: &str = r#"<!DOCTYPE html>
         var attempts = 0;
         var creativeCheck = window.setInterval(function () {
           attempts += 1;
-          if (document.querySelector('iframe')) {
+          var creativeFrame = document.querySelector('iframe');
+          var creativeImage = null;
+
+          try {
+            creativeImage = creativeFrame && creativeFrame.contentDocument
+              ? creativeFrame.contentDocument.querySelector('img')
+              : null;
+          } catch (_) {
+            creativeImage = null;
+          }
+
+          if (creativeImage && creativeImage.complete && creativeImage.naturalWidth > 0) {
             window.clearInterval(creativeCheck);
-            window.clearTimeout(loadTimeout);
-            reportStatus('loaded');
+            var displayImage = new Image(300, 250);
+            displayImage.alt = '';
+            displayImage.referrerPolicy = 'no-referrer';
+            displayImage.onload = function () {
+              window.clearTimeout(loadTimeout);
+              reportStatus('loaded');
+            };
+            displayImage.onerror = function () {
+              window.clearTimeout(loadTimeout);
+              reportStatus('failed');
+            };
+            displayImage.src = creativeImage.currentSrc || creativeImage.src;
+            document.body.replaceChildren(displayImage);
           } else if (attempts >= 16) {
             window.clearInterval(creativeCheck);
             reportStatus('failed');
@@ -662,6 +684,9 @@ mod ad_tests {
         assert!(AD_BANNER_HTML.contains("onload=\"window.telegramDriveAdLoaded()\""));
         assert!(AD_BANNER_HTML.contains("onerror=\"window.telegramDriveAdFailed()\""));
         assert!(AD_BANNER_HTML.contains("document.querySelector('iframe')"));
+        assert!(AD_BANNER_HTML.contains("creativeFrame.contentDocument.querySelector('img')"));
+        assert!(AD_BANNER_HTML.contains("creativeImage.naturalWidth > 0"));
+        assert!(AD_BANNER_HTML.contains("document.body.replaceChildren(displayImage)"));
     }
 
     #[test]
@@ -671,7 +696,9 @@ mod ad_tests {
         assert_eq!(parsed.host_str(), Some(AD_SCRIPT_HOST));
         assert_eq!(parsed.path(), "/9cf449272b7e1c83054b82b7639c6029/invoke.js");
         assert!(AD_BANNER_HTML.contains("reportStatus('failed')"));
-        assert!(AD_BANNER_CSP.contains("script-src 'unsafe-inline' http://localhost:14201/ad-script https:"));
+        assert!(AD_BANNER_CSP
+            .contains("script-src 'unsafe-inline' http://localhost:14201/ad-script https:"));
+        assert!(!AD_BANNER_CSP.contains("'unsafe-eval'"));
         assert!(!AD_BANNER_CSP.contains("connect-src 'self'"));
         assert!(AD_BANNER_CSP.contains("frame-src https:"));
         assert!(AD_BANNER_CSP.contains("object-src 'none'"));
