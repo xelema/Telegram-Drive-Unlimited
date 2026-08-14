@@ -1,3 +1,36 @@
+## [2.5.0] - 2026-08-13
+
+### Encrypted Settings Sync
+
+- Added opt-in, manual cross-device settings sync through the user’s own Telegram Saved Messages with no Telegram Drive sync server.
+- Protects synced preferences with Argon2id and authenticated XChaCha20-Poly1305 encryption using a user-provided passphrase that is never stored or uploaded.
+- Restricts sync to an explicit allowlist of portable preferences. Credentials, API and WebDAV keys, proxy details, supporter activation, crash consent, and file data are never included.
+- Added confirmation before replacing a backup from another device or applying downloaded preferences.
+
+### Offline Files and Windows Cache Reliability
+
+- Made recently viewed plaintext preview files use true least-recently-used retention, so actively reopened files are not evicted ahead of stale files.
+- Added actionable offline-cache inspection and cleanup errors instead of leaving Storage settings in an indefinite loading state.
+- Fixed Windows Transcode Cache commands to use the application’s managed shared cache state consistently.
+
+### Japanese Language Support
+
+- Completed the Japanese application translation and added Japanese locale registration, resolution, fallback, and CJK visual regression coverage.
+- Strengthened localization validation with locale-specific invariant handling and zero copied-English baseline debt for Japanese, Italian, and Vietnamese.
+
+### Supporter Experience
+
+- Ensures verified ad-free users never begin loading sponsor content while entitlement status is being checked.
+- Licensed users skip supporter promotion pages. Unlicensed desktop users receive a clear optional $5 lifetime ad-free offer at most once on app launch every 24 hours.
+- Clarified throughout the application and supporter terms that every feature remains free and the supporter license only removes sponsor placements.
+- Preserves the existing activation, recovery-code, device-limit, update, and refund/reversal safeguards.
+
+### Verification
+
+- Production frontend build and complete frontend regression suite passed.
+- Complete desktop Rust test suite passed with only the existing live advertisement network test ignored.
+- Localization structure, variables, invariant, and type validation passed.
+
 ## [2.4.0] - 2026-08-11
 
 ### Sponsor Display

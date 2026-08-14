@@ -879,6 +879,9 @@ pub fn run() {
             commands::cmd_get_startup_health,
             commands::cmd_get_storage_insight,
             commands::cmd_submit_crash_report,
+            commands::cmd_get_settings_sync_status,
+            commands::cmd_upload_settings_sync,
+            commands::cmd_download_settings_sync,
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             commands::cmd_get_supporter_status,
             #[cfg(not(any(target_os = "android", target_os = "ios")))]

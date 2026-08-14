@@ -39,7 +39,7 @@ import { RenameFileModal } from './dashboard/RenameFileModal';
 import { DesktopAdBanner } from './dashboard/DesktopAdBanner';
 import { RemoteUploadModal } from './dashboard/RemoteUploadModal';
 import { KeyboardShortcutsDialog } from './dashboard/KeyboardShortcutsDialog';
-import { DriveConceptTour } from './dashboard/DriveConceptTour';
+import { DriveConceptTour, SupporterReminderDialog } from './dashboard/DriveConceptTour';
 import { HelpCenterDialog } from './dashboard/HelpCenterDialog';
 import { Files, Link, Copy, Check, X, Loader2, Share2 } from 'lucide-react';
 
@@ -51,7 +51,9 @@ import { useFileDownload } from '../../hooks/useFileDownload';
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts';
 import { useSettings } from '../../context/SettingsContext';
 import { useConfirm } from '../../context/ConfirmContext';
+import { useSupporter } from '../../context/SupporterContext';
 import { DEFAULT_SEARCH_FILTERS, filterAndRankFiles, type FileSearchFilters } from '../../services/fileSearch';
+import { isSupporterPromptDue } from '../../services/supporterVisibility';
 
 const sameFile = (left: TelegramFile, right: TelegramFile) => (
     left.id === right.id && (left.folder_id ?? null) === (right.folder_id ?? null)
@@ -73,6 +75,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
 
     const { settings, updateSetting, isLoaded: settingsLoaded } = useSettings();
     const { confirm } = useConfirm();
+    const { status: supporterStatus } = useSupporter();
 
     useEffect(() => {
         if (sessionStorage.getItem('telegram-drive-recovered-session') !== 'true') return;
@@ -92,6 +95,8 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>('general');
     const [showShortcuts, setShowShortcuts] = useState(false);
     const [showHelp, setShowHelp] = useState(false);
+    const [showSupporterReminder, setShowSupporterReminder] = useState(false);
+    const supporterReminderEvaluated = useRef(false);
     const [createFolderRequest, setCreateFolderRequest] = useState(0);
     const [activeSmartView, setActiveSmartView] = useState<SmartView | null>('recents');
     const [searchTerm, setSearchTerm] = useState("");
@@ -129,6 +134,29 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     const [renameFolder, setRenameFolder] = useState<{ id: number; name: string } | null>(null);
     const [moveFileTarget, setMoveFileTarget] = useState<TelegramFile | null>(null);
     const [renameFileTarget, setRenameFileTarget] = useState<TelegramFile | null>(null);
+
+    const recordSupporterPromptShown = useCallback(() => {
+        updateSetting('supporterPromptLastShownAt', Date.now());
+    }, [updateSetting]);
+
+    useEffect(() => {
+        if (supporterStatus.ad_free) {
+            setShowSupporterReminder(false);
+            return;
+        }
+        if (
+            supporterReminderEvaluated.current
+            || supporterStatus.state === 'loading'
+            || !settingsLoaded
+            || !settings.driveTourSeen
+        ) return;
+
+        supporterReminderEvaluated.current = true;
+        if (isSupporterPromptDue(supporterStatus, settings.supporterPromptLastShownAt)) {
+            recordSupporterPromptShown();
+            setShowSupporterReminder(true);
+        }
+    }, [recordSupporterPromptShown, settings.driveTourSeen, settings.supporterPromptLastShownAt, settingsLoaded, supporterStatus]);
 
     useEffect(() => {
         const openSettings = (event: Event) => {
@@ -449,7 +477,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
         onRename: handleKeyboardRename,
         onShowShortcuts: () => setShowShortcuts(true),
         enabled: !previewFile && !playingFile && !pdfFile && !archiveViewFile
-            && !showMoveModal && !showSettings && !showShortcuts && !showHelp
+            && !showMoveModal && !showSettings && !showShortcuts && !showHelp && !showSupporterReminder
             && !showRemoteUpload && !shareFile && !bulkShareLinks
             && settings.driveTourSeen
     });
@@ -964,21 +992,30 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
 
             {showShortcuts && <KeyboardShortcutsDialog onClose={() => setShowShortcuts(false)} />}
 
-            {settingsLoaded && !settings.driveTourSeen && (
+            {settingsLoaded && supporterStatus.state !== 'loading' && !settings.driveTourSeen && (
                 <DriveConceptTour
                     onFinish={() => updateSetting('driveTourSeen', true)}
                     onOpenHelp={() => { updateSetting('driveTourSeen', true); setShowHelp(true); }}
                     onOpenSupporter={() => { updateSetting('driveTourSeen', true); setSettingsInitialTab('privacy'); setShowSettings(true); }}
+                    includeSupporterStep={!supporterStatus.ad_free}
+                    onSupporterShown={recordSupporterPromptShown}
                 />
             )}
 
             {showHelp && <HelpCenterDialog onClose={() => setShowHelp(false)} />}
 
+            {showSupporterReminder && (
+                <SupporterReminderDialog
+                    onClose={() => setShowSupporterReminder(false)}
+                    onOpenSupporter={() => { setShowSupporterReminder(false); setSettingsInitialTab('privacy'); setShowSettings(true); }}
+                />
+            )}
+
             <DesktopAdBanner
                 suppressed={
                     uploadQueue.some(item => ['pending', 'uploading', 'downloading', 'encrypting', 'verifying'].includes(item.status))
                     || downloadQueue.some(item => ['pending', 'cooldown', 'downloading', 'decrypting', 'verifying'].includes(item.status))
-                    || Boolean(previewFile || playingFile || pdfFile || archiveViewFile || showSettings || showMoveModal || shareFile || showRemoteUpload || showHelp || !settings.driveTourSeen)
+                    || Boolean(previewFile || playingFile || pdfFile || archiveViewFile || showSettings || showMoveModal || shareFile || showRemoteUpload || showHelp || showSupporterReminder || !settings.driveTourSeen)
                 }
                 onSupport={() => { setSettingsInitialTab('privacy'); setShowSettings(true); }}
             />

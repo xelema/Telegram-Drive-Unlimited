@@ -62,6 +62,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
     const cacheRequestId = useRef(0);
     const [offlineCache, setOfflineCache] = useState<OfflineCacheStatus | null>(null);
     const [offlineCacheLoading, setOfflineCacheLoading] = useState(false);
+    const [offlineCacheError, setOfflineCacheError] = useState<string | null>(null);
     const [clearingVariant, setClearingVariant] = useState<string | null>(null); // file_key:quality being cleared
     const [activeTab, setActiveTab] = useState<SettingsTab>('general');
     const [settingsSearch, setSettingsSearch] = useState('');
@@ -269,11 +270,13 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
 
     const fetchOfflineCache = useCallback(async () => {
         setOfflineCacheLoading(true);
+        setOfflineCacheError(null);
         try {
             const cacheStatus = await invoke<OfflineCacheStatus>('cmd_get_offline_cache_status');
             setOfflineCache(cacheStatus);
-        } catch {
+        } catch (error) {
             setOfflineCache(null);
+            setOfflineCacheError(error instanceof Error ? error.message : String(error));
         } finally {
             setOfflineCacheLoading(false);
         }
@@ -900,7 +903,9 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                                             <p className="text-sm font-medium text-telegram-text">{t('settings.offline_cache')}</p>
                                             <p className="text-xs text-telegram-subtext">{t('settings.offline_cache_desc')}</p>
                                             <p className="mt-1 text-xs font-mono text-telegram-primary">
-                                                {offlineCache
+                                                {offlineCacheError
+                                                    ? <span role="alert" className="text-red-400">{t('settings.failed_prefix', { error: offlineCacheError })}</span>
+                                                    : offlineCache
                                                     ? t('settings.offline_cache_usage', {
                                                         count: offlineCache.file_count,
                                                         used: formatBytes(offlineCache.total_bytes),
@@ -1191,6 +1196,9 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                                     <PrivacySettingsTab
                                         crashReportingEnabled={settings.crashReportingEnabled}
                                         onCrashReportingChange={() => updateSettings({ crashReportingEnabled: !settings.crashReportingEnabled, crashReportingConsentSeen: true })}
+                                        settings={settings}
+                                        onSettingsChange={updateSettings}
+                                        onSettingsSyncEnabledChange={enabled => updateSetting('telegramSettingsSyncEnabled', enabled)}
                                     />
                                 )}
 

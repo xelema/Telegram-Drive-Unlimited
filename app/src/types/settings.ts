@@ -9,7 +9,9 @@ export interface Settings {
   language: LanguagePreference;
   crashReportingEnabled: boolean;
   crashReportingConsentSeen: boolean;
+  telegramSettingsSyncEnabled: boolean;
   supporterMode: boolean;
+  supporterPromptLastShownAt: number;
   driveTourSeen: boolean;
   vaultRecoveryDrillCompleted: boolean;
   webdavPermissionExplained: boolean;

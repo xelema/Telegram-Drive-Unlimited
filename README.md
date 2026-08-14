@@ -75,7 +75,7 @@ These viewers currently operate on standard, unencrypted files. See [Encryption 
 
 ### Optional ad-free supporter access
 
-The desktop app offers an optional, verified **$5 USD one-time PayPal payment** that removes sponsor placements on up to three desktop devices. Start checkout only from **Settings → Privacy → Supporter**. The app creates no supporter email profile: activation uses PayPal transaction identifiers, a random entitlement, and device cryptographic keys. Normal app updates reuse the same operating-system credential and do not require reactivation.
+Telegram Drive has no feature tiers: every user has access to every application feature. The desktop app offers an optional, verified **$5 USD one-time PayPal payment** that removes sponsor placements on up to three desktop devices. Start checkout only from **Settings → Privacy → Supporter**. The app creates no supporter email profile: activation uses PayPal transaction identifiers, a random entitlement, and device cryptographic keys. Normal app updates reuse the same operating-system credential and do not require reactivation.
 
 > [!WARNING]
 > Payment alone does not bypass verification. Save the recovery code shown after activation. Refunds are not automatic and are not guaranteed except where required by law. A refund, payment reversal, chargeback, or upheld dispute revokes the associated ad-free entitlement. Read the [Supporter Terms](SUPPORTER_TERMS.md) before paying.

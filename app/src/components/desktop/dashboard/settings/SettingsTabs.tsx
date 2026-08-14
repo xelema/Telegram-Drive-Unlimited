@@ -1,12 +1,20 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { motion } from 'framer-motion';
-import { AlertTriangle, Bug, Cloud, Database, Globe, HardDrive, Heart, Megaphone, Shield, Zap, Clipboard, Loader2 } from 'lucide-react';
+import { AlertTriangle, Bug, Cloud, Database, Globe, HardDrive, Heart, Megaphone, Shield, Zap, Clipboard, Loader2, RefreshCw, Upload, Download } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-shell';
 import { toast } from 'sonner';
 import type { TFunction } from 'i18next';
 import { EncryptionSettingsSection } from '../../../shared/EncryptionSettingsSection';
 import { ThemesTab } from '../ThemesTab';
 import { useSupporter } from '../../../../context/SupporterContext';
+import { useConfirm } from '../../../../context/ConfirmContext';
+import type { Settings } from '../../../../types/settings';
+import {
+  downloadSettingsSync,
+  getSettingsSyncStatus,
+  uploadSettingsSync,
+  type SettingsSyncStatus,
+} from '../../../../services/settingsSync';
 
 const tabMotion = {
   initial: { opacity: 0 },
@@ -42,6 +50,136 @@ export function SharingSettingsTab({ children }: SettingsTabFrameProps) {
 interface PrivacySettingsTabProps {
   crashReportingEnabled: boolean;
   onCrashReportingChange: () => void;
+  settings: Settings;
+  onSettingsChange: (updates: Partial<Settings>) => void;
+  onSettingsSyncEnabledChange: (enabled: boolean) => void;
+}
+
+function SettingsSyncSection({
+  settings,
+  onSettingsChange,
+  onEnabledChange,
+}: {
+  settings: Settings;
+  onSettingsChange: (updates: Partial<Settings>) => void;
+  onEnabledChange: (enabled: boolean) => void;
+}) {
+  const { confirm } = useConfirm();
+  const [passphrase, setPassphrase] = useState('');
+  const [status, setStatus] = useState<SettingsSyncStatus | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const [busyAction, setBusyAction] = useState<'status' | 'upload' | 'download' | null>(null);
+
+  const refreshStatus = async () => {
+    setBusyAction('status');
+    setStatusError(null);
+    try {
+      setStatus(await getSettingsSyncStatus());
+    } catch (error) {
+      setStatus(null);
+      setStatusError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  useEffect(() => {
+    if (settings.telegramSettingsSyncEnabled) void refreshStatus();
+  }, [settings.telegramSettingsSyncEnabled]);
+
+  const upload = async () => {
+    if (status?.available && !status.current_device) {
+      const approved = await confirm({
+        title: 'Replace the settings backup?',
+        message: 'The latest encrypted backup came from another device. Uploading will replace it with this device’s current safe preferences.',
+        confirmText: 'Replace backup',
+      });
+      if (!approved) return;
+    }
+    setBusyAction('upload');
+    setStatusError(null);
+    try {
+      setStatus(await uploadSettingsSync(settings, passphrase));
+      toast.success('Encrypted settings uploaded to Telegram Saved Messages.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setStatusError(message);
+      toast.error(message);
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const download = async () => {
+    const approved = await confirm({
+      title: 'Apply settings from Telegram?',
+      message: 'Synced display, transfer, network-tuning, and encryption preferences will replace their local values. Credentials and activation data are not changed.',
+      confirmText: 'Apply settings',
+    });
+    if (!approved) return;
+    setBusyAction('download');
+    setStatusError(null);
+    try {
+      const restored = await downloadSettingsSync(passphrase);
+      onSettingsChange(restored.settings);
+      setStatus({
+        available: true,
+        updated_at: restored.updated_at,
+        device_id: restored.device_id,
+        current_device: status?.device_id === restored.device_id ? status.current_device : false,
+      });
+      toast.success('Encrypted settings downloaded and applied.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setStatusError(message);
+      toast.error(message);
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const passphraseIsValid = passphrase.trim().length >= 12;
+  const isBusy = busyAction !== null;
+
+  return (
+    <section className="rounded-lg border border-app-border-subtle bg-app-surface-sunken/20 p-4" aria-labelledby="settings-sync-title">
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex min-w-0 gap-3">
+          <Cloud className="mt-0.5 h-5 w-5 shrink-0 text-app-accent" aria-hidden="true" />
+          <div>
+            <h3 id="settings-sync-title" className="text-sm font-semibold text-app-text">Encrypted settings sync</h3>
+            <p className="mt-1 text-xs leading-5 text-app-text-secondary">Manually move safe app preferences between devices through your own Telegram Saved Messages. Telegram Drive operates no sync server.</p>
+          </div>
+        </div>
+        <button type="button" role="switch" aria-checked={settings.telegramSettingsSyncEnabled} aria-label="Enable encrypted settings sync" onClick={() => { setStatusError(null); setPassphrase(''); onEnabledChange(!settings.telegramSettingsSyncEnabled); }} className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${settings.telegramSettingsSyncEnabled ? 'bg-app-accent' : 'bg-app-border'}`}><span className={`absolute start-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${settings.telegramSettingsSyncEnabled ? 'translate-x-5 rtl:-translate-x-5' : ''}`} /></button>
+      </div>
+
+      {settings.telegramSettingsSyncEnabled && (
+        <div className="mt-4 space-y-3">
+          <div className="rounded-lg border border-app-warning/25 bg-app-warning/5 p-3 text-xs leading-5 text-app-text-secondary">
+            <strong className="text-app-text">Your passphrase cannot be recovered.</strong> It is used locally and is never stored or uploaded. The encrypted Telegram message may be visible in Saved Messages. Passwords, API/WebDAV keys, proxy details, supporter activation, crash consent, and file data are always excluded.
+          </div>
+          <label className="block">
+            <span className="text-xs font-medium text-app-text">Sync passphrase</span>
+            <input type="password" value={passphrase} onChange={event => setPassphrase(event.target.value)} minLength={12} autoComplete="new-password" spellCheck={false} placeholder="At least 12 characters" className="mt-1.5 w-full rounded-control border border-app-border bg-app-surface px-3 py-2.5 text-sm text-app-text outline-none focus:border-app-accent" />
+          </label>
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="button" disabled={!passphraseIsValid || isBusy} onClick={() => void upload()} className="quiet-control flex items-center gap-2 px-3 py-2 text-xs font-medium text-app-text disabled:cursor-not-allowed disabled:opacity-50">{busyAction === 'upload' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}Upload this device</button>
+            <button type="button" disabled={!passphraseIsValid || isBusy || status?.available === false} onClick={() => void download()} className="quiet-control flex items-center gap-2 px-3 py-2 text-xs font-medium text-app-text disabled:cursor-not-allowed disabled:opacity-50">{busyAction === 'download' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}Download and apply</button>
+            <button type="button" disabled={isBusy} onClick={() => void refreshStatus()} aria-label="Refresh settings sync status" className="quiet-control p-2 text-app-text-secondary disabled:opacity-50">{busyAction === 'status' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}</button>
+          </div>
+          {status && (
+            <p className="text-xs leading-5 text-app-text-secondary">
+              {status.available && status.updated_at
+                ? `Latest backup: ${new Date(status.updated_at * 1_000).toLocaleString()}${status.current_device ? ' · uploaded by this device' : ' · uploaded by another device'}`
+                : 'No encrypted settings backup was found in the latest 1,000 Saved Messages.'}
+            </p>
+          )}
+          {statusError && <p role="alert" className="text-xs leading-5 text-app-danger">{statusError}</p>}
+        </div>
+      )}
+    </section>
+  );
 }
 
 function SupporterSettingsSection() {
@@ -158,7 +296,7 @@ function SupporterSettingsSection() {
   );
 }
 
-export function PrivacySettingsTab({ crashReportingEnabled, onCrashReportingChange }: PrivacySettingsTabProps) {
+export function PrivacySettingsTab({ crashReportingEnabled, onCrashReportingChange, settings, onSettingsChange, onSettingsSyncEnabledChange }: PrivacySettingsTabProps) {
   return (
     <motion.section key="privacy" {...tabMotion} className="space-y-4">
       <div className="flex items-start gap-3 rounded-lg border border-app-accent/20 bg-app-accent/5 p-4">
@@ -183,6 +321,7 @@ export function PrivacySettingsTab({ crashReportingEnabled, onCrashReportingChan
         </div>
         <p className="rounded-lg border border-app-border-subtle p-3 text-xs leading-5 text-app-text-secondary"><strong className="text-app-text">Privacy policy summary:</strong> Telegram Drive does not sell personal data, inspect file contents for analytics, or operate a cloud account database. Revoking a share or disabling a local server stops that access immediately.</p>
       </section>
+      <SettingsSyncSection settings={settings} onSettingsChange={onSettingsChange} onEnabledChange={onSettingsSyncEnabledChange} />
       <SupporterSettingsSection />
     </motion.section>
   );

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { open } from '@tauri-apps/plugin-shell';
 import { Heart, X } from 'lucide-react';
 import { useSupporter } from '../../../context/SupporterContext';
+import { shouldShowSponsorContent } from '../../../services/supporterVisibility';
 
 const AD_INTERVAL_MS = 45 * 60 * 1000;
 const AUTO_DISMISS_SECONDS = 10;
@@ -47,7 +48,7 @@ export function DesktopAdBanner({ suppressed = false, onSupport }: DesktopAdBann
   const [isHovering, setIsHovering] = useState(false);
   const [loadStatus, setLoadStatus] = useState<AdLoadStatus>('loading');
   const [cycle, setCycle] = useState(0);
-  const eligible = !suppressed && !supporterStatus.ad_free;
+  const eligible = !suppressed && shouldShowSponsorContent(supporterStatus);
 
   useEffect(() => {
     if (!eligible || visible) return;

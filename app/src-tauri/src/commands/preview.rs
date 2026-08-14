@@ -106,6 +106,16 @@ async fn find_cached_file(cache_dir: &Path, stem: &str) -> Option<PathBuf> {
     newest.map(|(path, _)| path)
 }
 
+async fn mark_cache_file_used(path: PathBuf) {
+    let _ = tokio::task::spawn_blocking(move || {
+        let file = std::fs::OpenOptions::new().write(true).open(path)?;
+        file.set_times(
+            std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()),
+        )
+    })
+    .await;
+}
+
 fn media_extension(media: &Media) -> String {
     let extension = match media {
         Media::Document(document) => {
@@ -718,12 +728,14 @@ pub async fn cmd_get_preview(
     let stem = cache_stem(folder_id, message_id);
     if let Some(path) = find_cached_file(&cache_dir, &stem).await {
         log::debug!("Preview cache hit before Telegram lookup: {:?}", path);
+        mark_cache_file_used(path.clone()).await;
         return Ok(path.to_string_lossy().to_string());
     }
 
     let lock = download_lock(format!("preview:{}", stem));
     let _guard = lock.lock().await;
     if let Some(path) = find_cached_file(&cache_dir, &stem).await {
+        mark_cache_file_used(path.clone()).await;
         return Ok(path.to_string_lossy().to_string());
     }
 
@@ -790,20 +802,25 @@ pub async fn cmd_clean_preview_cache(app_handle: tauri::AppHandle) -> Result<(),
         .map_err(|e: tauri::Error| e.to_string())?
         .join("previews");
 
-    let _ = tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         if cache_dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(cache_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_file() {
-                        let _ = std::fs::remove_file(path);
-                    }
+            let entries = std::fs::read_dir(&cache_dir)
+                .map_err(|error| format!("Unable to read offline cache: {error}"))?;
+            for entry in entries {
+                let path = entry
+                    .map_err(|error| format!("Unable to inspect offline cache: {error}"))?
+                    .path();
+                if path.is_file() {
+                    std::fs::remove_file(&path).map_err(|error| {
+                        format!("Unable to remove offline file {}: {error}", path.display())
+                    })?;
                 }
             }
         }
+        Ok::<(), String>(())
     })
-    .await;
-    Ok(())
+    .await
+    .map_err(|error| format!("Offline cache cleanup task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -1130,6 +1147,34 @@ mod tests {
         assert!(!test_dir.join("home_32.txt.part").exists());
         assert_eq!(status.file_count, PREVIEW_CACHE_MAX_FILES);
         assert!(status.total_bytes <= PREVIEW_CACHE_MAX_TOTAL_BYTES);
+        let _ = std::fs::remove_dir_all(test_dir);
+    }
+
+    #[tokio::test]
+    async fn viewing_cached_file_refreshes_lru_position() {
+        let test_dir = std::env::temp_dir().join(format!(
+            "telegram_drive_offline_lru_test_{}",
+            rand::rng().random::<u64>()
+        ));
+        std::fs::create_dir_all(&test_dir).unwrap();
+        let recently_viewed = test_dir.join("home_1.txt");
+        std::fs::write(&recently_viewed, b"recent").unwrap();
+        for index in 2..=31 {
+            let path = test_dir.join(format!("home_{index}.txt"));
+            std::fs::write(&path, b"cached").unwrap();
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(SystemTime::UNIX_EPOCH))
+                .unwrap();
+        }
+
+        mark_cache_file_used(recently_viewed.clone()).await;
+        prune_preview_cache(test_dir.clone(), None).await;
+
+        assert!(recently_viewed.exists());
+        assert_eq!(preview_cache_status(&test_dir).await.file_count, PREVIEW_CACHE_MAX_FILES);
         let _ = std::fs::remove_dir_all(test_dir);
     }
 

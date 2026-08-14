@@ -2,7 +2,7 @@
 
 Terms version: 2026-08-11
 
-The supporter purchase is optional and is not required to use Telegram Drive’s core file-management features. A completed one-time payment activates ad-free use on up to three supported desktop devices, subject to successful entitlement verification.
+The supporter purchase is optional and is not required to use any Telegram Drive feature. Telegram Drive has no paid feature tier: a completed one-time payment activates ad-free use on up to three supported desktop devices, subject to successful entitlement verification.
 
 ## Activation and recovery
 

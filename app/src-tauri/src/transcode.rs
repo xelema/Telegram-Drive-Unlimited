@@ -838,7 +838,7 @@ pub async fn execute_transcode_pipeline(
 
 #[tauri::command]
 pub async fn cmd_get_transcode_capabilities(
-    manager: tauri::State<'_, TranscodeManager>,
+    manager: tauri::State<'_, Arc<TranscodeManager>>,
     app_handle: tauri::AppHandle,
 ) -> Result<TranscodeCapabilities, String> {
     // Lazy detection: if FFmpeg hasn't been detected yet, try now.
@@ -882,7 +882,7 @@ pub async fn cmd_prepare_transcoded_stream(
     folder_id: Option<i64>,
     quality: String,
     state: tauri::State<'_, TelegramState>,
-    manager: tauri::State<'_, TranscodeManager>,
+    manager: tauri::State<'_, Arc<TranscodeManager>>,
 ) -> Result<TranscodePrepareResult, String> {
     let folder_id = folder_id.unwrap_or(0);
     let key = TranscodeKey {
@@ -1085,7 +1085,7 @@ async fn get_duration_from_media(
 #[tauri::command]
 pub async fn cmd_get_transcode_status(
     job_id: String,
-    manager: tauri::State<'_, TranscodeManager>,
+    manager: tauri::State<'_, Arc<TranscodeManager>>,
 ) -> Result<TranscodeStatusResult, String> {
     let jobs = manager.jobs.lock().await;
     let job_arc = jobs
@@ -1119,7 +1119,7 @@ pub async fn cmd_get_transcode_status(
 #[tauri::command]
 pub async fn cmd_cancel_transcode(
     job_id: String,
-    manager: tauri::State<'_, TranscodeManager>,
+    manager: tauri::State<'_, Arc<TranscodeManager>>,
 ) -> Result<(), String> {
     let jobs = manager.jobs.lock().await;
     let job_arc = jobs
@@ -1144,7 +1144,7 @@ pub struct TranscodeCacheInfo {
     pub cached_variants: Vec<String>,
 }    #[tauri::command]
 pub async fn cmd_get_transcode_cache_info(
-    manager: tauri::State<'_, TranscodeManager>,
+    manager: tauri::State<'_, Arc<TranscodeManager>>,
 ) -> Result<TranscodeCacheInfo, String> {
     let current = manager.total_cache_size();
     let max = manager.get_max_cache_bytes().await;
@@ -1158,7 +1158,7 @@ pub async fn cmd_get_transcode_cache_info(
 #[tauri::command]
 pub async fn cmd_set_transcode_cache_limit(
     max_gb: u32,
-    manager: tauri::State<'_, TranscodeManager>,
+    manager: tauri::State<'_, Arc<TranscodeManager>>,
 ) -> Result<(), String> {
     let gb = std::cmp::max(1, std::cmp::min(50, max_gb));
     let max_bytes = (gb as u64) * 1024 * 1024 * 1024;
@@ -1179,7 +1179,7 @@ pub struct CachedVariantInfo {
 pub async fn cmd_get_cached_variants(
     message_id: i32,
     folder_id: Option<i64>,
-    manager: tauri::State<'_, TranscodeManager>,
+    manager: tauri::State<'_, Arc<TranscodeManager>>,
 ) -> Result<Vec<CachedVariantInfo>, String> {
     let folder_id = folder_id.unwrap_or(0);
     let file_key = format!("{}_{}", folder_id, message_id);
@@ -1342,7 +1342,7 @@ fn scan_transcode_cache(cache_root: &Path) -> Result<Vec<CacheEntry>, String> {
 
 #[tauri::command]
 pub async fn cmd_get_detailed_transcode_cache(
-    manager: tauri::State<'_, TranscodeManager>,
+    manager: tauri::State<'_, Arc<TranscodeManager>>,
 ) -> Result<DetailedCacheInfo, String> {
     let max_bytes = manager.get_max_cache_bytes().await;
     let cache_root = manager.cache_root.clone();
@@ -1473,7 +1473,7 @@ fn clear_variant_transcode_cache(
 pub async fn cmd_clear_transcode_cache(
     file_key: Option<String>,
     quality: Option<String>,
-    manager: tauri::State<'_, TranscodeManager>,
+    manager: tauri::State<'_, Arc<TranscodeManager>>,
 ) -> Result<String, String> {
     let cache_root = manager.cache_root.clone();
     tokio::task::spawn_blocking(move || match (file_key, quality) {
@@ -1492,7 +1492,7 @@ pub async fn cmd_clear_transcode_cache(
 pub async fn cmd_get_master_playlist_info(
     message_id: i32,
     folder_id: Option<i64>,
-    manager: tauri::State<'_, TranscodeManager>,
+    manager: tauri::State<'_, Arc<TranscodeManager>>,
 ) -> Result<MasterPlaylistInfo, String> {
     let folder_id = folder_id.unwrap_or(0);
     let file_key = format!("{}_{}", folder_id, message_id);

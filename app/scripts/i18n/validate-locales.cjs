@@ -58,6 +58,7 @@ function validate() {
 
     const targetKeys = new Set(Object.keys(target.flat));
     copiedEnglishCounts[locale] = 0;
+    const allowLocaleKeys = new Set(invariantAllowlist.localeKeys?.[locale] || []);
     const validSuffixes = ALLOWED_PLURAL_SUFFIXES[locale] || ALLOWED_PLURAL_SUFFIXES[locale.replace('-', '_')] || ['_one', '_other'];
 
     // Check missing / unexpected keys
@@ -114,7 +115,7 @@ function validate() {
 
         // 10. Copied English check
         if (enVal === targetVal && typeof enVal === 'string' && enVal.trim().length > 0) {
-          if (!allowKeys.has(key) && !allowTokens.has(enVal)) {
+          if (!allowKeys.has(key) && !allowTokens.has(enVal) && !allowLocaleKeys.has(key)) {
             copiedEnglishCounts[locale] += 1;
           }
         }
