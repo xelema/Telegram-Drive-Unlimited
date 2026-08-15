@@ -7,6 +7,8 @@ import Hls from 'hls.js';
 import { TelegramFile, StreamingQuality, TranscodePrepareResult, TranscodeJobPhase, TranscodeCapabilities, QUALITY_LABELS, HLS_QUALITIES } from '../../../types';
 import { useAdaptiveStreaming } from '../../../hooks/useAdaptiveStreaming';
 import { QualitySelector } from '../../shared/QualitySelector';
+import { FfmpegInstallNotice } from '../../shared/FfmpegInstallNotice';
+import { buildAuthenticatedHlsUrl } from '../../../services/hlsPlayback';
 
 interface AdaptiveMediaPlayerProps {
     file: TelegramFile;
@@ -427,8 +429,13 @@ export function AdaptiveMediaPlayer({
                         setHlsPhase('ready');
                         setHlsProgress(1);
                         if (status.playlist_url) {
-                            const fullUrl = `${streamBaseRef.current}${status.playlist_url}?token=${streamTokenRef.current}`;
+                            const fullUrl = buildAuthenticatedHlsUrl(streamUrl, status.playlist_url);
                             setHlsPlaylistUrl(fullUrl);
+                        } else {
+                            setHlsPhase('failed');
+                            setHlsError('The transcode completed without a playable HLS playlist');
+                            setHlsVariantStates(prev => ({ ...prev, [q]: 'failed' }));
+                            break;
                         }
                         setHlsVariantStates(prev => ({ ...prev, [q]: 'ready' }));
                         break;
@@ -447,7 +454,7 @@ export function AdaptiveMediaPlayer({
                 // Status check failed, will retry
             }
         }, 1000);
-    }, []);
+    }, [log, streamUrl]);
 
     // ── Start HLS transcode for a quality ───────────────────────────
     const startTranscode = useCallback(async (quality: StreamingQuality) => {
@@ -491,13 +498,17 @@ export function AdaptiveMediaPlayer({
                 setHlsProgress(1);
                 setHlsVariantStates(prev => ({ ...prev, [quality]: 'ready' }));
                 if (transcodePreparation.playlist_url) {
-                    const fullUrl = `${streamBaseRef.current}${transcodePreparation.playlist_url}?token=${streamTokenRef.current}`;
+                    const fullUrl = buildAuthenticatedHlsUrl(streamUrl, transcodePreparation.playlist_url);
                     log('hlsPlaylistUrl', fullUrl);
                     setHlsPlaylistUrl(fullUrl);
+                } else {
+                    setHlsPhase('failed');
+                    setHlsError('The cached transcode has no playable HLS playlist');
+                    setHlsVariantStates(prev => ({ ...prev, [quality]: 'failed' }));
                 }
             } else if (transcodePreparation.status === 'error') {
                 setHlsPhase('failed');
-                setHlsError('Transcode failed to start');
+                setHlsError(transcodePreparation.error || 'Transcode failed to start');
                 setHlsVariantStates(prev => ({ ...prev, [quality]: 'failed' }));
             } else {
                 currentJobIdRef.current = transcodePreparation.job_id;
@@ -510,7 +521,7 @@ export function AdaptiveMediaPlayer({
             setHlsError(String(error));
             setHlsVariantStates(prev => ({ ...prev, [quality]: 'failed' }));
         }
-    }, [file.id, activeFolderId, mseVideoRef, pollTranscodeStatus, abortMse, log]);
+    }, [file.id, activeFolderId, mseVideoRef, pollTranscodeStatus, abortMse, log, streamUrl]);
 
     // ── Handle quality change ────────────────────────────────────────
     const handleQualityChange = useCallback((quality: StreamingQuality) => {
@@ -659,15 +670,7 @@ export function AdaptiveMediaPlayer({
             }
         };
 
-        if (video.canPlayType('application/vnd.apple.mpegurl')) {
-            // Native HLS support (Safari)
-            video.src = hlsPlaylistUrl;
-            video.addEventListener('loadedmetadata', () => {
-                onHlsMetadata();
-                if (savedTime > 0) video.currentTime = savedTime;
-                video.play().catch(() => {});
-            }, { once: true });
-        } else if (Hls.isSupported()) {
+        if (Hls.isSupported()) {
             const token = streamTokenRef.current;
             const hls = new Hls({
                 enableWorker: true,
@@ -683,9 +686,14 @@ export function AdaptiveMediaPlayer({
                 },
             });
             hlsRef.current = hls;
+            let networkRecoveryAttempted = false;
+            let mediaRecoveryAttempted = false;
 
-            hls.loadSource(hlsPlaylistUrl);
-            hls.attachMedia(video);
+            // WebView2 is more reliable when the MediaSource is attached before
+            // the manifest request starts.
+            hls.on(Hls.Events.MEDIA_ATTACHED, () => {
+                hls.loadSource(hlsPlaylistUrl);
+            });
 
             hls.on(Hls.Events.MANIFEST_PARSED, () => {
                 log('HLS MANIFEST_PARSED, seeking to', savedTime);
@@ -698,14 +706,44 @@ export function AdaptiveMediaPlayer({
                 if (data.fatal) {
                     log('HLS fatal error', data.type, data.details);
                     console.error('[HLS] Fatal error:', data.type, data.details);
+
+                    if (data.type === Hls.ErrorTypes.NETWORK_ERROR && !networkRecoveryAttempted) {
+                        networkRecoveryAttempted = true;
+                        hls.startLoad();
+                        return;
+                    }
+                    if (data.type === Hls.ErrorTypes.MEDIA_ERROR && !mediaRecoveryAttempted) {
+                        mediaRecoveryAttempted = true;
+                        hls.recoverMediaError();
+                        return;
+                    }
+
                     setHlsError(`HLS playback error: ${data.details}`);
                     setHlsPhase('failed');
-                    hls.destroy();
-                    hlsRef.current = null;
                 } else {
                     log('HLS non-fatal error', data.type, data.details);
                 }
             });
+            hls.attachMedia(video);
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+            // Native HLS fallback for engines without MediaSource support.
+            const handleLoadedMetadata = () => {
+                onHlsMetadata();
+                if (savedTime > 0) video.currentTime = savedTime;
+                video.play().catch(() => {});
+            };
+            const handleNativeError = () => {
+                setHlsError(`Native HLS playback error${video.error?.message ? `: ${video.error.message}` : ''}`);
+                setHlsPhase('failed');
+            };
+            video.addEventListener('loadedmetadata', handleLoadedMetadata, { once: true });
+            video.addEventListener('error', handleNativeError, { once: true });
+            video.src = hlsPlaylistUrl;
+
+            return () => {
+                video.removeEventListener('loadedmetadata', handleLoadedMetadata);
+                video.removeEventListener('error', handleNativeError);
+            };
         } else {
             log('HLS not supported in this browser');
             setHlsError('HLS playback not supported in this browser');
@@ -713,7 +751,11 @@ export function AdaptiveMediaPlayer({
         }
 
         return () => {
-            // Don't destroy on cleanup, only on explicit switch
+            const activeHls = hlsRef.current;
+            if (activeHls) {
+                hlsRef.current = null;
+                activeHls.destroy();
+            }
         };
     }, [playbackMode, hlsPlaylistUrl, hlsPhase, hlsVideoReady, log]);
 
@@ -1162,6 +1204,10 @@ export function AdaptiveMediaPlayer({
                     )}
                     </div>
                 </div>}
+
+                {!isFullscreen && (
+                    <FfmpegInstallNotice available={transcodeCapabilities?.available} variant="player" />
+                )}
 
                 {/* Keyboard shortcut hints */}
                 {!isFullscreen && <div className="mt-2 flex items-center gap-4 text-[10px] text-white/25 select-none">

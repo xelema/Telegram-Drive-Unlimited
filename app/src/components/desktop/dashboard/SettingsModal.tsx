@@ -8,7 +8,7 @@ import { useSettings } from '../../../context/SettingsContext';
 import { useConfirm } from '../../../context/ConfirmContext';
 import { useTranslation } from 'react-i18next';
 import { LANGUAGES, type LanguagePreference } from '../../../i18n/languages';
-import { ShareInfo, CacheEntry, DetailedCacheInfo, OfflineCacheStatus } from '../../../types';
+import { ShareInfo, CacheEntry, DetailedCacheInfo, OfflineCacheStatus, TranscodeCapabilities } from '../../../types';
 import { version as appVersion } from '../../../../package.json';
 import { clearImageMemoryCaches } from '../../../services/imagePreviewCache';
 import { useModalFocus } from '../../../hooks/useModalFocus';
@@ -18,6 +18,7 @@ import { getDetailedTranscodeCache, transcodeCacheErrorMessage } from '../../../
 import { formatBytes } from '../../../utils';
 import { SettingsRow, SettingsStepper, SettingsToggle } from './settings/SettingsControls';
 import { AboutSettingsTab, AdvancedSettingsTab, EncryptionSettingsTab, GeneralSettingsTab, PrivacySettingsTab, ProxySettingsTab, SharingSettingsTab, ThemeSettingsTab, VpnSettingsTab, WebDavSettingsTab } from './settings/SettingsTabs';
+import { FfmpegInstallNotice } from '../../shared/FfmpegInstallNotice';
 
 interface SettingsModalProps {
     isOpen: boolean;
@@ -59,6 +60,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
     const [transcodeCache, setTranscodeCache] = useState<DetailedCacheInfo | null>(null);
     const [cacheLoading, setCacheLoading] = useState(false);
     const [cacheError, setCacheError] = useState<string | null>(null);
+    const [transcodeCapabilities, setTranscodeCapabilities] = useState<TranscodeCapabilities | null>(null);
     const cacheRequestId = useRef(0);
     const [offlineCache, setOfflineCache] = useState<OfflineCacheStatus | null>(null);
     const [offlineCacheLoading, setOfflineCacheLoading] = useState(false);
@@ -268,6 +270,14 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
         }
     }, []);
 
+    const fetchTranscodeCapabilities = useCallback(async () => {
+        try {
+            setTranscodeCapabilities(await invoke<TranscodeCapabilities>('cmd_get_transcode_capabilities'));
+        } catch {
+            setTranscodeCapabilities(null);
+        }
+    }, []);
+
     const fetchOfflineCache = useCallback(async () => {
         setOfflineCacheLoading(true);
         setOfflineCacheError(null);
@@ -286,9 +296,10 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
     useEffect(() => {
         if (isOpen && activeTab === 'general') {
             fetchTranscodeCache();
+            fetchTranscodeCapabilities();
             fetchOfflineCache();
         }
-    }, [isOpen, activeTab, fetchOfflineCache, fetchTranscodeCache]);
+    }, [isOpen, activeTab, fetchOfflineCache, fetchTranscodeCache, fetchTranscodeCapabilities]);
 
     // Poll API status while modal is open and API is enabled
     useEffect(() => {
@@ -1045,6 +1056,8 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                                             </button>
                                         </div>
                                     </div>
+
+                                    <FfmpegInstallNotice available={transcodeCapabilities?.available} />
 
                                     {/* Cache entries list */}
                                     {cacheLoading ? (

@@ -8,3 +8,11 @@ export const isAndroidPlatform = ((): boolean => {
     return typeof navigator !== 'undefined' && /android/i.test(navigator.userAgent);
   }
 })();
+
+export function isWindowsPlatform(): boolean {
+  try {
+    return osType() === 'windows';
+  } catch {
+    return typeof navigator !== 'undefined' && /windows/i.test(navigator.userAgent);
+  }
+}

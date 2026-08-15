@@ -1,9 +1,10 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
+const { invokeMock, openMock } = vi.hoisted(() => ({ invokeMock: vi.fn(), openMock: vi.fn() }));
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
-vi.mock('@tauri-apps/plugin-shell', () => ({ open: vi.fn() }));
+vi.mock('@tauri-apps/plugin-shell', () => ({ open: openMock }));
+vi.mock('@tauri-apps/plugin-os', () => ({ type: () => 'windows' }));
 vi.mock('@tauri-apps/plugin-updater', () => ({ check: vi.fn() }));
 vi.mock('../../src/components/desktop/dashboard/ThemesTab', () => ({ ThemesTab: () => null }));
 vi.mock('react-i18next', () => ({
@@ -13,6 +14,10 @@ vi.mock('react-i18next', () => ({
       if (key === 'common.loading') return 'Loading...';
       if (key === 'settings.clear_all') return 'Clear All';
       if (key === 'settings.retry_encryption_check') return 'Check again';
+      if (key === 'settings.ffmpeg_required_title') return 'FFmpeg is needed for HLS playback';
+      if (key === 'settings.ffmpeg_required_desc') return 'FFmpeg was not detected.';
+      if (key === 'settings.ffmpeg_restart_hint') return 'Add ffmpeg.exe to PATH, then restart.';
+      if (key === 'settings.ffmpeg_download_windows') return 'Download FFmpeg for Windows';
       return key;
     },
   }),
@@ -37,6 +42,8 @@ import { SettingsModal } from '../../src/components/desktop/dashboard/SettingsMo
 describe('SettingsModal transcode cache state', () => {
   beforeEach(() => {
     invokeMock.mockReset();
+    openMock.mockReset();
+    openMock.mockResolvedValue(undefined);
     invokeMock.mockImplementation((command: string) => {
       if (command === 'cmd_get_detailed_transcode_cache') {
         return Promise.reject(new Error('Windows cache access denied'));
@@ -50,6 +57,9 @@ describe('SettingsModal transcode cache state', () => {
       if (command === 'cmd_get_offline_cache_status') {
         return Promise.resolve({ entries: [], total_bytes: 0, max_bytes: 0 });
       }
+      if (command === 'cmd_get_transcode_capabilities') {
+        return Promise.resolve({ available: false, variants: [], mode: 'original' });
+      }
       return Promise.resolve(null);
     });
   });
@@ -62,5 +72,16 @@ describe('SettingsModal transcode cache state', () => {
       expect(screen.queryByLabelText('Loading...')).toBeNull();
     });
     expect((screen.getByRole('button', { name: 'Clear All' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('directs Windows users to the official FFmpeg download page when HLS is unavailable', async () => {
+    render(<SettingsModal isOpen onClose={vi.fn()} />);
+
+    expect(await screen.findByText('FFmpeg is needed for HLS playback')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Download FFmpeg for Windows' }));
+
+    await waitFor(() => {
+      expect(openMock).toHaveBeenCalledWith('https://ffmpeg.org/download.html#build-windows');
+    });
   });
 });

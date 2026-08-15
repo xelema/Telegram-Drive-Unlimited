@@ -59,6 +59,7 @@ export interface TranscodePrepareResult {
   status: 'started' | 'pending' | 'caching' | 'transcoding' | 'ready' | 'error' | 'cancelled';
   progress: number;
   playlist_url: string | null;
+  error: string | null;
 }
 
 export interface TranscodeStatusResult {
