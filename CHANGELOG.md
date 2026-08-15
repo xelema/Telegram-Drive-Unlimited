@@ -1,3 +1,23 @@
+## [2.5.2] - 2026-08-15
+
+### Windows Video Playback
+
+- Added clear Windows guidance when FFmpeg is unavailable, including a link to the official download page and instructions to add `ffmpeg.exe` to `PATH` before restarting Telegram Drive.
+- Fixed the handoff from completed FFmpeg jobs to the built-in player by carrying local authentication through HLS playlists and segment requests.
+- Improved WebView2 playback startup by attaching the media source before loading the HLS manifest and adding bounded network and media recovery.
+
+### Transcode Cache Reliability
+
+- Validates cached playlists and segments before marking a quality variant ready, preventing incomplete output from appearing with a misleading checkmark.
+- Removes invalid cached variants and regenerates them when playback is retried.
+- Allows stale failed, cancelled, or missing-output jobs to restart and preserves actionable transcode errors in the player.
+
+### Verification
+
+- Production frontend build and all 37 frontend tests passed.
+- All 69 desktop Rust tests passed; the live advertisement network test remains intentionally ignored.
+- Added route-level coverage for authenticated HLS playlist and segment delivery.
+
 ## [2.5.1] - 2026-08-14
 
 ### Sponsor Banner Reliability
