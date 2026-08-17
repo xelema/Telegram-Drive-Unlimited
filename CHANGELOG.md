@@ -1,3 +1,9 @@
+## [2.5.3] - 2026-08-16
+
+- Applied maintenance hotfixes and stability improvements.
+- Refined the user interface for a clearer, more polished experience.
+- Streamlined the donation and lifetime ad-free supporter activation path.
+
 ## [2.5.2] - 2026-08-15
 
 ### Windows Video Playback
