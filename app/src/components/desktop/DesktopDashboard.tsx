@@ -53,7 +53,7 @@ import { useSettings } from '../../context/SettingsContext';
 import { useConfirm } from '../../context/ConfirmContext';
 import { useSupporter } from '../../context/SupporterContext';
 import { DEFAULT_SEARCH_FILTERS, filterAndRankFiles, type FileSearchFilters } from '../../services/fileSearch';
-import { isSupporterPromptDue } from '../../services/supporterVisibility';
+import { isSupporterPromptDue, shouldOfferNewSupporterPurchase, SUPPORTER_VALUE_MOMENT_EVENT } from '../../services/supporterVisibility';
 
 const sameFile = (left: TelegramFile, right: TelegramFile) => (
     left.id === right.id && (left.folder_id ?? null) === (right.folder_id ?? null)
@@ -96,7 +96,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     const [showShortcuts, setShowShortcuts] = useState(false);
     const [showHelp, setShowHelp] = useState(false);
     const [showSupporterReminder, setShowSupporterReminder] = useState(false);
-    const supporterReminderEvaluated = useRef(false);
+    const supporterPromptDueRef = useRef(false);
     const [createFolderRequest, setCreateFolderRequest] = useState(0);
     const [activeSmartView, setActiveSmartView] = useState<SmartView | null>('recents');
     const [searchTerm, setSearchTerm] = useState("");
@@ -141,22 +141,26 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
 
     useEffect(() => {
         if (supporterStatus.ad_free) {
+            supporterPromptDueRef.current = false;
             setShowSupporterReminder(false);
             return;
         }
-        if (
-            supporterReminderEvaluated.current
-            || supporterStatus.state === 'loading'
-            || !settingsLoaded
-            || !settings.driveTourSeen
-        ) return;
+        supporterPromptDueRef.current = settingsLoaded
+            && settings.driveTourSeen
+            && isSupporterPromptDue(supporterStatus, settings.supporterPromptLastShownAt);
+    }, [settings.driveTourSeen, settings.supporterPromptLastShownAt, settingsLoaded, supporterStatus]);
 
-        supporterReminderEvaluated.current = true;
-        if (isSupporterPromptDue(supporterStatus, settings.supporterPromptLastShownAt)) {
+    useEffect(() => {
+        const showSupporterAfterValueMoment = () => {
+            if (!supporterPromptDueRef.current) return;
+            if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+            supporterPromptDueRef.current = false;
             recordSupporterPromptShown();
             setShowSupporterReminder(true);
-        }
-    }, [recordSupporterPromptShown, settings.driveTourSeen, settings.supporterPromptLastShownAt, settingsLoaded, supporterStatus]);
+        };
+        window.addEventListener(SUPPORTER_VALUE_MOMENT_EVENT, showSupporterAfterValueMoment);
+        return () => window.removeEventListener(SUPPORTER_VALUE_MOMENT_EVENT, showSupporterAfterValueMoment);
+    }, [recordSupporterPromptShown]);
 
     useEffect(() => {
         const openSettings = (event: Event) => {
@@ -997,7 +1001,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                     onFinish={() => updateSetting('driveTourSeen', true)}
                     onOpenHelp={() => { updateSetting('driveTourSeen', true); setShowHelp(true); }}
                     onOpenSupporter={() => { updateSetting('driveTourSeen', true); setSettingsInitialTab('privacy'); setShowSettings(true); }}
-                    includeSupporterStep={!supporterStatus.ad_free}
+                    includeSupporterStep={shouldOfferNewSupporterPurchase(supporterStatus)}
                     onSupporterShown={recordSupporterPromptShown}
                 />
             )}

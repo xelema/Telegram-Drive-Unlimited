@@ -13,6 +13,7 @@ import { useConfirm } from '../context/ConfirmContext';
 import { formatBytes } from '../utils';
 import { triggerHaptic } from '../services/feedback';
 import { restoreDownloadQueue, serializeDownloadQueue } from '../services/transferQueuePolicy';
+import { announceSupporterValueMoment } from '../services/supporterVisibility';
 
 interface ProgressPayload {
     id: string;
@@ -204,6 +205,7 @@ export function useFileDownload(store: Store | null) {
             } else {
                 setDownloadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'success', progress: 100 } : i));
                 triggerHaptic('success');
+                announceSupporterValueMoment('download_completed');
                 toast.success(`Downloaded: ${item.filename}`, !isAndroidPlatform && savePath ? {
                     action: {
                         label: 'Show in folder',

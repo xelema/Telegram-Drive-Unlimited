@@ -12,6 +12,7 @@ import { useTranslation } from 'react-i18next';
 import { useUploadChoice, type UploadChoice } from '../context/UploadChoiceContext';
 import { triggerHaptic } from '../services/feedback';
 import { restoreUploadQueue, serializeUploadQueue } from '../services/transferQueuePolicy';
+import { announceSupporterValueMoment } from '../services/supporterVisibility';
 
 interface ProgressPayload {
     id: string;
@@ -182,6 +183,7 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
             } else {
                 setUploadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'success', progress: 100 } : i));
                 triggerHaptic('success');
+                announceSupporterValueMoment('upload_completed');
                 queryClient.invalidateQueries({ queryKey: ['files', item.folderId] });
             }
             // Clean up temp zip on success

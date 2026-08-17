@@ -596,7 +596,7 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
 
                             <div className="space-y-4 text-center">
                                 <p className="mb-5 text-ui leading-relaxed text-app-text-secondary">
-                                    If you find Telegram Drive useful, consider supporting its development. Verified $5 PayPal supporter access that removes desktop ads is available after sign-in in Settings → Privacy. Only that in-app checkout activates ad-free access.
+                                    If you find Telegram Drive useful, the optional $5 USD Lifetime Ad-Free Supporter License is available after sign-in in Settings → Privacy. It removes desktop sponsor placements without locking any features behind payment. Only that verified in-app PayPal checkout activates ad-free access.
                                 </p>
 
                                 <div className="space-y-4">
