@@ -4,7 +4,9 @@ Telegram Drive is a cross-platform file manager for using your Telegram account 
 
 The application is built with Tauri, Rust, React, and TypeScript.
 
+<div align="center">
 https://caamer20.github.io/Telegram-Drive/
+</div>
 
 <div align="center">
 
