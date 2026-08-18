@@ -18,7 +18,11 @@ const ALLOWED_PLURAL_SUFFIXES = {
   ja: ['_other'],
   ko: ['_other'],
   vi: ['_other'],
-  'zh-CN': ['_other']
+  'zh-CN': ['_other'],
+  'zh-TW': ['_other'],
+  'bn-BD': ['_one', '_other'],
+  'fil-PH': ['_one', '_other'],
+  'th-TH': ['_other'],
 };
 
 function extractVariables(text) {

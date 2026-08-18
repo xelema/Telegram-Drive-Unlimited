@@ -36,3 +36,37 @@ test('Japanese CJK strings fit the narrow locale fixture', async ({ page }) => {
   await expect(card).toContainText('最近開いた暗号化されていないファイル');
   await expect(card).toHaveScreenshot('gallery-japanese-cjk.png');
 });
+
+test('new regional language strings fit the narrow locale fixture', async ({ page }) => {
+  await page.goto('/?design-gallery&locale-stress');
+  await expect(page.getByRole('heading', { name: 'Quiet Utility gallery' })).toBeVisible();
+  const card = page.getByTestId('localized-offline-card');
+
+  for (const locale of ['bn-BD', 'th-TH', 'fil-PH', 'zh-TW']) {
+    await page.getByLabel('Audit language').selectOption(locale);
+    await expect(card).toBeVisible();
+    const overflows = await card.evaluate(element => element.scrollWidth > element.clientWidth);
+    expect(overflows, `${locale} locale fixture should not overflow`).toBe(false);
+  }
+});
+
+test('desktop sponsor card renders without external creative dependencies', async ({ page }) => {
+  await page.goto('/?design-gallery&sponsor-preview');
+  await expect(page.getByRole('heading', { name: 'Sponsor placement preview' })).toBeVisible();
+
+  const banner = page.getByRole('complementary', { name: /Sponsored advertisement/ });
+  await expect(banner).toBeVisible();
+  await expect(banner).toContainText('A quick message from our sponsor');
+  await expect(banner).toContainText('Closes in 10s');
+
+  const layout = await banner.evaluate(element => ({
+    width: element.getBoundingClientRect().width,
+    fitsHorizontally: element.scrollWidth <= element.clientWidth,
+    fitsVertically: element.scrollHeight <= element.clientHeight,
+    hasIframe: element.querySelector('iframe') !== null,
+  }));
+  expect(layout.width).toBe(300);
+  expect(layout.fitsHorizontally).toBe(true);
+  expect(layout.fitsVertically).toBe(true);
+  expect(layout.hasIframe).toBe(false);
+});

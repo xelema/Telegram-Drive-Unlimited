@@ -1,33 +1,31 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DesktopAdBanner } from '../../src/components/desktop/dashboard/DesktopAdBanner';
+import { SPONSOR_URL } from '../../src/services/sponsorLinks';
 
-vi.mock('@tauri-apps/plugin-shell', () => ({ open: vi.fn() }));
+const openMock = vi.hoisted(() => vi.fn());
+const supporterStatus = vi.hoisted(() => ({ current: { state: 'inactive', ad_free: false } }));
+vi.mock('@tauri-apps/plugin-shell', () => ({ open: openMock }));
 vi.mock('../../src/context/SupporterContext', () => ({
-  useSupporter: () => ({ status: { ad_free: false } }),
+  useSupporter: () => ({ status: supporterStatus.current }),
 }));
 
 describe('DesktopAdBanner', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-11T00:00:00Z'));
+    localStorage.clear();
+    openMock.mockReset();
+    openMock.mockResolvedValue(undefined);
+    supporterStatus.current = { state: 'inactive', ad_free: false };
   });
 
   afterEach(() => {
     vi.useRealTimers();
   });
 
-  it('starts its countdown after the creative loads and dismisses for 45 minutes', async () => {
+  it('starts its countdown immediately and dismisses for 45 minutes', async () => {
     render(<DesktopAdBanner />);
-    const iframe = screen.getByTitle('Sponsored advertisement') as HTMLIFrameElement;
-
-    act(() => {
-      window.dispatchEvent(new MessageEvent('message', {
-        origin: 'null',
-        source: iframe.contentWindow,
-        data: { type: 'telegram-drive:ad-banner-status', status: 'loaded' },
-      }));
-    });
 
     expect(screen.getByText('Closes in 10s')).toBeTruthy();
     await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
@@ -46,13 +44,24 @@ describe('DesktopAdBanner', () => {
     expect(screen.getByRole('complementary')).toBeTruthy();
   });
 
-  it('uses a non-popup sandbox and shows a clickable fallback when loading fails', async () => {
+  it('always renders a sponsor card and opens the configured SmartLink', async () => {
     render(<DesktopAdBanner />);
-    const iframe = screen.getByTitle('Sponsored advertisement');
+    expect(screen.getByText('A quick message from our sponsor')).toBeTruthy();
+    expect(screen.queryByTitle('Sponsored advertisement')).toBeNull();
 
-    expect(iframe.getAttribute('sandbox')).toBe('allow-scripts');
-    await act(async () => { await vi.advanceTimersByTimeAsync(6_500); });
-    expect(screen.getByText('Sponsored content unavailable')).toBeTruthy();
-    expect(screen.getByText('Open sponsor')).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Open sponsored content in browser' }));
+      await Promise.resolve();
+    });
+    expect(openMock).toHaveBeenCalledWith(SPONSOR_URL);
+  });
+
+  it('does not render sponsor content for an ad-free supporter', () => {
+    supporterStatus.current = { state: 'active', ad_free: true };
+
+    render(<DesktopAdBanner />);
+
+    expect(screen.queryByRole('complementary')).toBeNull();
+    expect(openMock).not.toHaveBeenCalled();
   });
 });

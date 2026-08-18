@@ -1,13 +1,8 @@
-import { SupportedLanguage, LanguagePreference, getLanguageInfo } from './languages';
+import { SupportedLanguage, LanguagePreference, findLanguageInfo } from './languages';
 
 export function normalizeLocale(input: string): string {
   if (!input) return 'en';
-  const clean = input.trim();
-  if (clean.toLowerCase().startsWith('zh-tw') || clean.toLowerCase().startsWith('zh-hk') || clean.toLowerCase().startsWith('zh-hant')) {
-    // Explicit rule from plan: zh-TW/zh-HK/zh-Hant fall back to English, not Simplified Chinese
-    return 'en';
-  }
-  return clean;
+  return input.trim();
 }
 
 export function resolveSupportedLanguage(input: string | readonly string[]): SupportedLanguage {
@@ -15,7 +10,7 @@ export function resolveSupportedLanguage(input: string | readonly string[]): Sup
   for (const raw of list) {
     if (!raw) continue;
     const normalized = normalizeLocale(raw);
-    const match = getLanguageInfo(normalized);
+    const match = findLanguageInfo(normalized);
     if (match) {
       return match.code;
     }

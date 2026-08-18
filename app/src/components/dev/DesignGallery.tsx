@@ -3,6 +3,7 @@ import { ChevronLeft, Database, Download, ExternalLink, Folder, Key, MoreHorizon
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../../context/ThemeContext';
 import { getLanguageInfo, type SupportedLanguage } from '../../i18n/languages';
+import { DesktopAdBanner } from '../desktop/dashboard/DesktopAdBanner';
 import {
   Badge,
   Button,
@@ -26,12 +27,23 @@ export default function DesignGallery() {
   const [density, setDensity] = useState<'comfortable' | 'compact'>('comfortable');
   const [direction, setDirection] = useState<'ltr' | 'rtl'>('ltr');
   const [auditLanguage, setAuditLanguage] = useState<SupportedLanguage>('de');
-  const localeStress = new URLSearchParams(window.location.search).has('locale-stress');
+  const query = new URLSearchParams(window.location.search);
+  const localeStress = query.has('locale-stress');
+  const sponsorPreview = query.has('sponsor-preview');
   const activeDirection = localeStress ? getLanguageInfo(auditLanguage).dir : direction;
 
   const changeAuditLanguage = (language: SupportedLanguage) => {
     setAuditLanguage(language);
   };
+
+  if (sponsorPreview) {
+    return (
+      <main className="h-screen overflow-hidden bg-app-canvas p-8 text-app-text">
+        <h1 className="text-xl font-semibold">Sponsor placement preview</h1>
+        <DesktopAdBanner />
+      </main>
+    );
+  }
 
   return (
     <main dir={activeDirection} data-density={density} className="h-screen overflow-y-auto bg-app-canvas p-4 text-app-text sm:p-8">
@@ -82,6 +94,10 @@ export default function DesignGallery() {
                   <option value="de">Deutsch</option>
                   <option value="ar">العربية</option>
                   <option value="zh-CN">简体中文</option>
+                  <option value="zh-TW">繁體中文</option>
+                  <option value="bn-BD">বাংলা (বাংলাদেশ)</option>
+                  <option value="th-TH">ไทย (ประเทศไทย)</option>
+                  <option value="fil-PH">Filipino (Pilipinas)</option>
                   <option value="ja">日本語</option>
                   <option value="ko">한국어</option>
                   <option value="vi">Tiếng Việt</option>

@@ -126,20 +126,24 @@ Download and authenticate an encrypted file before opening it with another appli
 
 ## Languages
 
-Telegram Drive supports a **System** language preference and these 15 selectable production locales:
+Telegram Drive supports a **System** language preference and these 19 selectable production locales:
 
 - English
 - Spanish
 - Russian
 - Simplified Chinese
+- Traditional Chinese
 - French
 - Italian
 - Arabic
 - Brazilian Portuguese
 - German
 - Hindi
+- Bengali (Bangladesh)
 - Indonesian
+- Filipino (Philippines)
 - Turkish
+- Thai (Thailand)
 - Japanese
 - Korean
 - Vietnamese

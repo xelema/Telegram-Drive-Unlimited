@@ -92,7 +92,12 @@ fn escape_html(input: &str) -> String {
 
 fn resolve_req_lang(req: &HttpRequest) -> (&'static str, &'static str) {
     if let Some(query) = req.uri().query() {
+        let query = query.to_ascii_lowercase();
         if query.contains("lang=ar") { return ("ar", "rtl"); }
+        if query.contains("lang=zh-tw") || query.contains("lang=zh-hk") || query.contains("lang=zh-hant") { return ("zh-TW", "ltr"); }
+        if query.contains("lang=bn") { return ("bn-BD", "ltr"); }
+        if query.contains("lang=th") { return ("th-TH", "ltr"); }
+        if query.contains("lang=fil") || query.contains("lang=tl") { return ("fil-PH", "ltr"); }
         if query.contains("lang=es") { return ("es", "ltr"); }
         if query.contains("lang=ru") { return ("ru", "ltr"); }
         if query.contains("lang=fr") { return ("fr", "ltr"); }
@@ -103,7 +108,12 @@ fn resolve_req_lang(req: &HttpRequest) -> (&'static str, &'static str) {
     }
     if let Some(accept) = req.headers().get("Accept-Language") {
         if let Ok(val) = accept.to_str() {
+            let val = val.to_ascii_lowercase();
             if val.contains("ar") { return ("ar", "rtl"); }
+            if val.contains("zh-tw") || val.contains("zh-hk") || val.contains("zh-hant") { return ("zh-TW", "ltr"); }
+            if val.contains("bn") { return ("bn-BD", "ltr"); }
+            if val.contains("th") { return ("th-TH", "ltr"); }
+            if val.contains("fil") || val.contains("tl-ph") { return ("fil-PH", "ltr"); }
             if val.contains("es") { return ("es", "ltr"); }
             if val.contains("ru") { return ("ru", "ltr"); }
             if val.contains("fr") { return ("fr", "ltr"); }
@@ -147,6 +157,42 @@ fn render_password_form(req: &HttpRequest, file_name: &str, token: &str, error: 
                 "Mật khẩu",
                 "Xác minh và tải xuống",
                 "Mật khẩu không đúng. Vui lòng thử lại.",
+            ),
+            "bn-BD" => (
+                "পাসওয়ার্ড-সুরক্ষিত ফাইল",
+                "পাসওয়ার্ড লিখুন",
+                "এই শেয়ার লিঙ্কটি পাসওয়ার্ড দিয়ে সুরক্ষিত।",
+                "ফাইল",
+                "পাসওয়ার্ড",
+                "যাচাই করে ডাউনলোড করুন",
+                "পাসওয়ার্ডটি সঠিক নয়। আবার চেষ্টা করুন।",
+            ),
+            "th-TH" => (
+                "ไฟล์ที่ป้องกันด้วยรหัสผ่าน",
+                "ป้อนรหัสผ่าน",
+                "ลิงก์แชร์นี้ได้รับการป้องกันด้วยรหัสผ่าน",
+                "ไฟล์",
+                "รหัสผ่าน",
+                "ตรวจสอบและดาวน์โหลด",
+                "รหัสผ่านไม่ถูกต้อง โปรดลองอีกครั้ง",
+            ),
+            "fil-PH" => (
+                "File na Protektado ng Password",
+                "Ilagay ang Password",
+                "Protektado ng password ang share link na ito.",
+                "File",
+                "Password",
+                "I-verify at I-download",
+                "Mali ang password. Pakisubukang muli.",
+            ),
+            "zh-TW" => (
+                "密碼保護的檔案",
+                "輸入密碼",
+                "此分享連結受密碼保護。",
+                "檔案",
+                "密碼",
+                "驗證並下載",
+                "密碼不正確，請再試一次。",
             ),
             _ => (
                 "Password Protected File",
@@ -413,5 +459,26 @@ mod tests {
             .insert_header(("Accept-Language", "vi-VN,vi;q=0.9,en;q=0.8"))
             .to_http_request();
         assert_eq!(resolve_req_lang(&header_request), ("vi", "ltr"));
+    }
+
+    #[test]
+    fn resolves_new_regional_share_languages() {
+        for (locale, expected) in [
+            ("bn-BD", "bn-BD"),
+            ("th-TH", "th-TH"),
+            ("fil-PH", "fil-PH"),
+            ("tl-PH", "fil-PH"),
+            ("zh-TW", "zh-TW"),
+            ("zh-Hant", "zh-TW"),
+        ] {
+            let request = TestRequest::with_uri(&format!("/d/example?lang={locale}"))
+                .to_http_request();
+            assert_eq!(resolve_req_lang(&request), (expected, "ltr"));
+        }
+
+        let traditional_chinese = TestRequest::default()
+            .insert_header(("Accept-Language", "zh-HK,zh-Hant;q=0.9,en;q=0.8"))
+            .to_http_request();
+        assert_eq!(resolve_req_lang(&traditional_chinese), ("zh-TW", "ltr"));
     }
 }
