@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Telegram Drive — A local-first file workspace for Telegram</title>
   <meta name="description" content="Organize, preview, stream, and share files stored in your own Telegram account. Open source for Windows, macOS, Linux, and Android.">
-  <meta name="theme-color" content="#0b0d12">
-  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" id="themeColor" content="#0b0d12">
+  <meta name="color-scheme" content="dark light">
   <meta name="referrer" content="strict-origin-when-cross-origin">
   <link rel="canonical" href="https://caamer20.github.io/Telegram-Drive/">
   <link rel="icon" type="image/svg+xml" href="assets/logo.svg">
@@ -16,9 +16,21 @@
   <meta property="og:url" content="https://caamer20.github.io/Telegram-Drive/">
   <meta property="og:image" content="https://caamer20.github.io/Telegram-Drive/assets/dashboard.webp">
   <meta name="twitter:card" content="summary_large_image">
-  <script>document.documentElement.classList.add('js');</script>
+  <script>
+    document.documentElement.classList.add('js');
+    try {
+      const savedTheme = localStorage.getItem('telegram-drive-site-theme');
+      document.documentElement.dataset.theme = savedTheme === 'light' || savedTheme === 'dark'
+        ? savedTheme
+        : (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+      document.getElementById('themeColor').content = document.documentElement.dataset.theme === 'light' ? '#f6f8fb' : '#0b0d12';
+    } catch {
+      document.documentElement.dataset.theme = 'dark';
+    }
+  </script>
   <style>
     :root {
+      color-scheme: dark;
       --ink: #f5f7fb;
       --muted: #a5adba;
       --quiet: #727b89;
@@ -37,6 +49,23 @@
       --radius: 22px;
       --radius-sm: 13px;
       --shadow: 0 34px 100px rgba(0, 0, 0, .42);
+    }
+
+    :root[data-theme="light"] {
+      color-scheme: light;
+      --ink: #17212d;
+      --muted: #526274;
+      --quiet: #718094;
+      --canvas: #f6f8fb;
+      --surface: #ffffff;
+      --surface-2: #edf2f7;
+      --line: rgba(20, 42, 64, .14);
+      --line-soft: rgba(20, 42, 64, .09);
+      --accent: #087dbf;
+      --accent-strong: #006da9;
+      --accent-wash: rgba(8, 125, 191, .1);
+      --good: #168459;
+      --shadow: 0 30px 80px rgba(37, 61, 84, .16);
     }
 
     *, *::before, *::after { box-sizing: border-box; }
@@ -92,6 +121,12 @@
     .nav-links a { color: var(--muted); font-size: .88rem; font-weight: 560; text-decoration: none; transition: color .18s ease; }
     .nav-links a:hover { color: var(--ink); }
     .nav-actions { display: flex; align-items: center; gap: .7rem; }
+    .theme-toggle { width: 38px; height: 38px; display: inline-grid; flex: none; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); color: var(--ink); cursor: pointer; transition: transform .18s ease, background .18s ease, border-color .18s ease; }
+    .theme-toggle:hover { transform: translateY(-1px); border-color: var(--line); background: var(--surface); }
+    .theme-toggle svg { width: 17px; height: 17px; }
+    .theme-toggle .theme-icon-moon { display: none; }
+    :root[data-theme="light"] .theme-toggle .theme-icon-sun { display: none; }
+    :root[data-theme="light"] .theme-toggle .theme-icon-moon { display: block; }
     .menu-toggle { display: none; width: 42px; height: 42px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); cursor: pointer; }
     .menu-toggle span, .menu-toggle::before, .menu-toggle::after { display: block; width: 17px; height: 1.5px; margin: 4px auto; background: currentColor; content: ""; }
 
@@ -221,13 +256,33 @@
     .final-cta { padding-block: clamp(6rem, 12vw, 10rem); text-align: center; }
     .final-cta h2 { max-width: 800px; margin: 0 auto; font-size: clamp(2.5rem, 6vw, 5rem); letter-spacing: -.06em; line-height: 1.02; }
     .final-cta p { margin: 1.4rem 0 2rem; color: var(--muted); }
-    footer { padding: 3.5rem 0 2rem; border-top: 1px solid var(--line-soft); }
-    .footer-grid { display: grid; grid-template-columns: 2fr repeat(3, 1fr); gap: 3rem; }
-    .footer-brand p { max-width: 330px; margin: 1rem 0 0; color: var(--quiet); font-size: .82rem; }
-    .footer-col h3 { margin: .25rem 0 1rem; color: var(--quiet); font-size: .72rem; letter-spacing: .1em; text-transform: uppercase; }
-    .footer-col a { display: block; width: fit-content; margin: .55rem 0; color: var(--muted); font-size: .83rem; text-decoration: none; }
+    footer { padding: clamp(3.5rem, 7vw, 5rem) 0 2rem; border-top: 1px solid var(--line-soft); }
+    .footer-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: clamp(2rem, 5vw, 4.5rem); align-items: start; }
+    .footer-grid > * { min-width: 0; }
+    .footer-brand p { max-width: 270px; margin: 1.1rem 0 0; color: var(--quiet); font-size: .82rem; line-height: 1.7; }
+    .footer-col { display: flex; flex-direction: column; align-items: flex-start; gap: .7rem; }
+    .footer-col h3 { margin: .25rem 0 .45rem; color: var(--quiet); font-size: .72rem; letter-spacing: .1em; text-transform: uppercase; }
+    .footer-col a { display: block; width: fit-content; color: var(--muted); font-size: .83rem; text-decoration: none; }
     .footer-col a:hover { color: var(--ink); }
-    .footer-bottom { display: flex; justify-content: space-between; gap: 1rem; margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid var(--line-soft); color: var(--quiet); font-size: .75rem; }
+    .footer-bottom { display: flex; justify-content: space-between; gap: 1.5rem; margin-top: clamp(3rem, 6vw, 4.5rem); padding-top: 1.5rem; border-top: 1px solid var(--line-soft); color: var(--quiet); font-size: .75rem; }
+
+    :root[data-theme="light"] body { background: radial-gradient(circle at 50% -10%, rgba(53, 169, 239, .13), transparent 32rem), var(--canvas); }
+    :root[data-theme="light"] .site-header { background: rgba(246, 248, 251, .78); }
+    :root[data-theme="light"] .site-header.scrolled { background: rgba(246, 248, 251, .94); }
+    :root[data-theme="light"] .nav-links.open { background: #f6f8fb; }
+    :root[data-theme="light"] .button:hover { background: #e4ebf2; }
+    :root[data-theme="light"] .button.primary { border-color: #087dbf; background: #087dbf; color: #fff; }
+    :root[data-theme="light"] .button.primary:hover { background: #006da9; }
+    :root[data-theme="light"] .app-frame-bar { background: #eef2f6; }
+    :root[data-theme="light"] .app-frame-bar i { background: #c3ccd7; }
+    :root[data-theme="light"] .proof-row { background: rgba(255, 255, 255, .8); }
+    :root[data-theme="light"] .story-list,
+    :root[data-theme="light"] .support-details ul { color: #34475a; }
+    :root[data-theme="light"] .feature { background: rgba(255, 255, 255, .72); }
+    :root[data-theme="light"] code { background: #edf2f7; color: #1b506f; }
+    :root[data-theme="light"] .trust-panel { background: linear-gradient(140deg, #eaf6fd, #f5f9fc 62%, #fff); }
+    :root[data-theme="light"] .trust-item { border-color: rgba(20, 42, 64, .13); }
+    :root[data-theme="light"] .phone { border-color: #d7dee7; }
 
     dialog { width: min(94vw, 1500px); max-width: none; padding: 0; border: 1px solid var(--line); border-radius: var(--radius); background: #07090d; box-shadow: var(--shadow); }
     dialog::backdrop { background: rgba(3,5,8,.88); backdrop-filter: blur(10px); }
@@ -247,8 +302,7 @@
       .story-copy, .phone-copy { max-width: var(--reading); }
       .phones { max-width: 660px; }
       .phone:nth-child(2) { transform: none; }
-      .footer-grid { grid-template-columns: 2fr 1fr 1fr; }
-      .footer-col:last-child { grid-column: 2; }
+      .footer-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2.75rem 2rem; }
     }
 
     @media (max-width: 640px) {
@@ -266,9 +320,10 @@
       .phone-stage { overflow: hidden; }
       .phones { width: 142%; margin-left: -21%; gap: .6rem; }
       .support-price, .support-details { padding: 2rem 1.4rem; }
-      .footer-grid { grid-template-columns: 1fr 1fr; gap: 2rem; }
-      .footer-brand { grid-column: 1 / -1; }
-      .footer-col:last-child { grid-column: auto; }
+      .footer-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2.5rem 1rem; }
+      .footer-brand { grid-column: 1 / -1; padding-bottom: .25rem; }
+      .footer-brand p { max-width: 350px; }
+      .footer-col a { font-size: .78rem; }
       .footer-bottom { flex-direction: column; }
     }
 
@@ -298,6 +353,10 @@
       </nav>
       <button class="menu-toggle" id="menuToggle" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="navLinks"><span></span></button>
       <div class="nav-actions">
+        <button class="theme-toggle" id="themeToggle" type="button" aria-label="Switch to light mode">
+          <svg class="theme-icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.66 6.34l1.41-1.41"></path></svg>
+          <svg class="theme-icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 14.2A8.5 8.5 0 0 1 9.8 3.5a8.5 8.5 0 1 0 10.7 10.7Z"></path></svg>
+        </button>
         <a class="button compact github-link" href="https://github.com/caamer20/Telegram-Drive" target="_blank" rel="noopener noreferrer">GitHub</a>
         <a class="button compact primary" href="#download">Get the app</a>
       </div>
@@ -519,6 +578,21 @@
     const header = document.getElementById('siteHeader');
     const menuButton = document.getElementById('menuToggle');
     const navLinks = document.getElementById('navLinks');
+    const themeButton = document.getElementById('themeToggle');
+
+    const applyTheme = theme => {
+      document.documentElement.dataset.theme = theme;
+      document.getElementById('themeColor').content = theme === 'light' ? '#f6f8fb' : '#0b0d12';
+      themeButton.setAttribute('aria-label', theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
+      themeButton.setAttribute('title', theme === 'dark' ? 'Use light mode' : 'Use dark mode');
+    };
+
+    applyTheme(document.documentElement.dataset.theme || 'dark');
+    themeButton.addEventListener('click', () => {
+      const theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+      applyTheme(theme);
+      try { localStorage.setItem('telegram-drive-site-theme', theme); } catch { /* Storage can be unavailable in private contexts. */ }
+    });
 
     const setMenu = open => {
       navLinks.classList.toggle('open', open);
