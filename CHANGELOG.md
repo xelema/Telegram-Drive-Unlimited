@@ -1,3 +1,20 @@
+## [2.5.4] - 2026-08-18
+
+### Sponsor Experience
+
+- Replaced the unreliable embedded desktop creative with a consistent in-app sponsor card that retains the 10-second countdown and 45-minute return interval.
+- Standardized desktop sponsor actions on the configured EffectiveCPMNetwork destination and kept browser fallbacks isolated with `noopener,noreferrer`.
+- Removed the obsolete local advertisement relay and its external creative-loading dependencies.
+
+### Language Support
+
+- Added Bengali (Bangladesh), Thai (Thailand), Filipino (Philippines), and Traditional Chinese translations.
+- Added regional locale detection, language selection, localized public-share password pages, and layout regression coverage for the new languages.
+
+### Product Website
+
+- Launched the redesigned GitHub Pages product site and corrected responsive screenshot sizing so every image preserves its original aspect ratio.
+
 ## [2.5.3] - 2026-08-16
 
 - Applied maintenance hotfixes and stability improvements.
