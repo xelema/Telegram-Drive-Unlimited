@@ -8,7 +8,8 @@ The application is built with Tauri, Rust, React, and TypeScript.
 https://caamer20.github.io/Telegram-Drive/
 </div>
 
- 
+<br>
+<br>
 
 
 <div align="center">
