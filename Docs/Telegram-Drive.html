@@ -290,9 +290,10 @@
     .dialog-close { position: fixed; top: 1.2rem; right: 1.2rem; width: 44px; height: 44px; border: 1px solid rgba(255,255,255,.18); border-radius: 50%; background: rgba(11,13,18,.86); color: #fff; cursor: pointer; }
 
     @media (max-width: 960px) {
+      .nav-actions { order: 2; margin-left: auto; }
       .nav-links { display: none; position: fixed; inset: 72px 0 auto; padding: 1.5rem; border-bottom: 1px solid var(--line); background: #0d1016; }
       .nav-links.open { display: grid; gap: 1.2rem; }
-      .menu-toggle { display: block; margin-left: auto; }
+      .menu-toggle { display: block; order: 3; margin-left: 0; }
       .nav-actions .github-link { display: none; }
       .proof-row, .feature-grid, .steps, .download-grid { grid-template-columns: repeat(2, 1fr); }
       .proof:nth-child(3) { grid-column: 1 / -1; border-top: 1px solid var(--line-soft); border-left: 0; }
