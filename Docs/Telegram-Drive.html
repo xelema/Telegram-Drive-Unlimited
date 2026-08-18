@@ -53,7 +53,7 @@
       -webkit-font-smoothing: antialiased;
     }
     body.nav-open { overflow: hidden; }
-    img { display: block; max-width: 100%; }
+    img { display: block; max-width: 100%; height: auto; }
     button, a { font: inherit; }
     a { color: inherit; }
     button { color: inherit; }
@@ -129,7 +129,7 @@
     .app-frame { overflow: hidden; border: 1px solid rgba(255,255,255,.14); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); }
     .app-frame-bar { height: 42px; display: flex; align-items: center; gap: 6px; padding: 0 16px; border-bottom: 1px solid var(--line-soft); background: #12161d; }
     .app-frame-bar i { width: 8px; height: 8px; border-radius: 50%; background: #343c48; }
-    .app-frame img { width: 100%; aspect-ratio: 1.638 / 1; object-fit: cover; }
+    .app-frame img { width: 100%; height: auto; }
     .proof-row { display: grid; grid-template-columns: repeat(3, 1fr); margin-top: 1.2rem; border: 1px solid var(--line-soft); border-radius: var(--radius-sm); background: rgba(17,21,28,.72); text-align: left; }
     .proof { padding: 1.25rem 1.4rem; }
     .proof + .proof { border-left: 1px solid var(--line-soft); }
@@ -156,7 +156,7 @@
     .story-list li { display: flex; gap: .7rem; }
     .story-list li::before { color: var(--good); content: "✓"; }
     .story-media { overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-shadow: 0 24px 70px rgba(0,0,0,.32); }
-    .story-media img { width: 100%; cursor: zoom-in; }
+    .story-media img { width: 100%; height: auto; cursor: zoom-in; }
 
     .feature-grid { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid var(--line); border-left: 1px solid var(--line); }
     .feature { min-height: 220px; padding: clamp(1.5rem, 3vw, 2.25rem); border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); background: rgba(17,21,28,.5); }
@@ -185,7 +185,7 @@
     .phones { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; align-items: center; }
     .phone { overflow: hidden; border: 5px solid #242b35; border-radius: clamp(18px, 3vw, 30px); background: #11151c; box-shadow: 0 28px 70px rgba(0,0,0,.4); }
     .phone:nth-child(2) { transform: translateY(2.5rem); }
-    .phone img { width: 100%; cursor: zoom-in; }
+    .phone img { width: 100%; height: auto; cursor: zoom-in; }
 
     .support-card { display: grid; grid-template-columns: .8fr 1.2fr; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
     .support-price { padding: clamp(2rem, 6vw, 4.5rem); background: linear-gradient(145deg, rgba(53,169,239,.17), rgba(53,169,239,.03)); }
