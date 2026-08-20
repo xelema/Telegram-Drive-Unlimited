@@ -102,6 +102,32 @@
     .skip-link:focus { transform: translateY(0); }
     :focus-visible { outline: 3px solid var(--accent-strong); outline-offset: 3px; }
 
+    .fluid-orb {
+      position: fixed;
+      left: -8vw;
+      bottom: 0;
+      z-index: 0;
+      width: 116vw;
+      height: clamp(220px, 38vh, 440px);
+      pointer-events: none;
+      background: var(--canvas);
+      opacity: .24;
+      filter: blur(.2px) saturate(.95);
+      isolation: isolate;
+      -webkit-mask-image: linear-gradient(to bottom, transparent 0%, rgba(0, 0, 0, .72) 32%, #000 60%);
+      mask-image: linear-gradient(to bottom, transparent 0%, rgba(0, 0, 0, .72) 32%, #000 60%);
+    }
+    .fluid-orb::after {
+      position: absolute;
+      inset: 0;
+      box-shadow: inset 0 20px 90px rgba(0, 0, 0, .18);
+      content: "";
+    }
+    .fluid-orb canvas { display: block; width: 100%; height: 100%; }
+    :root[data-theme="light"] .fluid-orb { opacity: .18; }
+    :root[data-theme="light"] .fluid-orb::after { box-shadow: inset 0 20px 90px rgba(255, 255, 255, .08); }
+    main, footer { position: relative; z-index: 1; }
+
     .shell { width: min(calc(100% - 3rem), var(--content)); margin-inline: auto; }
     .site-header {
       position: fixed;
@@ -161,10 +187,8 @@
     .platform-line { margin: 1.25rem 0 0; color: var(--quiet); font-size: .82rem; }
     .product-stage { position: relative; margin-top: clamp(4rem, 8vw, 6.75rem); }
     .product-stage::before { position: absolute; inset: -12% 11% 20%; z-index: -1; border-radius: 50%; background: rgba(53,169,239,.15); filter: blur(80px); content: ""; }
-    .app-frame { overflow: hidden; border: 1px solid rgba(255,255,255,.14); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); }
-    .app-frame-bar { height: 42px; display: flex; align-items: center; gap: 6px; padding: 0 16px; border-bottom: 1px solid var(--line-soft); background: #12161d; }
-    .app-frame-bar i { width: 8px; height: 8px; border-radius: 50%; background: #343c48; }
-    .app-frame img { width: 100%; height: auto; }
+    .app-frame { padding: clamp(4px, .65vw, 9px); border: 1px solid rgba(255,255,255,.11); border-radius: calc(var(--radius) + 2px); background: linear-gradient(145deg, rgba(255,255,255,.09), rgba(255,255,255,.025)); box-shadow: 0 28px 90px rgba(0,0,0,.38), inset 0 1px 0 rgba(255,255,255,.08); }
+    .app-frame img { width: 100%; height: auto; border: 1px solid rgba(255,255,255,.08); border-radius: calc(var(--radius) - 7px); }
     .proof-row { display: grid; grid-template-columns: repeat(3, 1fr); margin-top: 1.2rem; border: 1px solid var(--line-soft); border-radius: var(--radius-sm); background: rgba(17,21,28,.72); text-align: left; }
     .proof { padding: 1.25rem 1.4rem; }
     .proof + .proof { border-left: 1px solid var(--line-soft); }
@@ -273,8 +297,8 @@
     :root[data-theme="light"] .button:hover { background: #e4ebf2; }
     :root[data-theme="light"] .button.primary { border-color: #087dbf; background: #087dbf; color: #fff; }
     :root[data-theme="light"] .button.primary:hover { background: #006da9; }
-    :root[data-theme="light"] .app-frame-bar { background: #eef2f6; }
-    :root[data-theme="light"] .app-frame-bar i { background: #c3ccd7; }
+    :root[data-theme="light"] .app-frame { border-color: rgba(20,42,64,.13); background: linear-gradient(145deg, rgba(255,255,255,.95), rgba(226,235,244,.72)); box-shadow: 0 28px 80px rgba(37,61,84,.18), inset 0 1px 0 #fff; }
+    :root[data-theme="light"] .app-frame img { border-color: rgba(20,42,64,.1); }
     :root[data-theme="light"] .proof-row { background: rgba(255, 255, 255, .8); }
     :root[data-theme="light"] .story-list,
     :root[data-theme="light"] .support-details ul { color: #34475a; }
@@ -308,13 +332,13 @@
 
     @media (max-width: 640px) {
       .shell { width: min(calc(100% - 2rem), var(--content)); }
+      .fluid-orb { height: 250px; }
       .nav-actions > .button { display: none; }
       .hero { padding-top: 8.5rem; }
       .hero h1 { font-size: clamp(2.75rem, 14vw, 4.2rem); }
       .hero-actions { display: grid; }
       .hero-actions .button { width: 100%; }
       .product-stage { margin-top: 3.5rem; }
-      .app-frame-bar { height: 30px; }
       .proof-row, .feature-grid, .steps, .download-grid { grid-template-columns: 1fr; }
       .proof + .proof, .proof:nth-child(3) { grid-column: auto; border-top: 1px solid var(--line-soft); border-left: 0; }
       .feature { min-height: 190px; }
@@ -339,6 +363,7 @@
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
+  <div class="fluid-orb" aria-hidden="true"><canvas id="fluidOrbCanvas"></canvas></div>
   <header class="site-header" id="siteHeader">
     <div class="shell nav-shell">
       <a class="brand" href="#top" aria-label="Telegram-Drive home">
@@ -378,7 +403,6 @@
 
         <div class="product-stage">
           <div class="app-frame">
-            <div class="app-frame-bar" aria-hidden="true"><i></i><i></i><i></i></div>
             <img src="assets/dashboard.webp" width="1800" height="1099" alt="Telegram-Drive desktop workspace showing folders and files" fetchpriority="high" data-lightbox>
           </div>
           <div class="proof-row" aria-label="Product principles">
@@ -580,6 +604,114 @@
     const menuButton = document.getElementById('menuToggle');
     const navLinks = document.getElementById('navLinks');
     const themeButton = document.getElementById('themeToggle');
+
+    const orbCanvas = document.getElementById('fluidOrbCanvas');
+    const orbGl = orbCanvas.getContext('webgl', { antialias: true, alpha: true });
+    const orbMotion = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const orbVertex = `attribute vec2 a_pos; void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }`;
+    const orbFragment = `
+      precision mediump float;
+      uniform vec2 u_resolution;
+      uniform float u_time;
+      uniform vec3 u_color;
+      uniform vec3 u_neutral;
+
+      float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }
+      float noise(vec2 p) {
+        vec2 i = floor(p), f = fract(p), u = f * f * (3.0 - 2.0 * f);
+        return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + 1.0), u.x), u.y);
+      }
+      float fbm(vec2 p) {
+        float value = 0.0, amount = 0.6;
+        for (int i = 0; i < 3; i++) { value += amount * noise(p); p *= 2.0; amount *= 0.5; }
+        return value;
+      }
+      void main() {
+        vec2 uv = gl_FragCoord.xy / u_resolution.xy;
+        float t = u_time * 0.22;
+        vec2 drift = vec2(sin(t) + 0.6 * sin(t * 1.7 + 1.3), cos(t * 0.8) + 0.6 * cos(t * 1.3 + 2.1));
+        vec2 p = vec2(uv.x * 1.25, uv.y) + drift * 0.7;
+        vec2 q = vec2(fbm(p + drift), fbm(p + vec2(3.2, 1.5) - drift));
+        float fluidA = fbm(p + 1.2 * q);
+        float fluidB = fbm(p * 1.42 + vec2(-q.y, q.x) + drift * 0.28);
+        float shade = clamp(1.0 - uv.y + (fluidA - 0.5) * 0.9 + (fluidB - 0.5) * 0.42, 0.0, 1.0);
+        vec3 soft = mix(u_neutral, u_color, .24);
+        vec3 middle = mix(u_neutral, u_color, .58);
+        vec3 accent = min(u_color * 1.16, vec3(1.0));
+        vec3 color = mix(u_neutral, soft, smoothstep(.14, .34, shade));
+        color = mix(color, middle, smoothstep(.36, .56, shade));
+        color = mix(color, u_color, smoothstep(.58, .76, shade));
+        color = mix(color, accent, smoothstep(.78, .94, shade));
+        float edge = smoothstep(0.04, .34, uv.y);
+        gl_FragColor = vec4(color * edge, edge);
+      }
+    `;
+
+    const compileOrbShader = (type, source) => {
+      const shader = orbGl?.createShader(type);
+      if (!shader) return null;
+      orbGl.shaderSource(shader, source);
+      orbGl.compileShader(shader);
+      if (!orbGl.getShaderParameter(shader, orbGl.COMPILE_STATUS)) {
+        orbGl.deleteShader(shader);
+        return null;
+      }
+      return shader;
+    };
+
+    if (orbGl) {
+      const program = orbGl.createProgram();
+      const vertex = compileOrbShader(orbGl.VERTEX_SHADER, orbVertex);
+      const fragment = compileOrbShader(orbGl.FRAGMENT_SHADER, orbFragment);
+      if (program && vertex && fragment) {
+        orbGl.attachShader(program, vertex);
+        orbGl.attachShader(program, fragment);
+        orbGl.linkProgram(program);
+        orbGl.useProgram(program);
+        const buffer = orbGl.createBuffer();
+        orbGl.bindBuffer(orbGl.ARRAY_BUFFER, buffer);
+        orbGl.bufferData(orbGl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), orbGl.STATIC_DRAW);
+        const position = orbGl.getAttribLocation(program, 'a_pos');
+        orbGl.enableVertexAttribArray(position);
+        orbGl.vertexAttribPointer(position, 2, orbGl.FLOAT, false, 0, 0);
+        const resolution = orbGl.getUniformLocation(program, 'u_resolution');
+        const time = orbGl.getUniformLocation(program, 'u_time');
+        const color = orbGl.getUniformLocation(program, 'u_color');
+        const neutral = orbGl.getUniformLocation(program, 'u_neutral');
+        const start = performance.now();
+        let lastTheme = '';
+        let width = 0;
+        let height = 0;
+
+        const renderOrb = timestamp => {
+          const dpr = Math.min(window.devicePixelRatio || 1, 2);
+          width = orbCanvas.clientWidth;
+          height = orbCanvas.clientHeight;
+          const pixelWidth = Math.round(width * dpr);
+          const pixelHeight = Math.round(height * dpr);
+          if (orbCanvas.width !== pixelWidth || orbCanvas.height !== pixelHeight) {
+            orbCanvas.width = pixelWidth;
+            orbCanvas.height = pixelHeight;
+            orbGl.viewport(0, 0, pixelWidth, pixelHeight);
+          }
+          const currentTheme = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+          if (currentTheme !== lastTheme) {
+            const rgb = currentTheme === 'light' ? [0.07, 0.48, 0.78] : [0.08, 0.38, 0.86];
+            orbGl.uniform3f(color, ...rgb);
+            orbGl.uniform3f(neutral, ...(currentTheme === 'light' ? [0.965, 0.973, 0.984] : [0.043, 0.051, 0.071]));
+            lastTheme = currentTheme;
+          }
+          orbGl.uniform2f(resolution, pixelWidth, pixelHeight);
+          orbGl.uniform1f(time, orbMotion ? (timestamp - start) / 1000 : 0);
+          orbGl.drawArrays(orbGl.TRIANGLES, 0, 6);
+          if (orbMotion) requestAnimationFrame(renderOrb);
+        };
+
+        new ResizeObserver(() => renderOrb(performance.now())).observe(orbCanvas.parentElement);
+        new MutationObserver(() => renderOrb(performance.now())).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+        renderOrb(start);
+      }
+    }
 
     const applyTheme = theme => {
       document.documentElement.dataset.theme = theme;
