@@ -42,7 +42,7 @@ test('new regional language strings fit the narrow locale fixture', async ({ pag
   await expect(page.getByRole('heading', { name: 'Quiet Utility gallery' })).toBeVisible();
   const card = page.getByTestId('localized-offline-card');
 
-  for (const locale of ['bn-BD', 'th-TH', 'fil-PH', 'zh-TW']) {
+  for (const locale of ['bn-BD', 'th-TH', 'fil-PH', 'zh-TW', 'uk-UA', 'pl-PL', 'fa-IR', 'ur-PK', 'ms-MY']) {
     await page.getByLabel('Audit language').selectOption(locale);
     await expect(card).toBeVisible();
     const overflows = await card.evaluate(element => element.scrollWidth > element.clientWidth);

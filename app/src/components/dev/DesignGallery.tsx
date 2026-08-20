@@ -92,6 +92,11 @@ export default function DesignGallery() {
                   onChange={(event) => changeAuditLanguage(event.target.value as SupportedLanguage)}
                 >
                   <option value="de">Deutsch</option>
+                  <option value="uk-UA">Українська</option>
+                  <option value="pl-PL">Polski</option>
+                  <option value="fa-IR">فارسی</option>
+                  <option value="ur-PK">اردو</option>
+                  <option value="ms-MY">Bahasa Melayu</option>
                   <option value="ar">العربية</option>
                   <option value="zh-CN">简体中文</option>
                   <option value="zh-TW">繁體中文</option>

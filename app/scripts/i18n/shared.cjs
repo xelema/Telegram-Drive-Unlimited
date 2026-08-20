@@ -5,7 +5,7 @@ const LOCALES_DIR = path.join(__dirname, '../../src/i18n/locales');
 const INVARIANT_ALLOWLIST_PATH = path.join(__dirname, '../../src/i18n/invariant-allowlist.json');
 
 const SUPPORTED_LOCALES = [
-  'en', 'es', 'ru', 'zh-CN', 'zh-TW', 'fr', 'it', 'ar', 'pt-BR', 'de', 'hi', 'bn-BD', 'id', 'fil-PH', 'tr', 'th-TH', 'ja', 'ko', 'vi'
+  'en', 'es', 'ru', 'uk-UA', 'pl-PL', 'fa-IR', 'ur-PK', 'ms-MY', 'zh-CN', 'zh-TW', 'fr', 'it', 'ar', 'pt-BR', 'de', 'hi', 'bn-BD', 'id', 'fil-PH', 'tr', 'th-TH', 'ja', 'ko', 'vi'
 ];
 
 function flattenObject(obj, prefix = '') {

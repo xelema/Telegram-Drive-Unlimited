@@ -4,6 +4,11 @@ import { initReactI18next } from 'react-i18next';
 import en from './locales/en.json';
 import es from './locales/es.json';
 import ru from './locales/ru.json';
+import ukUA from './locales/uk-UA.json';
+import plPL from './locales/pl-PL.json';
+import faIR from './locales/fa-IR.json';
+import urPK from './locales/ur-PK.json';
+import msMY from './locales/ms-MY.json';
 import zhCN from './locales/zh-CN.json';
 import zhTW from './locales/zh-TW.json';
 import fr from './locales/fr.json';
@@ -28,6 +33,11 @@ i18n
       en: { translation: en },
       es: { translation: es },
       ru: { translation: ru },
+      'uk-UA': { translation: ukUA },
+      'pl-PL': { translation: plPL },
+      'fa-IR': { translation: faIR },
+      'ur-PK': { translation: urPK },
+      'ms-MY': { translation: msMY },
       'zh-CN': { translation: zhCN },
       'zh-TW': { translation: zhTW },
       fr: { translation: fr },

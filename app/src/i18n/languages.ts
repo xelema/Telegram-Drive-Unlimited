@@ -1,4 +1,4 @@
-export type SupportedLanguage = 'en' | 'es' | 'ru' | 'zh-CN' | 'zh-TW' | 'fr' | 'it' | 'ar' | 'pt-BR' | 'de' | 'hi' | 'bn-BD' | 'id' | 'fil-PH' | 'tr' | 'th-TH' | 'ja' | 'ko' | 'vi';
+export type SupportedLanguage = 'en' | 'es' | 'ru' | 'uk-UA' | 'pl-PL' | 'fa-IR' | 'ur-PK' | 'ms-MY' | 'zh-CN' | 'zh-TW' | 'fr' | 'it' | 'ar' | 'pt-BR' | 'de' | 'hi' | 'bn-BD' | 'id' | 'fil-PH' | 'tr' | 'th-TH' | 'ja' | 'ko' | 'vi';
 
 export type LanguagePreference = 'system' | SupportedLanguage;
 
@@ -17,6 +17,11 @@ export const LANGUAGES: LanguageInfo[] = [
   { code: 'en', nativeLabel: 'English', englishLabel: 'English', dir: 'ltr', numberLocale: 'en-US', dateLocale: 'en-US', aliases: ['en'] },
   { code: 'es', nativeLabel: 'Español', englishLabel: 'Spanish', dir: 'ltr', numberLocale: 'es-ES', dateLocale: 'es-ES', aliases: ['es'] },
   { code: 'ru', nativeLabel: 'Русский', englishLabel: 'Russian', dir: 'ltr', numberLocale: 'ru-RU', dateLocale: 'ru-RU', aliases: ['ru'] },
+  { code: 'uk-UA', nativeLabel: 'Українська', englishLabel: 'Ukrainian', dir: 'ltr', numberLocale: 'uk-UA', dateLocale: 'uk-UA', aliases: ['uk', 'uk-UA'] },
+  { code: 'pl-PL', nativeLabel: 'Polski', englishLabel: 'Polish', dir: 'ltr', numberLocale: 'pl-PL', dateLocale: 'pl-PL', aliases: ['pl', 'pl-PL'] },
+  { code: 'fa-IR', nativeLabel: 'فارسی', englishLabel: 'Persian', dir: 'rtl', numberLocale: 'fa-IR', dateLocale: 'fa-IR', aliases: ['fa', 'fa-IR'] },
+  { code: 'ur-PK', nativeLabel: 'اردو', englishLabel: 'Urdu', dir: 'rtl', numberLocale: 'ur-PK', dateLocale: 'ur-PK', aliases: ['ur', 'ur-PK'] },
+  { code: 'ms-MY', nativeLabel: 'Bahasa Melayu', englishLabel: 'Malay', dir: 'ltr', numberLocale: 'ms-MY', dateLocale: 'ms-MY', aliases: ['ms', 'ms-MY'] },
   { code: 'zh-CN', nativeLabel: '简体中文', englishLabel: 'Chinese (Simplified)', dir: 'ltr', numberLocale: 'zh-CN', dateLocale: 'zh-CN', aliases: ['zh', 'zh-CN', 'zh-SG', 'zh-Hans'] },
   { code: 'zh-TW', nativeLabel: '繁體中文', englishLabel: 'Chinese (Traditional)', dir: 'ltr', numberLocale: 'zh-TW', dateLocale: 'zh-TW', aliases: ['zh-TW', 'zh-HK', 'zh-MO', 'zh-Hant'] },
   { code: 'fr', nativeLabel: 'Français', englishLabel: 'French', dir: 'ltr', numberLocale: 'fr-FR', dateLocale: 'fr-FR', aliases: ['fr'] },

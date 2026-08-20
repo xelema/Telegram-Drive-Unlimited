@@ -39,6 +39,22 @@ describe('supported languages', () => {
     expect(resolveSupportedLanguage(['unsupported-locale', 'TH-th'])).toBe('th-TH');
   });
 
+  it('registers the priority desktop locales with regional aliases and direction metadata', () => {
+    expect(LANGUAGES).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'uk-UA', nativeLabel: 'Українська', dir: 'ltr', numberLocale: 'uk-UA' }),
+      expect.objectContaining({ code: 'pl-PL', nativeLabel: 'Polski', dir: 'ltr', numberLocale: 'pl-PL' }),
+      expect.objectContaining({ code: 'fa-IR', nativeLabel: 'فارسی', dir: 'rtl', numberLocale: 'fa-IR' }),
+      expect.objectContaining({ code: 'ur-PK', nativeLabel: 'اردو', dir: 'rtl', numberLocale: 'ur-PK' }),
+      expect.objectContaining({ code: 'ms-MY', nativeLabel: 'Bahasa Melayu', dir: 'ltr', numberLocale: 'ms-MY' }),
+    ]));
+
+    expect(resolveSupportedLanguage(['uk-UA', 'en-US'])).toBe('uk-UA');
+    expect(resolveSupportedLanguage(['pl', 'en-US'])).toBe('pl-PL');
+    expect(resolveSupportedLanguage(['fa-IR', 'en-US'])).toBe('fa-IR');
+    expect(resolveSupportedLanguage(['ur', 'en-US'])).toBe('ur-PK');
+    expect(resolveSupportedLanguage(['ms-MY', 'en-US'])).toBe('ms-MY');
+  });
+
   it('keeps Traditional and Simplified Chinese resolution separate', () => {
     expect(resolveSupportedLanguage('zh-TW')).toBe('zh-TW');
     expect(resolveSupportedLanguage('zh-HK')).toBe('zh-TW');
@@ -53,5 +69,13 @@ describe('supported languages', () => {
     expect(i18n.t('settings.offline_cache', { lng: 'th-TH' })).toBe('ไฟล์ออฟไลน์');
     expect(i18n.t('settings.offline_cache', { lng: 'fil-PH' })).toBe('Mga offline na file');
     expect(i18n.t('settings.offline_cache', { lng: 'zh-TW' })).toBe('離線文件');
+  });
+
+  it('loads the priority locale bundles without falling back to English', () => {
+    expect(i18n.t('settings.offline_cache', { lng: 'uk-UA' })).toBe('Офлайн файли');
+    expect(i18n.t('settings.offline_cache', { lng: 'pl-PL' })).toBe('Pliki offline');
+    expect(i18n.t('settings.offline_cache', { lng: 'fa-IR' })).toBe('فایل های آفلاین');
+    expect(i18n.t('settings.offline_cache', { lng: 'ur-PK' })).toBe('آف لائن فائلیں۔');
+    expect(i18n.t('settings.offline_cache', { lng: 'ms-MY' })).toBe('Fail luar talian');
   });
 });

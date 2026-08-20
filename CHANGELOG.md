@@ -1,3 +1,27 @@
+## [2.5.5] - 2026-08-20
+
+### Sponsor Display
+
+- Restored the live 300 × 250 sponsor creative through an isolated loopback frame with a validated, cached loader relay for desktop environments where the provider script cannot load directly.
+- Starts the 10-second countdown only after the creative loads or the bounded fallback appears, preventing the sponsor placement from disappearing while it is still loading.
+- Removed manual dismissal from the desktop placement while retaining automatic dismissal, the 45-minute return interval, secure external-link handling, and ad-free supporter suppression.
+
+### Language Support
+
+- Added complete selectable locale bundles for Ukrainian, Polish, Persian, Urdu, and Malay, increasing the application to 24 supported language choices.
+- Added regional alias detection, locale-aware number and date formatting, plural validation, and localized core actions for all five languages.
+- Added right-to-left document handling and UI regression coverage for Persian and Urdu.
+
+### Product Website
+
+- Added a persistent light theme and refined the mobile navigation controls.
+- Balanced footer spacing and improved responsive presentation across the product page.
+
+### Verification
+
+- All localization structure, interpolation, plural, and type checks passed.
+- All 51 frontend unit tests, all 78 Rust tests, and the production frontend build passed.
+
 ## [2.5.4] - 2026-08-18
 
 ### Sponsor Experience
