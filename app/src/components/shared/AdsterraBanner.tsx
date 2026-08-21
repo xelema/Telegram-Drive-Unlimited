@@ -1,21 +1,21 @@
 import { useCallback, useState, useEffect } from 'react';
 import { usePlatform } from '../../hooks/usePlatform';
-import { open } from '@tauri-apps/plugin-shell';
 import { load } from '@tauri-apps/plugin-store';
 import { ExternalLink, X } from 'lucide-react';
-import { useSettings } from '../../context/SettingsContext';
+import { useSupporter } from '../../context/SupporterContext';
+import { openSponsorLink } from '../../services/sponsorLinks';
+import { shouldShowSponsorContent } from '../../services/supporterVisibility';
 
 interface AdsterraBannerProps {
   visible: boolean;
 }
 
-const SMARTLINK_URL = 'https://www.effectivecpmnetwork.com/nk8qy01t0g?key=a6c132f628973ad13b326e57e4a92f40';
 const DISMISSED_KEY = 'adBannerDismissed';
 
-/** SmartLink clickable banner for Android. Tapping opens the offerwall in an external browser. */
+/** Clickable sponsor banner for Android. The offer always opens in an external browser. */
 export default function AdsterraBanner({ visible }: AdsterraBannerProps) {
   const { isAndroid } = usePlatform();
-  const { settings } = useSettings();
+  const { status: supporterStatus } = useSupporter();
   const [dismissed, setDismissed] = useState(false);
   const [exiting, setExiting] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -36,11 +36,7 @@ export default function AdsterraBanner({ visible }: AdsterraBannerProps) {
   const handleClick = useCallback(async (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    try {
-      await open(SMARTLINK_URL);
-    } catch {
-      window.open(SMARTLINK_URL, '_blank', 'noopener,noreferrer');
-    }
+    await openSponsorLink();
   }, []);
 
   const handleDismiss = useCallback((e: React.MouseEvent) => {
@@ -57,7 +53,7 @@ export default function AdsterraBanner({ visible }: AdsterraBannerProps) {
 
   // Don't render until store check completes, or once dismissed.
   // Using !loaded prevents a flash on restart when the banner was previously dismissed.
-  if (!isAndroid || !loaded || dismissed || settings.supporterMode) {
+  if (!isAndroid || !loaded || dismissed || !shouldShowSponsorContent(supporterStatus)) {
     return null;
   }
 

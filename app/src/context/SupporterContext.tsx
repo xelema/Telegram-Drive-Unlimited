@@ -13,6 +13,7 @@ export interface SupporterStatus {
   expires_at: number | null;
   offline_until: number | null;
   recovery_code_saved: boolean;
+  checkout_pending?: boolean;
 }
 
 interface CheckoutStarted {
@@ -28,6 +29,7 @@ export interface CheckoutPollResult {
 
 interface SupporterContextValue {
   status: SupporterStatus;
+  latestRecoveryCode: string | null;
   refreshStatus: () => Promise<SupporterStatus>;
   beginCheckout: (termsVersion: string) => Promise<CheckoutStarted>;
   pollCheckout: () => Promise<CheckoutPollResult>;
@@ -44,25 +46,36 @@ const unavailableStatus: SupporterStatus = {
   expires_at: null,
   offline_until: null,
   recovery_code_saved: false,
+  checkout_pending: false,
+};
+
+const iosUnavailableStatus: SupporterStatus = {
+  ...unavailableStatus,
+  message: 'Verified supporter activation is unavailable on this platform.',
 };
 
 const SupporterContext = createContext<SupporterContextValue | null>(null);
 
 export function SupporterProvider({ children }: { children: ReactNode }) {
-  const isMobile = useMemo(() => {
+  const platform = useMemo(() => {
     try {
-      return ['android', 'ios'].includes(operatingSystemType());
+      const current = operatingSystemType();
+      return { isAndroid: current === 'android', isIos: current === 'ios' };
     } catch {
       const userAgent = navigator.userAgent.toLowerCase();
-      return userAgent.includes('android') || userAgent.includes('iphone') || userAgent.includes('ipad');
+      return {
+        isAndroid: userAgent.includes('android'),
+        isIos: userAgent.includes('iphone') || userAgent.includes('ipad'),
+      };
     }
   }, []);
   const [status, setStatus] = useState<SupporterStatus>({ ...unavailableStatus, state: 'loading', message: 'Checking supporter activation…' });
+  const [latestRecoveryCode, setLatestRecoveryCode] = useState<string | null>(null);
 
   const refreshStatus = useCallback(async () => {
-    if (isMobile) {
-      setStatus(unavailableStatus);
-      return unavailableStatus;
+    if (platform.isIos) {
+      setStatus(iosUnavailableStatus);
+      return iosUnavailableStatus;
     }
     try {
       const next = await invoke<SupporterStatus>('cmd_get_supporter_status');
@@ -73,7 +86,7 @@ export function SupporterProvider({ children }: { children: ReactNode }) {
       setStatus(next);
       return next;
     }
-  }, [isMobile]);
+  }, [platform.isIos]);
 
   const refreshEntitlement = useCallback(async () => {
     const next = await invoke<SupporterStatus>('cmd_refresh_supporter');
@@ -81,33 +94,91 @@ export function SupporterProvider({ children }: { children: ReactNode }) {
     return next;
   }, []);
 
+  const pollCheckout = useCallback(async () => {
+    const result = await invoke<CheckoutPollResult>('cmd_poll_supporter_checkout');
+    if (result.recovery_code) setLatestRecoveryCode(result.recovery_code);
+    if (result.status === 'completed' || (platform.isAndroid && ['failed', 'expired'].includes(result.status))) {
+      await refreshStatus();
+    }
+    return result;
+  }, [platform.isAndroid, refreshStatus]);
+
+  const beginCheckout = useCallback(async (termsVersion: string) => {
+    const checkout = await invoke<CheckoutStarted>('cmd_begin_supporter_checkout', { acceptedTermsVersion: termsVersion });
+    setLatestRecoveryCode(null);
+    setStatus(current => ({ ...current, checkout_pending: true }));
+    return checkout;
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
+    let androidRetry: number | undefined;
     void refreshStatus().then(current => {
-      if (cancelled || !['active', 'needs_refresh'].includes(current.state)) return;
+      if (cancelled) return;
+      if (platform.isAndroid && current.state === 'unavailable') {
+        androidRetry = window.setTimeout(() => {
+          if (cancelled) return;
+          void refreshStatus().then(retried => {
+            if (cancelled || !['active', 'needs_refresh'].includes(retried.state)) return;
+            void refreshEntitlement().catch(() => {
+              if (!cancelled) void refreshStatus();
+            });
+          });
+        }, 1_500);
+        return;
+      }
+      if (!['active', 'needs_refresh'].includes(current.state)) return;
       void refreshEntitlement().catch(() => {
         if (!cancelled) void refreshStatus();
       });
     });
-    return () => { cancelled = true; };
-  }, [refreshEntitlement, refreshStatus]);
+    return () => {
+      cancelled = true;
+      if (androidRetry !== undefined) window.clearTimeout(androidRetry);
+    };
+  }, [platform.isAndroid, refreshEntitlement, refreshStatus]);
+
+  useEffect(() => {
+    if (!platform.isAndroid || !status.checkout_pending || status.ad_free) return;
+    let cancelled = false;
+    let inFlight = false;
+    const recoverCheckout = async () => {
+      if (cancelled || inFlight) return;
+      inFlight = true;
+      try {
+        await pollCheckout();
+      } catch {
+        // A pending checkout remains durable and will be retried after connectivity returns.
+      } finally {
+        inFlight = false;
+      }
+    };
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') void recoverCheckout();
+    };
+    void recoverCheckout();
+    const interval = window.setInterval(() => void recoverCheckout(), 3_000);
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [platform.isAndroid, pollCheckout, status.ad_free, status.checkout_pending]);
 
   const value = useMemo<SupporterContextValue>(() => ({
     status,
+    latestRecoveryCode,
     refreshStatus,
     refreshEntitlement,
-    beginCheckout: termsVersion => invoke<CheckoutStarted>('cmd_begin_supporter_checkout', { acceptedTermsVersion: termsVersion }),
-    pollCheckout: async () => {
-      const result = await invoke<CheckoutPollResult>('cmd_poll_supporter_checkout');
-      if (result.status === 'completed') await refreshStatus();
-      return result;
-    },
+    beginCheckout,
+    pollCheckout,
     activate: async (recoveryCode, termsVersion) => {
       const next = await invoke<SupporterStatus>('cmd_activate_supporter', { recoveryCode, acceptedTermsVersion: termsVersion });
       setStatus(next);
       return next;
     },
-  }), [refreshEntitlement, refreshStatus, status]);
+  }), [beginCheckout, latestRecoveryCode, pollCheckout, refreshEntitlement, refreshStatus, status]);
 
   return <SupporterContext.Provider value={value}>{children}</SupporterContext.Provider>;
 }
@@ -115,6 +186,7 @@ export function SupporterProvider({ children }: { children: ReactNode }) {
 export function useSupporter() {
   return useContext(SupporterContext) ?? {
     status: unavailableStatus,
+    latestRecoveryCode: null,
     refreshStatus: async () => unavailableStatus,
     beginCheckout: async () => { throw new Error('Supporter activation is unavailable.'); },
     pollCheckout: async () => { throw new Error('Supporter activation is unavailable.'); },

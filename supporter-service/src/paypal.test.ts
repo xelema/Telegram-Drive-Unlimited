@@ -78,7 +78,7 @@ describe('Supporter terms', () => {
     expect(terms).toContain('Refunds are not automatic and are not guaranteed');
     expect(terms).toContain('refund, payment reversal, chargeback');
     expect(terms).toContain('does not request or store your PayPal email address');
-    expect(terms).toContain('up to 3 desktop devices');
+    expect(terms).toContain('up to 3 supported Windows, macOS, Linux, or Android devices');
     expect(terms).toContain('aggregate liability relating to the supporter payment will not exceed the amount paid');
     expect(terms).toContain('does not add IP addresses or raw PayPal webhook payloads');
   });

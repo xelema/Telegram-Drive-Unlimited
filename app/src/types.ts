@@ -5,3 +5,4 @@ export * from './types/media';
 export * from './types/encryption';
 export * from './types/archive';
 export * from './types/settings';
+export * from './types/sync';

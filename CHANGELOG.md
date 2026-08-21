@@ -1,3 +1,34 @@
+## [3.0.0] - 2026-08-21
+
+### Desktop Folder Sync
+
+- Added opt-in bidirectional folder mappings between local directories and Telegram channels on Windows, macOS, and Linux.
+- Added three-tree reconciliation using local, remote, and last-synced snapshots so incomplete remote scans cannot be mistaken for deletions.
+- Added explicit conflict resolution, a greater-than-50-percent mass-deletion guard, duplicate-path protection, cross-platform path validation, and mapping overlap checks.
+- Added atomic temporary-file downloads, an exact 2,000,000,000-byte upload cap, vault-aware queue pausing, and Telegram `FLOOD_WAIT` retry handling.
+
+### Transfer and Supporter Reliability
+
+- Hardened desktop transfer, preview, network-state, and encrypted upload handling around the new synchronization pipeline.
+- Improved durable transfer-queue recovery across network interruptions and application restarts.
+- Clarified supporter entitlement recovery and device-limit terms without changing feature access or pricing.
+
+### Language Support
+
+- Added the Folder Sync interface and status messages to all 24 shipped locale bundles, including right-to-left languages and regional variants.
+
+### Product Website
+
+- Added a responsive Folder Sync feature overview with the three-tree safety model, desktop platform scope, limits, and conflict behavior.
+- Published the complete list of all 24 supported interface languages and updated navigation, metadata, and FAQ content.
+
+### Verification
+
+- Production frontend build and all 66 frontend unit tests passed.
+- All 88 Rust library tests passed, including synchronization persistence, deletion protection, portable paths, transfer limits, and atomic replacement coverage.
+- All 24 locale bundles passed structural and type validation; the supporter service passed TypeScript validation and all 16 tests.
+- The product website passed responsive desktop/mobile, light/dark, internal-link, accessibility-attribute, and browser-console checks.
+
 ## [2.5.5] - 2026-08-20
 
 ### Sponsor Display

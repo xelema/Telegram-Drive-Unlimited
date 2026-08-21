@@ -68,6 +68,7 @@ pub mod transcode;
 pub mod fmp4_remux;
 pub mod mp4_utils;
 pub mod crypto_commands;
+pub mod sync_engine;
 
 
 /// Single source of truth for the Actix streaming server port.
@@ -362,7 +363,18 @@ fn cmd_open_file_externally(path: String, app_handle: tauri::AppHandle) -> Resul
                 "png" => "image/png",
                 "pdf" => "application/pdf",
                 "mp4" => "video/mp4",
+                "m4v" => "video/x-m4v",
+                "mkv" => "video/x-matroska",
+                "mov" => "video/quicktime",
+                "webm" => "video/webm",
+                "avi" => "video/x-msvideo",
                 "mp3" => "audio/mpeg",
+                "m4a" => "audio/mp4",
+                "aac" => "audio/aac",
+                "flac" => "audio/flac",
+                "ogg" | "oga" => "audio/ogg",
+                "opus" => "audio/opus",
+                "wav" => "audio/wav",
                 "txt" => "text/plain",
                 "zip" => "application/zip",
                 _ => "application/octet-stream",
@@ -758,14 +770,19 @@ pub fn run() {
                     }
                 });
             }
-            
+
             // Initialize SQLite Database
             let db_pool = db::init_db(app.handle()).map_err(|e| {
                 log::error!("Failed to initialize SQLite database: {}", e);
                 e
             })?;
             app.manage(db_pool.clone());
-            
+            let sync_engine = sync_engine::SyncEngine::new(db_pool.clone(), app.handle().clone());
+            app.manage(sync_engine);
+            if let Err(error) = app.state::<sync_engine::SyncEngine>().start() {
+                log::error!("Failed to initialize folder sync engine: {error}");
+            }
+
             // Start Streaming Server on dedicated thread (Actix needs its own runtime)
             // Disabled on Android: actix_rt::System creates a second Tokio runtime that
             // conflicts with Tauri's runtime and crashes the process on launch.
@@ -849,6 +866,8 @@ pub fn run() {
             commands::cmd_auth_check_password,
             commands::cmd_get_files,
             commands::cmd_upload_file,
+            commands::cmd_stage_android_upload,
+            commands::cmd_delete_android_staged_upload,
             commands::cmd_validate_dropped_paths,
             commands::initiate_upload,
             commands::cmd_upload_from_url,
@@ -882,18 +901,28 @@ pub fn run() {
             commands::cmd_get_settings_sync_status,
             commands::cmd_upload_settings_sync,
             commands::cmd_download_settings_sync,
-            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            commands::cmd_get_sync_settings,
+            commands::cmd_toggle_sync,
+            commands::cmd_add_sync_pair,
+            commands::cmd_get_sync_pairs,
+            commands::cmd_remove_sync_pair,
+            commands::cmd_get_sync_status,
+            commands::cmd_get_sync_conflicts,
+            commands::cmd_get_sync_log,
+            commands::cmd_resolve_conflict,
+            #[cfg(not(target_os = "ios"))]
             commands::cmd_get_supporter_status,
-            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            #[cfg(not(target_os = "ios"))]
             commands::cmd_begin_supporter_checkout,
-            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            #[cfg(not(target_os = "ios"))]
             commands::cmd_poll_supporter_checkout,
-            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            #[cfg(not(target_os = "ios"))]
             commands::cmd_activate_supporter,
-            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            #[cfg(not(target_os = "ios"))]
             commands::cmd_refresh_supporter,
             commands::cmd_check_connection,
             commands::cmd_is_network_available,
+            commands::cmd_get_android_network_status,
             commands::cmd_test_proxy_traffic,
             commands::cmd_reconnect_with_network_settings,
             commands::cmd_clean_cache,
@@ -969,12 +998,34 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    app.run(|app_handle, event| {
+    let graceful_sync_exit_started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    app.run(move |app_handle, event| {
+        if let tauri::RunEvent::ExitRequested { code, api, .. } = &event {
+            if !graceful_sync_exit_started.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                api.prevent_exit();
+                let app_handle = app_handle.clone();
+                let exit_code = code.unwrap_or(0);
+                tauri::async_runtime::spawn(async move {
+                    if let Some(sync_engine) =
+                        app_handle.try_state::<sync_engine::SyncEngine>()
+                    {
+                        if let Err(error) = sync_engine.shutdown_and_wait().await {
+                            log::error!("Folder sync did not shut down cleanly: {error}");
+                        }
+                    }
+                    app_handle.exit(exit_code);
+                });
+                return;
+            }
+        }
         if let tauri::RunEvent::Exit = event {
             log::info!("Application exiting — shutting down background services...");
 
             if let Some(crypto_state) = app_handle.try_state::<crypto::state::CryptoState>() {
                 crypto_state.lock();
+            }
+            if let Some(sync_engine) = app_handle.try_state::<sync_engine::SyncEngine>() {
+                sync_engine.shutdown();
             }
 
             // 1. Shutdown the grammers network runner

@@ -219,7 +219,7 @@ async function finalizePaidOrder(env: Env, claim: CheckoutClaimRow, order: PayPa
 async function beginCheckout(request: Request, env: Env): Promise<Response> {
   const body = await readJson<CheckoutRequest>(request);
   if (!validDevicePublicKey(body.device_public_key)) {
-    return errorResponse('INVALID_DEVICE_KEY', 400, 'A valid desktop device key is required.');
+    return errorResponse('INVALID_DEVICE_KEY', 400, 'A valid supporter device key is required.');
   }
   if (!acceptedCurrentTerms(env, body.terms_version, body.terms_accepted)) {
     return errorResponse('TERMS_NOT_ACCEPTED', 400, 'Accept the current supporter terms before continuing.');

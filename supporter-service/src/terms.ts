@@ -8,9 +8,9 @@ export function supporterTermsHtml(env: Env): string {
 <main style="max-width:720px;margin:auto;padding:40px 24px">
 <h1>Telegram Drive Supporter Terms</h1>
 <p><strong>Terms version:</strong> ${env.TERMS_VERSION}</p>
-<p>The supporter purchase is an optional, one-time payment of ${env.SUPPORTER_PRICE} ${env.SUPPORTER_CURRENCY}. It activates ad-free use on up to ${env.MAX_ACTIVE_DEVICES} desktop devices. Telegram Drive has no paid feature tier: every application feature remains available without purchasing.</p>
+<p>The supporter purchase is an optional, one-time payment of ${env.SUPPORTER_PRICE} ${env.SUPPORTER_CURRENCY}. It activates ad-free use on up to ${env.MAX_ACTIVE_DEVICES} supported Windows, macOS, Linux, or Android devices in total. Telegram Drive has no paid feature tier: every application feature remains available without purchasing.</p>
 <h2>Activation and recovery</h2>
-<p>Payment does not create a Telegram Drive account. Activation requires the desktop app to contact the Telegram Drive supporter service and receive a valid entitlement. Keep the recovery code shown after payment. Losing every activated device and the recovery code may make restoration impossible.</p>
+<p>Payment does not create a Telegram Drive account. Activation requires a supported Telegram Drive app to contact the supporter service and receive a valid entitlement. Keep the recovery code shown after payment. Losing every activated device and the recovery code may make restoration impossible.</p>
 <h2>Refunds, reversals, and disputes</h2>
 <p><strong>Refunds are not automatic and are not guaranteed, except where applicable law requires otherwise.</strong> Contact the project maintainer before purchasing if you are unsure whether activation will work in your environment. Any refund, payment reversal, chargeback, or upheld payment dispute revokes the associated ad-free entitlement.</p>
 <h2>Availability</h2>

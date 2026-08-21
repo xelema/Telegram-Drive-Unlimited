@@ -14,6 +14,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { quietMetrics } from '../../../design/contracts';
 import { CreateFolderDialog } from './CreateFolderDialog';
+import { SyncStatusBadge } from '../sync/SyncStatusBadge';
 
 const PRESET_COLORS = [
     '#3B82F6', // Blue
@@ -429,6 +430,7 @@ export function Sidebar({
             )}
 
             <div className={`flex flex-col border-t border-app-border-subtle p-2 ${settings.sidebarCollapsed ? 'items-center gap-2' : 'gap-2'}`}>
+                <SyncStatusBadge collapsed={settings.sidebarCollapsed} />
                 {settings.sidebarCollapsed ? (
                     <>
                         <div

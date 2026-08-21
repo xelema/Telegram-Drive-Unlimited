@@ -1,5 +1,6 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+#[cfg(not(target_os = "android"))]
 use keyring::Entry;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -7,6 +8,7 @@ use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 
+#[cfg(not(target_os = "android"))]
 const KEYRING_SERVICE: &str = "com.cameronamer.telegramdrive.supporter";
 const DEVICE_KEY_ACCOUNT: &str = "device-signing-key-v1";
 const RECOVERY_CODE_ACCOUNT: &str = "recovery-code-v1";
@@ -57,6 +59,7 @@ pub struct SupporterStatus {
     expires_at: Option<i64>,
     offline_until: Option<i64>,
     recovery_code_saved: bool,
+    checkout_pending: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -140,11 +143,13 @@ fn save_state(app: &AppHandle, state: &SupporterLocalState) -> Result<(), String
         .map_err(|error| format!("Unable to commit supporter state: {error}"))
 }
 
+#[cfg(not(target_os = "android"))]
 fn keyring_entry(account: &str) -> Result<Entry, String> {
     Entry::new(KEYRING_SERVICE, account)
         .map_err(|error| format!("Secure credential storage is unavailable: {error}"))
 }
 
+#[cfg(not(target_os = "android"))]
 fn load_signing_key() -> Result<Option<SigningKey>, String> {
     match keyring_entry(DEVICE_KEY_ACCOUNT)?.get_password() {
         Ok(encoded) => {
@@ -163,6 +168,7 @@ fn load_signing_key() -> Result<Option<SigningKey>, String> {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 fn signing_key() -> Result<SigningKey, String> {
     if let Some(key) = load_signing_key()? {
         return Ok(key);
@@ -179,24 +185,28 @@ fn signing_key() -> Result<SigningKey, String> {
     Ok(key)
 }
 
+#[cfg(not(target_os = "android"))]
 fn recovery_code_is_saved() -> bool {
     keyring_entry(RECOVERY_CODE_ACCOUNT)
         .and_then(|entry| entry.get_password().map_err(|error| error.to_string()))
         .is_ok()
 }
 
+#[cfg(not(target_os = "android"))]
 fn save_recovery_code(code: &str) -> Result<(), String> {
     keyring_entry(RECOVERY_CODE_ACCOUNT)?
         .set_password(code)
         .map_err(|error| format!("Unable to save the recovery code securely: {error}"))
 }
 
+#[cfg(not(target_os = "android"))]
 fn save_checkout_secret(secret: &str) -> Result<(), String> {
     keyring_entry(CHECKOUT_SECRET_ACCOUNT)?
         .set_password(secret)
         .map_err(|error| format!("Unable to save the checkout verification credential: {error}"))
 }
 
+#[cfg(not(target_os = "android"))]
 fn load_checkout_secret() -> Result<String, String> {
     keyring_entry(CHECKOUT_SECRET_ACCOUNT)?
         .get_password()
@@ -205,6 +215,7 @@ fn load_checkout_secret() -> Result<String, String> {
         })
 }
 
+#[cfg(not(target_os = "android"))]
 fn clear_checkout_secret() -> Result<(), String> {
     match keyring_entry(CHECKOUT_SECRET_ACCOUNT)?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
@@ -212,6 +223,166 @@ fn clear_checkout_secret() -> Result<(), String> {
             "Unable to clear the checkout verification credential: {error}"
         )),
     }
+}
+
+#[cfg(target_os = "android")]
+fn android_main_class() -> Result<jni::objects::JClass<'static>, String> {
+    crate::jni_cache::get_main_activity_jclass().ok_or_else(|| {
+        "Android secure credential storage is still starting; try again in a moment".to_string()
+    })
+}
+
+#[cfg(target_os = "android")]
+fn load_android_secret(account: &str) -> Result<Option<String>, String> {
+    let main_class = android_main_class()?;
+    let context = ndk_context::android_context();
+    let vm = unsafe { jni::JavaVM::from_raw(context.vm().cast()) }
+        .map_err(|error| format!("Unable to access Android secure storage: {error}"))?;
+    let mut env = vm
+        .attach_current_thread()
+        .map_err(|error| format!("Unable to attach Android secure storage: {error}"))?;
+    let account = env
+        .new_string(account)
+        .map_err(|error| format!("Unable to prepare Android credential name: {error}"))?;
+    let value = env
+        .call_static_method(
+            &main_class,
+            "getSupporterSecret",
+            "(Ljava/lang/String;)Ljava/lang/String;",
+            &[jni::objects::JValue::from(&account)],
+        )
+        .map_err(|error| format!("Unable to read Android secure credential: {error}"))?
+        .l()
+        .map_err(|error| format!("Android secure credential returned an invalid value: {error}"))?;
+    if value.is_null() {
+        return Ok(None);
+    }
+    let value = jni::objects::JString::from(value);
+    let value: String = env
+        .get_string(&value)
+        .map_err(|error| format!("Unable to decode Android secure credential: {error}"))?
+        .into();
+    Ok((!value.is_empty()).then_some(value))
+}
+
+#[cfg(target_os = "android")]
+fn save_android_secret(account: &str, secret: &str) -> Result<(), String> {
+    let main_class = android_main_class()?;
+    let context = ndk_context::android_context();
+    let vm = unsafe { jni::JavaVM::from_raw(context.vm().cast()) }
+        .map_err(|error| format!("Unable to access Android secure storage: {error}"))?;
+    let mut env = vm
+        .attach_current_thread()
+        .map_err(|error| format!("Unable to attach Android secure storage: {error}"))?;
+    let account = env
+        .new_string(account)
+        .map_err(|error| format!("Unable to prepare Android credential name: {error}"))?;
+    let secret = env
+        .new_string(secret)
+        .map_err(|error| format!("Unable to prepare Android secure credential: {error}"))?;
+    let saved = env
+        .call_static_method(
+            &main_class,
+            "putSupporterSecret",
+            "(Ljava/lang/String;Ljava/lang/String;)Z",
+            &[
+                jni::objects::JValue::from(&account),
+                jni::objects::JValue::from(&secret),
+            ],
+        )
+        .map_err(|error| format!("Unable to save Android secure credential: {error}"))?
+        .z()
+        .map_err(|error| format!("Android secure storage returned an invalid result: {error}"))?;
+    if saved {
+        Ok(())
+    } else {
+        Err("Android Keystore could not save the supporter credential".to_string())
+    }
+}
+
+#[cfg(target_os = "android")]
+fn delete_android_secret(account: &str) -> Result<(), String> {
+    let main_class = android_main_class()?;
+    let context = ndk_context::android_context();
+    let vm = unsafe { jni::JavaVM::from_raw(context.vm().cast()) }
+        .map_err(|error| format!("Unable to access Android secure storage: {error}"))?;
+    let mut env = vm
+        .attach_current_thread()
+        .map_err(|error| format!("Unable to attach Android secure storage: {error}"))?;
+    let account = env
+        .new_string(account)
+        .map_err(|error| format!("Unable to prepare Android credential name: {error}"))?;
+    let deleted = env
+        .call_static_method(
+            &main_class,
+            "deleteSupporterSecret",
+            "(Ljava/lang/String;)Z",
+            &[jni::objects::JValue::from(&account)],
+        )
+        .map_err(|error| format!("Unable to clear Android secure credential: {error}"))?
+        .z()
+        .map_err(|error| format!("Android secure storage returned an invalid result: {error}"))?;
+    if deleted {
+        Ok(())
+    } else {
+        Err("Android Keystore could not clear the supporter credential".to_string())
+    }
+}
+
+#[cfg(target_os = "android")]
+fn load_signing_key() -> Result<Option<SigningKey>, String> {
+    let Some(encoded) = load_android_secret(DEVICE_KEY_ACCOUNT)? else {
+        return Ok(None);
+    };
+    let bytes = URL_SAFE_NO_PAD
+        .decode(encoded)
+        .map_err(|_| "Stored supporter device key is invalid".to_string())?;
+    let key_bytes: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| "Stored supporter device key has the wrong length".to_string())?;
+    Ok(Some(SigningKey::from_bytes(&key_bytes)))
+}
+
+#[cfg(target_os = "android")]
+fn signing_key() -> Result<SigningKey, String> {
+    if let Some(key) = load_signing_key()? {
+        return Ok(key);
+    }
+    let mut bytes = [0_u8; 32];
+    getrandom::getrandom(&mut bytes)
+        .map_err(|error| format!("Unable to create a secure device key: {error}"))?;
+    let key = SigningKey::from_bytes(&bytes);
+    save_android_secret(DEVICE_KEY_ACCOUNT, &URL_SAFE_NO_PAD.encode(key.to_bytes()))?;
+    Ok(key)
+}
+
+#[cfg(target_os = "android")]
+fn recovery_code_is_saved() -> bool {
+    load_android_secret(RECOVERY_CODE_ACCOUNT)
+        .ok()
+        .flatten()
+        .is_some()
+}
+
+#[cfg(target_os = "android")]
+fn save_recovery_code(code: &str) -> Result<(), String> {
+    save_android_secret(RECOVERY_CODE_ACCOUNT, code)
+}
+
+#[cfg(target_os = "android")]
+fn save_checkout_secret(secret: &str) -> Result<(), String> {
+    save_android_secret(CHECKOUT_SECRET_ACCOUNT, secret)
+}
+
+#[cfg(target_os = "android")]
+fn load_checkout_secret() -> Result<String, String> {
+    load_android_secret(CHECKOUT_SECRET_ACCOUNT)?
+        .ok_or_else(|| "The secure checkout verification credential is unavailable".to_string())
+}
+
+#[cfg(target_os = "android")]
+fn clear_checkout_secret() -> Result<(), String> {
+    delete_android_secret(CHECKOUT_SECRET_ACCOUNT)
 }
 
 fn public_key(key: &SigningKey) -> String {
@@ -281,6 +452,21 @@ fn unix_time() -> i64 {
     chrono::Utc::now().timestamp()
 }
 
+fn checkout_is_pending(state: &SupporterLocalState) -> bool {
+    state.checkout_claim_id.is_some()
+        && state
+            .checkout_expires_at
+            .is_some_and(|expires_at| expires_at > unix_time())
+}
+
+fn clear_pending_checkout(app: &AppHandle, state: &mut SupporterLocalState) -> Result<(), String> {
+    state.checkout_claim_id = None;
+    state.checkout_expires_at = None;
+    save_state(app, state)?;
+    let _ = clear_checkout_secret();
+    Ok(())
+}
+
 async fn response_error(response: reqwest::Response) -> String {
     let status = response.status();
     match response.json::<ServiceErrorEnvelope>().await {
@@ -303,6 +489,7 @@ fn status_from_state(state: &SupporterLocalState) -> SupporterStatus {
         expires_at: None,
         offline_until: None,
         recovery_code_saved: recovery_code_is_saved(),
+        checkout_pending: checkout_is_pending(state),
     };
     if service_url().is_none() || configured_public_key().is_none() {
         return unavailable(
@@ -319,6 +506,7 @@ fn status_from_state(state: &SupporterLocalState) -> SupporterStatus {
             expires_at: None,
             offline_until: None,
             recovery_code_saved: recovery_code_is_saved(),
+            checkout_pending: checkout_is_pending(state),
         };
     }
     let Some(token) = state.entitlement_token.as_deref() else {
@@ -331,11 +519,29 @@ fn status_from_state(state: &SupporterLocalState) -> SupporterStatus {
             expires_at: None,
             offline_until: None,
             recovery_code_saved: recovery_code_is_saved(),
+            checkout_pending: checkout_is_pending(state),
         };
     };
     let Some(device_public_key) = state.device_public_key.as_deref() else {
         return unavailable("The local supporter device identity is missing.".to_string());
     };
+    #[cfg(target_os = "android")]
+    {
+        let device_key = match load_signing_key() {
+            Ok(Some(key)) => key,
+            Ok(None) => return unavailable(
+                "The Android secure device credential is missing; restore with your recovery code."
+                    .to_string(),
+            ),
+            Err(error) => return unavailable(error),
+        };
+        if public_key(&device_key) != device_public_key {
+            return unavailable(
+                "The Android secure device credential does not match this activation; restore with your recovery code."
+                    .to_string(),
+            );
+        }
+    }
     match parse_and_verify_token(token, device_public_key) {
         Ok(claims) => {
             let now = unix_time();
@@ -364,6 +570,7 @@ fn status_from_state(state: &SupporterLocalState) -> SupporterStatus {
                 expires_at: Some(claims.expires_at),
                 offline_until: Some(claims.offline_until),
                 recovery_code_saved: recovery_code_is_saved(),
+                checkout_pending: checkout_is_pending(state),
             }
         }
         Err(error) => unavailable(error),
@@ -372,7 +579,11 @@ fn status_from_state(state: &SupporterLocalState) -> SupporterStatus {
 
 #[tauri::command]
 pub async fn cmd_get_supporter_status(app: AppHandle) -> Result<SupporterStatus, String> {
-    Ok(status_from_state(&load_state(&app)))
+    let mut state = load_state(&app);
+    if state.checkout_claim_id.is_some() && !checkout_is_pending(&state) {
+        let _ = clear_pending_checkout(&app, &mut state);
+    }
+    Ok(status_from_state(&state))
 }
 
 #[tauri::command]
@@ -421,6 +632,14 @@ pub async fn cmd_begin_supporter_checkout(
 pub async fn cmd_poll_supporter_checkout(app: AppHandle) -> Result<CheckoutPollResult, String> {
     let base_url = service_url().ok_or("Supporter activation is not configured in this build")?;
     let mut state = load_state(&app);
+    if state.checkout_claim_id.is_some() && !checkout_is_pending(&state) {
+        clear_pending_checkout(&app, &mut state)?;
+        return Ok(CheckoutPollResult {
+            status: "expired".to_string(),
+            recovery_code: None,
+            message: "This checkout expired before payment was verified. Start a new checkout if no payment was completed.".to_string(),
+        });
+    }
     let claim_id = state
         .checkout_claim_id
         .as_deref()
@@ -456,12 +675,15 @@ pub async fn cmd_poll_supporter_checkout(app: AppHandle) -> Result<CheckoutPollR
         state.checkout_claim_id = None;
         state.checkout_expires_at = None;
         save_state(&app, &state)?;
-        clear_checkout_secret()?;
+        let _ = clear_checkout_secret();
         return Ok(CheckoutPollResult {
             status: "completed".to_string(),
             recovery_code: checkout.recovery_code,
             message: "Payment verified. Ad-free supporter access is active.".to_string(),
         });
+    }
+    if checkout.status == "failed" {
+        clear_pending_checkout(&app, &mut state)?;
     }
     Ok(CheckoutPollResult {
         status: checkout.status,
@@ -508,8 +730,11 @@ pub async fn cmd_activate_supporter(
     let mut state = load_state(&app);
     state.device_public_key = Some(device_public_key);
     state.entitlement_token = Some(token);
+    state.checkout_claim_id = None;
+    state.checkout_expires_at = None;
     state.revoked = false;
     save_state(&app, &state)?;
+    let _ = clear_checkout_secret();
     Ok(status_from_state(&state))
 }
 
@@ -598,6 +823,18 @@ mod tests {
             sha256_base64url("device-key"),
             sha256_base64url("other-key")
         );
+    }
+
+    #[test]
+    fn pending_checkout_survives_restart_only_until_its_expiration() {
+        let mut state = SupporterLocalState {
+            checkout_claim_id: Some("claim-1".to_string()),
+            checkout_expires_at: Some(unix_time() + 60),
+            ..Default::default()
+        };
+        assert!(checkout_is_pending(&state));
+        state.checkout_expires_at = Some(unix_time() - 1);
+        assert!(!checkout_is_pending(&state));
     }
 
     #[test]

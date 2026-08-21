@@ -651,12 +651,133 @@ pub fn copy_to_android_cache(raw_path: &str) -> Result<String, String> {
         }
     }
 }
-
-
-
 #[cfg(not(target_os = "android"))]
 pub fn copy_to_android_cache(_raw_path: &str) -> Result<String, String> {
     Err("Not supported on this platform".to_string())
+}
+
+#[tauri::command]
+pub async fn cmd_stage_android_upload(
+    path: String,
+    app_handle: tauri::AppHandle,
+) -> Result<String, String> {
+    #[cfg(target_os = "android")]
+    {
+        use tauri::Manager;
+
+        let remove_intermediate =
+            path.contains("content://") || path.contains("msf:") || path.contains("msf%");
+        let copied_path = tokio::task::spawn_blocking(move || {
+            if path.contains("content://") || path.contains("msf:") || path.contains("msf%") {
+                copy_to_android_cache(&path)
+            } else {
+                let metadata = std::fs::metadata(&path)
+                    .map_err(|error| format!("Unable to inspect Android upload source: {error}"))?;
+                if !metadata.is_file() || metadata.len() == 0 {
+                    return Err("Android upload source is missing or empty".to_string());
+                }
+                Ok(path)
+            }
+        })
+        .await
+        .map_err(|error| format!("Android upload staging task failed: {error}"))??;
+        let copied_path = std::path::PathBuf::from(copied_path);
+        let file_name = copied_path
+            .file_name()
+            .filter(|name| !name.is_empty())
+            .ok_or("Android upload staging produced an invalid filename")?
+            .to_os_string();
+        let staging_root = app_handle
+            .path()
+            .app_data_dir()
+            .map_err(|error| format!("Unable to locate Android app storage: {error}"))?
+            .join("android-transfer-staging");
+        let unique_directory = format!(
+            "{}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis(),
+            rand::random::<u64>()
+        );
+        let destination_directory = staging_root.join(unique_directory);
+        tokio::fs::create_dir_all(&destination_directory)
+            .await
+            .map_err(|error| {
+                format!("Unable to create Android upload staging directory: {error}")
+            })?;
+        let destination = destination_directory.join(file_name);
+        if let Err(error) = tokio::fs::copy(&copied_path, &destination).await {
+            if remove_intermediate {
+                let _ = tokio::fs::remove_file(&copied_path).await;
+            }
+            let _ = tokio::fs::remove_dir_all(&destination_directory).await;
+            return Err(format!(
+                "Unable to preserve the Android upload for recovery: {error}"
+            ));
+        }
+        if remove_intermediate {
+            let _ = tokio::fs::remove_file(&copied_path).await;
+        }
+        let staged_size = tokio::fs::metadata(&destination)
+            .await
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        if staged_size == 0 {
+            let _ = tokio::fs::remove_dir_all(&destination_directory).await;
+            return Err("Android upload staging produced an empty file".to_string());
+        }
+        Ok(destination.to_string_lossy().into_owned())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (path, app_handle);
+        Err("Android upload staging is unavailable on this platform".to_string())
+    }
+}
+
+#[tauri::command]
+pub async fn cmd_delete_android_staged_upload(
+    path: String,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        use tauri::Manager;
+
+        let staging_root = app_handle
+            .path()
+            .app_data_dir()
+            .map_err(|error| format!("Unable to locate Android app storage: {error}"))?
+            .join("android-transfer-staging");
+        let target = std::path::PathBuf::from(path);
+        if tokio::fs::metadata(&target).await.is_err() {
+            return Ok(());
+        }
+        let canonical_root = tokio::fs::canonicalize(&staging_root)
+            .await
+            .map_err(|error| format!("Unable to validate Android upload storage: {error}"))?;
+        let canonical_target = tokio::fs::canonicalize(&target)
+            .await
+            .map_err(|error| format!("Unable to validate staged Android upload: {error}"))?;
+        if !canonical_target.starts_with(&canonical_root) {
+            return Err("Refusing to remove a file outside Android upload staging".to_string());
+        }
+        tokio::fs::remove_file(&canonical_target)
+            .await
+            .map_err(|error| format!("Unable to remove staged Android upload: {error}"))?;
+        if let Some(parent) = canonical_target.parent() {
+            if parent.parent() == Some(canonical_root.as_path()) {
+                let _ = tokio::fs::remove_dir(parent).await;
+            }
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (path, app_handle);
+        Err("Android upload staging is unavailable on this platform".to_string())
+    }
 }
 
 pub async fn create_folder_inner(
@@ -1406,13 +1527,17 @@ async fn cmd_upload_file_inner(
 
     for attempt in 0..=max_retries {
         match client.send_message(&peer, message.clone()).await {
-            Ok(_) => {
-        if !tid.is_empty() {
-            let _ = app_handle.emit("upload-progress", ProgressPayload {
-                id: tid, percent: 100, uploaded_bytes: size, total_bytes: size, speed_bytes_per_sec: 0,
-            });
-        }
-        return Ok("File uploaded successfully".to_string());
+            Ok(sent) => {
+                if !tid.is_empty() {
+                    let _ = app_handle.emit("upload-progress", ProgressPayload {
+                        id: tid,
+                        percent: 100,
+                        uploaded_bytes: size,
+                        total_bytes: size,
+                        speed_bytes_per_sec: 0,
+                    });
+                }
+                return Ok(sent.id().to_string());
             }
             Err(e) => {
                 let err = map_error(e);
@@ -1744,9 +1869,9 @@ async fn cmd_upload_file_encrypted(
                         _sent.id(),
                         error
                     );
-                    return Ok("Encrypted file uploaded successfully; local indexing will be reconciled on refresh".to_string());
+                    return Ok(_sent.id().to_string());
                 }
-                return Ok("Encrypted file uploaded successfully".to_string());
+                return Ok(_sent.id().to_string());
             }
             Err(e) => {
                 let err = map_error(e);
@@ -1932,13 +2057,13 @@ pub async fn cmd_delete_file(
     Ok(true)
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct DownloadFileRequest {
-    message_id: i32,
-    save_path: String,
-    folder_id: Option<i64>,
-    transfer_id: Option<String>,
-    prompt_token: Option<u64>,
+    pub message_id: i32,
+    pub save_path: String,
+    pub folder_id: Option<i64>,
+    pub transfer_id: Option<String>,
+    pub prompt_token: Option<u64>,
 }
 
 #[tauri::command]

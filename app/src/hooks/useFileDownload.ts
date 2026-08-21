@@ -12,7 +12,7 @@ import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { useConfirm } from '../context/ConfirmContext';
 import { formatBytes } from '../utils';
 import { triggerHaptic } from '../services/feedback';
-import { restoreDownloadQueue, serializeDownloadQueue } from '../services/transferQueuePolicy';
+import { isTransientNetworkError, restoreDownloadQueue, serializeDownloadQueue } from '../services/transferQueuePolicy';
 import { announceSupporterValueMoment } from '../services/supporterVisibility';
 
 interface ProgressPayload {
@@ -23,13 +23,21 @@ interface ProgressPayload {
     speed_bytes_per_sec: number;
 }
 
-export function useFileDownload(store: Store | null) {
+export function useFileDownload(store: Store | null, androidNetworkAvailable = true) {
     const { t } = useTranslation();
     const [downloadQueue, setDownloadQueue] = useState<DownloadItem[]>([]);
     const [initialized, setInitialized] = useState(false);
     const cancelledRef = useRef<Set<string>>(new Set());
     const pausedRef = useRef<Set<string>>(new Set());
+    const networkPausedRef = useRef<Set<string>>(new Set());
     const activeCountRef = useRef(0);
+    const persistenceChainRef = useRef<Promise<void>>(Promise.resolve());
+    const persistenceHealthyRef = useRef(true);
+    const startingItemsRef = useRef<Set<string>>(new Set());
+    const downloadQueueRef = useRef(downloadQueue);
+    const androidNetworkAvailableRef = useRef(androidNetworkAvailable);
+    downloadQueueRef.current = downloadQueue;
+    androidNetworkAvailableRef.current = androidNetworkAvailable;
     const { settings, updateSetting } = useSettings();
     const { confirm } = useConfirm();
     const lastDownloadDirectoryRef = useRef<string | null>(null);
@@ -72,7 +80,7 @@ export function useFileDownload(store: Store | null) {
         if (!store || initialized) return;
         store.get<DownloadItem[]>('downloadQueue').then((saved) => {
             if (saved && saved.length > 0) {
-                const pending = restoreDownloadQueue(saved);
+                const pending = restoreDownloadQueue(saved, isAndroidPlatform);
                 if (pending.length > 0) {
                     setDownloadQueue(pending);
                     toast.info(`Restored ${pending.length} pending downloads`);
@@ -85,20 +93,77 @@ export function useFileDownload(store: Store | null) {
     // Save queue when it changes (only pending items)
     useEffect(() => {
         if (!store || !initialized) return;
-        const pending = serializeDownloadQueue(downloadQueue);
-        store.set('downloadQueue', pending).then(() => store.save());
+        const pending = serializeDownloadQueue(downloadQueue, isAndroidPlatform);
+        persistenceChainRef.current = persistenceChainRef.current
+            .catch(() => undefined)
+            .then(async () => {
+                await store.set('downloadQueue', pending);
+                await store.save();
+                persistenceHealthyRef.current = true;
+            })
+            .catch(error => {
+                persistenceHealthyRef.current = false;
+                console.error('[Download] Could not persist the recovery queue:', error);
+            });
     }, [store, downloadQueue, initialized]);
+
+    useEffect(() => {
+        if (!isAndroidPlatform || !initialized) return;
+        const activeStatuses: DownloadItem['status'][] = ['downloading', 'decrypting', 'verifying'];
+        if (!androidNetworkAvailable) {
+            setDownloadQueue(queue => {
+                let changed = false;
+                const next = queue.map(item => {
+                    if (!['pending', 'cooldown'].includes(item.status) && !activeStatuses.includes(item.status)) return item;
+                    changed = true;
+                    if (activeStatuses.includes(item.status)) {
+                        networkPausedRef.current.add(item.id);
+                        void invoke('cmd_cancel_transfer', { transferId: item.id }).catch(() => undefined);
+                    }
+                    return { ...item, status: 'waiting_for_network' as const, error: 'Waiting for a network connection' };
+                });
+                return changed ? next : queue;
+            });
+            return;
+        }
+        setDownloadQueue(queue => queue.some(item => item.status === 'waiting_for_network')
+            ? queue.map(item => item.status === 'waiting_for_network'
+                ? { ...item, status: 'pending' as const, error: undefined }
+                : item)
+            : queue);
+    }, [androidNetworkAvailable, initialized]);
 
     // Process up to maxConcurrentDownloads in parallel
     useEffect(() => {
+        if (isAndroidPlatform && !androidNetworkAvailable) return;
+        if (isAndroidPlatform && (!store || !initialized)) return;
         const maxConcurrent = settings.maxConcurrentDownloads || 1;
         const available = maxConcurrent - activeCountRef.current;
         if (available <= 0) return;
         const pendingItems = downloadQueue.filter(i => i.status === 'pending').slice(0, available);
         for (const item of pendingItems) {
-            processItem(item);
+            if (!isAndroidPlatform) {
+                void processItem(item);
+                continue;
+            }
+            if (startingItemsRef.current.has(item.id)) continue;
+            startingItemsRef.current.add(item.id);
+            void (async () => {
+                await persistenceChainRef.current;
+                const current = downloadQueueRef.current.find(candidate => candidate.id === item.id);
+                if (!current || current.status !== 'pending' || !androidNetworkAvailableRef.current) return;
+                if (!persistenceHealthyRef.current) {
+                    setDownloadQueue(queue => queue.map(candidate => candidate.id === item.id ? {
+                        ...candidate,
+                        status: 'error',
+                        error: 'Could not save this download for background recovery. Retry after reopening the app.',
+                    } : candidate));
+                    return;
+                }
+                await processItem(current);
+            })().finally(() => startingItemsRef.current.delete(item.id));
         }
-    }, [downloadQueue, settings.maxConcurrentDownloads]);
+    }, [downloadQueue, settings.maxConcurrentDownloads, androidNetworkAvailable, initialized, store]);
 
     const processItem = async (item: DownloadItem) => {
         activeCountRef.current++;
@@ -200,6 +265,7 @@ export function useFileDownload(store: Store | null) {
             // destination already contains the complete file and must not be
             // downloaded again on resume.
             pausedRef.current.delete(item.id);
+            networkPausedRef.current.delete(item.id);
             if (cancelledRef.current.has(item.id)) {
                 cancelledRef.current.delete(item.id);
             } else {
@@ -224,7 +290,9 @@ export function useFileDownload(store: Store | null) {
                 }
             }
         } catch (e) {
-            if (pausedRef.current.has(item.id)) {
+            if (networkPausedRef.current.has(item.id)) {
+                networkPausedRef.current.delete(item.id);
+            } else if (pausedRef.current.has(item.id)) {
                 pausedRef.current.delete(item.id);
             } else if (!cancelledRef.current.has(item.id)) {
                 const errMsg = String(e);
@@ -248,6 +316,12 @@ export function useFileDownload(store: Store | null) {
                         error: errMsg,
                     } : i));
                     toast.warning(t('settings.encryption_mode_passphrase'));
+                } else if (isAndroidPlatform && isTransientNetworkError(errMsg)) {
+                    setDownloadQueue(q => q.map(i => i.id === item.id ? {
+                        ...i,
+                        status: 'waiting_for_network',
+                        error: 'Waiting for a stable network connection',
+                    } : i));
                 } else {
                     setDownloadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'error', error: errMsg } : i));
                     toast.error(`Download failed: ${item.filename}`);
@@ -371,12 +445,13 @@ export function useFileDownload(store: Store | null) {
     const cancelAll = () => {
         setDownloadQueue(q => {
             const active = q.filter(i => i.status === 'downloading' || i.status === 'decrypting' || i.status === 'verifying');
+            const removable = q.filter(i => ['pending', 'paused', 'waiting_for_network', 'waiting_for_unlock', 'cooldown', 'error'].includes(i.status));
             for (const item of active) {
                 cancelledRef.current.add(item.id);
                 invoke('cmd_cancel_transfer', { transferId: item.id }).catch(() => {});
             }
             return q
-                .filter(i => i.status !== 'pending' && i.status !== 'paused' && i.status !== 'cooldown')
+                .filter(i => !removable.some(candidate => candidate.id === i.id))
                 .map(i => active.some(activeItem => activeItem.id === i.id) ? { ...i, status: 'cancelled' as const } : i);
         });
         toast.info('All downloads cancelled');
@@ -411,7 +486,7 @@ export function useFileDownload(store: Store | null) {
                 invoke('cmd_cancel_transfer', { transferId: id }).catch(() => {});
                 return q.map(i => i.id === id ? { ...i, status: 'cancelled' as const } : i);
             }
-            if (item?.status === 'pending' || item?.status === 'paused' || item?.status === 'cooldown') {
+            if (item && ['pending', 'paused', 'waiting_for_network', 'waiting_for_unlock', 'cooldown', 'error'].includes(item.status)) {
                 return q.filter(i => i.id !== id);
             }
             return q;
@@ -419,6 +494,7 @@ export function useFileDownload(store: Store | null) {
     };
 
     const retryItem = (id: string) => {
+        if (cancelledRef.current.has(id)) return;
         setDownloadQueue(q => q.map(i =>
             i.id === id && (i.status === 'error' || i.status === 'cancelled' || i.status === 'waiting_for_unlock')
                 ? { ...i, status: 'pending' as const, error: undefined, progress: undefined, downloadedBytes: undefined, totalBytes: undefined, speedBytesPerSec: undefined }

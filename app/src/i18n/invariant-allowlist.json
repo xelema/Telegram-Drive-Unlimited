@@ -1,6 +1,29 @@
 {
   "keys": [
-    "common.app_title"
+    "common.app_title",
+    "settings.tab_sync",
+    "settings.sync.title",
+    "settings.sync.description",
+    "settings.sync.toggle",
+    "settings.sync.select_folder",
+    "settings.sync.folder_added",
+    "settings.sync.off_by_default",
+    "settings.sync.onboarding",
+    "settings.sync.folder_mapper",
+    "settings.sync.mapper_description",
+    "settings.sync.remove",
+    "settings.sync.add_folder",
+    "settings.sync.select_channel",
+    "settings.sync.no_channels",
+    "sync.status.disabled",
+    "sync.status.syncing",
+    "sync.status.synced",
+    "sync.status.conflicts",
+    "sync.conflict.title",
+    "sync.conflict.keep_local",
+    "sync.conflict.keep_remote",
+    "sync.conflict.keep_both",
+    "sync.error.mass_deletion"
   ],
   "tokens": [
     "Telegram Drive",

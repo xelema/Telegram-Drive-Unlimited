@@ -64,7 +64,8 @@ pub mod startup;
 pub mod storage_insights;
 pub mod crash_reporting;
 pub mod settings_sync;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub mod sync;
+#[cfg(not(target_os = "ios"))]
 pub mod supporter;
 
 pub use auth::*;
@@ -84,5 +85,6 @@ pub use startup::*;
 pub use storage_insights::*;
 pub use crash_reporting::*;
 pub use settings_sync::*;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub use sync::*;
+#[cfg(not(target_os = "ios"))]
 pub use supporter::*;

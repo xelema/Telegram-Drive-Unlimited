@@ -255,6 +255,68 @@ pub fn init_db(app: &AppHandle) -> Result<DbConnection, String> {
         }
     }
 
+    // Folder sync schema v2. The master feature flag is inserted as false so
+    // a new or upgraded installation never starts syncing without consent.
+    {
+        let (migration_name, migration_checksum) = db_migrations::sync_migration_record();
+        let sql = format!(
+            "BEGIN IMMEDIATE TRANSACTION;
+            CREATE TABLE IF NOT EXISTS sync_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS sync_pairs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                local_path TEXT NOT NULL UNIQUE,
+                channel_id INTEGER NOT NULL,
+                folder_key TEXT NOT NULL,
+                label TEXT,
+                sync_direction TEXT NOT NULL DEFAULT 'bidirectional',
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS sync_state (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pair_id INTEGER NOT NULL,
+                relative_path TEXT NOT NULL,
+                local_hash TEXT,
+                remote_hash TEXT,
+                file_size INTEGER NOT NULL DEFAULT 0,
+                local_mtime INTEGER,
+                remote_date INTEGER,
+                message_id INTEGER,
+                sync_status TEXT NOT NULL DEFAULT 'synced',
+                UNIQUE (pair_id, relative_path),
+                FOREIGN KEY (pair_id) REFERENCES sync_pairs(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS sync_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pair_id INTEGER,
+                action TEXT NOT NULL,
+                relative_path TEXT,
+                detail TEXT,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_sync_state_pair ON sync_state(pair_id);
+            CREATE INDEX IF NOT EXISTS idx_sync_log_created ON sync_log(created_at DESC);
+            INSERT OR IGNORE INTO sync_settings (key, value) VALUES
+                ('sync_enabled', 'false'),
+                ('sync_debounce_ms', '3000'),
+                ('sync_encryption', 'inherit');
+            INSERT OR IGNORE INTO app_schema_migrations
+                (version, name, checksum, applied_at, app_version)
+                VALUES (2, '{}', '{}', {}, '{}');
+            COMMIT;",
+            migration_name.replace('\'', "''"),
+            migration_checksum,
+            chrono::Utc::now().timestamp(),
+            env!("CARGO_PKG_VERSION").replace('\'', "''"),
+        );
+        retry_initialization_step("folder sync migration", || {
+            conn.execute(&sql).map_err(|error| error.to_string())
+        })?;
+    }
+
     log::info!("SQLite database initialized successfully using sqlite crate.");
     Ok(Arc::new(Mutex::new(conn)))
 }

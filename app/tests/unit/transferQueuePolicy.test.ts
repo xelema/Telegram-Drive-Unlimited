@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   restoreDownloadQueue,
   restoreUploadQueue,
+  isTransientNetworkError,
   serializeDownloadQueue,
   serializeUploadQueue,
 } from '../../src/services/transferQueuePolicy';
@@ -37,7 +38,15 @@ describe('upload queue persistence', () => {
   });
 
   it('serializes only resumable work', () => {
-    expect(serializeUploadQueue([upload('verifying'), upload('error')]).map(item => item.status)).toEqual(['pending']);
+    expect(serializeUploadQueue([upload('verifying'), upload('error')], true).map(item => item.status)).toEqual(['pending', 'error']);
+  });
+
+  it('keeps the existing desktop policy of dropping failed items', () => {
+    expect(serializeUploadQueue([upload('error')])).toEqual([]);
+  });
+
+  it('keeps Android network waits recoverable across process recreation', () => {
+    expect(restoreUploadQueue([upload('waiting_for_network')])[0].status).toBe('waiting_for_network');
   });
 });
 
@@ -50,5 +59,23 @@ describe('download queue persistence', () => {
 
   it('keeps cooldown work resumable as pending', () => {
     expect(serializeDownloadQueue([download('cooldown')])[0].status).toBe('pending');
+  });
+
+  it('retains failed and network-waiting downloads for explicit or automatic retry', () => {
+    expect(restoreDownloadQueue([download('error'), download('waiting_for_network')], true).map(item => item.status))
+      .toEqual(['error', 'waiting_for_network']);
+  });
+
+  it('keeps the existing desktop policy of dropping failed downloads', () => {
+    expect(restoreDownloadQueue([download('error')])).toEqual([]);
+  });
+});
+
+describe('network failure classification', () => {
+  it('recognizes transient transport failures without treating application errors as offline', () => {
+    expect(isTransientNetworkError('TypeError: Failed to Fetch')).toBe(true);
+    expect(isTransientNetworkError('connection reset by peer')).toBe(true);
+    expect(isTransientNetworkError('DNS lookup failed: host unreachable')).toBe(true);
+    expect(isTransientNetworkError('FILE_TOO_BIG')).toBe(false);
   });
 });

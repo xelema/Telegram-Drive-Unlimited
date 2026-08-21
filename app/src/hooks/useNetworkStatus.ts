@@ -1,42 +1,53 @@
 import { useState, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { isAndroidPlatform } from '../utils';
 
 /**
  * Network detection for Tauri apps using lightweight backend check
  * 
- * Uses cmd_is_network_available which does a simple TCP connection test
- * to Telegram servers without using grammers (avoids stack overflow).
- * 
- * Polls every 10 seconds - very lightweight (~2ms per check).
+ * Desktop uses the existing lightweight Telegram TCP check. Android reads
+ * ConnectivityManager state so Wi-Fi, cellular, VPN, and offline transitions
+ * can pause recovery work before transport errors discard useful progress.
  */
 export function useNetworkStatus() {
-    const [isOnline, setIsOnline] = useState(true);
+    const [isOnline, setIsOnline] = useState(!isAndroidPlatform);
 
     useEffect(() => {
-        let interval: ReturnType<typeof setInterval> | null = null;
+        let cancelled = false;
+        const checkNetwork = async () => {
+            try {
+                const available = await invoke<boolean>(isAndroidPlatform
+                    ? 'cmd_get_android_network_status'
+                    : 'cmd_is_network_available');
+                if (!cancelled) setIsOnline(available);
+            } catch {
+                if (!cancelled) setIsOnline(false);
+            }
+        };
+        const handleOffline = () => {
+            if (isAndroidPlatform) setIsOnline(false);
+        };
+        const handleOnline = () => void checkNetwork();
+        const handleVisibility = () => {
+            if (document.visibilityState === 'visible') void checkNetwork();
+        };
 
-        // Import Tauri invoke
-        import('@tauri-apps/api/core').then(({ invoke }) => {
-            // Check network status
-            const checkNetwork = async () => {
-                try {
-                    // Use the lightweight TCP check (no grammers involved)
-                    const available = await invoke<boolean>('cmd_is_network_available');
-                    setIsOnline(available);
-                } catch (error) {
-                    // If the command fails, assume offline
-                    setIsOnline(false);
-                }
-            };
-
-            // Initial check
-            checkNetwork();
-
-            // Poll every 10 seconds (very lightweight, ~2ms per check)
-            interval = setInterval(checkNetwork, 10000);
-        });
+        void checkNetwork();
+        const interval = window.setInterval(checkNetwork, isAndroidPlatform ? 2_000 : 10_000);
+        if (isAndroidPlatform) {
+            window.addEventListener('offline', handleOffline);
+            window.addEventListener('online', handleOnline);
+            document.addEventListener('visibilitychange', handleVisibility);
+        }
 
         return () => {
-            if (interval) clearInterval(interval);
+            cancelled = true;
+            window.clearInterval(interval);
+            if (isAndroidPlatform) {
+                window.removeEventListener('offline', handleOffline);
+                window.removeEventListener('online', handleOnline);
+                document.removeEventListener('visibilitychange', handleVisibility);
+            }
         };
     }, []);
 

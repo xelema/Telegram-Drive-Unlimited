@@ -1,7 +1,30 @@
+use crate::vpn_optimizer::NetworkConfig;
 use std::net::TcpStream;
 use std::time::Duration;
 use tauri::State;
-use crate::vpn_optimizer::NetworkConfig;
+
+#[tauri::command]
+pub fn cmd_get_android_network_status() -> Result<bool, String> {
+    #[cfg(target_os = "android")]
+    {
+        let context = ndk_context::android_context();
+        let vm = unsafe { jni::JavaVM::from_raw(context.vm().cast()) }
+            .map_err(|error| format!("Unable to access Android connectivity: {error}"))?;
+        let mut env = vm
+            .attach_current_thread()
+            .map_err(|error| format!("Unable to attach Android connectivity check: {error}"))?;
+        let main_class = crate::jni_cache::get_main_activity_jclass()
+            .ok_or("Android connectivity is still initializing")?;
+        env.call_static_method(&main_class, "isNetworkAvailable", "()Z", &[])
+            .map_err(|error| format!("Unable to read Android connectivity: {error}"))?
+            .z()
+            .map_err(|error| format!("Android connectivity returned an invalid value: {error}"))
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        Ok(true)
+    }
+}
 
 /// Test whether Telegram MTProto traffic can pass through the configured proxy.
 /// Unlike cmd_is_network_available (which only TCP-pings the proxy host:port),

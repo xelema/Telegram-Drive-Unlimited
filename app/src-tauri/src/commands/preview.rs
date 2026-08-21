@@ -200,8 +200,8 @@ async fn prune_preview_cache(
             Err(_) => return,
         };
 
-        // First pass: delete any orphaned .part files left behind by
-        // interrupted downloads. These are always stale and never preserved.
+        // Desktop partials are disposable. Android retains recent partials so
+        // process death or a network handoff can resume at a Telegram chunk boundary.
         for entry in read_dir.by_ref().flatten() {
             let path = entry.path();
             if !path.is_file() {
@@ -209,6 +209,19 @@ async fn prune_preview_cache(
             }
             let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
             if fname.ends_with(".part") {
+                #[cfg(target_os = "android")]
+                {
+                    let stale = entry
+                        .metadata()
+                        .ok()
+                        .and_then(|metadata| metadata.modified().ok())
+                        .and_then(|modified| modified.elapsed().ok())
+                        .is_some_and(|age| age >= Duration::from_secs(24 * 60 * 60));
+                    if stale {
+                        let _ = std::fs::remove_file(&path);
+                    }
+                }
+                #[cfg(not(target_os = "android"))]
                 let _ = std::fs::remove_file(&path);
             }
         }
@@ -224,6 +237,10 @@ async fn prune_preview_cache(
         for entry in read_dir.flatten() {
             let path = entry.path();
             if !path.is_file() {
+                continue;
+            }
+            #[cfg(target_os = "android")]
+            if path.extension().and_then(|extension| extension.to_str()) == Some("part") {
                 continue;
             }
             let preserved = preserve_path
@@ -527,15 +544,52 @@ async fn download_to_file<D: grammers_client::types::Downloadable>(
     chunk_size: usize,
     download_limit_bytes_per_sec: u64,
     progress: Option<&PreviewProgressContext>,
+    expected_size: u64,
+    allow_resume: bool,
 ) -> Result<u64, String> {
-    let mut file = tokio::fs::File::create(part_path)
-        .await
-        .map_err(|e| format!("Failed to create .part file: {}", e))?;
-
     let valid_chunk_size = chunk_size.clamp(4 * 1024, 512 * 1024) / (4 * 1024) * (4 * 1024);
+    let existing_size = if allow_resume {
+        tokio::fs::metadata(part_path)
+            .await
+            .map(|metadata| metadata.len())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    if allow_resume && expected_size > 0 && existing_size == expected_size {
+        if let Some(context) = progress {
+            emit_preview_progress(context, existing_size, true);
+        }
+        return Ok(existing_size);
+    }
+    let resume_offset =
+        aligned_resume_offset(existing_size, valid_chunk_size as u64, expected_size);
+    let mut file = if allow_resume {
+        let file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(part_path)
+            .await
+            .map_err(|error| format!("Failed to open resumable .part file: {error}"))?;
+        file.set_len(resume_offset)
+            .await
+            .map_err(|error| format!("Failed to align resumable .part file: {error}"))?;
+        file
+    } else {
+        tokio::fs::File::create(part_path)
+            .await
+            .map_err(|error| format!("Failed to create .part file: {error}"))?
+    };
+
     let mut download_iter = client.iter_download(media);
     download_iter = download_iter.chunk_size(valid_chunk_size as i32);
-    let mut written: u64 = 0;
+    if resume_offset > 0 {
+        let chunk_count = i32::try_from(resume_offset / valid_chunk_size as u64)
+            .map_err(|_| "Resumable preview offset is too large".to_string())?;
+        download_iter = download_iter.skip_chunks(chunk_count);
+    }
+    let mut written = resume_offset;
+    let mut written_this_attempt = 0_u64;
     let started_at = Instant::now();
     let mut last_progress_emit = Instant::now();
 
@@ -546,6 +600,7 @@ async fn download_to_file<D: grammers_client::types::Downloadable>(
                     .await
                     .map_err(|e| format!("Write error: {}", e))?;
                 written += chunk.len() as u64;
+                written_this_attempt += chunk.len() as u64;
 
                 if let Some(context) = progress {
                     if last_progress_emit.elapsed() >= Duration::from_millis(200) {
@@ -556,7 +611,7 @@ async fn download_to_file<D: grammers_client::types::Downloadable>(
 
                 if download_limit_bytes_per_sec > 0 {
                     let expected_elapsed = Duration::from_secs_f64(
-                        written as f64 / download_limit_bytes_per_sec as f64,
+                        written_this_attempt as f64 / download_limit_bytes_per_sec as f64,
                     );
                     let actual_elapsed = started_at.elapsed();
                     if expected_elapsed > actual_elapsed {
@@ -566,7 +621,11 @@ async fn download_to_file<D: grammers_client::types::Downloadable>(
             }
             Ok(None) => break,
             Err(e) => {
-                let _ = tokio::fs::remove_file(part_path).await;
+                let _ = file.flush().await;
+                drop(file);
+                if !allow_resume {
+                    let _ = tokio::fs::remove_file(part_path).await;
+                }
                 return Err(format!("Download error: {}", e));
             }
         }
@@ -577,11 +636,15 @@ async fn download_to_file<D: grammers_client::types::Downloadable>(
         .map_err(|e| format!("Flush error: {}", e))?;
     drop(file);
 
-    if written == 0 {
-        let _ = tokio::fs::remove_file(part_path).await;
-        return Err(
-            "Download produced zero bytes (stale file reference or stream drop)".to_string(),
-        );
+    if written == 0 || (expected_size > 0 && written != expected_size) {
+        if !allow_resume {
+            let _ = tokio::fs::remove_file(part_path).await;
+        }
+        return Err(if written == 0 {
+            "Download produced zero bytes (stale file reference or stream drop)".to_string()
+        } else {
+            format!("Download stopped at {written} of {expected_size} bytes")
+        });
     }
 
     if let Some(context) = progress {
@@ -589,6 +652,13 @@ async fn download_to_file<D: grammers_client::types::Downloadable>(
     }
 
     Ok(written)
+}
+
+fn aligned_resume_offset(existing_size: u64, chunk_size: u64, expected_size: u64) -> u64 {
+    if chunk_size == 0 || (expected_size > 0 && existing_size > expected_size) {
+        return 0;
+    }
+    existing_size / chunk_size * chunk_size
 }
 
 struct DownloadOptions<'a> {
@@ -618,18 +688,33 @@ async fn download_media_with_retry(options: DownloadOptions<'_>) -> Result<(), S
         .and_then(|extension| extension.to_str())
         .unwrap_or("bin");
     let unique_id = rand::rng().random::<u64>();
-    let part_path = options
-        .save_path
-        .with_extension(format!("{}_{}.part", extension, unique_id));
+    let allow_resume = cfg!(target_os = "android");
+    let part_path = if allow_resume {
+        options
+            .save_path
+            .with_extension(format!("{}.part", extension))
+    } else {
+        options
+            .save_path
+            .with_extension(format!("{}_{}.part", extension, unique_id))
+    };
     let progress = options.report_progress.then(|| PreviewProgressContext {
         app_handle: options.app_handle.clone(),
         message_id: options.message_id,
         folder_id: options.folder_id,
         total_bytes: options.expected_size,
     });
+    let validated_size = if allow_resume {
+        options.expected_size
+    } else {
+        0
+    };
 
     let mut last_error = String::new();
-    let _ = tokio::fs::remove_file(&part_path).await;
+    let mut download_complete = false;
+    if !allow_resume {
+        let _ = tokio::fs::remove_file(&part_path).await;
+    }
     match download_to_file(
         options.client,
         options.media,
@@ -637,14 +722,16 @@ async fn download_media_with_retry(options: DownloadOptions<'_>) -> Result<(), S
         options.chunk_size,
         options.download_limit_bytes_per_sec,
         progress.as_ref(),
+        validated_size,
+        allow_resume,
     )
     .await
     {
-        Ok(_) => {}
+        Ok(_) => download_complete = true,
         Err(error) => last_error = error,
     }
 
-    if !is_nonempty_file(&part_path).await {
+    if !download_complete {
         tokio::time::sleep(Duration::from_millis(500)).await;
         let fresh_media = options
             .client
@@ -655,7 +742,9 @@ async fn download_media_with_retry(options: DownloadOptions<'_>) -> Result<(), S
             .and_then(|message| message.media());
 
         if let Some(fresh_media) = fresh_media {
-            let _ = tokio::fs::remove_file(&part_path).await;
+            if !allow_resume {
+                let _ = tokio::fs::remove_file(&part_path).await;
+            }
             if let Err(error) = download_to_file(
                 options.client,
                 &fresh_media,
@@ -663,17 +752,23 @@ async fn download_media_with_retry(options: DownloadOptions<'_>) -> Result<(), S
                 options.chunk_size,
                 options.download_limit_bytes_per_sec,
                 progress.as_ref(),
+                validated_size,
+                allow_resume,
             )
             .await
             {
                 last_error = error;
+            } else {
+                download_complete = true;
             }
         }
     }
 
-    if !is_nonempty_file(&part_path).await {
+    if !download_complete || !is_nonempty_file(&part_path).await {
         options.bandwidth.release_down(options.expected_size);
-        let _ = tokio::fs::remove_file(&part_path).await;
+        if !allow_resume {
+            let _ = tokio::fs::remove_file(&part_path).await;
+        }
         return Err(if last_error.is_empty() {
             "Preview download failed".to_string()
         } else {
@@ -694,7 +789,9 @@ async fn download_media_with_retry(options: DownloadOptions<'_>) -> Result<(), S
             return Ok(());
         }
         options.bandwidth.release_down(options.expected_size);
-        let _ = tokio::fs::remove_file(&part_path).await;
+        if !allow_resume {
+            let _ = tokio::fs::remove_file(&part_path).await;
+        }
         return Err(format!("Failed to save preview: {}", error));
     }
 
@@ -974,6 +1071,8 @@ pub async fn cmd_get_thumbnail(
             net_config.chunk_size_bytes(),
             net_config.download_limit_bytes_per_sec(),
             None,
+            0,
+            false,
         )
         .await;
         if let Err(error) = result {
@@ -1125,6 +1224,18 @@ pub async fn cmd_delete_image_thumbnail(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resumable_preview_offsets_keep_only_complete_telegram_chunks() {
+        let chunk = 512 * 1024;
+        assert_eq!(aligned_resume_offset(0, chunk, 4 * chunk), 0);
+        assert_eq!(
+            aligned_resume_offset(chunk + 12_345, chunk, 4 * chunk),
+            chunk
+        );
+        assert_eq!(aligned_resume_offset(5 * chunk, chunk, 4 * chunk), 0);
+        assert_eq!(aligned_resume_offset(chunk, 0, 4 * chunk), 0);
+    }
 
     #[tokio::test]
     async fn offline_cache_pruning_counts_preserved_file_and_removes_parts() {

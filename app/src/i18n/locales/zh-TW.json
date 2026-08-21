@@ -72,6 +72,22 @@
     "duplicates": "重複"
   },
   "settings": {
+    "tab_sync": "Folder Sync",
+    "sync": {
+      "title": "Folder Sync",
+      "description": "Automatically sync local folders with Telegram channels.",
+      "toggle": "Enable Sync",
+      "select_folder": "Select a local folder",
+      "folder_added": "Sync folder added",
+      "off_by_default": "Folder Sync is off by default",
+      "onboarding": "Nothing is synchronized until you enable it. Files over 2 GB are skipped, and large deletion bursts pause the sync for your protection.",
+      "folder_mapper": "Folder mapper",
+      "mapper_description": "Map each local folder to one existing Telegram channel.",
+      "remove": "Remove sync folder",
+      "add_folder": "Add Folder",
+      "select_channel": "Select Telegram channel",
+      "no_channels": "Refresh your Telegram folders before creating a sync mapping."
+    },
     "title": "設置",
     "tab_general": "一般",
     "tab_webdav": "WebDAV",
@@ -537,6 +553,23 @@
     "resend_in": "在 {{seconds}}s 內重新傳送代碼",
     "resend_code": "重新傳送代碼",
     "use_qr_instead": "改用 QR 碼"
+  },
+  "sync": {
+    "status": {
+      "disabled": "Folder Sync disabled",
+      "syncing": "Folder Sync running",
+      "synced": "Folders synced",
+      "conflicts": "Folder Sync needs attention"
+    },
+    "conflict": {
+      "title": "Sync Conflict Detected",
+      "keep_local": "Keep Local",
+      "keep_remote": "Keep Remote",
+      "keep_both": "Keep Both"
+    },
+    "error": {
+      "mass_deletion": "Sync paused: Too many files deleted remotely."
+    }
   },
   "ads": {
     "sponsored": "贊助",

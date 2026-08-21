@@ -11,7 +11,7 @@ import type { Store } from '@tauri-apps/plugin-store';
 import { useTranslation } from 'react-i18next';
 import { useUploadChoice, type UploadChoice } from '../context/UploadChoiceContext';
 import { triggerHaptic } from '../services/feedback';
-import { restoreUploadQueue, serializeUploadQueue } from '../services/transferQueuePolicy';
+import { isTransientNetworkError, restoreUploadQueue, serializeUploadQueue } from '../services/transferQueuePolicy';
 import { announceSupporterValueMoment } from '../services/supporterVisibility';
 
 interface ProgressPayload {
@@ -31,7 +31,11 @@ interface RemoteProgressPayload {
     total_bytes: number;
 }
 
-export function useFileUpload(activeFolderId: number | null, store: Store | null) {
+export function useFileUpload(
+    activeFolderId: number | null,
+    store: Store | null,
+    androidNetworkAvailable = true,
+) {
     const { t } = useTranslation();
     const queryClient = useQueryClient();
     const { settings } = useSettings();
@@ -40,7 +44,15 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
     const [initialized, setInitialized] = useState(false);
     const cancelledRef = useRef<Set<string>>(new Set());
     const pausedRef = useRef<Set<string>>(new Set());
+    const networkPausedRef = useRef<Set<string>>(new Set());
     const activeCountRef = useRef(0);
+    const persistenceChainRef = useRef<Promise<void>>(Promise.resolve());
+    const persistenceHealthyRef = useRef(true);
+    const startingItemsRef = useRef<Set<string>>(new Set());
+    const uploadQueueRef = useRef(uploadQueue);
+    const androidNetworkAvailableRef = useRef(androidNetworkAvailable);
+    uploadQueueRef.current = uploadQueue;
+    androidNetworkAvailableRef.current = androidNetworkAvailable;
 
     // Listen for progress events from Rust
     useEffect(() => {
@@ -61,7 +73,7 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
 
         listen<RemoteProgressPayload>('remote-upload-progress', (event) => {
             setUploadQueue(q => q.map(i =>
-                i.id === event.payload.id && i.status !== 'paused' && i.status !== 'cancelled' ? {
+                i.id === event.payload.id && !['paused', 'cancelled', 'waiting_for_network'].includes(i.status) ? {
                     ...i,
                     status: event.payload.phase,
                     progress: event.payload.percent,
@@ -82,7 +94,7 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
         if (!store || initialized) return;
         store.get<QueueItem[]>('uploadQueue').then((saved) => {
             if (saved && saved.length > 0) {
-                const pending = restoreUploadQueue(saved);
+                const pending = restoreUploadQueue(saved, isAndroidPlatform);
                 if (pending.length > 0) {
                     setUploadQueue(pending);
                     toast.info(`Restored ${pending.length} pending uploads`);
@@ -94,41 +106,88 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
 
     useEffect(() => {
         if (!store || !initialized) return;
-        const pending = serializeUploadQueue(uploadQueue);
-        store.set('uploadQueue', pending).then(() => store.save());
+        const pending = serializeUploadQueue(uploadQueue, isAndroidPlatform);
+        persistenceChainRef.current = persistenceChainRef.current
+            .catch(() => undefined)
+            .then(async () => {
+                await store.set('uploadQueue', pending);
+                await store.save();
+                persistenceHealthyRef.current = true;
+            })
+            .catch(error => {
+                persistenceHealthyRef.current = false;
+                console.error('[Upload] Could not persist the recovery queue:', error);
+            });
     }, [store, uploadQueue, initialized]);
+
+    useEffect(() => {
+        if (!isAndroidPlatform || !initialized) return;
+        const activeStatuses: QueueItem['status'][] = ['uploading', 'downloading', 'encrypting', 'verifying'];
+        if (!androidNetworkAvailable) {
+            setUploadQueue(queue => {
+                let changed = false;
+                const next = queue.map(item => {
+                    if (item.status !== 'pending' && !activeStatuses.includes(item.status)) return item;
+                    changed = true;
+                    if (activeStatuses.includes(item.status)) {
+                        networkPausedRef.current.add(item.id);
+                        void invoke('cmd_cancel_transfer', { transferId: item.id }).catch(() => undefined);
+                    }
+                    return { ...item, status: 'waiting_for_network' as const, error: 'Waiting for a network connection' };
+                });
+                return changed ? next : queue;
+            });
+            return;
+        }
+        setUploadQueue(queue => queue.some(item => item.status === 'waiting_for_network')
+            ? queue.map(item => item.status === 'waiting_for_network'
+                ? { ...item, status: 'pending' as const, error: undefined }
+                : item)
+            : queue);
+    }, [androidNetworkAvailable, initialized]);
 
     // Process up to maxConcurrentUploads in parallel
     useEffect(() => {
+        if (isAndroidPlatform && !androidNetworkAvailable) return;
+        if (isAndroidPlatform && (!store || !initialized)) return;
         const maxConcurrent = settings.maxConcurrentUploads || 1;
         const available = maxConcurrent - activeCountRef.current;
         if (available <= 0) return;
         const pendingItems = uploadQueue.filter(i => i.status === 'pending').slice(0, available);
         for (const item of pendingItems) {
-            processItem(item);
+            if (!isAndroidPlatform) {
+                void processItem(item);
+                continue;
+            }
+            if (startingItemsRef.current.has(item.id)) continue;
+            startingItemsRef.current.add(item.id);
+            void (async () => {
+                await persistenceChainRef.current;
+                const current = uploadQueueRef.current.find(candidate => candidate.id === item.id);
+                if (!current || current.status !== 'pending' || !androidNetworkAvailableRef.current) return;
+                if (!persistenceHealthyRef.current) {
+                    setUploadQueue(queue => queue.map(candidate => candidate.id === item.id ? {
+                        ...candidate,
+                        status: 'error',
+                        error: 'Could not save this upload for background recovery. Retry after reopening the app.',
+                    } : candidate));
+                    return;
+                }
+                await processItem(current);
+            })().finally(() => startingItemsRef.current.delete(item.id));
         }
-    }, [uploadQueue, settings.maxConcurrentUploads]);
+    }, [uploadQueue, settings.maxConcurrentUploads, androidNetworkAvailable, initialized, store]);
 
-    // Manage Android Foreground Service for persistent uploads
-    useEffect(() => {
-        if (!isAndroidPlatform) return;
-
-        const hasActiveUploads = uploadQueue.some(i => i.status === 'uploading' || i.status === 'pending');
-        if (hasActiveUploads) {
-            invoke('cmd_start_foreground_service').catch(() => {});
-        } else if (initialized) {
-            invoke('cmd_stop_foreground_service').catch(() => {});
-        }
-    }, [uploadQueue, initialized]);
-
-    /** Clean up temp zip file if the item was created from a folder */
-    const cleanupTempZip = async (item: QueueItem) => {
+    const cleanupResumableSource = async (item: QueueItem) => {
         if (item.tempZipPath) {
             try {
                 await invoke('cmd_delete_temp_zip', { path: item.tempZipPath });
             } catch {
                 // Best-effort cleanup
             }
+        }
+        if (item.androidStaged) {
+            await invoke('cmd_delete_android_staged_upload', { path: item.path }).catch(() => undefined);
         }
     };
 
@@ -178,6 +237,7 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
             // late pause request raced with its final bytes. Mark it successful
             // so resume cannot create a duplicate Telegram message.
             pausedRef.current.delete(item.id);
+            networkPausedRef.current.delete(item.id);
             if (cancelledRef.current.has(item.id)) {
                 cancelledRef.current.delete(item.id);
             } else {
@@ -186,10 +246,12 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
                 announceSupporterValueMoment('upload_completed');
                 queryClient.invalidateQueries({ queryKey: ['files', item.folderId] });
             }
-            // Clean up temp zip on success
-            if (!keepTemporaryFileForResume) await cleanupTempZip(item);
+            if (!keepTemporaryFileForResume) await cleanupResumableSource(item);
         } catch (e) {
-            if (pausedRef.current.has(item.id)) {
+            if (networkPausedRef.current.has(item.id)) {
+                networkPausedRef.current.delete(item.id);
+                keepTemporaryFileForResume = true;
+            } else if (pausedRef.current.has(item.id)) {
                 pausedRef.current.delete(item.id);
                 keepTemporaryFileForResume = true;
             } else if (!cancelledRef.current.has(item.id)) {
@@ -197,6 +259,7 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
                 if (errMsg.includes('Transfer cancelled')) {
                     setUploadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'cancelled' } : i));
                 } else if (errMsg.includes('VAULT_LOCKED') || errMsg.includes('KEY_REQUIRED')) {
+                    keepTemporaryFileForResume = Boolean(item.tempZipPath || item.androidStaged);
                     setUploadQueue(q => q.map(i => i.id === item.id ? {
                         ...i,
                         status: 'waiting_for_unlock',
@@ -207,7 +270,15 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
                 } else if (errMsg.includes('FILE_TOO_BIG') || errMsg.includes('too large') || errMsg.includes('2 GB')) {
                     setUploadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'error', error: errMsg } : i));
                     toast.error(`Upload failed: Telegram has a 2 GB file size limit. Try splitting large folders.`);
+                } else if (isAndroidPlatform && isTransientNetworkError(errMsg)) {
+                    keepTemporaryFileForResume = true;
+                    setUploadQueue(q => q.map(i => i.id === item.id ? {
+                        ...i,
+                        status: 'waiting_for_network',
+                        error: 'Waiting for a stable network connection',
+                    } : i));
                 } else {
+                    keepTemporaryFileForResume = Boolean(item.tempZipPath || item.androidStaged);
                     const displayPath = item.url || item.path;
                     setUploadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'error', error: errMsg } : i));
                     toast.error(`Upload failed for ${displayPath.split('/').pop()}: ${e}`);
@@ -215,8 +286,7 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
             } else if (cancelledRef.current.has(item.id)) {
                 cancelledRef.current.delete(item.id);
             }
-            // Clean up temp zip even on failure
-            if (!keepTemporaryFileForResume) await cleanupTempZip(item);
+            if (!keepTemporaryFileForResume) await cleanupResumableSource(item);
         } finally {
             activeCountRef.current--;
             // A quickly resumed item may already be pending while the cancelled
@@ -284,9 +354,24 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
         if (!paths || paths.length === 0) return 0;
         const protection = await chooseAndStageProtection(paths.length);
         if (!protection) return 0;
-        const newItems: QueueItem[] = paths.map((path: string, index) => ({
+        const preparedPaths: Array<{ path: string; androidStaged: boolean }> = [];
+        try {
+            for (const path of paths) {
+                preparedPaths.push(isAndroidPlatform
+                    ? { path: await invoke<string>('cmd_stage_android_upload', { path }), androidStaged: true }
+                    : { path, androidStaged: false });
+            }
+        } catch (error) {
+            await Promise.all(preparedPaths
+                .filter(candidate => candidate.androidStaged)
+                .map(candidate => invoke('cmd_delete_android_staged_upload', { path: candidate.path }).catch(() => undefined)));
+            toast.error(`Android could not preserve the selected file for background recovery: ${String(error)}`);
+            return 0;
+        }
+        const newItems: QueueItem[] = preparedPaths.map((prepared, index) => ({
             id: Math.random().toString(36).substr(2, 9),
-            path,
+            path: prepared.path,
+            androidStaged: prepared.androidStaged || undefined,
             folderId: destinationFolderId,
             status: 'pending' as const,
             protection: protection[index],
@@ -379,12 +464,25 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
                     await invoke('cmd_delete_temp_zip', { path: zipPath }).catch(() => {});
                     return;
                 }
+                let uploadPath = zipPath;
+                let androidStaged = false;
+                if (isAndroidPlatform) {
+                    try {
+                        uploadPath = await invoke<string>('cmd_stage_android_upload', { path: zipPath });
+                        androidStaged = true;
+                    } catch (error) {
+                        await invoke('cmd_delete_temp_zip', { path: zipPath }).catch(() => undefined);
+                        throw error;
+                    }
+                    await invoke('cmd_delete_temp_zip', { path: zipPath }).catch(() => undefined);
+                }
                 const item: QueueItem = {
                     id: Math.random().toString(36).substr(2, 9),
-                    path: zipPath,
+                    path: uploadPath,
                     folderId: activeFolderId,
                     status: 'pending',
-                    tempZipPath: zipPath,
+                    tempZipPath: androidStaged ? undefined : zipPath,
+                    androidStaged: androidStaged || undefined,
                     protection: protection[0],
                 };
                 setUploadQueue(prev => [...prev, item]);
@@ -401,12 +499,14 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
     const cancelAll = () => {
         setUploadQueue(q => {
             const activeItems = q.filter(i => ['uploading', 'downloading', 'encrypting', 'verifying'].includes(i.status));
+            const removableItems = q.filter(i => ['pending', 'paused', 'waiting_for_network', 'waiting_for_unlock', 'error'].includes(i.status));
             for (const item of activeItems) {
                 cancelledRef.current.add(item.id);
                 invoke('cmd_cancel_transfer', { transferId: item.id }).catch(() => {});
             }
+            for (const item of removableItems) void cleanupResumableSource(item);
             return q
-                .filter(i => i.status !== 'pending' && i.status !== 'paused')
+                .filter(i => !removableItems.some(removable => removable.id === i.id))
                 .map(i => activeItems.some(active => active.id === i.id) ? { ...i, status: 'cancelled' as const } : i);
         });
         toast.info('All uploads cancelled');
@@ -431,6 +531,15 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
         toast.info('Uploads resumed');
     };
 
+    const clearFinished = () => {
+        setUploadQueue(queue => {
+            const removed = queue.filter(item => ['success', 'error', 'cancelled'].includes(item.status)
+                && !cancelledRef.current.has(item.id));
+            for (const item of removed) void cleanupResumableSource(item);
+            return queue.filter(item => !removed.some(candidate => candidate.id === item.id));
+        });
+    };
+
     const cancelItem = (id: string) => {
         setUploadQueue(q => {
             const item = q.find(i => i.id === id);
@@ -439,8 +548,8 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
                 invoke('cmd_cancel_transfer', { transferId: id }).catch(() => {});
                 return q.map(i => i.id === id ? { ...i, status: 'cancelled' as const } : i);
             }
-            // Remove pending items directly
-            if (item?.status === 'pending' || item?.status === 'paused') {
+            if (item && ['pending', 'paused', 'waiting_for_network', 'waiting_for_unlock', 'error'].includes(item.status)) {
+                void cleanupResumableSource(item);
                 return q.filter(i => i.id !== id);
             }
             return q;
@@ -448,6 +557,7 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
     };
 
     const retryItem = async (id: string) => {
+        if (cancelledRef.current.has(id)) return;
         const item = uploadQueue.find(candidate => candidate.id === id);
         if (!item || !['error', 'cancelled', 'waiting_for_unlock'].includes(item.status)) return;
         let protection = item.protection;
@@ -495,6 +605,7 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
         cancelAll,
         pauseAll,
         resumeAll,
+        clearFinished,
         cancelItem,
         retryItem,
     };

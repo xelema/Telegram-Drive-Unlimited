@@ -41,6 +41,7 @@ import { RemoteUploadModal } from './dashboard/RemoteUploadModal';
 import { KeyboardShortcutsDialog } from './dashboard/KeyboardShortcutsDialog';
 import { DriveConceptTour, SupporterReminderDialog } from './dashboard/DriveConceptTour';
 import { HelpCenterDialog } from './dashboard/HelpCenterDialog';
+import { SyncDashboard } from './sync/SyncDashboard';
 import { Files, Link, Copy, Check, X, Loader2, Share2 } from 'lucide-react';
 
 // Hooks
@@ -760,6 +761,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
             onDragEnd={handleInternalDragEnd}
         >
             <div className="desktop-shell relative flex h-screen w-full overflow-hidden bg-app-canvas">
+                <SyncDashboard />
 
             <ExternalDropBlocker
                 currentFolderName={currentViewName}

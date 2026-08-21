@@ -3,11 +3,14 @@ use sqlite::{Connection, State};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-const APPLICATION_SCHEMA_VERSION: i64 = 1;
+const APPLICATION_SCHEMA_VERSION: i64 = 2;
+const BASELINE_SCHEMA_VERSION: i64 = 1;
 const ENCRYPTION_SCHEMA_VERSION: i64 = 3;
 const BASELINE_NAME: &str = "baseline_known_schema";
 const BASELINE_DEFINITION: &str =
     "1:baseline_known_schema:app_schema_migrations(version,name,checksum,applied_at,app_version)";
+const SYNC_MIGRATION_NAME: &str = "telegram_folder_sync";
+const SYNC_MIGRATION_DEFINITION: &str = "2:telegram_folder_sync:sync_settings(key,value);sync_pairs(id,local_path,channel_id,folder_key,label,sync_direction,is_active,created_at);sync_state(id,pair_id,relative_path,local_hash,remote_hash,file_size,local_mtime,remote_date,message_id,sync_status);sync_log(id,pair_id,action,relative_path,detail,created_at)";
 
 const MIGRATION_LEDGER_SQL: &str = "CREATE TABLE app_schema_migrations (
         version INTEGER PRIMARY KEY,
@@ -26,6 +29,10 @@ const KNOWN_TABLES: &[&str] = &[
     "groups",
     "schema_version",
     "shared_links",
+    "sync_log",
+    "sync_pairs",
+    "sync_settings",
+    "sync_state",
 ];
 
 const SHARED_LINK_COLUMNS: &[&str] = &[
@@ -91,6 +98,18 @@ const ENCRYPTION_PROFILE_COLUMNS: &[&str] = &[
 const ENCRYPTION_VERSION_COLUMNS: &[&str] = &["version", "applied_at"];
 const MIGRATION_LEDGER_COLUMNS: &[&str] =
     &["version", "name", "checksum", "applied_at", "app_version"];
+const SYNC_SETTING_COLUMNS: &[&str] = &["key", "value"];
+const SYNC_PAIR_COLUMNS: &[&str] = &[
+    "id", "local_path", "channel_id", "folder_key", "label", "sync_direction",
+    "is_active", "created_at",
+];
+const SYNC_STATE_COLUMNS: &[&str] = &[
+    "id", "pair_id", "relative_path", "local_hash", "remote_hash", "file_size",
+    "local_mtime", "remote_date", "message_id", "sync_status",
+];
+const SYNC_LOG_COLUMNS: &[&str] = &[
+    "id", "pair_id", "action", "relative_path", "detail", "created_at",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SchemaLayout {
@@ -178,10 +197,28 @@ pub fn inspect_schema(conn: &Connection) -> Result<SchemaLayout, String> {
         validate_columns(conn, "file_activity", FILE_ACTIVITY_COLUMNS)?;
     }
 
+    let sync_presence = [
+        tables.contains("sync_settings"),
+        tables.contains("sync_pairs"),
+        tables.contains("sync_state"),
+        tables.contains("sync_log"),
+    ];
+    let has_sync = sync_presence.iter().all(|present| *present);
+    if !has_sync && sync_presence.iter().any(|present| *present) {
+        return Err("Database has a partial folder-sync schema. No changes were made.".to_string());
+    }
+    if has_sync {
+        validate_columns(conn, "sync_settings", SYNC_SETTING_COLUMNS)?;
+        validate_columns(conn, "sync_pairs", SYNC_PAIR_COLUMNS)?;
+        validate_columns(conn, "sync_state", SYNC_STATE_COLUMNS)?;
+        validate_columns(conn, "sync_log", SYNC_LOG_COLUMNS)?;
+    }
+
     let has_migration_ledger = tables.contains("app_schema_migrations");
     if has_migration_ledger {
         validate_columns(conn, "app_schema_migrations", MIGRATION_LEDGER_COLUMNS)?;
         validate_existing_baseline(conn)?;
+        validate_sync_migration(conn, has_sync)?;
         if !(has_groups && has_encryption && has_file_activity) {
             return Err(
                 "Managed database is missing tables required by its recorded schema version. No changes were made."
@@ -269,7 +306,7 @@ pub fn install_baseline(conn: &Connection) -> Result<(), String> {
             )
             .map_err(|error| error.to_string())?;
         statement
-            .bind((1, APPLICATION_SCHEMA_VERSION))
+            .bind((1, BASELINE_SCHEMA_VERSION))
             .map_err(|error| error.to_string())?;
         statement
             .bind((2, BASELINE_NAME))
@@ -311,7 +348,7 @@ fn validate_existing_baseline(conn: &Connection) -> Result<(), String> {
         .prepare("SELECT name, checksum FROM app_schema_migrations WHERE version = ?")
         .map_err(|error| error.to_string())?;
     statement
-        .bind((1, APPLICATION_SCHEMA_VERSION))
+        .bind((1, BASELINE_SCHEMA_VERSION))
         .map_err(|error| error.to_string())?;
     if statement.next().map_err(|error| error.to_string())? != State::Row {
         return Err(
@@ -332,6 +369,28 @@ fn validate_existing_baseline(conn: &Connection) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+fn validate_sync_migration(conn: &Connection, has_sync: bool) -> Result<(), String> {
+    let mut statement = conn
+        .prepare("SELECT name, checksum FROM app_schema_migrations WHERE version = 2")
+        .map_err(|error| error.to_string())?;
+    let has_record = statement.next().map_err(|error| error.to_string())? == State::Row;
+    if has_record != has_sync {
+        return Err("Folder-sync tables and their migration record do not match. No changes were made.".to_string());
+    }
+    if has_record {
+        let name = statement.read::<String, _>(0).map_err(|error| error.to_string())?;
+        let checksum = statement.read::<String, _>(1).map_err(|error| error.to_string())?;
+        if name != SYNC_MIGRATION_NAME || checksum != sync_migration_checksum() {
+            return Err("Folder-sync migration does not match this build. No changes were made.".to_string());
+        }
+    }
+    Ok(())
+}
+
+pub fn sync_migration_record() -> (&'static str, String) {
+    (SYNC_MIGRATION_NAME, sync_migration_checksum())
 }
 
 fn quick_check(conn: &Connection) -> Result<(), String> {
@@ -489,6 +548,11 @@ fn reject_newer_version(
 
 fn baseline_checksum() -> String {
     let digest = Sha256::digest(BASELINE_DEFINITION.as_bytes());
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn sync_migration_checksum() -> String {
+    let digest = Sha256::digest(SYNC_MIGRATION_DEFINITION.as_bytes());
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
@@ -709,12 +773,12 @@ mod tests {
         newer
             .execute(
                 "INSERT INTO app_schema_migrations
-                 VALUES (2, 'future', 'future', 1, '9.0.0')",
+                 VALUES (3, 'future', 'future', 1, '9.0.0')",
             )
             .unwrap();
         assert!(inspect_schema(&newer)
             .unwrap_err()
-            .contains("supports up to 1"));
+            .contains("supports up to 2"));
 
         let modified = connection();
         create_current_schema(&modified);
@@ -728,6 +792,40 @@ mod tests {
         assert!(inspect_schema(&modified)
             .unwrap_err()
             .contains("does not match this build"));
+    }
+
+    #[test]
+    fn accepts_complete_folder_sync_schema_v2() {
+        let conn = connection();
+        create_current_schema(&conn);
+        install_baseline(&conn).unwrap();
+        conn.execute(
+            "CREATE TABLE sync_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             CREATE TABLE sync_pairs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, local_path TEXT NOT NULL UNIQUE,
+                channel_id INTEGER NOT NULL, folder_key TEXT NOT NULL, label TEXT,
+                sync_direction TEXT NOT NULL, is_active INTEGER NOT NULL, created_at INTEGER NOT NULL
+             );
+             CREATE TABLE sync_state (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, pair_id INTEGER NOT NULL,
+                relative_path TEXT NOT NULL, local_hash TEXT, remote_hash TEXT,
+                file_size INTEGER NOT NULL, local_mtime INTEGER, remote_date INTEGER,
+                message_id INTEGER, sync_status TEXT NOT NULL, UNIQUE(pair_id, relative_path)
+             );
+             CREATE TABLE sync_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, pair_id INTEGER, action TEXT NOT NULL,
+                relative_path TEXT, detail TEXT, created_at INTEGER NOT NULL
+             );",
+        )
+        .unwrap();
+        let (name, checksum) = sync_migration_record();
+        let mut statement = conn.prepare(
+            "INSERT INTO app_schema_migrations (version, name, checksum, applied_at, app_version) VALUES (2, ?, ?, 1, 'test')",
+        ).unwrap();
+        statement.bind((1, name)).unwrap();
+        statement.bind((2, checksum.as_str())).unwrap();
+        statement.next().unwrap();
+        assert_eq!(inspect_schema(&conn).unwrap(), SchemaLayout::Current);
     }
 
     #[test]

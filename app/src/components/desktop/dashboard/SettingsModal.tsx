@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, RotateCcw, Download, Upload, Trash2, HardDrive, Globe, Key, Copy, Check, RefreshCw, FolderArchive, Shield, Zap, Activity, Gauge, Wifi, ChevronDown, Link, Sparkles, Info, Monitor, Loader2, Languages, Play, Palette, Tag, Search, Bug, Database } from 'lucide-react';
+import { X, RotateCcw, Download, Upload, Trash2, HardDrive, Globe, Key, Copy, Check, RefreshCw, FolderArchive, Shield, Zap, Activity, Gauge, Wifi, ChevronDown, Link, Sparkles, Info, Monitor, Loader2, Languages, Play, Palette, Tag, Search, Bug, Database, FolderSync } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { check, Update } from '@tauri-apps/plugin-updater';
@@ -19,6 +19,7 @@ import { formatBytes } from '../../../utils';
 import { SettingsRow, SettingsStepper, SettingsToggle } from './settings/SettingsControls';
 import { AboutSettingsTab, AdvancedSettingsTab, EncryptionSettingsTab, GeneralSettingsTab, PrivacySettingsTab, ProxySettingsTab, SharingSettingsTab, ThemeSettingsTab, VpnSettingsTab, WebDavSettingsTab } from './settings/SettingsTabs';
 import { FfmpegInstallNotice } from '../../shared/FfmpegInstallNotice';
+import { SyncSettingsPanel } from '../sync/SyncSettingsPanel';
 
 interface SettingsModalProps {
     isOpen: boolean;
@@ -48,7 +49,7 @@ interface WebDavTokenResponse {
     url: string;
 }
 
-export type SettingsTab = 'general' | 'privacy' | 'advanced' | 'webdav' | 'themes' | 'proxy' | 'vpn' | 'encryption' | 'sharing' | 'about';
+export type SettingsTab = 'general' | 'privacy' | 'advanced' | 'webdav' | 'themes' | 'proxy' | 'vpn' | 'encryption' | 'sharing' | 'sync' | 'about';
 
 export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: SettingsModalProps) {
     const { settings, updateSetting, updateSettings, resetSettings } = useSettings();
@@ -693,7 +694,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                             {([
                                 ['Essentials', [['general', Globe, 'General transfers language updates'], ['themes', Palette, 'Appearance colors themes']] as const],
                                 ['Security & Privacy', [['privacy', Bug, 'Privacy telemetry crash reports consent'], ['encryption', Shield, 'Encryption vault security auto lock']] as const],
-                                ['Connections', [['sharing', Link, 'Sharing links local server']] as const],
+                                ['Connections', [['sync', FolderSync, 'Folder sync local directories Telegram channels'], ['sharing', Link, 'Sharing links local server']] as const],
                                 ['Advanced', [['advanced', Gauge, 'REST API proxy VPN WebDAV network integration Finder token port']] as const],
                                 ['Support', [['about', Info, 'About diagnostics version updates']] as const],
                             ] as const).map(([group, items]) => {
@@ -1984,6 +1985,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                                     </SharingSettingsTab>
                                 )}
                                 {activeTab === 'themes' && <ThemeSettingsTab />}
+                                {activeTab === 'sync' && <SyncSettingsPanel />}
                                 {activeTab === 'about' && (
                                     <AboutSettingsTab
                                         appVersion={appVersion}

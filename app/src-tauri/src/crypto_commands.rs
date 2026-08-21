@@ -241,6 +241,7 @@ pub async fn cmd_update_encryption_settings(
 pub async fn cmd_create_vault(
     mut passphrase: String,
     crypto_state: State<'_, CryptoState>,
+    app_handle: tauri::AppHandle,
 ) -> Result<UnlockSessionId, String> {
     if !crypto_state.get_features().core_available {
         passphrase.zeroize();
@@ -250,6 +251,9 @@ pub async fn cmd_create_vault(
         .create_vault(passphrase.as_bytes())
         .map_err(|e| e.to_string());
     passphrase.zeroize();
+    if result.is_ok() {
+        let _ = app_handle.emit("vault-unlocked", ());
+    }
     result
 }
 
@@ -258,11 +262,15 @@ pub async fn cmd_create_vault(
 pub async fn cmd_unlock_vault(
     mut passphrase: String,
     crypto_state: State<'_, CryptoState>,
+    app_handle: tauri::AppHandle,
 ) -> Result<UnlockSessionId, String> {
     let result = crypto_state
         .unlock(passphrase.as_bytes())
         .map_err(|e| e.to_string());
     passphrase.zeroize();
+    if result.is_ok() {
+        let _ = app_handle.emit("vault-unlocked", ());
+    }
     result
 }
 

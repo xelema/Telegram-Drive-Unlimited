@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Telegram-Drive — A local-first file workspace for Telegram</title>
-  <meta name="description" content="Organize, preview, stream, and share files stored in your own Telegram account. Open source for Windows, macOS, Linux, and Android.">
+  <meta name="description" content="Organize, preview, sync, stream, and share files stored in your own Telegram account. Open source for Windows, macOS, Linux, and Android.">
   <meta name="theme-color" id="themeColor" content="#0b0d12">
   <meta name="color-scheme" content="dark light">
   <meta name="referrer" content="strict-origin-when-cross-origin">
@@ -12,7 +12,7 @@
   <link rel="icon" type="image/svg+xml" href="assets/logo.svg">
   <meta property="og:type" content="website">
   <meta property="og:title" content="Telegram-Drive — Your Telegram files, organized">
-  <meta property="og:description" content="A local-first, open-source file workspace for your own Telegram account.">
+  <meta property="og:description" content="A local-first, open-source file workspace with opt-in desktop folder sync and support for 24 languages.">
   <meta property="og:url" content="https://caamer20.github.io/Telegram-Drive/">
   <meta property="og:image" content="https://caamer20.github.io/Telegram-Drive/assets/dashboard.webp">
   <meta name="twitter:card" content="summary_large_image">
@@ -223,6 +223,30 @@
     .feature h3 { margin: 2.5rem 0 .7rem; font-size: 1.05rem; }
     .feature p { margin: 0; color: var(--muted); font-size: .87rem; line-height: 1.65; }
 
+    .language-panel { margin-top: clamp(2rem, 4vw, 3rem); padding: clamp(1.6rem, 4vw, 2.5rem); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); }
+    .language-header { display: flex; justify-content: space-between; gap: 2rem; align-items: end; }
+    .language-header h3 { margin: 0; font-size: clamp(1.4rem, 2.5vw, 2rem); letter-spacing: -.035em; }
+    .language-header p { max-width: 560px; margin: .55rem 0 0; color: var(--muted); font-size: .9rem; }
+    .language-count { flex: none; padding: .45rem .75rem; border: 1px solid rgba(53,169,239,.28); border-radius: 999px; background: var(--accent-wash); color: var(--accent-strong); font-size: .76rem; font-weight: 720; }
+    .language-list { display: flex; flex-wrap: wrap; gap: .55rem; margin: 1.6rem 0 0; padding: 0; list-style: none; }
+    .language-list li { padding: .46rem .68rem; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--surface-2); color: var(--muted); font-size: .78rem; }
+
+    .sync-layout { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(290px, .85fr); gap: clamp(2rem, 6vw, 5rem); align-items: stretch; }
+    .sync-map { display: flex; flex-direction: column; justify-content: center; padding: clamp(1.5rem, 4vw, 2.75rem); border: 1px solid rgba(53,169,239,.25); border-radius: var(--radius); background: linear-gradient(145deg, rgba(53,169,239,.12), rgba(17,21,28,.72)); box-shadow: var(--shadow); }
+    .sync-map-label { margin: 0 0 1.5rem; color: var(--quiet); font-size: .72rem; font-weight: 720; letter-spacing: .1em; text-transform: uppercase; }
+    .sync-tree { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr); gap: .7rem; align-items: center; }
+    .sync-node { min-height: 142px; display: flex; flex-direction: column; justify-content: space-between; padding: 1rem; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); }
+    .sync-node.synced { border-color: rgba(53,169,239,.42); background: var(--accent-wash); }
+    .sync-node strong { font-size: .9rem; }
+    .sync-node span { color: var(--quiet); font-size: .73rem; line-height: 1.5; }
+    .sync-arrow { color: var(--accent-strong); font-size: 1.2rem; }
+    .sync-default { margin: 1.5rem 0 0; padding-top: 1.1rem; border-top: 1px solid var(--line); color: var(--muted); font-size: .82rem; line-height: 1.65; }
+    .sync-default strong { color: var(--good); }
+    .sync-guards { display: grid; align-content: start; gap: 0; border-top: 1px solid var(--line); }
+    .sync-guard { padding: 1.25rem 0; border-bottom: 1px solid var(--line); }
+    .sync-guard strong { display: block; font-size: .92rem; }
+    .sync-guard span { display: block; margin-top: .35rem; color: var(--muted); font-size: .82rem; line-height: 1.6; }
+
     .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; counter-reset: setup; }
     .step { min-height: 270px; padding: 2rem; border: 1px solid var(--line-soft); border-radius: var(--radius-sm); background: var(--surface); counter-increment: setup; }
     .step::before { display: inline-grid; width: 34px; height: 34px; place-items: center; border: 1px solid rgba(53,169,239,.28); border-radius: 50%; background: var(--accent-wash); color: var(--accent-strong); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .75rem; content: "0" counter(setup); }
@@ -303,6 +327,7 @@
     :root[data-theme="light"] .story-list,
     :root[data-theme="light"] .support-details ul { color: #34475a; }
     :root[data-theme="light"] .feature { background: rgba(255, 255, 255, .72); }
+    :root[data-theme="light"] .sync-map { background: linear-gradient(145deg, rgba(53,169,239,.12), rgba(255,255,255,.9)); }
     :root[data-theme="light"] code { background: #edf2f7; color: #1b506f; }
     :root[data-theme="light"] .trust-panel { background: linear-gradient(140deg, #eaf6fd, #f5f9fc 62%, #fff); }
     :root[data-theme="light"] .trust-item { border-color: rgba(20, 42, 64, .13); }
@@ -321,7 +346,7 @@
       .nav-actions .github-link { display: none; }
       .proof-row, .feature-grid, .steps, .download-grid { grid-template-columns: repeat(2, 1fr); }
       .proof:nth-child(3) { grid-column: 1 / -1; border-top: 1px solid var(--line-soft); border-left: 0; }
-      .story, .story.reverse, .trust-grid, .phone-stage, .support-card { grid-template-columns: 1fr; }
+      .story, .story.reverse, .trust-grid, .phone-stage, .support-card, .sync-layout { grid-template-columns: 1fr; }
       .support-details { border-top: 1px solid var(--line); border-left: 0; }
       .story.reverse .story-media { order: 0; }
       .story-copy, .phone-copy { max-width: var(--reading); }
@@ -342,6 +367,10 @@
       .proof-row, .feature-grid, .steps, .download-grid { grid-template-columns: 1fr; }
       .proof + .proof, .proof:nth-child(3) { grid-column: auto; border-top: 1px solid var(--line-soft); border-left: 0; }
       .feature { min-height: 190px; }
+      .language-header { align-items: flex-start; flex-direction: column; gap: 1rem; }
+      .sync-tree { grid-template-columns: 1fr; }
+      .sync-node { min-height: 112px; }
+      .sync-arrow { justify-self: center; transform: rotate(90deg); }
       .phone-stage { overflow: hidden; }
       .phones { width: 142%; margin-left: -21%; gap: .6rem; }
       .support-price, .support-details { padding: 2rem 1.4rem; }
@@ -358,7 +387,7 @@
     }
   </style>
   <script type="application/ld+json">
-    {"@context":"https://schema.org","@type":"SoftwareApplication","name":"Telegram-Drive","applicationCategory":"UtilitiesApplication","operatingSystem":"Windows, macOS, Linux, Android","description":"A local-first, open-source file workspace for files stored in your Telegram account.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"url":"https://caamer20.github.io/Telegram-Drive/","downloadUrl":"https://github.com/caamer20/Telegram-Drive/releases","author":{"@type":"Person","name":"Cameron Amer"}}
+    {"@context":"https://schema.org","@type":"SoftwareApplication","name":"Telegram-Drive","applicationCategory":"UtilitiesApplication","operatingSystem":"Windows, macOS, Linux, Android","description":"A local-first, open-source file workspace with opt-in desktop folder sync for files stored in your Telegram account.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"url":"https://caamer20.github.io/Telegram-Drive/","downloadUrl":"https://github.com/caamer20/Telegram-Drive/releases","author":{"@type":"Person","name":"Cameron Amer"}}
   </script>
 </head>
 <body>
@@ -372,6 +401,7 @@
       </a>
       <nav class="nav-links" id="navLinks" aria-label="Primary navigation">
         <a href="#product">Product</a>
+        <a href="#folder-sync">Folder Sync</a>
         <a href="#privacy">Privacy</a>
         <a href="#supporter">Supporter</a>
         <a href="#download">Download</a>
@@ -394,7 +424,7 @@
       <div class="shell">
         <p class="eyebrow">Open source · Local first · Cross-platform</p>
         <h1>Your Telegram files, <span>organized.</span></h1>
-        <p class="hero-copy">Telegram-Drive gives Saved Messages and your channels a focused file workspace—complete with uploads, previews, streaming, search, and sharing.</p>
+        <p class="hero-copy">Telegram-Drive gives Saved Messages and your channels a focused file workspace—complete with uploads, previews, desktop folder sync, streaming, search, and sharing.</p>
         <div class="hero-actions">
           <a class="button primary" id="heroDownload" href="https://github.com/caamer20/Telegram-Drive/releases" target="_blank" rel="noopener noreferrer">Download latest release</a>
           <a class="button" href="https://github.com/caamer20/Telegram-Drive" target="_blank" rel="noopener noreferrer">Explore the source <span aria-hidden="true">↗</span></a>
@@ -461,7 +491,48 @@
           <article class="feature"><span class="feature-num">03</span><h3>Optional encryption</h3><p>Protect selected transfers with authenticated TDENC2 envelopes and local vault keys.</p></article>
           <article class="feature"><span class="feature-num">04</span><h3>WebDAV</h3><p>Opt-in local file-manager access with capability links and read-only defaults.</p></article>
           <article class="feature"><span class="feature-num">05</span><h3>REST API</h3><p>Local automation endpoints protected by an API key and disabled by default.</p></article>
-          <article class="feature"><span class="feature-num">06</span><h3>19 languages</h3><p>System-language detection plus selectable regional locales, including RTL support.</p></article>
+          <article class="feature"><span class="feature-num">06</span><h3>Folder Sync</h3><p>Opt-in bidirectional sync between local folders and Telegram channels on Windows, macOS, and Linux.</p></article>
+        </div>
+        <aside class="language-panel" id="languages" aria-labelledby="languages-title">
+          <div class="language-header">
+            <div>
+              <h3 id="languages-title">Available in 24 languages.</h3>
+              <p>Use automatic system-language detection or choose a language in Settings. Right-to-left layouts are supported where appropriate.</p>
+            </div>
+            <span class="language-count">24 interface languages</span>
+          </div>
+          <ul class="language-list" aria-label="Supported interface languages">
+            <li>Arabic</li><li>Bengali</li><li>Chinese (Simplified)</li><li>Chinese (Traditional)</li><li>English</li><li>Filipino</li><li>French</li><li>German</li><li>Hindi</li><li>Indonesian</li><li>Italian</li><li>Japanese</li><li>Korean</li><li>Malay</li><li>Persian</li><li>Polish</li><li>Portuguese (Brazil)</li><li>Russian</li><li>Spanish</li><li>Thai</li><li>Turkish</li><li>Ukrainian</li><li>Urdu</li><li>Vietnamese</li>
+          </ul>
+        </aside>
+      </div>
+    </section>
+
+    <section class="section section-rule" id="folder-sync">
+      <div class="shell">
+        <div class="section-head">
+          <p class="eyebrow">Desktop Folder Sync</p>
+          <h2>Keep a local folder and a Telegram channel in step.</h2>
+          <p class="section-lede">Map folders to channels for bidirectional sync on Windows, macOS, and Linux. Telegram-Drive compares what is local, what is remote, and the last successfully synced state before it plans a change.</p>
+        </div>
+        <div class="sync-layout">
+          <div class="sync-map" aria-label="Three-tree folder sync model">
+            <p class="sync-map-label">Three-tree reconciliation</p>
+            <div class="sync-tree">
+              <div class="sync-node"><strong>Local Tree</strong><span>Files on this computer now</span></div>
+              <span class="sync-arrow" aria-hidden="true">↔</span>
+              <div class="sync-node synced"><strong>Synced Tree</strong><span>The last confirmed shared state</span></div>
+              <span class="sync-arrow" aria-hidden="true">↔</span>
+              <div class="sync-node"><strong>Remote Tree</strong><span>Files in the Telegram channel now</span></div>
+            </div>
+            <p class="sync-default"><strong>Off by default.</strong> Folder Sync starts only after you enable it in Settings and keeps that choice across restarts.</p>
+          </div>
+          <div class="sync-guards" aria-label="Folder Sync safeguards">
+            <div class="sync-guard"><strong>Network-safe planning</strong><span>An incomplete remote scan pauses reconciliation, so a connection failure is not mistaken for deleted files.</span></div>
+            <div class="sync-guard"><strong>Mass-deletion protection</strong><span>If planned deletions exceed 50% of the synced baseline, the run stops for review.</span></div>
+            <div class="sync-guard"><strong>Atomic downloads</strong><span>Downloads finish in a temporary file before replacing the destination, protecting against partial files.</span></div>
+            <div class="sync-guard"><strong>Clear limits and conflicts</strong><span>Files over 2 GB are skipped and logged. Conflicts can keep the local copy, remote copy, or both.</span></div>
+          </div>
         </div>
       </div>
     </section>
@@ -566,6 +637,7 @@
         <div class="faq">
           <details><summary>Where are my files stored?</summary><p>In your own Telegram account. Saved Messages acts as the home location and channels act as folders. Telegram-Drive does not operate a separate file-storage service.</p></details>
           <details><summary>Is the storage unlimited?</summary><p>No. Storage and file handling follow Telegram’s account, service, and per-file limits. Telegram-Drive currently limits a Telegram object to roughly 2 GB, with slightly less available for encrypted files because of envelope overhead.</p></details>
+          <details><summary>Does Folder Sync start automatically?</summary><p>No. Folder Sync is off by default and must be enabled explicitly in Settings. On Windows, macOS, and Linux, you can then map a local folder to a Telegram channel and choose how to resolve any conflicts.</p></details>
           <details><summary>Does the $5 license unlock features?</summary><p>No. Every feature is available in the free version. The lifetime supporter license only removes supported desktop sponsor placements and helps fund development.</p></details>
           <details><summary>Do normal updates require reactivation?</summary><p>No. A verified device keeps its secure entitlement through normal application updates. Keep the recovery code for reinstalls or another eligible device; the license supports up to three desktop devices.</p></details>
           <details><summary>Are WebDAV and the REST API public?</summary><p>They are disabled by default and bind to loopback by default. REST uses an API key, while WebDAV uses a capability URL and starts in read-only mode. Network exposure remains under the user’s control.</p></details>
@@ -587,7 +659,7 @@
     <div class="shell">
       <div class="footer-grid">
         <div class="footer-brand"><a class="brand" href="#top"><img src="assets/logo.svg" alt="" width="30" height="30"><span>Telegram-Drive</span></a><p>A local-first, open-source file workspace for files stored in your Telegram account.</p></div>
-        <div class="footer-col"><h3>Product</h3><a href="#product">Product</a><a href="#privacy">Privacy</a><a href="#supporter">Supporter</a><a href="#download">Download</a></div>
+        <div class="footer-col"><h3>Product</h3><a href="#product">Product</a><a href="#folder-sync">Folder Sync</a><a href="#languages">Languages</a><a href="#privacy">Privacy</a><a href="#supporter">Supporter</a><a href="#download">Download</a></div>
         <div class="footer-col"><h3>Resources</h3><a href="https://github.com/caamer20/Telegram-Drive" target="_blank" rel="noopener noreferrer">GitHub</a><a href="https://github.com/caamer20/Telegram-Drive/blob/main/README.md" target="_blank" rel="noopener noreferrer">Documentation</a><a href="https://github.com/caamer20/Telegram-Drive/blob/main/PRIVACY.md" target="_blank" rel="noopener noreferrer">Privacy policy</a><a href="https://github.com/caamer20/Telegram-Drive/blob/main/SECURITY.md" target="_blank" rel="noopener noreferrer">Security</a></div>
         <div class="footer-col"><h3>Project</h3><a href="https://github.com/caamer20/Telegram-Drive/releases" target="_blank" rel="noopener noreferrer">Releases</a><a href="https://github.com/caamer20/Telegram-Drive/issues" target="_blank" rel="noopener noreferrer">Support</a><a href="https://www.cameronamer.com" target="_blank" rel="noopener noreferrer">Cameron Amer</a></div>
       </div>
