@@ -10,6 +10,7 @@ The desktop supporter feature is backed by a Cloudflare Worker, D1, and PayPal O
 - Signed tokens are valid for 30 days with a seven-day offline grace period. The app attempts a refresh on startup, so a verified refund or reversal takes effect when the service is reachable.
 - PayPal webhook signatures are verified through PayPal before events are processed. Event IDs are deduplicated, and failed processing remains retryable.
 - Checkout creation records the exact supporter-terms version and acceptance timestamp before redirecting to PayPal.
+- A scheduled GitHub Action writes checksum-protected, restore-ready D1 SQL exports to a private R2 bucket; see [Supporter D1 Backup and Recovery](SUPPORTER_BACKUP_RECOVERY.md).
 
 ## Local verification
 
@@ -45,6 +46,10 @@ Configure PayPal to send these events to `<PUBLIC_ORIGIN>/v1/paypal/webhook`:
 
 Use PayPal sandbox credentials and `PAYPAL_ENVIRONMENT=sandbox` until the complete purchase, return, token issuance, refresh, recovery, refund, and revocation flow passes. Switch to live credentials and `PAYPAL_ENVIRONMENT=live` only after sandbox verification.
 
+## Independent D1 backups
+
+Provision the private R2 bucket and GitHub Actions secrets documented in [Supporter D1 Backup and Recovery](SUPPORTER_BACKUP_RECOVERY.md), then manually run `Supporter D1 Backup` once before enabling payments. The backup workflow is intentionally separate from Worker deployment: missing R2 configuration cannot prevent the supporter service from deploying, and a Worker defect cannot silently disable the independent export job.
+
 ## Desktop release configuration
 
 Set these non-secret GitHub repository variables before tagging a release:
@@ -65,3 +70,4 @@ Before publishing a desktop release:
 5. Restore on a second test device with the recovery code, then confirm the fourth activation is rejected.
 6. Refund the sandbox capture and confirm the next online refresh revokes ad-free access.
 7. Confirm no email, Telegram identifier, file metadata, or IP address is persisted in D1.
+8. Confirm the latest scheduled D1 archive and checksum exist in R2, and keep a dated record of the most recent successful restore drill.

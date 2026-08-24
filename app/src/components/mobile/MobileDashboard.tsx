@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
-import { Folder, Download, Menu, LogOut, RefreshCw, UploadCloud, MoreVertical, Trash2, Pencil, Globe, Shield, Lock, ChevronDown, Share2, Link, Copy, Check, X, Loader2, Wifi, Activity, Zap, Eye, EyeOff } from 'lucide-react';
+import { Folder, Download, Menu, LogOut, RefreshCw, UploadCloud, MoreVertical, Trash2, Pencil, Globe, Shield, Lock, ChevronDown, Share2, Link, Copy, Check, X, Loader2, Wifi, Activity, Zap, Eye, EyeOff, HelpCircle, ExternalLink, Pause, Play, RotateCcw, CheckCircle2, Database } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
@@ -10,16 +10,19 @@ import { BottomNavBar } from './BottomNavBar';
 import { TouchFileList } from './TouchFileList';
 import { ThemeToggle } from '../shared/ThemeToggle';
 import AdsterraBanner from '../shared/AdsterraBanner';
+import { DriveConceptTour } from '../desktop/dashboard/DriveConceptTour';
+import { HelpCenterDialog } from '../desktop/dashboard/HelpCenterDialog';
 import { ActionPopover, ActionItem } from './ActionPopover';
 import { ShareDialog } from '../desktop/dashboard/ShareDialog';
 import { RenameFolderSheet } from './RenameFolderSheet';
+import { MobileMediaPlayer } from './MobileMediaPlayer';
+import { MobileSupporterCard } from './MobileSupporterCard';
 import { usePlatform } from '../../hooks/usePlatform';
 import { useTelegramConnection } from '../../hooks/useTelegramConnection';
 import { useFileUpload } from '../../hooks/useFileUpload';
 import { useFileDownload } from '../../hooks/useFileDownload';
 import { useFileOperations } from '../../hooks/useFileOperations';
 import { formatBytes, isMediaFile, isPdfFile, isImageFile, nativeShareOrCopy, copyToClipboard } from '../../utils';
-import { MediaPlayer } from '../desktop/dashboard/MediaPlayer';
 import { PdfViewer } from '../desktop/dashboard/PdfViewer';
 import { PreviewModal } from '../desktop/dashboard/PreviewModal';
 import { useTheme } from '../../context/ThemeContext';
@@ -28,15 +31,49 @@ import { useSettings } from '../../context/SettingsContext';
 import { version as appVersion } from '../../../package.json';
 import { LANGUAGES } from '../../i18n/languages';
 import { useTranslation } from 'react-i18next';
+import { useConfirm } from '../../context/ConfirmContext';
+import { BandwidthWidget } from '../desktop/dashboard/BandwidthWidget';
+import type { OfflineCacheStatus } from '../../types';
+import { evaluateAndroidTransferPolicy, type AndroidTransferEnvironment } from '../../services/androidTransferPolicy';
+
+interface AndroidPlaybackHistoryEntry {
+  mediaId: string;
+  title: string;
+  positionMs: number;
+  durationMs: number;
+  completed: boolean;
+  lastPlayedAt: number;
+}
+
+function MobileSettingToggle({ checked, label, description, onChange }: {
+  checked: boolean;
+  label: string;
+  description: string;
+  onChange: () => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4 border-b border-telegram-border/20 py-3 last:border-b-0">
+      <div>
+        <p className="text-xs font-medium text-telegram-text">{label}</p>
+        <p className="mt-0.5 text-[10px] leading-4 text-telegram-subtext">{description}</p>
+      </div>
+      <button type="button" role="switch" aria-checked={checked} aria-label={label} onClick={onChange} className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${checked ? 'bg-telegram-primary' : 'bg-telegram-border'}`}>
+        <span className={`absolute start-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-5 rtl:-translate-x-5' : ''}`} />
+      </button>
+    </div>
+  );
+}
 
 export default function MobileDashboard({ onLogout }: { onLogout?: () => void }) {
   const { t } = useTranslation();
+  const { confirm } = useConfirm();
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<'files' | 'downloads' | 'settings'>('files');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const { isAndroid } = usePlatform();
+  const { isAndroid, isTelevision } = usePlatform();
   const { theme } = useTheme();
-  const { settings, updateSetting } = useSettings();
+  const { settings, updateSetting, isLoaded: settingsLoaded } = useSettings();
+  const [showHelp, setShowHelp] = useState(false);
 
   // ── Android deep-link listener (https://t.me/ links) ──────────────────
   useEffect(() => {
@@ -124,8 +161,49 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
     handleFolderRename, handleFolderToggleVisibility, handleExportFolderInvite
   } = useTelegramConnection(logoutHandler);
 
-  const { handleManualUpload } = useFileUpload(activeFolderId, store);
-  const { queueDownload, queueBulkDownload } = useFileDownload(store);
+  const { data: androidTransferEnvironment } = useQuery({
+    queryKey: ['android-transfer-environment'],
+    queryFn: () => invoke<AndroidTransferEnvironment>('cmd_get_android_transfer_environment'),
+    enabled: isAndroid,
+    refetchInterval: isAndroid ? 10_000 : false,
+    refetchOnWindowFocus: true,
+  });
+  const androidTransferGate = useMemo(
+    () => evaluateAndroidTransferPolicy(androidTransferEnvironment, settings),
+    [androidTransferEnvironment, settings],
+  );
+  const transferAllowed = !isAndroid || (isConnected && androidTransferGate.allowed);
+  const transferWaitingReason = !isConnected
+    ? 'Waiting for the Telegram connection'
+    : androidTransferGate.reason ?? 'Waiting for Android transfer conditions';
+
+  useEffect(() => {
+    if (!isAndroid || !settingsLoaded) return;
+    void invoke('cmd_configure_android_transfer_recovery', {
+      wifiOnly: settings.androidWifiOnlyTransfers,
+      allowRoaming: settings.androidAllowRoaming,
+      requireCharging: settings.androidRequireCharging,
+      pauseOnLowBattery: settings.androidPauseOnLowBattery,
+    }).catch(error => console.warn('[Transfer] Unable to configure Android recovery:', error));
+  }, [
+    isAndroid,
+    settings.androidAllowRoaming,
+    settings.androidPauseOnLowBattery,
+    settings.androidRequireCharging,
+    settings.androidWifiOnlyTransfers,
+    settingsLoaded,
+  ]);
+
+  const {
+    uploadQueue, setUploadQueue, handleManualUpload, clearFinished: clearUploads,
+    cancelAll: cancelUploads, pauseAll: pauseUploads, resumeAll: resumeUploads,
+    cancelItem: cancelUpload, retryItem: retryUpload,
+  } = useFileUpload(activeFolderId, store, transferAllowed, transferWaitingReason);
+  const {
+    downloadQueue, queueDownload, queueBulkDownload, clearFinished: clearDownloads,
+    cancelAll: cancelDownloads, pauseAll: pauseDownloads, resumeAll: resumeDownloads,
+    cancelItem: cancelDownload, retryItem: retryDownload,
+  } = useFileDownload(store, transferAllowed, transferWaitingReason);
 
   const [playingFile, setPlayingFile] = useState<TelegramFile | null>(null);
   const [pdfFile, setPdfFile] = useState<TelegramFile | null>(null);
@@ -136,9 +214,11 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
   const [bulkShareCopied, setBulkShareCopied] = useState<Set<string>>(new Set());
   const [uploadingCacheFiles, setUploadingCacheFiles] = useState<Set<string>>(new Set());
   const transferIdCounter = useRef(0);
+  const transferServiceRunningRef = useRef(false);
 
   // ── Connection diagnostics state ──────────────────────────────────────
   const [checkingLatency, setCheckingLatency] = useState(false);
+  const [copyingDiagnostics, setCopyingDiagnostics] = useState(false);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
 
   const { data: bandwidth } = useQuery({
@@ -146,6 +226,40 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
     queryFn: () => invoke<BandwidthStats>('cmd_get_bandwidth'),
     refetchInterval: activeTab === 'settings' ? 5000 : false,
   });
+
+  const {
+    data: offlineCache,
+    isFetching: offlineCacheLoading,
+    refetch: refetchOfflineCache,
+  } = useQuery({
+    queryKey: ['offline-cache-status'],
+    queryFn: () => invoke<OfflineCacheStatus>('cmd_get_offline_cache_status'),
+    enabled: activeTab === 'settings',
+  });
+
+  const clearOfflineCache = useCallback(async () => {
+    const accepted = await confirm({
+      title: t('settings.clear_offline_cache_title'),
+      message: t('settings.clear_offline_cache_desc'),
+      confirmText: t('settings.clear'),
+      variant: 'danger',
+    });
+    if (!accepted) return;
+    try {
+      await invoke('cmd_clean_preview_cache');
+      await refetchOfflineCache();
+      toast.success(t('settings.offline_cache_cleared'));
+    } catch {
+      toast.error(t('settings.cache_clear_failed'));
+    }
+  }, [confirm, refetchOfflineCache, t]);
+
+  useEffect(() => {
+    if (!isAndroid || !settingsLoaded) return;
+    void invoke('cmd_set_preview_cache_limit', { maxGb: settings.androidMediaCacheMaxGb })
+      .then(() => refetchOfflineCache())
+      .catch(error => console.warn('[Media] Unable to configure offline cache:', error));
+  }, [isAndroid, refetchOfflineCache, settings.androidMediaCacheMaxGb, settingsLoaded]);
 
   const handleCheckLatency = useCallback(async () => {
     setCheckingLatency(true);
@@ -168,7 +282,130 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
     }
   }, []);
 
-  const adVisible = !playingFile && !pdfFile && !previewFile && !shareFile && !bulkShareLinks;
+  const handleCopyDiagnostics = useCallback(async () => {
+    setCopyingDiagnostics(true);
+    try {
+      const diagnostics = await invoke<string>('cmd_get_system_diagnostics');
+      await copyToClipboard(diagnostics);
+      toast.success(t('settings.diagnostics_copied'));
+    } catch (error) {
+      toast.error(t('settings.diagnostics_copy_failed', { error: String(error) }));
+    } finally {
+      setCopyingDiagnostics(false);
+    }
+  }, [t]);
+
+  const handleBiometricLockToggle = useCallback(async () => {
+    if (settings.androidBiometricLock) {
+      updateSetting('androidBiometricLock', false);
+      return;
+    }
+    try {
+      const available = await invoke<boolean>('cmd_get_android_authentication_available');
+      if (!available) {
+        toast.error('Set a device PIN, pattern, password, or supported biometric before enabling app lock.');
+        return;
+      }
+      const authenticated = await invoke<boolean>('cmd_android_authenticate', { reason: 'Authenticate to enable Telegram Drive app lock' });
+      if (authenticated) updateSetting('androidBiometricLock', true);
+    } catch (error) {
+      toast.error(`Could not enable Android app lock: ${error}`);
+    }
+  }, [settings.androidBiometricLock, updateSetting]);
+
+  useEffect(() => {
+    if (!isAndroid || !settingsLoaded) return;
+    void invoke<boolean>('cmd_configure_android_privacy', {
+      biometricLock: settings.androidBiometricLock,
+      privacyScreen: settings.androidPrivacyScreen,
+      timeoutMinutes: settings.androidLockAfterBackgroundMinutes,
+    }).then(available => {
+      if (!available && settings.androidBiometricLock) updateSetting('androidBiometricLock', false);
+    }).catch(error => console.warn('[Privacy] Unable to configure Android privacy:', error));
+  }, [
+    isAndroid,
+    settings.androidBiometricLock,
+    settings.androidLockAfterBackgroundMinutes,
+    settings.androidPrivacyScreen,
+    settingsLoaded,
+    updateSetting,
+  ]);
+
+  // The in-app sponsor placement is TV-safe and remains available to free users.
+  // Keep it suppressed during media, previews, dialogs, and active transfers so it
+  // never covers playback controls or interrupts a bandwidth-sensitive operation.
+  const adVisible = !playingFile && !pdfFile && !previewFile && !shareFile && !bulkShareLinks
+    && !showHelp && settings.driveTourSeen
+    && !uploadQueue.some(item => ['pending', 'uploading', 'downloading', 'encrypting', 'verifying'].includes(item.status))
+    && !downloadQueue.some(item => ['pending', 'cooldown', 'downloading', 'decrypting', 'verifying'].includes(item.status));
+
+  const activeUploadCount = uploadQueue.filter(item => ['pending', 'uploading', 'downloading', 'encrypting', 'verifying'].includes(item.status)).length;
+  const activeDownloadCount = downloadQueue.filter(item => ['pending', 'cooldown', 'downloading', 'decrypting', 'verifying'].includes(item.status)).length;
+  const pausedUploadCount = uploadQueue.filter(item => item.status === 'paused').length;
+  const pausedDownloadCount = downloadQueue.filter(item => item.status === 'paused').length;
+  const networkWaitingCount = [...uploadQueue, ...downloadQueue].filter(item => item.status === 'waiting_for_network').length;
+  const aggregateTransferSpeed = [...uploadQueue, ...downloadQueue].reduce((sum, item) => sum + (item.speedBytesPerSec || 0), 0);
+  const foregroundItems = [...uploadQueue, ...downloadQueue].filter(item =>
+    ['pending', 'uploading', 'downloading', 'encrypting', 'decrypting', 'verifying'].includes(item.status)
+  );
+  const aggregateTransferProgress = foregroundItems.length > 0
+    ? Math.round(foregroundItems.reduce((sum, item) => sum + (item.progress || 0), 0) / foregroundItems.length)
+    : 0;
+
+  useEffect(() => {
+    if (!isAndroid) return;
+    const hasRunningTransfers = [...uploadQueue, ...downloadQueue]
+      .some(item => ['pending', 'uploading', 'downloading', 'encrypting', 'decrypting', 'verifying'].includes(item.status));
+    if (hasRunningTransfers && !transferServiceRunningRef.current) {
+      transferServiceRunningRef.current = true;
+      void invoke('cmd_start_foreground_service').catch(() => {
+        transferServiceRunningRef.current = false;
+      });
+    } else if (!hasRunningTransfers && settingsLoaded && transferServiceRunningRef.current) {
+      transferServiceRunningRef.current = false;
+      void invoke('cmd_stop_foreground_service').catch(() => undefined);
+    }
+  }, [downloadQueue, isAndroid, settingsLoaded, uploadQueue]);
+
+  useEffect(() => {
+    if (!isAndroid || !transferServiceRunningRef.current) return;
+    void invoke('cmd_update_foreground_service', {
+      active: foregroundItems.length,
+      progress: aggregateTransferProgress,
+      speed: Math.round(aggregateTransferSpeed),
+      paused: foregroundItems.length === 0 && pausedUploadCount + pausedDownloadCount > 0,
+    }).catch(() => undefined);
+  }, [aggregateTransferProgress, aggregateTransferSpeed, foregroundItems.length, isAndroid, pausedDownloadCount, pausedUploadCount]);
+
+  useEffect(() => {
+    if (!isAndroid) return;
+    const applyTransferAction = (action: string) => {
+      if (action === 'pause' || action === 'timeout') {
+        pauseUploads();
+        pauseDownloads();
+        if (action === 'timeout') toast.info('Android paused long-running transfers. Open Transfers to resume.');
+      } else if (action === 'resume') {
+        resumeUploads();
+        resumeDownloads();
+      } else if (action === 'cancel') {
+        cancelUploads();
+        cancelDownloads();
+      }
+    };
+    const handleTransferAction = (event: Event) => applyTransferAction((event as CustomEvent<string>).detail);
+    window.addEventListener('android-transfer-action', handleTransferAction);
+    void invoke<string>('cmd_get_pending_android_transfer_action')
+      .then(action => { if (action) applyTransferAction(action); })
+      .catch(() => undefined);
+    return () => window.removeEventListener('android-transfer-action', handleTransferAction);
+  }, [cancelDownloads, cancelUploads, isAndroid, pauseDownloads, pauseUploads, resumeDownloads, resumeUploads]);
+
+  useEffect(() => () => {
+    if (isAndroid && transferServiceRunningRef.current) {
+      transferServiceRunningRef.current = false;
+      void invoke('cmd_stop_foreground_service').catch(() => undefined);
+    }
+  }, [isAndroid]);
 
   // ── Android cached shared files ───────────────────────────────────────
   interface CachedFileEntry {
@@ -189,16 +426,20 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
     const tid = `cache-upload-${++transferIdCounter.current}-${Date.now()}`;
     setUploadingCacheFiles(prev => new Set(prev).add(entry.cached_path));
     try {
-      await invoke<string>('cmd_upload_file', {
-        path: entry.cached_path,
+      const stagedPath = await invoke<string>('cmd_stage_android_upload', { path: entry.cached_path });
+      setUploadQueue(queue => [...queue, {
+        id: tid,
+        path: stagedPath,
         folderId: activeFolderId,
-        transferId: tid,
-      });
-      toast.success(`Uploaded: ${entry.file_name}`);
-      // Refresh the list to remove the uploaded entry
-      refetchCachedFiles();
+        status: 'pending',
+        androidStaged: true,
+        protection: { mode: 'standard' },
+      }]);
+      await invoke('cmd_remove_cached_path', { uri: entry.uri }).catch(() => undefined);
+      await refetchCachedFiles();
+      toast.success(`Queued: ${entry.file_name}`);
     } catch (e) {
-      toast.error(`Upload failed: ${e}`);
+      toast.error(`Could not preserve the shared file for upload: ${e}`);
     } finally {
       setUploadingCacheFiles(prev => {
         const next = new Set(prev);
@@ -206,7 +447,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
         return next;
       });
     }
-  }, [activeFolderId, refetchCachedFiles]);
+  }, [activeFolderId, refetchCachedFiles, setUploadQueue]);
 
   const handleClearCachedFiles = useCallback(async () => {
     try {
@@ -249,6 +490,24 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
     },
     enabled: !!store,
   });
+
+  const { data: playbackHistory = [] } = useQuery({
+    queryKey: ['android-playback-history'],
+    queryFn: () => invoke<AndroidPlaybackHistoryEntry[]>('cmd_get_android_playback_history'),
+    enabled: isAndroid && activeTab === 'files',
+    refetchInterval: isAndroid && activeTab === 'files' ? 15_000 : false,
+  });
+  const continueWatching = useMemo(() => {
+    const folderKey = String(activeFolderId ?? 'home');
+    return playbackHistory.flatMap(entry => {
+      if (entry.completed || entry.positionMs < 10_000 || !entry.mediaId.startsWith(`${folderKey}:`)) return [];
+      const messageId = Number(entry.mediaId.slice(folderKey.length + 1));
+      const file = allFiles.find(candidate => candidate.id === messageId);
+      if (!file) return [];
+      const progress = entry.durationMs > 0 ? Math.min(100, Math.round(entry.positionMs / entry.durationMs * 100)) : 0;
+      return [{ entry, file, progress }];
+    }).slice(0, 5);
+  }, [activeFolderId, allFiles, playbackHistory]);
 
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [fileRenames, setFileRenames] = useState<Map<number, string>>(new Map());
@@ -356,6 +615,31 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
     }
   }, []);
 
+  const handleKeepOffline = useCallback(async (file: TelegramFile) => {
+    const toastId = toast.loading(`Saving ${file.name} for offline use…`);
+    const folderId = file.folder_id ?? activeFolderId;
+    try {
+      await invoke('cmd_get_preview', { messageId: file.id, folderId });
+      await invoke('cmd_set_preview_pinned', { messageId: file.id, folderId, pinned: true });
+      await Promise.all([refetchOfflineCache(), queryClient.invalidateQueries({ queryKey: ['files', activeFolderId] })]);
+      toast.success(`${file.name} will be kept offline`, { id: toastId });
+    } catch (error) {
+      toast.error(`Could not keep this file offline: ${error}`, { id: toastId });
+    }
+  }, [activeFolderId, queryClient, refetchOfflineCache]);
+
+  const handleRemoveOffline = useCallback(async (file: TelegramFile) => {
+    const folderId = file.folder_id ?? activeFolderId;
+    try {
+      await invoke('cmd_set_preview_pinned', { messageId: file.id, folderId, pinned: false });
+      await invoke('cmd_delete_preview_for_message', { messageId: file.id, folderId });
+      await Promise.all([refetchOfflineCache(), queryClient.invalidateQueries({ queryKey: ['files', activeFolderId] })]);
+      toast.success(`Removed the offline copy of ${file.name}`);
+    } catch (error) {
+      toast.error(`Could not remove the offline copy: ${error}`);
+    }
+  }, [activeFolderId, queryClient, refetchOfflineCache]);
+
   const handleRenameFile = useCallback((file: TelegramFile) => {
     const currentName = fileRenames.get(file.id) || file.name;
     const newName = prompt(`Rename "${currentName}":`, currentName);
@@ -450,10 +734,31 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
     );
   }, [allFiles, fileRenames]);
 
+  useEffect(() => {
+    if (!isAndroid) return;
+    const androidWindow = window as typeof window & { __telegramDriveHandleAndroidBack?: () => boolean };
+    androidWindow.__telegramDriveHandleAndroidBack = () => {
+      if (playingFile) { setPlayingFile(null); return true; }
+      if (pdfFile) { setPdfFile(null); return true; }
+      if (previewFile) { setPreviewFile(null); return true; }
+      if (shareFile) { setShareFile(null); return true; }
+      if (bulkShareLinks) { setBulkShareLinks(null); return true; }
+      if (showHelp) { setShowHelp(false); return true; }
+      if (folderActionMenu) { setFolderActionMenu(null); return true; }
+      if (renameFolder) { setRenameFolder(null); return true; }
+      if (isSidebarOpen) { setIsSidebarOpen(false); return true; }
+      if (selectedIds.length > 0) { setSelectedIds([]); return true; }
+      if (activeTab !== 'files') { setActiveTab('files'); return true; }
+      if (activeFolderId !== null) { setActiveFolderId(null); return true; }
+      return false;
+    };
+    return () => { delete androidWindow.__telegramDriveHandleAndroidBack; };
+  }, [activeFolderId, activeTab, bulkShareLinks, folderActionMenu, isAndroid, isSidebarOpen, pdfFile, playingFile, previewFile, renameFolder, selectedIds.length, setActiveFolderId, shareFile, showHelp]);
+
   return (
-    <div className="absolute inset-0 flex flex-col bg-telegram-bg text-telegram-text overflow-hidden select-none font-sans">
+    <div className={`absolute inset-0 flex flex-col bg-telegram-bg text-telegram-text overflow-hidden select-none font-sans ${isTelevision ? 'tv-shell' : ''}`}>
       {/* Premium Gradient Top Header */}
-      <header className="flex items-center justify-between px-5 pb-4 pt-[calc(1rem+env(safe-area-inset-top,24px))] bg-gradient-to-r from-telegram-hover/40 to-telegram-bg border-b border-telegram-border/60 shadow-lg backdrop-blur-md sticky top-0 z-40">
+      <header className="flex items-center justify-between px-5 pb-4 pt-[calc(1rem+env(safe-area-inset-top,24px))] bg-gradient-to-r from-telegram-hover/40 to-telegram-bg border-b border-telegram-border/60 shadow-lg backdrop-blur-md sticky top-0 z-40 md:ml-[280px]">
         <div className="flex items-center gap-3">
           <img src="/logo.svg" className="w-8 h-8 drop-shadow-lg" alt="Logo" />
           <div>
@@ -464,15 +769,16 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
           <ThemeToggle />
           <button
             onClick={() => setIsSidebarOpen(true)}
-            className="p-2 rounded-xl bg-telegram-hover/30 hover:bg-telegram-hover/60 border border-telegram-border/40 text-telegram-subtext transition-all duration-300"
+            className="min-h-12 min-w-12 p-2 rounded-xl bg-telegram-hover/30 hover:bg-telegram-hover/60 border border-telegram-border/40 text-telegram-subtext transition-all duration-300 md:hidden"
+            aria-label="Open folders"
           >
-            <Menu className="w-5 h-5" />
+            <Menu className="mx-auto w-5 h-5" aria-hidden="true" />
           </button>
         </div>
       </header>
 
       {/* Main Viewport Container */}
-      <main className="flex-1 overflow-y-auto px-4 py-3 space-y-4 pb-40 scroll-smooth">
+      <main className="flex-1 overflow-y-auto px-4 py-3 space-y-4 pb-40 scroll-smooth md:ml-[280px] md:px-8 lg:px-12">
         {activeTab === 'files' && (
           <div className="space-y-4">
             {/* Folder Header Breadcrumb */}
@@ -500,6 +806,21 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
               </div>
             </div>
 
+            {continueWatching.length > 0 && (
+              <section className="rounded-2xl border border-telegram-border/30 bg-telegram-hover/20 p-3" aria-labelledby="continue-watching-title">
+                <h2 id="continue-watching-title" className="mb-2 text-[10px] font-bold uppercase tracking-wide text-telegram-primary">Continue watching</h2>
+                <div className="flex gap-2 overflow-x-auto pb-1">
+                  {continueWatching.map(({ entry, file, progress }) => (
+                    <button key={entry.mediaId} type="button" onClick={() => setPlayingFile(file)} className="w-44 shrink-0 rounded-xl border border-telegram-border/30 bg-telegram-bg/50 p-3 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-telegram-primary">
+                      <span className="block truncate text-xs font-semibold text-telegram-text">{settings.androidPrivateMediaMetadata ? file.name : entry.title}</span>
+                      <span className="mt-1 block text-[10px] text-telegram-subtext">Resume at {Math.floor(entry.positionMs / 60_000)}:{String(Math.floor(entry.positionMs / 1000) % 60).padStart(2, '0')}</span>
+                      <span className="mt-2 block h-1 overflow-hidden rounded-full bg-telegram-border/40"><span className="block h-full rounded-full bg-telegram-primary" style={{ width: `${progress}%` }} /></span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            )}
+
             {/* Dynamic Real File List */}
             <TouchFileList
               files={displayFiles}
@@ -510,6 +831,8 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
               onRename={handleRenameFile}
               onShare={setShareFile}
               onCopyTelegramLink={handleCopyTelegramLink}
+              onKeepOffline={handleKeepOffline}
+              onRemoveOffline={handleRemoveOffline}
               onBulkShare={handleBulkShare}
               selectedIds={selectedIds}
               onToggleSelection={handleToggleSelection}
@@ -525,14 +848,71 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
         )}
 
         {activeTab === 'downloads' && (
-          <div className="flex flex-col items-center justify-center h-[60vh] space-y-3 text-center px-6">
-            <div className="p-4 rounded-full bg-telegram-primary/10 text-telegram-primary border border-telegram-primary/20">
-              <Download className="w-8 h-8 animate-bounce" />
+          <div className="space-y-4" aria-label="Transfer queue">
+            <div className="rounded-2xl border border-telegram-border/30 bg-telegram-hover/20 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-sm font-bold text-telegram-text">Transfers</h2>
+                  <p className="mt-0.5 text-[10px] text-telegram-subtext">
+                    {activeUploadCount + activeDownloadCount > 0
+                      ? `${activeUploadCount + activeDownloadCount} active${aggregateTransferSpeed > 0 ? ` · ${formatBytes(aggregateTransferSpeed)}/s` : ''}`
+                      : networkWaitingCount > 0
+                        ? `${networkWaitingCount} waiting for network`
+                      : pausedUploadCount + pausedDownloadCount > 0
+                        ? `${pausedUploadCount + pausedDownloadCount} paused`
+                        : 'Queue is up to date'}
+                  </p>
+                </div>
+                {uploadQueue.length + downloadQueue.length > 0 && activeUploadCount + activeDownloadCount === 0 && pausedUploadCount + pausedDownloadCount === 0 && (
+                  <CheckCircle2 className="h-6 w-6 text-emerald-400" aria-hidden="true" />
+                )}
+              </div>
             </div>
-            <h3 className="text-base font-bold">Transfers Queue</h3>
-            <p className="text-xs text-telegram-subtext max-w-xs leading-relaxed">
-              Downloads and uploads are safely queued and managed in the background.
-            </p>
+
+            {([
+              {
+                title: 'Uploads', icon: UploadCloud, items: uploadQueue,
+                active: activeUploadCount, paused: pausedUploadCount,
+                pause: pauseUploads, resume: resumeUploads, cancelAll: cancelUploads,
+                clear: clearUploads,
+                cancel: cancelUpload, retry: retryUpload,
+              },
+              {
+                title: 'Downloads', icon: Download, items: downloadQueue,
+                active: activeDownloadCount, paused: pausedDownloadCount,
+                pause: pauseDownloads, resume: resumeDownloads, cancelAll: cancelDownloads,
+                clear: clearDownloads, cancel: cancelDownload, retry: retryDownload,
+              },
+            ] as const).map(section => (
+              <section key={section.title} className="overflow-hidden rounded-2xl border border-telegram-border/30 bg-telegram-hover/20">
+                <header className="flex items-center justify-between gap-3 border-b border-telegram-border/20 px-4 py-3">
+                  <h3 className="flex items-center gap-2 text-xs font-semibold text-telegram-text"><section.icon className="h-4 w-4 text-telegram-primary" aria-hidden="true" />{section.title}</h3>
+                  <div className="flex items-center gap-2 text-[10px] font-semibold">
+                    {section.active > 0 && <button type="button" onClick={section.pause} className="flex items-center gap-1 text-telegram-subtext"><Pause className="h-3 w-3" aria-hidden="true" />Pause</button>}
+                    {section.paused > 0 && <button type="button" onClick={section.resume} className="flex items-center gap-1 text-telegram-primary"><Play className="h-3 w-3" aria-hidden="true" />Resume</button>}
+                    {section.active > 0 && <button type="button" onClick={section.cancelAll} className="text-red-400">Cancel</button>}
+                    <button type="button" onClick={section.clear} className="text-telegram-primary">Clear</button>
+                  </div>
+                </header>
+                {section.items.length === 0 ? (
+                  <p className="px-4 py-6 text-center text-[11px] text-telegram-subtext">No {section.title.toLowerCase()} yet.</p>
+                ) : section.items.map(item => {
+                  const name = 'filename' in item ? item.filename : (item.url || item.path).split(/[\\/]/).pop() || item.path;
+                  const canCancel = ['pending', 'paused', 'waiting_for_network', 'waiting_for_unlock', 'error', 'cooldown', 'uploading', 'downloading', 'encrypting', 'decrypting', 'verifying'].includes(item.status);
+                  const canRetry = ['error', 'cancelled', 'waiting_for_unlock'].includes(item.status);
+                  return (
+                    <div key={item.id} className="border-t border-telegram-border/20 px-4 py-3 first:border-t-0">
+                      <div className="flex items-center gap-3">
+                        <div className="min-w-0 flex-1"><p className="truncate text-xs font-medium text-telegram-text">{name}</p><p className="mt-0.5 text-[10px] capitalize text-telegram-subtext">{item.status.replace(/_/g, ' ')}{item.speedBytesPerSec ? ` · ${formatBytes(item.speedBytesPerSec)}/s` : ''}</p></div>
+                        {canCancel && <button type="button" onClick={() => section.cancel(item.id)} className="rounded-lg p-2 text-telegram-subtext" aria-label={`Cancel ${name}`}><X className="h-4 w-4" aria-hidden="true" /></button>}
+                        {canRetry && <button type="button" onClick={() => void section.retry(item.id)} className="rounded-lg p-2 text-telegram-primary" aria-label={`Retry ${name}`}><RotateCcw className="h-4 w-4" aria-hidden="true" /></button>}
+                      </div>
+                      {['uploading', 'downloading', 'encrypting', 'decrypting', 'verifying'].includes(item.status) && <div className="mt-2 h-1 overflow-hidden rounded-full bg-telegram-border/30"><div className="h-full rounded-full bg-telegram-primary transition-[width] motion-reduce:transition-none" style={{ width: `${item.progress || 2}%` }} /></div>}
+                    </div>
+                  );
+                })}
+              </section>
+            ))}
           </div>
         )}
 
@@ -546,10 +926,14 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
                   <p className="text-[10px] text-telegram-subtext">{t('settings.zip_folders_desc')}</p>
                 </div>
                 <button
+                  type="button"
+                  role="switch"
+                  aria-checked={settings.zipFolders}
+                  aria-label={t('settings.zip_before_upload')}
                   onClick={() => updateSetting('zipFolders', !settings.zipFolders)}
                   className={`relative w-11 h-6 rounded-full transition-colors duration-200 flex-shrink-0 ${settings.zipFolders ? 'bg-telegram-primary' : 'bg-telegram-border'}`}
                 >
-                  <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.zipFolders ? 'translate-x-5' : 'translate-x-0'}`} />
+                  <span className={`absolute top-0.5 start-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.zipFolders ? 'translate-x-5 rtl:-translate-x-5' : 'translate-x-0'}`} />
                 </button>
               </div>
 
@@ -644,21 +1028,104 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
 
               {/* Bandwidth stats */}
               {bandwidth && (
-                <div className="flex items-center justify-between py-2">
-                  <div>
-                    <p className="text-xs font-medium">{t('common.usage')}</p>
-                    <p className="text-[10px] text-telegram-subtext">{t('settings.up_down_since_connected')}</p>
-                  </div>
-                  <div className="text-right">
+                <div className="py-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <div><p className="text-xs font-medium">250 GB weekly limit</p><p className="text-[10px] text-telegram-subtext">Uploads and downloads reset Monday</p></div>
                     <p className="text-[11px] font-mono font-semibold text-telegram-text">
                       <span className="text-emerald-400">↑ {formatBytes(bandwidth.up_bytes)}</span>
                       {' · '}
                       <span className="text-blue-400">↓ {formatBytes(bandwidth.down_bytes)}</span>
                     </p>
                   </div>
+                  <BandwidthWidget bandwidth={bandwidth} />
                 </div>
               )}
+
+              <div className="flex items-center justify-between gap-3 border-t border-telegram-border/20 pt-3">
+                <div>
+                  <p className="text-xs font-medium">Sanitized support snapshot</p>
+                  <p className="text-[10px] text-telegram-subtext">Includes app/device state and recent process-exit codes—never filenames, paths, messages, account IDs, or tokens.</p>
+                </div>
+                <button type="button" onClick={() => void handleCopyDiagnostics()} disabled={copyingDiagnostics} className="min-h-11 shrink-0 rounded-xl border border-telegram-primary/20 bg-telegram-primary/15 px-3 text-xs font-semibold text-telegram-primary disabled:opacity-50">
+                  {copyingDiagnostics ? t('common.loading') : t('settings.copy_diagnostics')}
+                </button>
+              </div>
             </div>
+
+            {isAndroid && (
+              <section className="rounded-2xl border border-telegram-border/30 bg-telegram-hover/20 p-4" aria-labelledby="android-transfer-policy-title">
+                <div className="mb-2 flex items-start justify-between gap-3">
+                  <div>
+                    <h3 id="android-transfer-policy-title" className="text-[10px] font-bold uppercase tracking-wide text-telegram-primary">Android transfer reliability</h3>
+                    <p className="mt-1 text-[10px] leading-4 text-telegram-subtext">Saved queues resume after reopening. Android will notify you after a reboot or process interruption.</p>
+                  </div>
+                  <span className={`mt-0.5 h-2.5 w-2.5 shrink-0 rounded-full ${transferAllowed ? 'bg-emerald-400' : 'bg-amber-400'}`} title={transferWaitingReason} />
+                </div>
+                <MobileSettingToggle checked={settings.androidWifiOnlyTransfers} label="Wi-Fi only" description="Wait for an unmetered network before uploading or downloading." onChange={() => updateSetting('androidWifiOnlyTransfers', !settings.androidWifiOnlyTransfers)} />
+                <MobileSettingToggle checked={settings.androidAllowRoaming} label="Allow roaming" description="Disabled by default to prevent unexpected carrier charges." onChange={() => updateSetting('androidAllowRoaming', !settings.androidAllowRoaming)} />
+                <MobileSettingToggle checked={settings.androidRequireCharging} label="Require charging" description="Only run queued transfers while external power is connected." onChange={() => updateSetting('androidRequireCharging', !settings.androidRequireCharging)} />
+                <MobileSettingToggle checked={settings.androidPauseOnLowBattery} label="Pause on low battery" description="Wait when battery is 15% or lower unless the device is charging." onChange={() => updateSetting('androidPauseOnLowBattery', !settings.androidPauseOnLowBattery)} />
+                <label className="mt-3 flex items-center justify-between gap-3 text-xs">
+                  <span><span className="block font-medium text-telegram-text">Free-space reserve</span><span className="mt-0.5 block text-[10px] text-telegram-subtext">Downloads never consume this reserve.</span></span>
+                  <select value={settings.androidMinimumFreeStorageGb} onChange={event => updateSetting('androidMinimumFreeStorageGb', Number(event.target.value))} className="min-h-11 rounded-lg border border-telegram-border bg-telegram-bg px-3 text-xs text-telegram-text">
+                    {[1, 2, 5, 10].map(value => <option key={value} value={value}>{value} GB</option>)}
+                  </select>
+                </label>
+                {!transferAllowed && <p className="mt-3 rounded-lg bg-amber-500/10 px-3 py-2 text-[10px] text-amber-300">{transferWaitingReason}</p>}
+                {androidTransferEnvironment?.backgroundRestricted && <p className="mt-2 text-[10px] text-amber-300">Android battery settings currently restrict this app. Transfers will recover from the saved queue when you reopen it.</p>}
+              </section>
+            )}
+
+            <div className="rounded-2xl border border-telegram-border/30 bg-telegram-hover/20 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex min-w-0 gap-2.5">
+                  <Database className="mt-0.5 h-4 w-4 shrink-0 text-telegram-primary" aria-hidden="true" />
+                  <div>
+                    <p className="text-xs font-medium">{t('settings.offline_cache')}</p>
+                    <p className="mt-0.5 text-[10px] leading-4 text-telegram-subtext">{t('settings.offline_cache_desc')}</p>
+                    <p className="mt-1 text-[10px] font-mono text-telegram-primary">
+                      {offlineCache
+                        ? t('settings.offline_cache_usage', { count: offlineCache.file_count, used: formatBytes(offlineCache.total_bytes), limit: formatBytes(offlineCache.max_bytes) })
+                        : t('common.loading')}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex shrink-0 gap-1">
+                  <button type="button" onClick={() => void refetchOfflineCache()} disabled={offlineCacheLoading} className="min-h-11 min-w-11 rounded-xl p-2 text-telegram-subtext" aria-label={t('settings.refresh_offline_cache')}>
+                    <RefreshCw className={`mx-auto h-4 w-4 ${offlineCacheLoading ? 'animate-spin' : ''}`} aria-hidden="true" />
+                  </button>
+                  <button type="button" onClick={() => void clearOfflineCache()} disabled={!offlineCache?.file_count || offlineCacheLoading} className="min-h-11 rounded-xl bg-red-500/10 px-3 text-[11px] font-semibold text-red-400 disabled:opacity-40">
+                    {t('settings.clear')}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {isAndroid && (
+              <section className="rounded-2xl border border-telegram-border/30 bg-telegram-hover/20 p-4" aria-labelledby="android-media-title">
+                <h3 id="android-media-title" className="mb-2 text-[10px] font-bold uppercase tracking-wide text-telegram-primary">Media &amp; playback</h3>
+                <MobileSettingToggle checked={settings.androidPrivateMediaMetadata} label="Private system metadata" description="Show “Private media” instead of filenames on the lock screen, Bluetooth devices, and system controls." onChange={() => updateSetting('androidPrivateMediaMetadata', !settings.androidPrivateMediaMetadata)} />
+                <div className="grid grid-cols-2 gap-3 py-3">
+                  <label className="text-[10px] text-telegram-subtext">Playback speed<select value={settings.androidPlaybackSpeed} onChange={event => updateSetting('androidPlaybackSpeed', Number(event.target.value))} className="mt-1 min-h-11 w-full rounded-lg border border-telegram-border bg-telegram-bg px-2 text-xs text-telegram-text">{[0.5, 0.75, 1, 1.25, 1.5, 2].map(value => <option key={value} value={value}>{value}×</option>)}</select></label>
+                  <label className="text-[10px] text-telegram-subtext">Movie orientation<select value={settings.androidMediaOrientation} onChange={event => updateSetting('androidMediaOrientation', event.target.value as 'auto' | 'landscape' | 'portrait')} className="mt-1 min-h-11 w-full rounded-lg border border-telegram-border bg-telegram-bg px-2 text-xs text-telegram-text"><option value="auto">Auto</option><option value="landscape">Landscape</option><option value="portrait">Portrait</option></select></label>
+                  <label className="text-[10px] text-telegram-subtext">Subtitle size<select value={settings.androidSubtitleScale} onChange={event => updateSetting('androidSubtitleScale', Number(event.target.value))} className="mt-1 min-h-11 w-full rounded-lg border border-telegram-border bg-telegram-bg px-2 text-xs text-telegram-text"><option value={0.8}>Small</option><option value={1}>Default</option><option value={1.25}>Large</option><option value={1.5}>Extra large</option></select></label>
+                  <label className="text-[10px] text-telegram-subtext">Offline cache<select value={settings.androidMediaCacheMaxGb} onChange={event => updateSetting('androidMediaCacheMaxGb', Number(event.target.value))} className="mt-1 min-h-11 w-full rounded-lg border border-telegram-border bg-telegram-bg px-2 text-xs text-telegram-text">{[0.5, 1, 2, 5, 10, 25].map(value => <option key={value} value={value}>{value} GB</option>)}</select></label>
+                </div>
+                <p className="text-[10px] leading-4 text-telegram-subtext">Audio/subtitle track selection and playback speed are also available from the player controls. Playback position is saved per file.</p>
+              </section>
+            )}
+
+            {isAndroid && (
+              <section className="rounded-2xl border border-telegram-border/30 bg-telegram-hover/20 p-4" aria-labelledby="android-privacy-title">
+                <h3 id="android-privacy-title" className="mb-2 text-[10px] font-bold uppercase tracking-wide text-telegram-primary">Device privacy</h3>
+                <MobileSettingToggle checked={settings.androidBiometricLock} label="Biometric or device lock" description="Require a biometric, PIN, pattern, or device password after Telegram Drive has been in the background." onChange={() => void handleBiometricLockToggle()} />
+                <MobileSettingToggle checked={settings.androidPrivacyScreen} label="Block screenshots & Recents previews" description="Use Android FLAG_SECURE for the app and sensitive in-app media." onChange={() => updateSetting('androidPrivacyScreen', !settings.androidPrivacyScreen)} />
+                <label className="mt-3 flex items-center justify-between gap-3 text-xs">
+                  <span><span className="block font-medium text-telegram-text">Lock after backgrounding</span><span className="mt-0.5 block text-[10px] text-telegram-subtext">Applies when device lock is enabled.</span></span>
+                  <select value={settings.androidLockAfterBackgroundMinutes} onChange={event => updateSetting('androidLockAfterBackgroundMinutes', Number(event.target.value))} disabled={!settings.androidBiometricLock} className="min-h-11 rounded-lg border border-telegram-border bg-telegram-bg px-3 text-xs text-telegram-text disabled:opacity-50"><option value={0}>Immediately</option><option value={1}>1 minute</option><option value={5}>5 minutes</option><option value={15}>15 minutes</option><option value={60}>1 hour</option></select>
+                </label>
+              </section>
+            )}
 
             {/* Proxy Configuration */}
             <div className="p-4 rounded-2xl bg-telegram-hover/20 border border-telegram-border/30 space-y-4">
@@ -674,10 +1141,14 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
                   <p className="text-[10px] text-telegram-subtext">{t('settings.enable_proxy_desc')}</p>
                 </div>
                 <button
+                  type="button"
+                  role="switch"
+                  aria-checked={settings.proxyEnabled}
+                  aria-label={t('common.enable_proxy')}
                   onClick={() => updateSetting('proxyEnabled', !settings.proxyEnabled)}
                   className={`relative w-11 h-6 rounded-full transition-colors duration-200 flex-shrink-0 ${settings.proxyEnabled ? 'bg-telegram-primary' : 'bg-telegram-border'}`}
                 >
-                  <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.proxyEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                  <span className={`absolute top-0.5 start-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.proxyEnabled ? 'translate-x-5 rtl:-translate-x-5' : 'translate-x-0'}`} />
                 </button>
               </div>
 
@@ -819,6 +1290,32 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
               </div>
             )}
 
+            <div className="space-y-4 rounded-2xl border border-telegram-border/30 bg-telegram-hover/20 p-4">
+              <h3 className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-telegram-primary">
+                <Shield className="h-3 w-3" aria-hidden="true" />
+                Privacy &amp; support
+              </h3>
+              <MobileSupporterCard />
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowHelp(true)}
+                  className="flex items-center justify-center gap-1.5 rounded-xl border border-telegram-border/40 bg-telegram-bg/50 px-3 py-2.5 text-[11px] font-semibold text-telegram-text"
+                >
+                  <HelpCircle className="h-3.5 w-3.5 text-telegram-primary" aria-hidden="true" />
+                  Help &amp; FAQ
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openUrl('https://github.com/caamer20/Telegram-Drive/blob/main/PRIVACY.md')}
+                  className="flex items-center justify-center gap-1.5 rounded-xl border border-telegram-border/40 bg-telegram-bg/50 px-3 py-2.5 text-[11px] font-semibold text-telegram-text"
+                >
+                  Privacy policy <ExternalLink className="h-3 w-3 text-telegram-primary" aria-hidden="true" />
+                </button>
+              </div>
+              <p className="text-[10px] leading-relaxed text-telegram-subtext">Credentials and settings stay on this device. File transfers go directly between this app and Telegram; sponsor content is provided by the named advertising service.</p>
+            </div>
+
             <div className="p-4 rounded-2xl bg-telegram-hover/20 border border-telegram-border/30 space-y-4">
               <h3 className="text-sm font-bold text-telegram-primary tracking-wide uppercase text-[10px]">{t('common.about')}</h3>
               <div className="flex flex-col items-center py-3 space-y-4">
@@ -869,14 +1366,14 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
       {/* Slide-out Sidebar Drawer Overlay */}
       {isSidebarOpen && (
         <div
-          className="fixed inset-0 bg-black/60 z-[100] backdrop-blur-sm transition-opacity duration-300"
+          className="fixed inset-0 bg-black/60 z-[100] backdrop-blur-sm transition-opacity duration-300 md:hidden"
           onClick={() => setIsSidebarOpen(false)}
         />
       )}
 
       {/* Slide-out Sidebar Drawer Panel */}
       <div
-        className={`fixed top-0 left-0 bottom-0 w-[280px] bg-telegram-surface border-r border-telegram-border/60 z-[110] shadow-2xl flex flex-col pt-[calc(1rem+env(safe-area-inset-top,24px))] pb-28 transition-transform duration-300 ease-out transform ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'
+        className={`fixed top-0 left-0 bottom-0 w-[280px] bg-telegram-surface border-r border-telegram-border/60 z-[110] shadow-2xl flex flex-col pt-[calc(1rem+env(safe-area-inset-top,24px))] pb-[calc(1rem+env(safe-area-inset-bottom,0px))] transition-transform duration-300 ease-out transform md:translate-x-0 ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'
           }`}
         onClick={e => e.stopPropagation()}
       >
@@ -887,7 +1384,8 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
           </div>
           <button
             onClick={() => setIsSidebarOpen(false)}
-            className="p-1 rounded-lg bg-telegram-hover/30 hover:bg-telegram-hover/60 text-telegram-subtext text-xs"
+            className="min-h-11 min-w-11 p-1 rounded-lg bg-telegram-hover/30 hover:bg-telegram-hover/60 text-telegram-subtext text-xs md:hidden"
+            aria-label="Close folders"
           >
             ✕
           </button>
@@ -949,6 +1447,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
 
         {/* Action Panel & Connection Status */}
         <div className="px-4 py-3 border-t border-telegram-border/30 space-y-3">
+          <BandwidthWidget bandwidth={bandwidth ?? null} />
           <button
             onClick={async () => {
               const name = prompt("Enter folder name:");
@@ -987,24 +1486,29 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
       )}
 
       {/* Floating Bottom Nav Bar */}
-      <BottomNavBar activeTab={activeTab} setActiveTab={setActiveTab} isAndroid={isAndroid} />
+      <BottomNavBar activeTab={activeTab} setActiveTab={setActiveTab} isAndroid={isAndroid} isTelevision={isTelevision} />
 
       {/* Adsterra Banner (Android only) — z-[60] keeps it above the BottomNavBar (z-50).
            Positioned at bottom-[144px] to sit cleanly above the nav bar (~60px tall, at bottom-20=80px). */}
-      <div className="fixed bottom-[144px] left-0 right-0 z-[60]">
+      <div className={`fixed bottom-[144px] left-0 right-0 z-[60] ${isTelevision ? 'tv-sponsor-placement' : ''}`}>
         <AdsterraBanner visible={adVisible} />
       </div>
 
       {/* Previews Overlays (Media, PDF & Images) */}
       {playingFile && (
-        <div className="fixed inset-0 z-[100] bg-black/90">
-          <MediaPlayer
-            key={playingFile.id}
-            file={playingFile}
-            onClose={() => setPlayingFile(null)}
-            activeFolderId={activeFolderId}
-          />
-        </div>
+        <MobileMediaPlayer
+          key={playingFile.id}
+          file={playingFile}
+          onClose={() => setPlayingFile(null)}
+          activeFolderId={activeFolderId}
+          preferences={{
+            privateMetadata: settings.androidPrivateMediaMetadata,
+            privacyScreen: settings.androidPrivacyScreen,
+            orientation: settings.androidMediaOrientation,
+            subtitleScale: settings.androidSubtitleScale,
+            playbackSpeed: settings.androidPlaybackSpeed,
+          }}
+        />
       )}
       {pdfFile && (
         <div className="fixed inset-0 z-[100] bg-telegram-bg">
@@ -1027,8 +1531,20 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
         <ShareDialog
           file={shareFile}
           onClose={() => setShareFile(null)}
+          folders={folders}
+          activeFolderId={activeFolderId}
         />
       )}
+
+      {settingsLoaded && !settings.driveTourSeen && (
+        <DriveConceptTour
+          onFinish={() => updateSetting('driveTourSeen', true)}
+          onOpenHelp={() => { updateSetting('driveTourSeen', true); setShowHelp(true); }}
+          includeSupporterStep={false}
+        />
+      )}
+
+      {showHelp && <HelpCenterDialog onClose={() => setShowHelp(false)} />}
 
       {/* Bulk Share Results Modal */}
       {bulkShareLinks && (

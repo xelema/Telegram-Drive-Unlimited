@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { useSettings } from '../../context/SettingsContext';
 import { useEncryption } from '../../hooks/useEncryption';
 import { EncryptionTransparencyDialog } from './EncryptionTransparencyDialog';
+import { requireAndroidReauthentication } from '../../services/androidReauthentication';
 
 function RecoveryDrillPanel({ encryption, onComplete }: { encryption: ReturnType<typeof useEncryption>; onComplete: () => void }) {
     const [stage, setStage] = useState<'export' | 'verify'>('export');
@@ -19,6 +20,7 @@ function RecoveryDrillPanel({ encryption, onComplete }: { encryption: ReturnType
         if (recoveryPassphrase.length < 8) return;
         setBusy(true);
         try {
+            await requireAndroidReauthentication('Authenticate before exporting vault recovery material');
             setBundle(await encryption.exportRecovery(recoveryPassphrase));
         } catch (error) {
             toast.error(`Recovery export failed: ${error}`);
@@ -31,6 +33,7 @@ function RecoveryDrillPanel({ encryption, onComplete }: { encryption: ReturnType
         if (!verifyBundle.trim() || !verifyPassphrase) return;
         setBusy(true);
         try {
+            await requireAndroidReauthentication('Authenticate before importing vault recovery material');
             await encryption.importRecovery(verifyBundle.trim(), verifyPassphrase);
             await encryption.refreshVaultStatus();
             onComplete();
@@ -82,6 +85,7 @@ function ExportRecoverySection({ encryption }: { encryption: ReturnType<typeof u
         if (!exportPassphrase) return;
         setExporting(true);
         try {
+            await requireAndroidReauthentication('Authenticate before exporting vault recovery material');
             const bundle = await encryption.exportRecovery(exportPassphrase);
             setExportedBundle(bundle);
             toast.success(t('settings.export_success'));
@@ -161,6 +165,7 @@ function ImportRecoverySection({ encryption }: { encryption: ReturnType<typeof u
         if (!window.confirm(t('settings.import_recovery_confirmation'))) return;
         setImporting(true);
         try {
+            await requireAndroidReauthentication('Authenticate before importing vault recovery material');
             await encryption.importRecovery(importBundle, importPassphrase);
             toast.success(t('settings.import_success'));
             setShowImport(false);
@@ -293,6 +298,7 @@ export function EncryptionSettingsSection() {
         }
         setChangingVaultPassphrase(true);
         try {
+            await requireAndroidReauthentication('Authenticate before changing the vault passphrase');
             await encryption.changeVaultPassphrase(newVaultPassphrase);
             setNewVaultPassphrase('');
             setConfirmNewVaultPassphrase('');

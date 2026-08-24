@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback, createContext, useContext, ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { type as osType } from '@tauri-apps/plugin-os';
 import { listen } from '@tauri-apps/api/event';
 import { useSettings } from '../context/SettingsContext';
+import { useVaultActivity } from './useVaultActivity';
 import type {
     EncryptionCapabilities,
     EncryptionCapabilityState,
@@ -44,6 +46,7 @@ export function EncryptionProvider({ children }: { children: ReactNode }) {
     const [capabilityState, setCapabilityState] = useState<EncryptionCapabilityState>('loading');
     const [capabilityError, setCapabilityError] = useState<string | null>(null);
     const [isLoaded, setIsLoaded] = useState(false);
+    useVaultActivity(vaultStatus?.is_unlocked === true);
 
     const refreshCapabilities = useCallback(async () => {
         setCapabilityState('loading');
@@ -125,7 +128,22 @@ export function EncryptionProvider({ children }: { children: ReactNode }) {
     ]);
 
     useEffect(() => {
-        if (!appSettingsLoaded || !appSettings.encryptionLockOnSleep) return;
+        if (!appSettingsLoaded) return;
+        let mobile = false;
+        try {
+            const platform = osType();
+            mobile = platform === 'android' || platform === 'ios';
+        } catch {
+            // Browser previews have no native sleep lifecycle.
+            return;
+        }
+        if (!mobile) {
+            void invoke('cmd_set_desktop_lock_on_sleep', {
+                enabled: appSettings.encryptionLockOnSleep,
+            }).catch(() => {});
+            return;
+        }
+        if (!appSettings.encryptionLockOnSleep) return;
         const handleVisibility = () => {
             if (document.visibilityState === 'hidden') {
                 void invoke('cmd_lock_vault').catch(() => {});

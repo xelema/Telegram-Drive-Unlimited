@@ -386,9 +386,17 @@ export function disputeRevokesAccess(resource: Record<string, unknown> | undefin
 }
 
 async function processWebhook(request: Request, env: Env): Promise<Response> {
-  const { raw, parsed: event } = await readRawJson<PayPalWebhookEvent>(request);
+  const { raw, parsed } = await readRawJson<unknown>(request);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return errorResponse('INVALID_WEBHOOK', 400, 'Invalid webhook payload.');
+  }
+  const event = parsed as PayPalWebhookEvent;
   if (typeof event.id !== 'string' || typeof event.event_type !== 'string') return errorResponse('INVALID_WEBHOOK', 400, 'Invalid webhook payload.');
-  if (!await verifyPayPalWebhook(env, request.headers, raw)) return errorResponse('WEBHOOK_NOT_VERIFIED', 401, 'Webhook signature is invalid.');
+  const verification = await verifyPayPalWebhook(env, request.headers, raw);
+  if (verification.status === 'invalid') return errorResponse('WEBHOOK_NOT_VERIFIED', 401, 'Webhook signature is invalid.');
+  if (verification.status === 'unavailable') {
+    return errorResponse('WEBHOOK_VERIFICATION_UNAVAILABLE', 503, 'PayPal verification is temporarily unavailable. Webhook delivery should be retried.');
+  }
   if (!await recordWebhook(env, event.id, event.event_type, nowSeconds())) return json({ status: 'duplicate' });
 
   let result = 'ignored';

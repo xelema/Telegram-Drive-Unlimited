@@ -1,10 +1,10 @@
-use std::sync::Arc;
+use grammers_client::types::{PasswordToken, Peer};
+use grammers_client::Client;
+use grammers_session::storages::SqliteSession;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex;
-use grammers_client::Client;
-use grammers_client::types::{PasswordToken, Peer};
-use grammers_session::storages::SqliteSession;
 
 use crate::models::AuthCodeRequestResult;
 
@@ -46,45 +46,45 @@ pub struct TelegramState {
     pub cancelled_transfers: Arc<tokio::sync::RwLock<HashSet<String>>>,
 }
 
-pub mod auth;
-pub mod fs;
-pub mod preview;
-pub mod utils;
-pub mod network;
-pub mod streaming;
 pub mod api_settings;
-pub mod webdav_settings;
-pub mod settings;
-pub mod sharing;
-pub mod video_metadata;
 pub mod archive;
-pub mod folder_groups;
+pub mod auth;
+pub mod crash_reporting;
 pub mod file_activity;
+pub mod folder_groups;
+pub mod fs;
+pub mod network;
+pub mod preview;
+pub mod settings;
+pub mod settings_sync;
+pub mod sharing;
 pub mod startup;
 pub mod storage_insights;
-pub mod crash_reporting;
-pub mod settings_sync;
-pub mod sync;
+pub mod streaming;
 #[cfg(not(target_os = "ios"))]
 pub mod supporter;
+pub mod sync;
+pub mod utils;
+pub mod video_metadata;
+pub mod webdav_settings;
 
-pub use auth::*;
-pub use fs::*;
-pub use preview::*;
-pub use utils::*;
-pub use network::*;
-pub use streaming::*;
 pub use api_settings::*;
-pub use settings::*;
-pub use sharing::*;
-pub use video_metadata::*;
 pub use archive::*;
-pub use folder_groups::*;
+pub use auth::*;
+pub use crash_reporting::*;
 pub use file_activity::*;
+pub use folder_groups::*;
+pub use fs::*;
+pub use network::*;
+pub use preview::*;
+pub use settings::*;
+pub use settings_sync::*;
+pub use sharing::*;
 pub use startup::*;
 pub use storage_insights::*;
-pub use crash_reporting::*;
-pub use settings_sync::*;
-pub use sync::*;
+pub use streaming::*;
 #[cfg(not(target_os = "ios"))]
 pub use supporter::*;
+pub use sync::*;
+pub use utils::*;
+pub use video_metadata::*;

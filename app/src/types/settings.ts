@@ -52,6 +52,19 @@ export interface Settings {
   encryptionAutoLockMinutes: number;
   encryptionLockOnSleep: boolean;
   encryptionTempPolicy: 'balanced' | 'strict';
+  androidWifiOnlyTransfers: boolean;
+  androidAllowRoaming: boolean;
+  androidRequireCharging: boolean;
+  androidPauseOnLowBattery: boolean;
+  androidMinimumFreeStorageGb: number;
+  androidBiometricLock: boolean;
+  androidPrivacyScreen: boolean;
+  androidPrivateMediaMetadata: boolean;
+  androidLockAfterBackgroundMinutes: number;
+  androidMediaOrientation: 'auto' | 'landscape' | 'portrait';
+  androidSubtitleScale: number;
+  androidPlaybackSpeed: number;
+  androidMediaCacheMaxGb: number;
 }
 
 export type Theme = 'light' | 'dark';

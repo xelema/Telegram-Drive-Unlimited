@@ -63,11 +63,7 @@ impl LeaseManager {
 
     /// Create a new lease for plaintext data.
     /// Returns the path where plaintext data should be written.
-    pub fn create_lease(
-        &mut self,
-        expected_size: u64,
-        ttl: Duration,
-    ) -> CryptoResult<PathBuf> {
+    pub fn create_lease(&mut self, expected_size: u64, ttl: Duration) -> CryptoResult<PathBuf> {
         self.check_policy()?;
 
         // Check total limit

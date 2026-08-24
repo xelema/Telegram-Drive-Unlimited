@@ -1,9 +1,9 @@
-use actix_web::{get, web, App, HttpServer, HttpResponse, Responder};
-use actix_cors::Cors;
-use crate::commands::TelegramState;
 use crate::commands::utils::{media_size, resolve_peer};
-use grammers_client::types::Media;
+use crate::commands::TelegramState;
 use crate::transcode::TranscodeManager;
+use actix_cors::Cors;
+use actix_web::{get, web, App, HttpResponse, HttpServer, Responder};
+use grammers_client::types::Media;
 
 use std::net::TcpListener;
 use std::sync::Arc;
@@ -335,7 +335,28 @@ mod desktop_ads {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use actix_web::{http::StatusCode, test as actix_test};
         use std::net::{Ipv4Addr, Ipv6Addr};
+
+        #[actix_web::test]
+        async fn banner_route_serves_the_isolated_creative_host() {
+            let app = actix_test::init_service(App::new().configure(configure)).await;
+            let request = actix_test::TestRequest::get()
+                .uri("/ad-banner")
+                .to_request();
+            let response = actix_test::call_service(&app, request).await;
+
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response.headers().get("x-content-type-options").unwrap(),
+                "nosniff"
+            );
+            assert!(response.headers().contains_key("content-security-policy"));
+            let body = actix_test::read_body(response).await;
+            assert!(body
+                .windows(b"/ad-script".len())
+                .any(|part| part == b"/ad-script"));
+        }
 
         #[test]
         fn banner_reports_when_the_provider_inserts_a_creative() {
@@ -356,9 +377,8 @@ mod desktop_ads {
             assert_eq!(parsed.host_str(), Some(AD_SCRIPT_HOST));
             assert_eq!(parsed.path(), "/9cf449272b7e1c83054b82b7639c6029/invoke.js");
             assert!(!AD_BANNER_CSP.contains("'unsafe-eval'"));
-            assert!(AD_BANNER_CSP.contains(
-                "script-src 'unsafe-inline' http://localhost:14201/ad-script https:"
-            ));
+            assert!(AD_BANNER_CSP
+                .contains("script-src 'unsafe-inline' http://localhost:14201/ad-script https:"));
             assert!(AD_BANNER_CSP.contains("object-src 'none'"));
         }
 
@@ -508,12 +528,16 @@ pub fn build_media_response(
         debug_assert!(
             cdn_aligned_start <= start_byte,
             "CDN alignment invariant violated: aligned {} > requested {}",
-            cdn_aligned_start, start_byte
+            cdn_aligned_start,
+            start_byte
         );
 
         log::debug!(
             "Range alignment: requested={}, cdn_aligned={}, chunk_index={}, bytes_to_skip={}",
-            start_byte, cdn_aligned_start, chunk_index, bytes_to_skip,
+            start_byte,
+            cdn_aligned_start,
+            chunk_index,
+            bytes_to_skip,
         );
     }
 
@@ -565,7 +589,10 @@ pub fn build_media_response(
 
     let mut resp = if is_range {
         let mut r = HttpResponse::PartialContent();
-        r.insert_header(("Content-Range", format!("bytes {}-{}/{}", start_byte, end_byte, size)));
+        r.insert_header((
+            "Content-Range",
+            format!("bytes {}-{}/{}", start_byte, end_byte, size),
+        ));
         r.insert_header(("Content-Length", content_length.to_string()));
         r
     } else {
@@ -605,14 +632,20 @@ async fn stream_media(
     // Validate session token
     match &query.token {
         Some(t) if t == &token_data.token => {
-            log::debug!("Stream request: Token validated successfully for msg {}", message_id);
-        },
+            log::debug!(
+                "Stream request: Token validated successfully for msg {}",
+                message_id
+            );
+        }
         _ => {
-            log::error!("Stream request failed: Invalid or missing stream token for msg {}", message_id);
-            return HttpResponse::Forbidden().body("Invalid or missing stream token")
-        },
+            log::error!(
+                "Stream request failed: Invalid or missing stream token for msg {}",
+                message_id
+            );
+            return HttpResponse::Forbidden().body("Invalid or missing stream token");
+        }
     }
-    
+
     // Parse folder ID
     let folder_id = if folder_id_str == "me" || folder_id_str == "home" || folder_id_str == "null" {
         log::debug!("Stream request: Using root folder for msg {}", message_id);
@@ -620,30 +653,36 @@ async fn stream_media(
     } else {
         match folder_id_str.parse::<i64>() {
             Ok(id) => {
-                log::debug!("Stream request: Parsed folder ID {} for msg {}", id, message_id);
+                log::debug!(
+                    "Stream request: Parsed folder ID {} for msg {}",
+                    id,
+                    message_id
+                );
                 Some(id)
-            },
+            }
             Err(_) => {
-                log::error!("Stream request failed: Invalid folder ID format '{}' for msg {}", folder_id_str, message_id);
-                return HttpResponse::BadRequest().body("Invalid folder ID")
-            },
+                log::error!(
+                    "Stream request failed: Invalid folder ID format '{}' for msg {}",
+                    folder_id_str,
+                    message_id
+                );
+                return HttpResponse::BadRequest().body("Invalid folder ID");
+            }
         }
     };
 
     let folder_key = folder_id
         .map(|id| id.to_string())
         .unwrap_or_else(|| "home".to_string());
-    let encrypted = db_pool
-        .lock()
-        .ok()
-        .and_then(|connection| {
-            let mut statement = connection
+    let encrypted = crate::db::with_connection(db_pool.get_ref().clone(), move |connection| {
+        let mut statement = connection
                 .prepare("SELECT 1 FROM encrypted_files WHERE folder_key = ? AND message_id = ? AND record_state = 'active'")
-                .ok()?;
-            statement.bind((1, folder_key.as_str())).ok()?;
-            statement.bind((2, i64::from(message_id))).ok()?;
-            Some(matches!(statement.next(), Ok(sqlite::State::Row)))
-        })
+                .map_err(|error| error.to_string())?;
+        statement.bind((1, folder_key.as_str())).map_err(|error| error.to_string())?;
+        statement.bind((2, i64::from(message_id))).map_err(|error| error.to_string())?;
+        Ok(matches!(statement.next(), Ok(sqlite::State::Row)))
+    })
+        .await
         .unwrap_or(true);
     if encrypted {
         return HttpResponse::Conflict().body(
@@ -651,17 +690,21 @@ async fn stream_media(
         );
     }
 
-    let client_opt = {
-        data.client.lock().await.clone()
-    };
+    let client_opt = { data.client.lock().await.clone() };
 
     if let Some(client) = client_opt {
-        log::debug!("Stream request: Client acquired, resolving peer for msg {}...", message_id);
+        log::debug!(
+            "Stream request: Client acquired, resolving peer for msg {}...",
+            message_id
+        );
         match resolve_peer(&client, folder_id, &data.peer_cache).await {
             Ok(peer) => {
-                log::debug!("Stream request: Peer resolved, fetching message {}...", message_id);
+                log::debug!(
+                    "Stream request: Peer resolved, fetching message {}...",
+                    message_id
+                );
                 // Try to fetch message efficiently
-                 match client.get_messages_by_id(peer, &[message_id]).await {
+                match client.get_messages_by_id(peer, &[message_id]).await {
                     Ok(messages) => {
                         if let Some(Some(msg)) = messages.first() {
                             if msg.text() == "TDENC2"
@@ -676,43 +719,71 @@ async fn stream_media(
                                 );
                             }
                             if let Some(media) = msg.media() {
-                                log::debug!("Stream request: Message and media found for msg {}", message_id);
+                                log::debug!(
+                                    "Stream request: Message and media found for msg {}",
+                                    message_id
+                                );
                                 let mime = mime_type_from_media(&media);
                                 return build_media_response(
-                                    &client, &media, &req, &mime, None,
+                                    &client,
+                                    &media,
+                                    &req,
+                                    &mime,
+                                    None,
                                     StreamingExtras {
-                                        extra_headers: vec![("Cache-Control", "private, max-age=120".to_string())],
+                                        extra_headers: vec![(
+                                            "Cache-Control",
+                                            "private, max-age=120".to_string(),
+                                        )],
                                         log_label: "Stream",
                                     },
                                 );
                             } else {
-                                log::error!("Stream request failed: Media not found in message {}", message_id);
+                                log::error!(
+                                    "Stream request failed: Media not found in message {}",
+                                    message_id
+                                );
                             }
                         } else {
                             log::error!("Stream request failed: Message {} not found", message_id);
                         }
                         HttpResponse::NotFound().body("Message or media not found")
-                    },
+                    }
                     Err(e) => {
-                        log::error!("Stream request failed: Error fetching message {}: {}", message_id, e);
-                        HttpResponse::InternalServerError().body(format!("Failed to fetch message: {}", e))
-                    },
-                 }
-            },
+                        log::error!(
+                            "Stream request failed: Error fetching message {}: {}",
+                            message_id,
+                            e
+                        );
+                        HttpResponse::InternalServerError()
+                            .body(format!("Failed to fetch message: {}", e))
+                    }
+                }
+            }
             Err(e) => {
-                log::error!("Stream request failed: Peer resolution error for msg {}: {}", message_id, e);
+                log::error!(
+                    "Stream request failed: Peer resolution error for msg {}: {}",
+                    message_id,
+                    e
+                );
                 HttpResponse::BadRequest().body(format!("Peer resolution failed: {}", e))
-            },
+            }
         }
     } else {
-        log::error!("Stream request failed: Telegram client not connected for msg {}", message_id);
+        log::error!(
+            "Stream request failed: Telegram client not connected for msg {}",
+            message_id
+        );
         HttpResponse::ServiceUnavailable().body("Telegram client not connected")
     }
 }
 
 fn mime_type_from_media(media: &Media) -> String {
     match media {
-        Media::Document(d) => d.mime_type().unwrap_or("application/octet-stream").to_string(),
+        Media::Document(d) => d
+            .mime_type()
+            .unwrap_or("application/octet-stream")
+            .to_string(),
         _ => "application/octet-stream".to_string(),
     }
 }
@@ -724,6 +795,43 @@ pub async fn start_server(
     db_pool: crate::db::DbConnection,
     transcode_manager: Arc<TranscodeManager>,
 ) -> std::io::Result<actix_web::dev::Server> {
+    let listener = bind_stream_listener(port)?;
+    start_server_with_listener(state, token, db_pool, transcode_manager, listener)
+}
+
+fn bind_stream_listener(port: u16) -> std::io::Result<TcpListener> {
+    // Bind the listener to 127.0.0.1 explicitly. The streaming server is only
+    // accessed from the local frontend; exposing it on all interfaces is both
+    // unnecessary and liable to trigger desktop firewall prompts.
+    let ipv4_addr = format!("127.0.0.1:{port}");
+    match TcpListener::bind(&ipv4_addr) {
+        Ok(listener) => {
+            log::info!("Streaming Server listening on {} (IPv4)", ipv4_addr);
+            Ok(listener)
+        }
+        Err(error) => {
+            log::warn!(
+                "IPv4 loopback bind failed ({}), falling back to IPv6 loopback",
+                error
+            );
+            let ipv6_addr = format!("[::1]:{port}");
+            let listener = TcpListener::bind(&ipv6_addr)?;
+            log::info!(
+                "Streaming Server listening on {} (IPv6 loopback)",
+                ipv6_addr
+            );
+            Ok(listener)
+        }
+    }
+}
+
+fn start_server_with_listener(
+    state: Arc<TelegramState>,
+    token: String,
+    db_pool: crate::db::DbConnection,
+    transcode_manager: Arc<TranscodeManager>,
+    listener: TcpListener,
+) -> std::io::Result<actix_web::dev::Server> {
     let state_data = web::Data::new(state);
     let token_data = web::Data::new(StreamTokenData { token });
     let db_data = web::Data::new(db_pool);
@@ -731,28 +839,8 @@ pub async fn start_server(
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let ad_script_cache = web::Data::new(desktop_ads::AdScriptCache::default());
 
-    log::info!("Starting Streaming Server on port {}", port);
-
-    // Bind the listener to 127.0.0.1 explicitly.
-    // The streaming server is only accessed from the local frontend — binding
-    // to 0.0.0.0 is unnecessary and can trigger firewall prompts on Windows.
-    // 127.0.0.1 is the most universally reliable loopback address across all
-    // platforms (Windows, macOS, Linux) and pairs correctly with the "localhost"
-    // hostname used by the client (localhost → 127.0.0.1 is the standard mapping).
-    let ipv4_addr = format!("127.0.0.1:{}", port);
-    let listener = match TcpListener::bind(&ipv4_addr) {
-        Ok(l) => {
-            log::info!("Streaming Server listening on {} (IPv4)", ipv4_addr);
-            l
-        }
-        Err(e) => {
-            log::warn!("IPv4 loopback bind failed ({}), falling back to IPv6 loopback", e);
-            let ipv6_addr = format!("[::1]:{}", port);
-            let l = TcpListener::bind(&ipv6_addr)?;
-            log::info!("Streaming Server listening on {} (IPv6 loopback)", ipv6_addr);
-            l
-        }
-    };
+    let local_addr = listener.local_addr()?;
+    log::info!("Starting Streaming Server on {}", local_addr);
 
     let server = HttpServer::new(move || {
         let cors = Cors::default()
@@ -790,7 +878,83 @@ pub async fn start_server(
     .listen(listener)?
     .run();
 
-    log::info!("Streaming Server started successfully on port {}", port);
+    log::info!("Streaming Server started successfully on {}", local_addr);
 
     Ok(server)
+}
+
+#[cfg(test)]
+mod streaming_runtime_tests {
+    use super::*;
+    use crate::commands::TelegramState;
+    use std::collections::{HashMap, HashSet};
+    use std::sync::atomic::{AtomicU32, AtomicU64};
+    use tokio::sync::{Mutex, RwLock};
+
+    fn disconnected_telegram_state() -> Arc<TelegramState> {
+        Arc::new(TelegramState {
+            client: Arc::new(Mutex::new(None)),
+            session: Arc::new(Mutex::new(None)),
+            phone_login: Arc::new(Mutex::new(None)),
+            password_token: Arc::new(Mutex::new(None)),
+            api_id: Arc::new(Mutex::new(None)),
+            auth_attempt_counter: Arc::new(AtomicU64::new(0)),
+            runner_shutdown: Arc::new(std::sync::Mutex::new(None)),
+            runner_count: Arc::new(AtomicU32::new(0)),
+            peer_cache: Arc::new(RwLock::new(HashMap::new())),
+            cancelled_transfers: Arc::new(RwLock::new(HashSet::new())),
+        })
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn streaming_server_runs_on_existing_tokio_runtime_and_stops_gracefully() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let database = Arc::new(std::sync::Mutex::new(sqlite::open(":memory:").unwrap()));
+        let cache_root = std::env::temp_dir().join(format!(
+            "telegram-drive-stream-runtime-{}-{}",
+            std::process::id(),
+            address.port()
+        ));
+        let transcode_manager = Arc::new(TranscodeManager::new(cache_root.clone()));
+
+        // This deliberately uses Tokio directly, without actix_rt::System. It
+        // exercises the same runtime arrangement used by Tauri on Android.
+        let server = start_server_with_listener(
+            disconnected_telegram_state(),
+            "runtime-test-token".to_string(),
+            database,
+            transcode_manager,
+            listener,
+        )
+        .unwrap();
+        let handle = server.handle();
+        let server_task = tokio::spawn(server);
+
+        let client = reqwest::Client::new();
+        let endpoint = format!("http://{address}/stream/home/1");
+        let response = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match client.get(&endpoint).send().await {
+                    Ok(response) => break response,
+                    Err(_) => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
+                }
+            }
+        })
+        .await
+        .expect("streaming server did not accept loopback connections");
+
+        assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+        assert_eq!(
+            response.text().await.unwrap(),
+            "Invalid or missing stream token"
+        );
+
+        handle.stop(true).await;
+        server_task
+            .await
+            .expect("streaming server task panicked")
+            .expect("streaming server stopped with an error");
+        let _ = std::fs::remove_dir_all(cache_root);
+    }
 }

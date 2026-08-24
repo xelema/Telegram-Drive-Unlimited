@@ -13,6 +13,18 @@ import { useUploadChoice, type UploadChoice } from '../context/UploadChoiceConte
 import { triggerHaptic } from '../services/feedback';
 import { isTransientNetworkError, restoreUploadQueue, serializeUploadQueue } from '../services/transferQueuePolicy';
 import { announceSupporterValueMoment } from '../services/supporterVisibility';
+import {
+    clearTerminalTransfers,
+    configureDesktopTransferLimits,
+    enqueueDesktopTransfers,
+    listenToDesktopTransfers,
+    listDesktopTransfers,
+    supplyTransferPromptToken,
+    transferBulkAction,
+    transferItemAction,
+    transferJobToUploadItem,
+    uploadItemToTransferRequest,
+} from '../services/desktopTransferEngine';
 
 interface ProgressPayload {
     id: string;
@@ -35,6 +47,7 @@ export function useFileUpload(
     activeFolderId: number | null,
     store: Store | null,
     androidNetworkAvailable = true,
+    androidWaitingReason = 'Waiting for a network connection',
 ) {
     const { t } = useTranslation();
     const queryClient = useQueryClient();
@@ -51,11 +64,14 @@ export function useFileUpload(
     const startingItemsRef = useRef<Set<string>>(new Set());
     const uploadQueueRef = useRef(uploadQueue);
     const androidNetworkAvailableRef = useRef(androidNetworkAvailable);
+    const desktopRevisionsRef = useRef<Map<string, number>>(new Map());
+    const desktopStatusesRef = useRef<Map<string, string>>(new Map());
     uploadQueueRef.current = uploadQueue;
     androidNetworkAvailableRef.current = androidNetworkAvailable;
 
     // Listen for progress events from Rust
     useEffect(() => {
+        if (!isAndroidPlatform) return;
         let unlistenProgress: UnlistenFn | undefined;
         let unlistenRemote: UnlistenFn | undefined;
 
@@ -90,8 +106,78 @@ export function useFileUpload(
         };
     }, []);
 
+    // Desktop queue state is a revisioned projection of the durable Rust engine.
+    useEffect(() => {
+        if (isAndroidPlatform) return;
+        let disposed = false;
+        let unlisten: UnlistenFn | undefined;
+        const accept = (
+            job: Awaited<ReturnType<typeof listDesktopTransfers>>[number],
+            notifyTransition = false,
+        ) => {
+            if (disposed || job.direction !== 'upload') return;
+            const knownRevision = desktopRevisionsRef.current.get(job.id) || 0;
+            if (job.revision < knownRevision) return;
+            const previousStatus = desktopStatusesRef.current.get(job.id);
+            desktopRevisionsRef.current.set(job.id, job.revision);
+            desktopStatusesRef.current.set(job.id, job.status);
+            const item = transferJobToUploadItem(job);
+            setUploadQueue(queue => queue.some(candidate => candidate.id === item.id)
+                ? queue.map(candidate => candidate.id === item.id ? item : candidate)
+                : [...queue, item]);
+            if (notifyTransition && previousStatus !== job.status) {
+                if (job.status === 'completed') {
+                    triggerHaptic('success');
+                    announceSupporterValueMoment('upload_completed');
+                    void queryClient.invalidateQueries({ queryKey: ['files', job.folderId] });
+                } else if (job.status === 'failed') {
+                    toast.error(`Upload failed for ${job.filename}: ${job.error || 'Unknown error'}`);
+                } else if (job.status === 'waiting_for_unlock') {
+                    toast.warning(t('settings.encryption_mode_passphrase'));
+                }
+            }
+        };
+        void listenToDesktopTransfers(job => accept(job, true), id => {
+            desktopRevisionsRef.current.delete(id);
+            desktopStatusesRef.current.delete(id);
+            setUploadQueue(queue => queue.filter(item => item.id !== id));
+        }).then(async listener => {
+            if (disposed) {
+                listener();
+                return;
+            }
+            unlisten = listener;
+            const jobs = await listDesktopTransfers();
+            jobs.forEach(job => accept(job));
+        }).catch(error => {
+            console.error('[Upload] Could not attach to the desktop transfer engine:', error);
+            toast.error('The desktop transfer queue could not be loaded.');
+        });
+        return () => {
+            disposed = true;
+            unlisten?.();
+        };
+    }, [queryClient, t]);
+
     useEffect(() => {
         if (!store || initialized) return;
+        if (!isAndroidPlatform) {
+            void store.get<QueueItem[]>('uploadQueue').then(async saved => {
+                const pending = saved ? restoreUploadQueue(saved, false) : [];
+                if (pending.length > 0) {
+                    await enqueueDesktopTransfers(pending.map(uploadItemToTransferRequest));
+                    await store.set('uploadQueue', []);
+                    await store.save();
+                    toast.info(`Migrated ${pending.length} uploads to the durable desktop queue`);
+                }
+                setInitialized(true);
+            }).catch(error => {
+                console.error('[Upload] Could not migrate the desktop recovery queue:', error);
+                toast.error('Could not migrate the saved upload queue. It was left intact.');
+                setInitialized(true);
+            });
+            return;
+        }
         store.get<QueueItem[]>('uploadQueue').then((saved) => {
             if (saved && saved.length > 0) {
                 const pending = restoreUploadQueue(saved, isAndroidPlatform);
@@ -105,6 +191,7 @@ export function useFileUpload(
     }, [store, initialized]);
 
     useEffect(() => {
+        if (!isAndroidPlatform) return;
         if (!store || !initialized) return;
         const pending = serializeUploadQueue(uploadQueue, isAndroidPlatform);
         persistenceChainRef.current = persistenceChainRef.current
@@ -121,6 +208,14 @@ export function useFileUpload(
     }, [store, uploadQueue, initialized]);
 
     useEffect(() => {
+        if (isAndroidPlatform) return;
+        void configureDesktopTransferLimits(
+            settings.maxConcurrentUploads || 1,
+            settings.maxConcurrentDownloads || 1,
+        ).catch(error => console.error('[Transfer] Could not update concurrency limits:', error));
+    }, [settings.maxConcurrentDownloads, settings.maxConcurrentUploads]);
+
+    useEffect(() => {
         if (!isAndroidPlatform || !initialized) return;
         const activeStatuses: QueueItem['status'][] = ['uploading', 'downloading', 'encrypting', 'verifying'];
         if (!androidNetworkAvailable) {
@@ -133,7 +228,7 @@ export function useFileUpload(
                         networkPausedRef.current.add(item.id);
                         void invoke('cmd_cancel_transfer', { transferId: item.id }).catch(() => undefined);
                     }
-                    return { ...item, status: 'waiting_for_network' as const, error: 'Waiting for a network connection' };
+                    return { ...item, status: 'waiting_for_network' as const, error: androidWaitingReason };
                 });
                 return changed ? next : queue;
             });
@@ -144,10 +239,11 @@ export function useFileUpload(
                 ? { ...item, status: 'pending' as const, error: undefined }
                 : item)
             : queue);
-    }, [androidNetworkAvailable, initialized]);
+    }, [androidNetworkAvailable, androidWaitingReason, initialized]);
 
     // Process up to maxConcurrentUploads in parallel
     useEffect(() => {
+        if (!isAndroidPlatform) return;
         if (isAndroidPlatform && !androidNetworkAvailable) return;
         if (isAndroidPlatform && (!store || !initialized)) return;
         const maxConcurrent = settings.maxConcurrentUploads || 1;
@@ -177,6 +273,29 @@ export function useFileUpload(
             })().finally(() => startingItemsRef.current.delete(item.id));
         }
     }, [uploadQueue, settings.maxConcurrentUploads, androidNetworkAvailable, initialized, store]);
+
+    const enqueueUploadItems = async (items: QueueItem[]) => {
+        if (items.length === 0) return;
+        if (isAndroidPlatform) {
+            setUploadQueue(previous => [...previous, ...items]);
+            return;
+        }
+        const jobs = await enqueueDesktopTransfers(items.map(uploadItemToTransferRequest));
+        setUploadQueue(previous => {
+            const currentJobs = jobs.filter(job => {
+                const knownRevision = desktopRevisionsRef.current.get(job.id) || 0;
+                return job.revision >= knownRevision;
+            });
+            const incoming = new Map(currentJobs.map(job => [job.id, transferJobToUploadItem(job)]));
+            const next = previous.map(item => incoming.get(item.id) || item);
+            const known = new Set(previous.map(item => item.id));
+            for (const job of currentJobs) {
+                desktopRevisionsRef.current.set(job.id, job.revision);
+                if (!known.has(job.id)) next.push(transferJobToUploadItem(job));
+            }
+            return next;
+        });
+    };
 
     const cleanupResumableSource = async (item: QueueItem) => {
         if (item.tempZipPath) {
@@ -376,7 +495,7 @@ export function useFileUpload(
             status: 'pending' as const,
             protection: protection[index],
         }));
-        setUploadQueue(prev => [...prev, ...newItems]);
+        await enqueueUploadItems(newItems);
         toast.info(t('notifications.uploads_queued', { count: paths.length }));
         return paths.length;
     };
@@ -485,7 +604,7 @@ export function useFileUpload(
                     androidStaged: androidStaged || undefined,
                     protection: protection[0],
                 };
-                setUploadQueue(prev => [...prev, item]);
+                await enqueueUploadItems([item]);
                 toast.success(`Queued "${folderName}.zip" for upload`);
             } catch (e) {
                 console.error('[Upload] Zip error:', e);
@@ -497,6 +616,11 @@ export function useFileUpload(
     };
 
     const cancelAll = () => {
+        if (!isAndroidPlatform) {
+            void transferBulkAction('cancel', 'upload').catch(error => toast.error(String(error)));
+            toast.info('All uploads cancelled');
+            return;
+        }
         setUploadQueue(q => {
             const activeItems = q.filter(i => ['uploading', 'downloading', 'encrypting', 'verifying'].includes(i.status));
             const removableItems = q.filter(i => ['pending', 'paused', 'waiting_for_network', 'waiting_for_unlock', 'error'].includes(i.status));
@@ -513,6 +637,11 @@ export function useFileUpload(
     };
 
     const pauseAll = () => {
+        if (!isAndroidPlatform) {
+            void transferBulkAction('pause', 'upload').catch(error => toast.error(String(error)));
+            toast.info('Uploads paused. Active items will restart safely when resumed.');
+            return;
+        }
         setUploadQueue(q => q.map(item => {
             if (['uploading', 'downloading', 'encrypting', 'verifying'].includes(item.status)) {
                 pausedRef.current.add(item.id);
@@ -525,6 +654,11 @@ export function useFileUpload(
     };
 
     const resumeAll = () => {
+        if (!isAndroidPlatform) {
+            void transferBulkAction('resume', 'upload').catch(error => toast.error(String(error)));
+            toast.info('Uploads resumed');
+            return;
+        }
         setUploadQueue(q => q.map(item => item.status === 'paused'
             ? { ...item, status: 'pending' as const, error: undefined }
             : item));
@@ -532,6 +666,10 @@ export function useFileUpload(
     };
 
     const clearFinished = () => {
+        if (!isAndroidPlatform) {
+            void clearTerminalTransfers('upload', true).catch(error => toast.error(String(error)));
+            return;
+        }
         setUploadQueue(queue => {
             const removed = queue.filter(item => ['success', 'error', 'cancelled'].includes(item.status)
                 && !cancelledRef.current.has(item.id));
@@ -541,6 +679,10 @@ export function useFileUpload(
     };
 
     const cancelItem = (id: string) => {
+        if (!isAndroidPlatform) {
+            void transferItemAction('cancel', id).catch(error => toast.error(String(error)));
+            return;
+        }
         setUploadQueue(q => {
             const item = q.find(i => i.id === id);
             if (item && ['uploading', 'downloading', 'encrypting', 'verifying'].includes(item.status)) {
@@ -565,6 +707,13 @@ export function useFileUpload(
             const staged = await stageProtectionForFiles(1, protection.mode);
             if (!staged) return;
             protection = { ...staged[0], protectMetadata: protection.protectMetadata };
+        }
+        if (!isAndroidPlatform) {
+            if (protection?.promptToken) {
+                await supplyTransferPromptToken(id, protection.promptToken);
+            }
+            await transferItemAction('retry', id);
+            return;
         }
         setUploadQueue(q => q.map(i =>
             i.id === id
@@ -591,7 +740,7 @@ export function useFileUpload(
             status: 'pending' as const,
             protection: protection[0],
         };
-        setUploadQueue(prev => [...prev, item]);
+        await enqueueUploadItems([item]);
         toast.info(`Queued remote upload from URL`);
     };
 

@@ -3,6 +3,108 @@ use std::net::TcpStream;
 use std::time::Duration;
 use tauri::State;
 
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AndroidTransferEnvironment {
+    pub connected: bool,
+    pub metered: bool,
+    pub roaming: bool,
+    pub charging: bool,
+    pub battery_low: bool,
+    pub storage_low: bool,
+    pub free_bytes: u64,
+    pub power_save_mode: bool,
+    pub background_restricted: bool,
+    pub is_television: bool,
+}
+
+#[tauri::command]
+pub fn cmd_get_android_transfer_environment() -> Result<AndroidTransferEnvironment, String> {
+    #[cfg(target_os = "android")]
+    {
+        let context = ndk_context::android_context();
+        let vm = unsafe { jni::JavaVM::from_raw(context.vm().cast()) }
+            .map_err(|error| format!("Unable to access Android transfer conditions: {error}"))?;
+        let mut env = vm
+            .attach_current_thread()
+            .map_err(|error| format!("Unable to attach Android transfer conditions: {error}"))?;
+        let main_class = crate::jni_cache::get_main_activity_jclass()
+            .ok_or("Android transfer conditions are still initializing")?;
+        let value = env
+            .call_static_method(
+                &main_class,
+                "getTransferEnvironmentJson",
+                "()Ljava/lang/String;",
+                &[],
+            )
+            .map_err(|error| format!("Unable to read Android transfer conditions: {error}"))?
+            .l()
+            .map_err(|error| {
+                format!("Android transfer conditions returned an invalid value: {error}")
+            })?;
+        let value = jni::objects::JString::from(value);
+        let json: String = env
+            .get_string(&value)
+            .map_err(|error| format!("Unable to decode Android transfer conditions: {error}"))?
+            .into();
+        return serde_json::from_str(&json)
+            .map_err(|error| format!("Unable to parse Android transfer conditions: {error}"));
+    }
+    #[cfg(not(target_os = "android"))]
+    Ok(AndroidTransferEnvironment {
+        connected: true,
+        metered: false,
+        roaming: false,
+        charging: true,
+        battery_low: false,
+        storage_low: false,
+        free_bytes: u64::MAX,
+        power_save_mode: false,
+        background_restricted: false,
+        is_television: false,
+    })
+}
+
+#[tauri::command]
+pub fn cmd_configure_android_transfer_recovery(
+    wifi_only: bool,
+    allow_roaming: bool,
+    require_charging: bool,
+    pause_on_low_battery: bool,
+) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        let context = ndk_context::android_context();
+        let vm = unsafe { jni::JavaVM::from_raw(context.vm().cast()) }
+            .map_err(|error| format!("Unable to access Android recovery settings: {error}"))?;
+        let mut env = vm
+            .attach_current_thread()
+            .map_err(|error| format!("Unable to attach Android recovery settings: {error}"))?;
+        let main_class = crate::jni_cache::get_main_activity_jclass()
+            .ok_or("Android transfer recovery is still initializing")?;
+        env.call_static_method(
+            &main_class,
+            "configureTransferRecovery",
+            "(ZZZZ)V",
+            &[
+                jni::objects::JValue::Bool(if wifi_only { 1 } else { 0 }),
+                jni::objects::JValue::Bool(if allow_roaming { 1 } else { 0 }),
+                jni::objects::JValue::Bool(if require_charging { 1 } else { 0 }),
+                jni::objects::JValue::Bool(if pause_on_low_battery { 1 } else { 0 }),
+            ],
+        )
+        .map_err(|error| format!("Unable to configure Android transfer recovery: {error}"))?;
+    }
+    #[cfg(not(target_os = "android"))]
+    let _ = (
+        wifi_only,
+        allow_roaming,
+        require_charging,
+        pause_on_low_battery,
+    );
+    Ok(())
+}
+
 #[tauri::command]
 pub fn cmd_get_android_network_status() -> Result<bool, String> {
     #[cfg(target_os = "android")]
@@ -52,10 +154,15 @@ pub async fn cmd_get_proxy_status(
     tokio::task::spawn_blocking(move || {
         let timeout = Duration::from_secs(3);
         let start = std::time::Instant::now();
-        
+
         let addrs = match std::net::ToSocketAddrs::to_socket_addrs(&addr_str) {
             Ok(iter) => iter.collect::<Vec<_>>(),
-            Err(_) => return Ok(ProxyStatus { reachable: false, latency_ms: -1 }),
+            Err(_) => {
+                return Ok(ProxyStatus {
+                    reachable: false,
+                    latency_ms: -1,
+                })
+            }
         };
 
         for addr in addrs {
@@ -90,7 +197,19 @@ pub async fn cmd_test_proxy_traffic(
         None => return Ok(false),
     };
 
-    log::info!("Testing proxy traffic through: {}", proxy_url);
+    // Copy the non-secret values while the lock is held, then end the guard's
+    // lexical scope before this async command can reach an await. An explicit
+    // drop is not sufficient for Send analysis on every 32-bit target.
+    let (proxy_type, proxy_host, proxy_port) = {
+        let proxy = net_config.proxy.read().map_err(|error| error.to_string())?;
+        (proxy.proxy_type.clone(), proxy.host.clone(), proxy.port)
+    };
+    log::info!(
+        "Testing proxy traffic through configured {} proxy at {}:{} (credentials redacted)",
+        proxy_type,
+        proxy_host,
+        proxy_port
+    );
 
     // Create a temporary session in a temp directory
     let temp_dir = std::env::temp_dir().join("telegram_drive_proxy_test");
@@ -112,8 +231,10 @@ pub async fn cmd_test_proxy_traffic(
             let session = std::sync::Arc::new(session);
 
             // Build connection params with proxy
-            let mut conn_params = grammers_mtsender::ConnectionParams::default();
-            conn_params.proxy_url = Some(proxy_url);
+            let conn_params = grammers_mtsender::ConnectionParams {
+                proxy_url: Some(proxy_url),
+                ..Default::default()
+            };
 
             let pool = grammers_mtsender::SenderPool::with_configuration(
                 session.clone(),
@@ -136,10 +257,8 @@ pub async fn cmd_test_proxy_traffic(
             });
 
             // Try get_me() with a timeout
-            let result = tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                client.get_me(),
-            ).await;
+            let result =
+                tokio::time::timeout(std::time::Duration::from_secs(10), client.get_me()).await;
 
             // Abort runner regardless of outcome
             runner_handle.abort();
@@ -170,11 +289,11 @@ pub async fn cmd_test_proxy_traffic(
 
 /// Telegram DC addresses for connectivity checks and fallback
 const DC_ADDRESSES: &[&str] = &[
-    "149.154.167.50:443",  // DC2
-    "149.154.175.53:443",  // DC1
-    "149.154.167.51:443",  // DC3
-    "149.154.167.91:443",  // DC4
-    "91.108.56.130:443",   // DC5
+    "149.154.167.50:443", // DC2
+    "149.154.175.53:443", // DC1
+    "149.154.167.51:443", // DC3
+    "149.154.167.91:443", // DC4
+    "91.108.56.130:443",  // DC5
 ];
 
 /// Network availability check that respects VPN optimizer settings.
@@ -191,7 +310,11 @@ pub async fn cmd_is_network_available(
     let proxy_addr = net_config.proxy_addr();
     let dc_attempts = {
         let vpn = net_config.vpn.read().map_err(|e| e.to_string())?;
-        if vpn.enabled { vpn.dc_fallback_attempts as usize } else { 1 }
+        if vpn.enabled {
+            vpn.dc_fallback_attempts as usize
+        } else {
+            1
+        }
     };
 
     tokio::task::spawn_blocking(move || {
@@ -271,16 +394,13 @@ pub async fn cmd_detect_vpn() -> Result<bool, String> {
         #[cfg(target_os = "macos")]
         {
             // macOS: check for utun/tun/wg/ppp/tap/ipsec interfaces via ifconfig
-            match std::process::Command::new("ifconfig")
-                .arg("-l")
-                .output()
-            {
+            match std::process::Command::new("ifconfig").arg("-l").output() {
                 Ok(output) => {
                     let ifaces = String::from_utf8_lossy(&output.stdout);
                     let vpn_prefixes = ["utun", "tun", "wg", "ppp", "tap", "ipsec"];
-                    let found = ifaces.split_whitespace().any(|iface| {
-                        vpn_prefixes.iter().any(|prefix| iface.starts_with(prefix))
-                    });
+                    let found = ifaces
+                        .split_whitespace()
+                        .any(|iface| vpn_prefixes.iter().any(|prefix| iface.starts_with(prefix)));
                     Ok(found)
                 }
                 Err(_) => Ok(false),
@@ -310,14 +430,19 @@ pub async fn cmd_detect_vpn() -> Result<bool, String> {
         #[cfg(target_os = "windows")]
         {
             // Windows: run ipconfig and check output for common VPN adapter keywords
-            match std::process::Command::new("ipconfig")
-                .output()
-            {
+            match std::process::Command::new("ipconfig").output() {
                 Ok(output) => {
                     let stdout = String::from_utf8_lossy(&output.stdout).to_lowercase();
                     let vpn_keywords = [
-                        "tap-windows", "tunnel", "wireguard", "openvpn",
-                        "fortinet", "cisco", "tailscale", "zerotier", "ipsec"
+                        "tap-windows",
+                        "tunnel",
+                        "wireguard",
+                        "openvpn",
+                        "fortinet",
+                        "cisco",
+                        "tailscale",
+                        "zerotier",
+                        "ipsec",
                     ];
                     let found = vpn_keywords.iter().any(|kw| stdout.contains(kw));
                     Ok(found)

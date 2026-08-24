@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
 
@@ -87,13 +86,10 @@ pub fn verify_token(token: &str, stored_hash: &str) -> bool {
 }
 
 fn response(app: &AppHandle, settings: WebDavSettingsFile) -> WebDavSettingsResponse {
-    let running = app
-        .try_state::<crate::WebDavServerRunning>()
-        .map(|state| state.0.load(Ordering::Relaxed))
-        .unwrap_or(false);
-    let last_error = app
-        .try_state::<crate::WebDavServerLastError>()
-        .and_then(|state| state.0.lock().ok().and_then(|value| value.clone()));
+    let (running, last_error) = app
+        .try_state::<crate::WebDavServerLifecycle>()
+        .map(|state| state.0.status())
+        .unwrap_or((false, None));
 
     WebDavSettingsResponse {
         supported: cfg!(not(any(target_os = "android", target_os = "ios"))),
@@ -157,7 +153,7 @@ pub async fn cmd_update_webdav_settings(
     drop(write_guard);
 
     if changed {
-        crate::restart_webdav_server(&app);
+        let _ = crate::restart_webdav_server(&app).await;
     }
     Ok(response(&app, settings))
 }
@@ -167,9 +163,11 @@ pub async fn cmd_regenerate_webdav_token(app: AppHandle) -> Result<WebDavTokenRe
     if cfg!(any(target_os = "android", target_os = "ios")) {
         return Err("WebDAV hosting is available in the desktop app".to_string());
     }
-    let mut rng = rand::rng();
-    let bytes: Vec<u8> = (0..32).map(|_| rand::Rng::random(&mut rng)).collect();
-    let token: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    let token: String = {
+        let mut rng = rand::rng();
+        let bytes: Vec<u8> = (0..32).map(|_| rand::Rng::random(&mut rng)).collect();
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    };
 
     let write_guard = SETTINGS_WRITE_LOCK
         .lock()
@@ -178,7 +176,7 @@ pub async fn cmd_regenerate_webdav_token(app: AppHandle) -> Result<WebDavTokenRe
     settings.token_hash = Some(hash_token(&token));
     save_settings(&app, &settings)?;
     drop(write_guard);
-    crate::restart_webdav_server(&app);
+    let _ = crate::restart_webdav_server(&app).await;
 
     Ok(WebDavTokenResponse {
         url: format!("http://127.0.0.1:{}/dav/{}/", settings.port, token),

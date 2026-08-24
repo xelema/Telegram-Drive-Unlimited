@@ -1,4 +1,4 @@
-/// Crypto policy: limits, suites, and feature flags.
+//! Crypto policy: limits, suites, and feature flags.
 
 /// Magic bytes for the corrected TDENC2 envelope format.
 pub const MAGIC: &[u8; 6] = b"TDENC2";
@@ -155,7 +155,7 @@ pub fn validate_argon2_params(
 pub fn validate_chunk_size(size: u32) -> Result<u32, crate::crypto::error::CryptoError> {
     use crate::crypto::error::{CryptoError, CryptoErrorCode};
 
-    if size < MIN_CHUNK_SIZE || size > MAX_CHUNK_SIZE {
+    if !(MIN_CHUNK_SIZE..=MAX_CHUNK_SIZE).contains(&size) {
         return Err(CryptoError::new(
             CryptoErrorCode::PolicyRejected,
             format!(

@@ -1,3 +1,91 @@
+## [3.5.0] - 2026-08-24
+
+### Release Overview
+
+Telegram Drive 3.5 is a major reliability, security, media, and platform release. It moves critical transfer and desktop-lifecycle work into durable native services, strengthens file and network boundaries, expands the Android application into a signed phone, tablet, Android TV, and Google TV release, and adds professional image-viewing and media-recovery behavior.
+
+### Desktop-Native Experience
+
+- Added configurable tray and background operation so active transfers can continue after the main window is closed.
+- Added native transfer notifications for completed, failed, paused, and attention-required work, with privacy-conscious message content, duplicate suppression, and per-category controls.
+- Added tray transfer summaries and direct navigation back to the main workspace, transfer center, and settings.
+- Added reliable explicit-quit handling, single-instance behavior, window restoration, and first-use guidance for background mode.
+- Added suspend, resume, and network-recovery coordination so interrupted work is reevaluated when the device wakes or connectivity returns.
+- Added native Linux Wayland detection while preserving explicit environment overrides and X11 compatibility.
+
+### Durable Transfers and File Integrity
+
+- Added a backend-owned SQLite transfer scheduler with durable queue ordering, independent upload and download concurrency limits, revision-safe state updates, and restart recovery.
+- Preserved pause, resume, retry, cancel, cooldown, network-waiting, and vault-unlock states across desktop window and process lifecycle changes.
+- Reworked downloads to use private temporary files, scoped bandwidth reservations, explicit verification, filesystem synchronization, and atomic destination replacement.
+- Ensured failed or cancelled downloads release reserved quota and cannot leave a partially published destination file.
+- Hardened URL uploads against server-side request forgery by validating schemes, credentials, DNS results, redirect destinations, private and reserved address ranges, and streamed response-size limits.
+- Reworked temporary archive creation around an application-owned directory, unpredictable identifiers, an ownership registry, explicit symlink rejection, bounded file and byte limits, and fail-closed handling of unreadable entries.
+
+### Security and Privacy Hardening
+
+- Moved proxy passwords out of serialized settings and into the operating system credential manager, with safe migration of legacy values and redaction of proxy URLs and authentication logs.
+- Tightened the production Content Security Policy by removing inline-script execution and keeping executable content restricted to approved application resources.
+- Moved runtime SQLite work behind a centralized blocking boundary to prevent synchronous database access from stalling asynchronous services.
+- Replaced periodic vault polling with an event-driven auto-lock deadline supervisor that responds to visible user activity without weakening lock behavior.
+- Hardened REST, WebDAV, streaming, and local-service restart ownership with graceful shutdown, generation checks, and bounded port-conflict retries.
+- Strengthened entitlement verification with fixed token headers, Ed25519 signature validation, device binding, ordered validity claims, and safe offline-grace handling.
+- Hardened payment webhooks with strict header, certificate-host, timestamp, algorithm, signature, and raw-payload validation before any database mutation.
+- Added independent, checksummed D1 backup exports to private object storage with a documented restore and disaster-recovery procedure.
+
+### Media Playback and Image Viewing
+
+- Fixed MP4 parsing failures caused by false box detection inside media payloads, including support for extended-size boxes and bounded validation of movie metadata.
+- Improved adaptive playback recovery with native-video fallback, bounded startup handling, safer file changes, and clearer remux state transitions.
+- Prevented the streaming-conversion overlay from remaining visible after playback has already started.
+- Added desktop image-viewer controls for zoom in, zoom out, fit to window, actual size, zoom percentage, wheel zoom, panning, double-click zoom, and keyboard navigation.
+- Added touch-first image interaction with pinch-to-zoom, drag panning, double-tap zoom, bounded transforms, and gesture isolation for Android devices.
+- Preserved progressive thumbnail loading and full-resolution image replacement while zooming or navigating between files.
+
+### Android, Android TV, and Google TV
+
+- Promoted Android from a separate unsigned beta into the primary signed release workflow for phones, tablets, Android TV, and Google TV on Android 7.0 and newer.
+- Added native in-app media playback with system transport controls, playback-position restoration, playback speed, audio and subtitle track selection, orientation handling, and Picture-in-Picture where supported.
+- Added resilient Android transfer recovery using foreground services, scheduled recovery work, persisted queue state, reboot recovery, and actionable battery-optimization guidance.
+- Added secure Android reauthentication and device-credential integration for sensitive application state.
+- Added signed sideload-update metadata, package and version checks, SHA-256 verification, and a controlled handoff to the Android package installer.
+- Added television launcher presentation, remote-focus navigation, Android TV instrumentation coverage, and a dedicated Google TV release path.
+- Added reproducible Android overrides, release-minification safeguards for JNI methods, four-ABI packaging, and 16 KB native-library alignment verification.
+
+### Synchronization, Networking, and Platform Reliability
+
+- Preserved folder-sync deletion guards, conflict handling, portable naming, atomic replacement, retry classification, and vault-aware behavior while moving database access onto safe asynchronous boundaries.
+- Changed network keep-alive probes to resolve Telegram hostnames dynamically instead of depending on a fixed datacenter address.
+- Isolated desktop and Android capabilities so mobile-only permissions cannot leak into desktop builds.
+- Centralized application provider ownership and Query Client lifetime to prevent cross-mount state leakage and initialization-order ambiguity.
+- Improved startup and shutdown ownership for streaming, synchronization, notification, and transfer services.
+
+### Release Engineering and Documentation
+
+- Expanded pull-request checks across Windows, macOS, and Linux with frontend tests, production compilation, Rust tests, formatting, linting, and packaging smoke coverage.
+- Added tag-gated release preflight checks before any draft release or installer build can begin.
+- Added reproducible signed Android APK and App Bundle generation, emulator coverage for phone and Google TV profiles, artifact integrity checks, and release-manifest validation.
+- Added operational runbooks for Android sideload releases, signing-key backup, upgrade verification, service backup, and restore drills.
+- Updated the product website and project documentation for the unified desktop and Android release model.
+
+### Compatibility and Upgrade Notes
+
+- Existing Telegram sessions, folders, settings, encrypted files, share links, synchronization mappings, and recovery material remain compatible.
+- Legacy proxy credentials are migrated to secure operating system storage after the native backend confirms successful persistence.
+- Existing Android installations can upgrade in place only when they use the same package identity and trusted signing certificate; follow the sideload release documentation when moving from an unsigned development build.
+- Android background execution remains subject to device-manufacturer battery policy. The application preserves recoverable queue state when the operating system stops background work.
+- Some video formats still depend on platform codec availability or FFmpeg. The player now provides bounded fallback and recovery behavior when direct streaming is unavailable.
+
+### Verification
+
+- All 108 frontend tests passed across 32 test files.
+- All 137 Rust library tests and all 8 Android URI integration tests passed.
+- All 36 supporter-service tests, TypeScript validation, and the production Worker bundle dry-run passed.
+- All 6 Playwright visual-regression scenarios passed.
+- Production TypeScript and frontend builds passed.
+- Rust formatting, Clippy with warnings denied, and release-route validation passed.
+- Locale structure, interpolation, generated-key, and no-regression literal-budget checks passed for all shipped language bundles.
+
 ## [3.0.0] - 2026-08-21
 
 ### Desktop Folder Sync

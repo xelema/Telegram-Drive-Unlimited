@@ -1,7 +1,7 @@
+use crate::db::DbConnection;
+use rand::Rng;
 use serde::Serialize;
 use tauri::State;
-use rand::Rng;
-use crate::db::DbConnection;
 
 #[derive(Debug, Serialize)]
 pub struct ShareInfo {
@@ -36,8 +36,13 @@ pub async fn cmd_create_share(
     expiry_hours: Option<i64>,
     db_pool: State<'_, DbConnection>,
 ) -> Result<ShareInfo, String> {
-    {
-        let conn = db_pool.lock().map_err(|e| e.to_string())?;
+    let token = generate_share_token();
+    let created_at = chrono::Utc::now().timestamp();
+    let expires_at = expiry_hours.map(|hours| created_at + hours * 3600);
+    let database = db_pool.inner().clone();
+    let token_for_db = token.clone();
+    let file_name_for_db = file_name.clone();
+    let has_password = crate::db::with_connection(database, move |conn| {
         let folder_key = folder_id
             .map(|id| id.to_string())
             .unwrap_or_else(|| "home".to_string());
@@ -49,41 +54,32 @@ pub async fn cmd_create_share(
         if matches!(encrypted.next(), Ok(sqlite::State::Row)) {
             return Err("[ENCRYPTED_SHARE_UNAVAILABLE] Encrypted sharing is disabled until a credential-safe sharing flow is available".to_string());
         }
-    }
-    let token = generate_share_token();
-    let created_at = chrono::Utc::now().timestamp();
-    let expires_at = expiry_hours.map(|hours| created_at + hours * 3600);
-    
-    let password_hash = if let Some(ref pwd) = password {
-        if pwd.is_empty() {
-            None
+
+        let password_hash = if let Some(ref pwd) = password {
+            if pwd.is_empty() {
+                None
+            } else {
+                Some(hash_password(pwd)?)
+            }
         } else {
-            // bcrypt embeds the salt in the hash; password_salt column set to NULL.
-            let hash = hash_password(pwd)?;
-            Some(hash)
-        }
-    } else {
-        None
-    };
-
-    let conn = db_pool.lock().map_err(|e| e.to_string())?;
-    
-    let mut stmt = conn.prepare(
-        "INSERT INTO shared_links (id, folder_id, message_id, file_name, file_size, password_hash, password_salt, expires_at, revoked, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)"
-    ).map_err(|e| e.to_string())?;
-
-    stmt.bind((1, token.as_str())).map_err(|e| e.to_string())?;
-    stmt.bind((2, folder_id)).map_err(|e| e.to_string())?;
-    stmt.bind((3, message_id as i64)).map_err(|e| e.to_string())?;
-    stmt.bind((4, file_name.as_str())).map_err(|e| e.to_string())?;
-    stmt.bind((5, file_size)).map_err(|e| e.to_string())?;
-    stmt.bind((6, password_hash.as_deref())).map_err(|e| e.to_string())?;
-    stmt.bind::<(usize, Option<&str>)>((7, None)).map_err(|e| e.to_string())?;
-    stmt.bind((8, expires_at)).map_err(|e| e.to_string())?;
-    stmt.bind((9, created_at)).map_err(|e| e.to_string())?;
-
-    stmt.next().map_err(|e| e.to_string())?;
+            None
+        };
+        let mut stmt = conn.prepare(
+            "INSERT INTO shared_links (id, folder_id, message_id, file_name, file_size, password_hash, password_salt, expires_at, revoked, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)"
+        ).map_err(|e| e.to_string())?;
+        stmt.bind((1, token_for_db.as_str())).map_err(|e| e.to_string())?;
+        stmt.bind((2, folder_id)).map_err(|e| e.to_string())?;
+        stmt.bind((3, message_id as i64)).map_err(|e| e.to_string())?;
+        stmt.bind((4, file_name_for_db.as_str())).map_err(|e| e.to_string())?;
+        stmt.bind((5, file_size)).map_err(|e| e.to_string())?;
+        stmt.bind((6, password_hash.as_deref())).map_err(|e| e.to_string())?;
+        stmt.bind::<(usize, Option<&str>)>((7, None)).map_err(|e| e.to_string())?;
+        stmt.bind((8, expires_at)).map_err(|e| e.to_string())?;
+        stmt.bind((9, created_at)).map_err(|e| e.to_string())?;
+        stmt.next().map_err(|e| e.to_string())?;
+        Ok(password_hash.is_some())
+    }).await?;
 
     let link = format!("http://127.0.0.1:{}/d/{}", crate::STREAM_PORT, token);
 
@@ -93,17 +89,16 @@ pub async fn cmd_create_share(
         file_size,
         created_at,
         expires_at,
-        has_password: password_hash.is_some(),
+        has_password,
         link,
     })
 }
 
 #[tauri::command]
-pub async fn cmd_list_shares(
-    db_pool: State<'_, DbConnection>,
-) -> Result<Vec<ShareInfo>, String> {
-    let conn = db_pool.lock().map_err(|e| e.to_string())?;
-    let mut stmt = conn
+pub async fn cmd_list_shares(db_pool: State<'_, DbConnection>) -> Result<Vec<ShareInfo>, String> {
+    let database = db_pool.inner().clone();
+    crate::db::with_connection(database, |conn| {
+        let mut stmt = conn
         .prepare(
             "SELECT id, folder_id, message_id, file_name, file_size, password_hash, expires_at, created_at 
              FROM shared_links WHERE revoked = 0 ORDER BY created_at DESC"
@@ -119,7 +114,7 @@ pub async fn cmd_list_shares(
         let file_size = stmt.read::<i64, _>("file_size").map_err(|e| e.to_string())?;
         let created_at = stmt.read::<i64, _>("created_at").map_err(|e| e.to_string())?;
         let link = format!("http://127.0.0.1:{}/d/{}", crate::STREAM_PORT, id);
-        
+
         shares.push(ShareInfo {
             id,
             file_name,
@@ -130,19 +125,21 @@ pub async fn cmd_list_shares(
             link,
         });
     }
-    
-    Ok(shares)
+
+        Ok(shares)
+    }).await
 }
 
 #[tauri::command]
-pub async fn cmd_revoke_share(
-    id: String,
-    db_pool: State<'_, DbConnection>,
-) -> Result<(), String> {
-    let conn = db_pool.lock().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare("UPDATE shared_links SET revoked = 1 WHERE id = ?").map_err(|e| e.to_string())?;
-    stmt.bind((1, id.as_str())).map_err(|e| e.to_string())?;
-    stmt.next().map_err(|e| e.to_string())?;
-    
-    Ok(())
+pub async fn cmd_revoke_share(id: String, db_pool: State<'_, DbConnection>) -> Result<(), String> {
+    let database = db_pool.inner().clone();
+    crate::db::with_connection(database, move |conn| {
+        let mut stmt = conn
+            .prepare("UPDATE shared_links SET revoked = 1 WHERE id = ?")
+            .map_err(|e| e.to_string())?;
+        stmt.bind((1, id.as_str())).map_err(|e| e.to_string())?;
+        stmt.next().map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await
 }

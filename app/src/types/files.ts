@@ -58,6 +58,9 @@ export interface FolderInviteInfo {
 }
 
 export interface BandwidthStats {
+  date: string;
   up_bytes: number;
   down_bytes: number;
+  limit_bytes: number;
+  period: 'weekly';
 }

@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DEFAULT_SETTINGS } from '../../src/config/defaultSettings';
-import { mergeStoredSettings, readPersistedSettings, writePersistedSettings, type SettingsStore } from '../../src/services/settingsPersistence';
+import {
+  markProxySecretMigrated,
+  mergeStoredSettings,
+  readPersistedSettings,
+  settingsForPersistence,
+  writePersistedSettings,
+  type SettingsStore,
+} from '../../src/services/settingsPersistence';
 import {
   readActiveCustomTheme,
   readThemePreference,
@@ -43,8 +50,39 @@ describe('settings persistence', () => {
 
     expect((await readPersistedSettings(DEFAULT_SETTINGS, loadStore)).viewMode).toBe('list');
     await writePersistedSettings(DEFAULT_SETTINGS, loadStore);
-    expect(set).toHaveBeenCalledWith('settings', DEFAULT_SETTINGS);
+    expect(set).toHaveBeenCalledWith('settings', { ...DEFAULT_SETTINGS, proxyPassword: '' });
     expect(save).toHaveBeenCalledOnce();
+  });
+
+  it('never persists a newly entered proxy password', () => {
+    markProxySecretMigrated();
+    expect(settingsForPersistence({ ...DEFAULT_SETTINGS, proxyPassword: 'super-secret' }).proxyPassword).toBe('');
+  });
+
+  it('retains a legacy password only until secure migration is confirmed', async () => {
+    const store: SettingsStore = {
+      get: vi.fn().mockResolvedValue({ proxyPassword: 'legacy-secret' }),
+      set: vi.fn(),
+      save: vi.fn(),
+    };
+    const loadStore = async () => store;
+    const loaded = await readPersistedSettings(DEFAULT_SETTINGS, loadStore);
+
+    expect(settingsForPersistence(loaded).proxyPassword).toBe('legacy-secret');
+    markProxySecretMigrated();
+    expect(settingsForPersistence(loaded).proxyPassword).toBe('');
+  });
+
+  it('never restores a legacy password after the user replaces it', async () => {
+    const store: SettingsStore = {
+      get: vi.fn().mockResolvedValue({ proxyPassword: 'legacy-secret' }),
+      set: vi.fn(),
+      save: vi.fn(),
+    };
+    const loaded = await readPersistedSettings(DEFAULT_SETTINGS, async () => store);
+
+    expect(settingsForPersistence({ ...loaded, proxyPassword: 'replacement-secret' }).proxyPassword).toBe('');
+    expect(settingsForPersistence(loaded).proxyPassword).toBe('');
   });
 
   it('falls back safely when the settings store is unavailable', async () => {

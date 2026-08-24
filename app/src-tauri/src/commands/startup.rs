@@ -20,15 +20,13 @@ pub async fn cmd_get_startup_health(
     db_pool: State<'_, DbConnection>,
     stream_config: State<'_, StreamConfig>,
 ) -> Result<StartupHealth, String> {
-    let database_ready = {
-        let connection = db_pool
-            .lock()
-            .map_err(|_| "Database lock is unavailable".to_string())?;
+    let database_ready = crate::db::with_connection(db_pool.inner().clone(), |connection| {
         let mut statement = connection
             .prepare("SELECT 1")
             .map_err(|error| error.to_string())?;
-        matches!(statement.next(), Ok(sqlite::State::Row))
-    };
+        Ok(matches!(statement.next(), Ok(sqlite::State::Row)))
+    })
+    .await?;
     let app_data_ready = app
         .path()
         .app_data_dir()

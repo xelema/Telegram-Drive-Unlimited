@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
-use sha2::{Sha256, Digest};
-use tauri::{AppHandle, Manager};
+use sha2::{Digest, Sha256};
 use std::path::PathBuf;
+use std::sync::Mutex;
+use tauri::{AppHandle, Manager};
+
+static SETTINGS_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 /// Persisted API settings (written to api_settings.json in the app data dir)
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -28,6 +31,7 @@ pub struct ApiSettingsResponse {
     pub port: u16,
     pub key_set: bool,
     pub running: bool,
+    pub last_error: Option<String>,
 }
 
 fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -53,6 +57,20 @@ fn save_settings(app: &AppHandle, settings: &ApiSettingsFile) -> Result<(), Stri
     std::fs::write(path, json).map_err(|e| e.to_string())
 }
 
+fn response(app: &AppHandle, settings: ApiSettingsFile) -> ApiSettingsResponse {
+    let (running, last_error) = app
+        .try_state::<crate::ApiServerLifecycle>()
+        .map(|state| state.0.status())
+        .unwrap_or((false, None));
+    ApiSettingsResponse {
+        enabled: settings.enabled,
+        port: settings.port,
+        key_set: settings.key_hash.is_some(),
+        running,
+        last_error,
+    }
+}
+
 fn hash_key(key: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(key.as_bytes());
@@ -67,20 +85,9 @@ pub fn verify_key(plaintext: &str, stored_hash: &str) -> bool {
 }
 
 #[tauri::command]
-pub async fn cmd_get_api_settings(
-    app: AppHandle,
-) -> Result<ApiSettingsResponse, String> {
+pub async fn cmd_get_api_settings(app: AppHandle) -> Result<ApiSettingsResponse, String> {
     let settings = load_settings(&app);
-    let running = {
-        let state = app.try_state::<crate::ApiServerRunning>();
-        state.map(|s| s.0.load(std::sync::atomic::Ordering::Relaxed)).unwrap_or(false)
-    };
-    Ok(ApiSettingsResponse {
-        enabled: settings.enabled,
-        port: settings.port,
-        key_set: settings.key_hash.is_some(),
-        running,
-    })
+    Ok(response(&app, settings))
 }
 
 #[tauri::command]
@@ -96,7 +103,10 @@ pub async fn cmd_update_api_settings(
 
     // Prevent collision with streaming server
     if port == crate::STREAM_PORT {
-        return Err(format!("Port {} is used by the media streaming server", port));
+        return Err(format!(
+            "Port {} is used by the media streaming server",
+            port
+        ));
     }
 
     let webdav_settings = crate::commands::webdav_settings::load_settings(&app);
@@ -104,6 +114,9 @@ pub async fn cmd_update_api_settings(
         return Err(format!("Port {} is already used by WebDAV", port));
     }
 
+    let write_guard = SETTINGS_WRITE_LOCK
+        .lock()
+        .map_err(|_| "REST API settings lock is unavailable".to_string())?;
     let mut settings = load_settings(&app);
     let port_changed = settings.port != port;
     let enabled_changed = settings.enabled != enabled;
@@ -111,42 +124,36 @@ pub async fn cmd_update_api_settings(
     settings.enabled = enabled;
     settings.port = port;
     save_settings(&app, &settings)?;
+    drop(write_guard);
 
     // Restart server if anything changed
     if port_changed || enabled_changed {
-        crate::restart_api_server(&app);
+        let _ = crate::restart_api_server(&app).await;
     }
-
-    let running = {
-        let state = app.try_state::<crate::ApiServerRunning>();
-        state.map(|s| s.0.load(std::sync::atomic::Ordering::Relaxed)).unwrap_or(false)
-    };
-
-    Ok(ApiSettingsResponse {
-        enabled: settings.enabled,
-        port: settings.port,
-        key_set: settings.key_hash.is_some(),
-        running,
-    })
+    Ok(response(&app, settings))
 }
 
 #[tauri::command]
-pub async fn cmd_regenerate_api_key(
-    app: AppHandle,
-) -> Result<String, String> {
+pub async fn cmd_regenerate_api_key(app: AppHandle) -> Result<String, String> {
+    let write_guard = SETTINGS_WRITE_LOCK
+        .lock()
+        .map_err(|_| "REST API settings lock is unavailable".to_string())?;
     let mut settings = load_settings(&app);
 
     // Generate a secure 32-byte random key as hex
-    let mut rng = rand::rng();
-    let bytes: Vec<u8> = (0..32).map(|_| rand::Rng::random(&mut rng)).collect();
-    let plaintext_key: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
+    let plaintext_key: String = {
+        let mut rng = rand::rng();
+        let bytes: Vec<u8> = (0..32).map(|_| rand::Rng::random(&mut rng)).collect();
+        bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    };
 
     // Store only the hash
     settings.key_hash = Some(hash_key(&plaintext_key));
     save_settings(&app, &settings)?;
+    drop(write_guard);
 
     // Restart server so middleware picks up the new hash
-    crate::restart_api_server(&app);
+    let _ = crate::restart_api_server(&app).await;
 
     // Return the plaintext key ONCE — it is never stored or retrievable again
     Ok(plaintext_key)

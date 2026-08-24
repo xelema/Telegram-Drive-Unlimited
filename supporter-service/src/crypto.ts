@@ -2,6 +2,7 @@ import type { EntitlementClaims, Env } from './types';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const ENTITLEMENT_HEADER = { alg: 'EdDSA', typ: 'TD-SUPPORTER', kid: 'v1' } as const;
 
 export function encodeBase64Url(bytes: Uint8Array): string {
   let binary = '';
@@ -76,7 +77,8 @@ async function verificationKey(env: Env): Promise<CryptoKey> {
 }
 
 export async function issueEntitlementToken(env: Env, claims: EntitlementClaims): Promise<string> {
-  const header = encodeBase64Url(encoder.encode(JSON.stringify({ alg: 'EdDSA', typ: 'TD-SUPPORTER', kid: 'v1' })));
+  validateEntitlementClaims(claims);
+  const header = encodeBase64Url(encoder.encode(JSON.stringify(ENTITLEMENT_HEADER)));
   const payload = encodeBase64Url(encoder.encode(JSON.stringify(claims)));
   const signingInput = `${header}.${payload}`;
   const signature = await crypto.subtle.sign({ name: 'Ed25519' }, await signingKey(env), encoder.encode(signingInput));
@@ -93,11 +95,54 @@ export async function verifyEntitlementToken(env: Env, token: string): Promise<E
     encoder.encode(`${parts[0]}.${parts[1]}`),
   );
   if (!valid) throw new Error('Invalid entitlement signature');
+
+  const header = JSON.parse(decoder.decode(decodeBase64Url(parts[0]))) as Record<string, unknown>;
+  if (
+    !header
+    || header.alg !== ENTITLEMENT_HEADER.alg
+    || header.typ !== ENTITLEMENT_HEADER.typ
+    || header.kid !== ENTITLEMENT_HEADER.kid
+  ) {
+    throw new Error('Invalid entitlement header');
+  }
   const claims = JSON.parse(decoder.decode(decodeBase64Url(parts[1]))) as EntitlementClaims;
-  if (claims.iss !== 'telegram-drive-supporter' || claims.aud !== 'telegram-drive-desktop') {
+  validateEntitlementClaims(claims);
+  return claims;
+}
+
+function validNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
+
+function validUnixSecond(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+function validateEntitlementClaims(claims: EntitlementClaims): void {
+  if (!claims || claims.iss !== 'telegram-drive-supporter' || claims.aud !== 'telegram-drive-desktop') {
     throw new Error('Invalid entitlement audience');
   }
-  return claims;
+  if (
+    !validNonEmptyString(claims.entitlement_id)
+    || !validNonEmptyString(claims.terms_version)
+    || !validNonEmptyString(claims.device_key_hash)
+  ) {
+    throw new Error('Invalid entitlement claims');
+  }
+  try {
+    if (decodeBase64Url(claims.device_key_hash).byteLength !== 32) throw new Error();
+  } catch {
+    throw new Error('Invalid entitlement device binding');
+  }
+  if (
+    !validUnixSecond(claims.issued_at)
+    || !validUnixSecond(claims.expires_at)
+    || !validUnixSecond(claims.offline_until)
+    || claims.issued_at > claims.expires_at
+    || claims.expires_at > claims.offline_until
+  ) {
+    throw new Error('Invalid entitlement validity period');
+  }
 }
 
 export async function verifyDeviceProof(publicKey: string, message: string, signature: string): Promise<boolean> {

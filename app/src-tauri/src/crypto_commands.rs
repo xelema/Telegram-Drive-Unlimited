@@ -133,11 +133,28 @@ pub async fn cmd_get_encryption_capabilities(
         contract_version: CRYPTO_CONTRACT_VERSION,
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         backend_build_id: CRYPTO_BACKEND_BUILD_ID.to_string(),
-        availability: if features.core_available { "ready" } else { "blocked" }.to_string(),
-        blockers: if features.core_available { Vec::new() } else { vec!["CRYPTO_BACKEND_DISABLED".to_string()] },
+        availability: if features.core_available {
+            "ready"
+        } else {
+            "blocked"
+        }
+        .to_string(),
+        blockers: if features.core_available {
+            Vec::new()
+        } else {
+            vec!["CRYPTO_BACKEND_DISABLED".to_string()]
+        },
         vault_backend: "persistent_file".to_string(),
-        readable_formats: if features.read_enabled { vec![2] } else { Vec::new() },
-        writable_formats: if features.upload_enabled { vec![2] } else { Vec::new() },
+        readable_formats: if features.read_enabled {
+            vec![2]
+        } else {
+            Vec::new()
+        },
+        writable_formats: if features.upload_enabled {
+            vec![2]
+        } else {
+            Vec::new()
+        },
         features: CryptoFeatureAvailability {
             upload: features.upload_enabled,
             read: features.read_enabled,
@@ -165,31 +182,41 @@ pub async fn cmd_get_crypto_inventory(
     db_pool: State<'_, DbConnection>,
     crypto_state: State<'_, CryptoState>,
 ) -> Result<CryptoInventory, String> {
-    let conn = db_pool.lock().map_err(|_| "DB poisoned".to_string())?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT envelope_version, COUNT(*), COALESCE(SUM(ciphertext_size), 0) \
+    let (entries, total_files, total_ciphertext_bytes, experimental_format_quarantined) =
+        crate::db::with_connection(db_pool.inner().clone(), |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT envelope_version, COUNT(*), COALESCE(SUM(ciphertext_size), 0) \
              FROM encrypted_files GROUP BY envelope_version ORDER BY envelope_version",
-        )
-        .map_err(|e| e.to_string())?;
+                )
+                .map_err(|e| e.to_string())?;
 
-    let mut entries = Vec::new();
-    let mut total_files = 0i64;
-    let mut total_ciphertext_bytes = 0i64;
-    let mut experimental_format_quarantined = false;
-    while let sqlite::State::Row = stmt.next().map_err(|e| e.to_string())? {
-        let envelope_version = stmt.read::<i64, _>(0).map_err(|e| e.to_string())?;
-        let file_count = stmt.read::<i64, _>(1).map_err(|e| e.to_string())?;
-        let ciphertext_bytes = stmt.read::<i64, _>(2).map_err(|e| e.to_string())?;
-        total_files = total_files.saturating_add(file_count);
-        total_ciphertext_bytes = total_ciphertext_bytes.saturating_add(ciphertext_bytes);
-        experimental_format_quarantined |= envelope_version == 1;
-        entries.push(CryptoInventoryEntry {
-            envelope_version,
-            file_count,
-            ciphertext_bytes,
-        });
-    }
+            let mut entries = Vec::new();
+            let mut total_files = 0i64;
+            let mut total_ciphertext_bytes = 0i64;
+            let mut experimental_format_quarantined = false;
+            while let sqlite::State::Row = stmt.next().map_err(|e| e.to_string())? {
+                let envelope_version = stmt.read::<i64, _>(0).map_err(|e| e.to_string())?;
+                let file_count = stmt.read::<i64, _>(1).map_err(|e| e.to_string())?;
+                let ciphertext_bytes = stmt.read::<i64, _>(2).map_err(|e| e.to_string())?;
+                total_files = total_files.saturating_add(file_count);
+                total_ciphertext_bytes = total_ciphertext_bytes.saturating_add(ciphertext_bytes);
+                experimental_format_quarantined |= envelope_version == 1;
+                entries.push(CryptoInventoryEntry {
+                    envelope_version,
+                    file_count,
+                    ciphertext_bytes,
+                });
+            }
+
+            Ok((
+                entries,
+                total_files,
+                total_ciphertext_bytes,
+                experimental_format_quarantined,
+            ))
+        })
+        .await?;
 
     Ok(CryptoInventory {
         entries,
@@ -300,6 +327,20 @@ pub async fn cmd_lock_vault(
     Ok(())
 }
 
+/// Record throttled foreground input for the inactivity deadline. Activity
+/// arriving after an elapsed deadline locks atomically rather than reviving an
+/// expired vault after process or device suspension.
+#[tauri::command]
+pub async fn cmd_record_vault_activity(
+    crypto_state: State<'_, CryptoState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    if crypto_state.record_activity() {
+        let _ = app_handle.emit("vault-locked", "auto_lock");
+    }
+    Ok(())
+}
+
 /// Stage a file passphrase behind a short-lived, opaque, single-use token.
 /// The returned token is safe to keep in an in-memory queue; the passphrase is
 /// consumed by the next upload/download command and is never persisted.
@@ -372,7 +413,9 @@ pub async fn cmd_import_vault_recovery(
     if crypto_state.vault_exists() && replace_existing != Some(true) {
         bundle_base64.zeroize();
         recovery_passphrase.zeroize();
-        return Err("[RECOVERY_CONFIRMATION_REQUIRED] Import would replace the existing vault".to_string());
+        return Err(
+            "[RECOVERY_CONFIRMATION_REQUIRED] Import would replace the existing vault".to_string(),
+        );
     }
     let mut bundle =
         base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &bundle_base64)
@@ -401,11 +444,10 @@ pub async fn cmd_get_file_encryption_info(
     db_pool: State<'_, DbConnection>,
     crypto_state: State<'_, CryptoState>,
 ) -> Result<FileEncryptionInfo, String> {
-    let conn = db_pool.lock().map_err(|_| "DB poisoned".to_string())?;
     let folder_key = folder_id
         .map(|id| id.to_string())
         .unwrap_or_else(|| "home".to_string());
-
+    let row = crate::db::with_connection(db_pool.inner().clone(), move |conn| {
     let query = "SELECT envelope_version, key_profile_id, record_state, ciphertext_size, protection_mode, metadata_protected FROM encrypted_files WHERE folder_key = ? AND message_id = ?";
     let mut stmt = conn.prepare(query).map_err(|e| e.to_string())?;
     stmt.bind((1, folder_key.as_str()))
@@ -427,6 +469,15 @@ pub async fn cmd_get_file_encryption_info(
             .flatten()
             .map(|value| value != 0);
 
+        Ok(Some((version, profile_id, state_str, ct_size, protection_mode, metadata_protected)))
+    } else {
+        Ok(None)
+    }
+    }).await?;
+
+    if let Some((version, profile_id, state_str, ct_size, protection_mode, metadata_protected)) =
+        row
+    {
         let state = match state_str.as_str() {
             "active" if version == Some(1) => "encrypted_unsupported_version",
             "active"
@@ -434,7 +485,10 @@ pub async fn cmd_get_file_encryption_info(
                     && matches!(
                         protection_mode.as_deref(),
                         Some("vault") | Some("vault_and_passphrase")
-                    ) => "encrypted_unlocked",
+                    ) =>
+            {
+                "encrypted_unlocked"
+            }
             "active" => "encrypted_locked",
             "verifying" => "encrypted_verifying",
             "corrupt" => "encrypted_corrupt",

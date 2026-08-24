@@ -37,42 +37,42 @@ fn duplicate_key(file: &FileMetadata) -> (String, u64) {
     (file.name.trim().to_lowercase(), file.size)
 }
 
-fn load_protected_files(
-    db_pool: &DbConnection,
+async fn load_protected_files(
+    db_pool: DbConnection,
 ) -> Result<HashMap<(String, i32), ProtectedInsight>, String> {
-    let connection = db_pool
-        .lock()
-        .map_err(|_| "Database lock is unavailable".to_string())?;
-    let mut statement = connection
-        .prepare(
-            "SELECT folder_key, message_id, plaintext_size, protection_mode, metadata_protected
+    crate::db::with_connection(db_pool, |connection| {
+        let mut statement = connection
+            .prepare(
+                "SELECT folder_key, message_id, plaintext_size, protection_mode, metadata_protected
              FROM encrypted_files WHERE record_state = 'active'",
-        )
-        .map_err(|error| error.to_string())?;
-    let mut protected = HashMap::new();
-    while let sqlite::State::Row = statement.next().map_err(|error| error.to_string())? {
-        let folder_key = statement
-            .read::<String, _>(0)
+            )
             .map_err(|error| error.to_string())?;
-        let message_id = statement
-            .read::<i64, _>(1)
-            .map_err(|error| error.to_string())? as i32;
-        protected.insert(
-            (folder_key, message_id),
-            ProtectedInsight {
-                plaintext_size: statement
-                    .read::<Option<i64>, _>(2)
-                    .ok()
-                    .flatten()
-                    .and_then(|size| u64::try_from(size).ok()),
-                protection_mode: statement
-                    .read::<String, _>(3)
-                    .unwrap_or_else(|_| "vault".to_string()),
-                metadata_protected: statement.read::<i64, _>(4).unwrap_or(1) != 0,
-            },
-        );
-    }
-    Ok(protected)
+        let mut protected = HashMap::new();
+        while let sqlite::State::Row = statement.next().map_err(|error| error.to_string())? {
+            let folder_key = statement
+                .read::<String, _>(0)
+                .map_err(|error| error.to_string())?;
+            let message_id = statement
+                .read::<i64, _>(1)
+                .map_err(|error| error.to_string())? as i32;
+            protected.insert(
+                (folder_key, message_id),
+                ProtectedInsight {
+                    plaintext_size: statement
+                        .read::<Option<i64>, _>(2)
+                        .ok()
+                        .flatten()
+                        .and_then(|size| u64::try_from(size).ok()),
+                    protection_mode: statement
+                        .read::<String, _>(3)
+                        .unwrap_or_else(|_| "vault".to_string()),
+                    metadata_protected: statement.read::<i64, _>(4).unwrap_or(1) != 0,
+                },
+            );
+        }
+        Ok(protected)
+    })
+    .await
 }
 
 async fn scan_drive_files(
@@ -184,7 +184,7 @@ pub async fn cmd_get_storage_insight(
     large_threshold_bytes: Option<u64>,
     old_file_days: Option<i64>,
 ) -> Result<StorageInsightResult, String> {
-    let protected_files = load_protected_files(&db_pool)?;
+    let protected_files = load_protected_files(db_pool.inner().clone()).await?;
     let vault_unlocked = crypto_state.get_current_wrapping_key().is_ok();
     let indexed = scan_drive_files(&state, &protected_files, vault_unlocked).await?;
     let scanned_count = indexed.len();

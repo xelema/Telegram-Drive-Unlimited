@@ -42,7 +42,10 @@ impl CryptoError {
     }
 
     pub fn key_required() -> Self {
-        Self::new(CryptoErrorCode::KeyRequired, "Key is required to decrypt this file")
+        Self::new(
+            CryptoErrorCode::KeyRequired,
+            "Key is required to decrypt this file",
+        )
     }
 
     pub fn wrong_key_or_corrupt() -> Self {

@@ -1,8 +1,8 @@
 //! Tauri commands for applying proxy and VPN optimizer settings.
 //! These are called from the frontend when the user changes network configuration.
 
+use crate::vpn_optimizer::{NetworkConfig, NetworkConfigSnapshot, ProxyConfig, VpnConfig};
 use tauri::State;
-use crate::vpn_optimizer::{NetworkConfig, ProxyConfig, VpnConfig, NetworkConfigSnapshot};
 
 #[derive(Debug, serde::Deserialize)]
 pub struct ProxySettingsRequest {
@@ -22,18 +22,32 @@ pub async fn cmd_apply_proxy_settings(
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
+    let password = if req.password.is_empty() {
+        net_config
+            .proxy
+            .read()
+            .map_err(|error| error.to_string())?
+            .password
+            .clone()
+    } else {
+        crate::proxy_secret::store_password(&req.password)?;
+        req.password
+    };
     let config = ProxyConfig {
         enabled: req.enabled,
         proxy_type: req.proxy_type,
         host: req.host,
         port: req.port,
         username: req.username,
-        password: req.password,
+        password,
     };
 
     log::info!(
         "Applying proxy settings: enabled={}, type={}, host={}:{}",
-        config.enabled, config.proxy_type, config.host, config.port
+        config.enabled,
+        config.proxy_type,
+        config.host,
+        config.port
     );
 
     *net_config.proxy.write().map_err(|e| e.to_string())? = config.clone();
@@ -54,6 +68,41 @@ pub async fn cmd_apply_proxy_settings(
     }
 
     Ok("Proxy settings applied".into())
+}
+
+/// Import a password found in a legacy frontend settings file. The caller may
+/// scrub the legacy value only after this command succeeds.
+#[tauri::command]
+pub async fn cmd_migrate_proxy_secret(
+    password: String,
+    net_config: State<'_, std::sync::Arc<NetworkConfig>>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    if password.is_empty() {
+        return Ok(());
+    }
+    crate::proxy_secret::store_password(&password)?;
+    net_config
+        .proxy
+        .write()
+        .map_err(|error| error.to_string())?
+        .password = password;
+    crate::vpn_optimizer::save_network_config(&app, &net_config.snapshot())
+}
+
+#[tauri::command]
+pub async fn cmd_clear_proxy_secret(
+    net_config: State<'_, std::sync::Arc<NetworkConfig>>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    crate::proxy_secret::delete_password()?;
+    net_config
+        .proxy
+        .write()
+        .map_err(|error| error.to_string())?
+        .password
+        .clear();
+    crate::vpn_optimizer::save_network_config(&app, &net_config.snapshot())
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -102,14 +151,21 @@ pub async fn cmd_apply_vpn_settings(
         bandwidth_limit_up_kbs: req.bandwidth_limit_up_kbs,
         bandwidth_limit_down_kbs: req.bandwidth_limit_down_kbs,
         chunk_size_kb: req.chunk_size_kb.clamp(64, 512),
-        keep_alive_interval_sec: if req.keep_alive_interval_sec == 0 { 0 } else { req.keep_alive_interval_sec.clamp(30, 120) },
+        keep_alive_interval_sec: if req.keep_alive_interval_sec == 0 {
+            0
+        } else {
+            req.keep_alive_interval_sec.clamp(30, 120)
+        },
         auto_detect_vpn: req.auto_detect_vpn,
         archive_max_bytes: req.archive_max_bytes,
     };
 
     log::info!(
         "Applying VPN settings: enabled={}, timeout={}x, retries={}, flood_wait={}",
-        config.enabled, config.timeout_multiplier, config.retry_attempts, config.flood_wait_respect
+        config.enabled,
+        config.timeout_multiplier,
+        config.retry_attempts,
+        config.flood_wait_respect
     );
 
     *net_config.vpn.write().map_err(|e| e.to_string())? = config;

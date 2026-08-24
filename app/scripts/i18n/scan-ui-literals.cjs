@@ -4,6 +4,7 @@ const ts = require('typescript');
 
 const SRC_DIR = path.join(__dirname, '../../src');
 const ALLOWLIST_PATH = path.join(__dirname, '../../src/i18n/literal-allowlist.json');
+const BUDGET_PATH = path.join(__dirname, '../../src/i18n/literal-budget.json');
 
 function loadAllowlist() {
   if (fs.existsSync(ALLOWLIST_PATH)) {
@@ -93,6 +94,19 @@ function runScanner() {
     console.log('\nNote: Unextracted literals detected in shipping components. Extract them in Phase 3.');
   } else {
     console.log('[PASS] UI Literal Scanner found zero unextracted shipping literals.');
+  }
+
+  if (fs.existsSync(BUDGET_PATH)) {
+    const budget = JSON.parse(fs.readFileSync(BUDGET_PATH, 'utf8')).maxFindings;
+    if (!Number.isInteger(budget) || budget < 0) {
+      throw new Error('src/i18n/literal-budget.json must define a non-negative integer maxFindings.');
+    }
+    if (totalFindings > budget) {
+      console.error(`\n[FAIL] UI literal debt increased from the ${budget}-item budget to ${totalFindings}.`);
+      process.exitCode = 1;
+    } else {
+      console.log(`[PASS] UI literal debt is within the ${budget}-item no-regression budget.`);
+    }
   }
 }
 

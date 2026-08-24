@@ -19,6 +19,7 @@ pub type OperationHandle = u64;
 #[derive(Clone)]
 pub struct CryptoState {
     inner: Arc<Mutex<CryptoStateInner>>,
+    auto_lock_changed: Arc<tokio::sync::Notify>,
 }
 
 struct CryptoStateInner {
@@ -82,7 +83,23 @@ impl CryptoState {
                 last_activity: Instant::now(),
                 locked: true,
             })),
+            auto_lock_changed: Arc::new(tokio::sync::Notify::new()),
         }
+    }
+
+    fn signal_auto_lock_change(&self) {
+        // `notify_one` retains a permit when the supervisor is between waits,
+        // preventing an unlock or activity update from being lost.
+        self.auto_lock_changed.notify_one();
+    }
+
+    fn lock_inner(inner: &mut CryptoStateInner) {
+        inner.vault.lock();
+        inner.current_session = None;
+        inner.sessions.clear();
+        inner.operation_handles.clear();
+        inner.prompt_secrets.clear();
+        inner.locked = true;
     }
 
     /// Create a new vault and immediately make it available.
@@ -104,6 +121,8 @@ impl CryptoState {
         inner.current_session = Some(session_id);
         inner.locked = false;
         inner.last_activity = Instant::now();
+        drop(inner);
+        self.signal_auto_lock_change();
         Ok(session_id)
     }
 
@@ -131,7 +150,8 @@ impl CryptoState {
         inner.current_session = Some(session_id);
         inner.locked = false;
         inner.last_activity = Instant::now();
-
+        drop(inner);
+        self.signal_auto_lock_change();
         Ok(session_id)
     }
 
@@ -141,12 +161,9 @@ impl CryptoState {
             .inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        inner.vault.lock();
-        inner.current_session = None;
-        inner.sessions.clear();
-        inner.operation_handles.clear();
-        inner.prompt_secrets.clear();
-        inner.locked = true;
+        Self::lock_inner(&mut inner);
+        drop(inner);
+        self.signal_auto_lock_change();
     }
 
     /// Check if the vault is currently locked.
@@ -339,6 +356,8 @@ impl CryptoState {
         inner.current_session = Some(session_id);
         inner.locked = false;
         inner.last_activity = Instant::now();
+        drop(inner);
+        self.signal_auto_lock_change();
         Ok(())
     }
 
@@ -352,6 +371,8 @@ impl CryptoState {
         }
         inner.vault.change_passphrase(new_passphrase)?;
         inner.last_activity = Instant::now();
+        drop(inner);
+        self.signal_auto_lock_change();
         Ok(())
     }
 
@@ -379,28 +400,101 @@ impl CryptoState {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         inner.auto_lock_timeout = timeout;
+        drop(inner);
+        self.signal_auto_lock_change();
     }
 
-    /// Check if auto-lock should trigger. Returns true if the vault should be locked.
-    pub fn check_auto_lock(&self) -> bool {
+    /// Return the current lock deadline. A locked vault or disabled timeout has
+    /// no deadline and leaves the supervisor asleep until state changes.
+    pub fn next_auto_lock_deadline(&self) -> Option<Instant> {
         let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if inner.locked {
+            return None;
+        }
+        inner
+            .auto_lock_timeout
+            .and_then(|timeout| inner.last_activity.checked_add(timeout))
+    }
+
+    /// Wait until unlock, activity, timeout, or explicit lock changes the
+    /// deadline. This replaces periodic wakeups while the vault is idle.
+    pub async fn wait_for_auto_lock_change(&self) {
+        self.auto_lock_changed.notified().await;
+    }
+
+    /// Sleep until this vault crosses its current inactivity deadline. Deadline
+    /// changes interrupt the sleep and are recalculated without periodic polls.
+    pub async fn wait_until_auto_locked(&self) {
+        loop {
+            match self.next_auto_lock_deadline() {
+                Some(deadline) => {
+                    tokio::select! {
+                        _ = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
+                            if self.lock_if_auto_lock_due() {
+                                return;
+                            }
+                        }
+                        _ = self.wait_for_auto_lock_change() => {}
+                    }
+                }
+                None => self.wait_for_auto_lock_change().await,
+            }
+        }
+    }
+
+    /// Atomically lock only when the current deadline is still due. The
+    /// recheck prevents a simultaneous activity signal from racing the timer.
+    pub fn lock_if_auto_lock_due(&self) -> bool {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let due = !inner.locked
+            && inner
+                .auto_lock_timeout
+                .is_some_and(|timeout| inner.last_activity.elapsed() >= timeout);
+        if due {
+            Self::lock_inner(&mut inner);
+        }
+        drop(inner);
+        if due {
+            self.signal_auto_lock_change();
+        }
+        due
+    }
+
+    /// Record foreground user activity. If the deadline already elapsed while
+    /// the process was suspended, lock instead of reviving the expired vault.
+    /// Returns true when this activity caused the overdue vault to lock.
+    pub fn record_activity(&self) -> bool {
+        let mut inner = self
             .inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if inner.locked {
             return false;
         }
-        if let Some(timeout) = inner.auto_lock_timeout {
-            inner.last_activity.elapsed() > timeout
+        let auto_locked = inner
+            .auto_lock_timeout
+            .is_some_and(|timeout| inner.last_activity.elapsed() >= timeout);
+        if auto_locked {
+            Self::lock_inner(&mut inner);
         } else {
-            false
+            inner.last_activity = Instant::now();
         }
+        drop(inner);
+        self.signal_auto_lock_change();
+        auto_locked
     }
 
-    pub fn touch_activity(&self) {
+    #[cfg(test)]
+    fn set_last_activity_for_test(&self, last_activity: Instant) {
         if let Ok(mut inner) = self.inner.lock() {
             if !inner.locked {
-                inner.last_activity = Instant::now();
+                inner.last_activity = last_activity;
             }
         }
     }
@@ -414,7 +508,9 @@ mod tests {
     #[test]
     fn prompt_secrets_are_opaque_and_single_use() {
         let state = CryptoState::new(Box::new(MemoryVault::new()));
-        let token = state.stage_prompt_secret(b"correct horse battery staple").unwrap();
+        let token = state
+            .stage_prompt_secret(b"correct horse battery staple")
+            .unwrap();
         assert_ne!(token, 0);
         assert_eq!(
             state.consume_prompt_secret(token).unwrap().expose(),
@@ -427,8 +523,68 @@ mod tests {
     #[test]
     fn locking_revokes_staged_prompt_secrets() {
         let state = CryptoState::new(Box::new(MemoryVault::new()));
-        let token = state.stage_prompt_secret(b"temporary file passphrase").unwrap();
+        let token = state
+            .stage_prompt_secret(b"temporary file passphrase")
+            .unwrap();
         state.lock();
         assert!(state.consume_prompt_secret(token).is_err());
+    }
+
+    #[test]
+    fn foreground_activity_extends_an_active_deadline() {
+        let state = CryptoState::new(Box::new(MemoryVault::new()));
+        state.create_vault(b"test passphrase").unwrap();
+        state.set_auto_lock_timeout(Some(Duration::from_secs(60)));
+        let first_deadline = state.next_auto_lock_deadline().unwrap();
+
+        assert!(!state.record_activity());
+        assert!(state.next_auto_lock_deadline().unwrap() >= first_deadline);
+        assert!(!state.is_locked());
+    }
+
+    #[test]
+    fn overdue_activity_locks_instead_of_reviving_the_vault() {
+        let state = CryptoState::new(Box::new(MemoryVault::new()));
+        state.create_vault(b"test passphrase").unwrap();
+        state.set_auto_lock_timeout(Some(Duration::from_secs(60)));
+        state.set_last_activity_for_test(Instant::now() - Duration::from_secs(61));
+
+        assert!(state.record_activity());
+        assert!(state.is_locked());
+        assert!(state.next_auto_lock_deadline().is_none());
+    }
+
+    #[test]
+    fn deadline_check_is_atomic_and_disabled_timeout_stays_unlocked() {
+        let state = CryptoState::new(Box::new(MemoryVault::new()));
+        state.create_vault(b"test passphrase").unwrap();
+        state.set_auto_lock_timeout(None);
+        state.set_last_activity_for_test(Instant::now() - Duration::from_secs(24 * 60 * 60));
+
+        assert!(!state.lock_if_auto_lock_due());
+        assert!(!state.record_activity());
+        assert!(!state.is_locked());
+        assert!(state.next_auto_lock_deadline().is_none());
+    }
+
+    #[tokio::test]
+    async fn supervisor_sleeps_without_a_deadline_and_wakes_on_schedule_change() {
+        let state = CryptoState::new(Box::new(MemoryVault::new()));
+        state.create_vault(b"test passphrase").unwrap();
+        state.set_auto_lock_timeout(None);
+
+        let waiter_state = state.clone();
+        let waiter = tokio::spawn(async move {
+            waiter_state.wait_until_auto_locked().await;
+        });
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+
+        state.set_auto_lock_timeout(Some(Duration::ZERO));
+        tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("schedule change should wake the auto-lock supervisor")
+            .expect("auto-lock supervisor should not panic");
+        assert!(state.is_locked());
     }
 }

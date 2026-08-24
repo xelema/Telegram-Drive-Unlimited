@@ -1,0 +1,86 @@
+name: Supporter D1 Backup
+
+on:
+  schedule:
+    - cron: '41 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supporter-d1-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: supporter-service
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      R2_BUCKET: ${{ secrets.R2_BACKUP_BUCKET }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: supporter-service/package-lock.json
+      - run: npm ci
+
+      - name: Validate backup configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          for variable in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY R2_BUCKET; do
+            if [[ -z "${!variable:-}" ]]; then
+              echo "Missing required backup secret: ${variable}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Export D1 and upload verified archive to R2
+        shell: bash
+        run: |
+          set -euo pipefail
+          backup_dir="backup-out"
+          export_file="${backup_dir}/telegram-drive-supporter.sql"
+          timestamp="$(date -u +'%Y%m%dT%H%M%SZ')"
+          archive_name="telegram-drive-supporter-${timestamp}.sql.gz"
+          archive_file="${backup_dir}/${archive_name}"
+          checksum_file="${archive_file}.sha256"
+          object_prefix="d1/telegram-drive-supporter/$(date -u +'%Y/%m/%d')"
+          endpoint="https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com"
+
+          mkdir -p "${backup_dir}"
+          npx wrangler d1 export telegram-drive-supporter --remote --output="${export_file}"
+          test -s "${export_file}"
+          grep -q 'CREATE TABLE' "${export_file}"
+          grep -q 'entitlements' "${export_file}"
+          gzip -9 -c "${export_file}" > "${archive_file}"
+          (
+            cd "${backup_dir}"
+            sha256sum "${archive_name}" > "${archive_name}.sha256"
+          )
+
+          aws s3 cp "${archive_file}" "s3://${R2_BUCKET}/${object_prefix}/${archive_name}" \
+            --endpoint-url "${endpoint}" --content-type application/gzip --only-show-errors
+          aws s3 cp "${checksum_file}" "s3://${R2_BUCKET}/${object_prefix}/${archive_name}.sha256" \
+            --endpoint-url "${endpoint}" --content-type text/plain --only-show-errors
+
+          local_size="$(stat -c '%s' "${archive_file}")"
+          remote_size="$(aws s3api head-object \
+            --bucket "${R2_BUCKET}" \
+            --key "${object_prefix}/${archive_name}" \
+            --endpoint-url "${endpoint}" \
+            --query ContentLength \
+            --output text)"
+          test "${local_size}" = "${remote_size}"
+          echo "Uploaded and verified s3://${R2_BUCKET}/${object_prefix}/${archive_name}"

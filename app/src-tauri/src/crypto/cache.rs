@@ -72,11 +72,7 @@ impl EncryptedDerivedCache {
     }
 
     /// Load and decrypt a derivative.
-    pub fn load(
-        &self,
-        _file_uuid: &[u8; 16],
-        _derivative_type: &str,
-    ) -> CryptoResult<Vec<u8>> {
+    pub fn load(&self, _file_uuid: &[u8; 16], _derivative_type: &str) -> CryptoResult<Vec<u8>> {
         if self.cache_key.is_none() {
             return Err(crate::crypto::error::CryptoError::vault_locked());
         }

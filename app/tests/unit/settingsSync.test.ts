@@ -18,6 +18,8 @@ describe('settings sync allowlist', () => {
     expect(syncable).not.toHaveProperty('supporterMode');
     expect(syncable).not.toHaveProperty('crashReportingConsentSeen');
     expect(syncable).not.toHaveProperty('telegramSettingsSyncEnabled');
+    expect(syncable).not.toHaveProperty('backgroundModeEnabled');
+    expect(syncable).not.toHaveProperty('notificationsEnabled');
     expect(Object.keys(syncable)).toEqual([...SYNCABLE_SETTING_KEYS]);
   });
 });

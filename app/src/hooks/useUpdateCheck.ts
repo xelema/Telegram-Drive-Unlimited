@@ -1,5 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { check, Update } from '@tauri-apps/plugin-updater';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+import { type as osType } from '@tauri-apps/plugin-os';
 import { installVerifiedUpdate, type UpdateInstallPhase } from '../services/updateReliability';
 
 interface UpdateState {
@@ -10,6 +13,22 @@ interface UpdateState {
     error: string | null;
     version: string | null;
     phase: UpdateInstallPhase | null;
+}
+
+interface AndroidUpdateManifest {
+    version: string;
+    versionCode: number;
+}
+
+interface AndroidUpdateProgress {
+    downloadedBytes: number;
+    totalBytes?: number;
+    percent?: number;
+}
+
+interface AndroidInstallResult {
+    installerLaunched: boolean;
+    unknownSourcesSettingsOpened: boolean;
 }
 
 export function useUpdateCheck() {
@@ -23,10 +42,25 @@ export function useUpdateCheck() {
         phase: null,
     });
     const [update, setUpdate] = useState<Update | null>(null);
+    const [androidUpdate, setAndroidUpdate] = useState<AndroidUpdateManifest | null>(null);
+    const isAndroid = (() => {
+        try { return osType() === 'android'; } catch { return false; }
+    })();
 
     const checkForUpdates = useCallback(async () => {
         setState(s => ({ ...s, checking: true, error: null }));
         try {
+            if (isAndroid) {
+                const updateInfo = await invoke<AndroidUpdateManifest | null>('cmd_check_android_update');
+                setAndroidUpdate(updateInfo);
+                setState(s => ({
+                    ...s,
+                    checking: false,
+                    available: updateInfo !== null,
+                    version: updateInfo?.version ?? null,
+                }));
+                return;
+            }
             const updateInfo = await check();
             if (updateInfo) {
                 setUpdate(updateInfo);
@@ -47,15 +81,41 @@ export function useUpdateCheck() {
                 error: message,
             }));
         }
-    }, []);
+    }, [isAndroid]);
 
     const downloadAndInstall = useCallback(async () => {
-        if (!update) return;
+        if (!update && !androidUpdate) return;
 
         setState(s => ({ ...s, downloading: true, progress: 0, phase: 'downloading', error: null }));
         try {
+            if (isAndroid) {
+                const unlisten = await listen<AndroidUpdateProgress>('android-update-progress', (event) => {
+                    const progress = event.payload.percent;
+                    if (progress !== undefined) {
+                        setState(s => ({
+                            ...s,
+                            progress,
+                            phase: progress >= 100 ? 'installing' : 'downloading',
+                        }));
+                    }
+                });
+                try {
+                    const result = await invoke<AndroidInstallResult>('cmd_download_and_install_android_update');
+                    if (result.unknownSourcesSettingsOpened) {
+                        setState(s => ({
+                            ...s,
+                            downloading: false,
+                            phase: null,
+                            error: 'Allow Telegram Drive to install updates, then choose Update Now again.',
+                        }));
+                    }
+                } finally {
+                    unlisten();
+                }
+                return;
+            }
             await installVerifiedUpdate(
-                update,
+                update!,
                 (nextProgress) => setState(s => ({ ...s, progress: nextProgress })),
                 (phase) => setState(s => ({ ...s, phase })),
             );
@@ -68,11 +128,12 @@ export function useUpdateCheck() {
                 error: message,
             }));
         }
-    }, [update]);
+    }, [androidUpdate, isAndroid, update]);
 
     const dismissUpdate = useCallback(() => {
         setState(s => ({ ...s, available: false, phase: null }));
         setUpdate(null);
+        setAndroidUpdate(null);
     }, []);
 
     useEffect(() => {

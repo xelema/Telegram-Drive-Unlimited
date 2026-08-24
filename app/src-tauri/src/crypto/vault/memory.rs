@@ -23,6 +23,12 @@ impl MemoryVault {
     }
 }
 
+impl Default for MemoryVault {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CryptoVault for MemoryVault {
     fn exists(&self) -> bool {
         self.created

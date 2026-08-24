@@ -39,9 +39,11 @@ export function AdaptiveMediaPlayer({
 
     // ── fMP4 remux state ────────────────────────────────────────────
     const [fmp4Remuxing, setFmp4Remuxing] = useState(false);
-    const [fmp4RemuxError, setFmp4RemuxError] = useState<string | null>(null);
     const [fmp4StreamUrl, setFmp4StreamUrl] = useState<string | null>(null);
     const fmp4RemuxingRef = useRef(false);
+    const [playbackConfirmed, setPlaybackConfirmed] = useState(false);
+    const playbackConfirmedRef = useRef(false);
+    const [originalPlaybackError, setOriginalPlaybackError] = useState<string | null>(null);
     // Generation counter bumped on source change so stale async IIFEs
     // from a previous file don't set state on the current file.
     const remuxGenerationRef = useRef(0);
@@ -77,7 +79,6 @@ export function AdaptiveMediaPlayer({
 
         fmp4RemuxingRef.current = true;
         setFmp4Remuxing(true);
-        setFmp4RemuxError(null);
 
         // Capture the generation counter so the async IIFE can bail out
         // if the user navigates to a different file before the remux
@@ -103,6 +104,12 @@ export function AdaptiveMediaPlayer({
                 }
 
                 if (remuxPreparation.status === 'ready') {
+                    if (playbackConfirmedRef.current) {
+                        logRef.current?.('fMP4 cached while original playback is active; keeping current source');
+                        setFmp4Remuxing(false);
+                        fmp4RemuxingRef.current = false;
+                        return;
+                    }
                     const fullUrl = `${streamBaseRef.current}${remuxPreparation.url}?token=${streamTokenRef.current}`;
                     logRef.current?.('fMP4 already cached, switching to:', fullUrl);
                     abortMseRef.current?.();
@@ -132,6 +139,12 @@ export function AdaptiveMediaPlayer({
                         );
 
                         if (status.status === 'ready') {
+                            if (playbackConfirmedRef.current) {
+                                logRef.current?.('fMP4 remux completed during playback; keeping current source');
+                                setFmp4Remuxing(false);
+                                fmp4RemuxingRef.current = false;
+                                return;
+                            }
                             const fullUrl = `${streamBaseRef.current}${fmp4Url}?token=${streamTokenRef.current}`;
                             logRef.current?.('fMP4 remux complete, switching to:', fullUrl);
                             abortMseRef.current?.();
@@ -158,7 +171,6 @@ export function AdaptiveMediaPlayer({
                     return;
                 }
                 logRef.current?.('fMP4 remux failed:', String(error));
-                setFmp4RemuxError(String(error));
                 setFmp4Remuxing(false);
                 fmp4RemuxingRef.current = false;
                 // The hook will fall back to native video since we
@@ -224,6 +236,18 @@ export function AdaptiveMediaPlayer({
     }, []);
     // Wire late-bound refs for the progressive handler
     logRef.current = log;
+
+    const markPlaybackConfirmed = useCallback(() => {
+        playbackConfirmedRef.current = true;
+        setPlaybackConfirmed(true);
+        setOriginalPlaybackError(null);
+    }, []);
+
+    const handleOriginalPlaybackError = useCallback((event: React.SyntheticEvent<HTMLVideoElement>) => {
+        playbackConfirmedRef.current = false;
+        setPlaybackConfirmed(false);
+        setOriginalPlaybackError(event.currentTarget.error?.message || 'Unknown error');
+    }, []);
 
     // ── Volume state ─────────────────────────────────────────────────
     const [volume, setVolume] = useState(1);
@@ -377,9 +401,11 @@ export function AdaptiveMediaPlayer({
         // from the previous file discard their results instead of setting
         // state on the new file.
         setFmp4Remuxing(false);
-        setFmp4RemuxError(null);
         setFmp4StreamUrl(null);
         fmp4RemuxingRef.current = false;
+        playbackConfirmedRef.current = false;
+        setPlaybackConfirmed(false);
+        setOriginalPlaybackError(null);
         remuxGenerationRef.current += 1;
     }, [streamUrl]);
 
@@ -467,6 +493,8 @@ export function AdaptiveMediaPlayer({
         if (video) savedTimeRef.current = video.currentTime;
 
         hlsQualityRef.current = quality;
+        playbackConfirmedRef.current = false;
+        setPlaybackConfirmed(false);
         setPlaybackMode('hls');
         setHlsQuality(quality);
         setHlsPhase('preparing');
@@ -542,6 +570,9 @@ export function AdaptiveMediaPlayer({
             }
             hlsQualityRef.current = null;
             currentJobIdRef.current = null;
+            playbackConfirmedRef.current = false;
+            setPlaybackConfirmed(false);
+            setOriginalPlaybackError(null);
             setPlaybackMode('original');
             setHlsPhase('idle');
             setHlsQuality(null);
@@ -776,6 +807,9 @@ export function AdaptiveMediaPlayer({
             hlsRef.current = null;
         }
         hlsQualityRef.current = null;
+        playbackConfirmedRef.current = false;
+        setPlaybackConfirmed(false);
+        setOriginalPlaybackError(null);
         setPlaybackMode('original');
         setHlsPhase('idle');
         setHlsQuality(null);
@@ -844,8 +878,13 @@ export function AdaptiveMediaPlayer({
     const hasVideoTrack = tracks.some(t => t.type === 'video');
     const isMseLoading = msePhase === 'loading' || msePhase === 'initializing';
     const isHlsLoading = hlsPhase === 'preparing' || hlsPhase === 'caching' || hlsPhase === 'transcoding';
-    const displayPhase: string = isHlsMode ? hlsPhase : (isMseLoading ? 'loading' : msePhase);
-    const displayError: string | null = isHlsMode ? hlsError : mseError;
+    const originalDisplayPhase: string = originalPlaybackError
+        ? 'error'
+        : useFallback
+            ? (playbackConfirmed ? 'playing' : 'loading')
+            : (isMseLoading ? 'loading' : msePhase);
+    const displayPhase: string = isHlsMode ? hlsPhase : originalDisplayPhase;
+    const displayError: string | null = isHlsMode ? hlsError : (originalPlaybackError || mseError);
     const showOriginalVideo = !isHlsMode && !useFallback;
 
     // Build the effective quality label
@@ -886,7 +925,7 @@ export function AdaptiveMediaPlayer({
                 {/* Video container */}
                 <div className={`relative flex items-center justify-center overflow-hidden bg-black ${isFullscreen ? 'h-full w-full rounded-none shadow-none' : 'viewer-panel aspect-video w-full'}`}>
                     {/* fMP4 remux loading overlay */}
-                    {fmp4Remuxing && (
+                    {fmp4Remuxing && !useFallback && !playbackConfirmed && (
                         <div className="flex flex-col items-center gap-4 text-white absolute inset-0 bg-black/80 z-10">
                             <Zap className="w-10 h-10 text-telegram-primary animate-pulse" />
                             <div className="flex flex-col items-center gap-1">
@@ -898,20 +937,8 @@ export function AdaptiveMediaPlayer({
                         </div>
                     )}
 
-                    {/* fMP4 remux error */}
-                    {fmp4RemuxError && !fmp4Remuxing && (
-                        <div className="flex flex-col items-center gap-3 text-white absolute inset-0 bg-black/80 z-10">
-                            <AlertTriangle className="w-10 h-10 text-amber-400" />
-                            <p className="text-sm text-amber-400 font-medium">Streaming conversion failed</p>
-                            <p className="text-xs text-white/40 text-center max-w-md">
-                                {fmp4RemuxError}
-                            </p>
-                            <p className="text-[11px] text-white/20">Falling back to native video player...</p>
-                        </div>
-                    )}
-
                     {/* Error display */}
-                    {(displayPhase === 'error' || displayPhase === 'failed') && (
+                    {(isHlsMode || !playbackConfirmed) && (displayPhase === 'error' || displayPhase === 'failed') && (
                         <div className="flex flex-col items-center gap-3 text-white px-8">
                             <AlertTriangle className="w-10 h-10 text-red-400" />
                             <p className="text-sm text-red-400 font-medium">Playback Error</p>
@@ -979,7 +1006,17 @@ export function AdaptiveMediaPlayer({
 
                     {/* Fallback: native <video> (non-MP4 or no MSE support) */}
                     {useFallback && !isHlsMode && (
-                        <video src={fallbackUrl} controls controlsList="nodownload" autoPlay className="w-full h-full object-contain" />
+                        <video
+                            src={fallbackUrl}
+                            controls
+                            controlsList="nodownload"
+                            autoPlay
+                            className="w-full h-full object-contain"
+                            onLoadedData={markPlaybackConfirmed}
+                            onCanPlay={markPlaybackConfirmed}
+                            onPlaying={markPlaybackConfirmed}
+                            onError={handleOriginalPlaybackError}
+                        />
                     )}
 
                     {/* HLS video element — rendered as soon as HLS mode is active so attachMedia works */}
@@ -989,6 +1026,8 @@ export function AdaptiveMediaPlayer({
                             controls={hlsPhase === 'ready'}
                             controlsList="nodownload"
                             autoPlay
+                            onLoadedData={markPlaybackConfirmed}
+                            onPlaying={markPlaybackConfirmed}
                             className={`w-full h-full object-contain ${hlsPhase === 'ready' ? 'opacity-100' : 'opacity-0 absolute inset-0 pointer-events-none'}`}
                         />
                     )}
@@ -1000,6 +1039,9 @@ export function AdaptiveMediaPlayer({
                             controls
                             controlsList="nodownload"
                             autoPlay
+                            onLoadedData={markPlaybackConfirmed}
+                            onCanPlay={markPlaybackConfirmed}
+                            onPlaying={markPlaybackConfirmed}
                             className={`w-full h-full object-contain ${(isMseLoading || msePhase === 'error') ? 'opacity-0' : 'opacity-100'}`}
                         />
                     )}

@@ -49,8 +49,8 @@ fn sync_paths_overlap(left: &Path, right: &Path) -> bool {
 }
 
 #[tauri::command]
-pub fn cmd_get_sync_settings(db: State<'_, DbConnection>) -> Result<SyncSettings, String> {
-    config::load_settings(db.inner())
+pub async fn cmd_get_sync_settings(db: State<'_, DbConnection>) -> Result<SyncSettings, String> {
+    config::load_settings(db.inner().clone()).await
 }
 
 #[tauri::command]
@@ -60,12 +60,13 @@ pub async fn cmd_toggle_sync(
     enabled: bool,
 ) -> Result<SyncSettings, String> {
     config::set_setting(
-        db.inner(),
-        "sync_enabled",
-        if enabled { "true" } else { "false" },
-    )?;
+        db.inner().clone(),
+        "sync_enabled".to_string(),
+        if enabled { "true" } else { "false" }.to_string(),
+    )
+    .await?;
     restart_sync_engine(&app).await?;
-    config::load_settings(db.inner())
+    config::load_settings(db.inner().clone()).await
 }
 
 #[tauri::command]
@@ -93,10 +94,12 @@ pub async fn cmd_add_sync_pair(
     let local_path = canonical.to_string_lossy().into_owned();
     let created_at = chrono::Utc::now().timestamp();
     let folder_key = channel_id.to_string();
-    let (id, fallback_label) = {
-        let connection = db
-            .lock()
-            .map_err(|_| "Database lock poisoned".to_string())?;
+    let canonical_for_check = canonical.clone();
+    let local_path_for_db = local_path.clone();
+    let folder_key_for_db = folder_key.clone();
+    let label_for_db = label.clone();
+    let direction_for_db = direction.clone();
+    let (id, fallback_label) = crate::db::with_connection(db.inner().clone(), move |connection| {
         let mut existing_pairs = connection
             .prepare("SELECT local_path, channel_id FROM sync_pairs")
             .map_err(|error| error.to_string())?;
@@ -108,7 +111,7 @@ pub async fn cmd_add_sync_pair(
             if existing_channel == channel_id {
                 return Err("A Telegram channel can be mapped to only one local folder".to_string());
             }
-            if sync_paths_overlap(&canonical, Path::new(&existing_path)) {
+            if sync_paths_overlap(&canonical_for_check, Path::new(&existing_path)) {
                 return Err(
                     "Sync folders cannot be identical, nested, or contain another sync folder"
                         .to_string(),
@@ -131,19 +134,19 @@ pub async fn cmd_add_sync_pair(
             "INSERT INTO sync_pairs (local_path, channel_id, folder_key, label, sync_direction, is_active, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)",
         ).map_err(|error| error.to_string())?;
         statement
-            .bind((1, local_path.as_str()))
+            .bind((1, local_path_for_db.as_str()))
             .map_err(|error| error.to_string())?;
         statement
             .bind((2, channel_id))
             .map_err(|error| error.to_string())?;
         statement
-            .bind((3, folder_key.as_str()))
+            .bind((3, folder_key_for_db.as_str()))
             .map_err(|error| error.to_string())?;
         statement
-            .bind::<(usize, Option<&str>)>((4, label.as_deref().or(fallback_label.as_deref())))
+            .bind::<(usize, Option<&str>)>((4, label_for_db.as_deref().or(fallback_label.as_deref())))
             .map_err(|error| error.to_string())?;
         statement
-            .bind((5, direction.as_str()))
+            .bind((5, direction_for_db.as_str()))
             .map_err(|error| error.to_string())?;
         statement
             .bind((6, created_at))
@@ -157,8 +160,8 @@ pub async fn cmd_add_sync_pair(
         let id = id_statement
             .read::<i64, _>(0)
             .map_err(|error| error.to_string())?;
-        (id, fallback_label)
-    };
+        Ok((id, fallback_label))
+    }).await?;
     restart_sync_engine(&app).await?;
     Ok(SyncPair {
         id,
@@ -187,8 +190,8 @@ mod tests {
 }
 
 #[tauri::command]
-pub fn cmd_get_sync_pairs(db: State<'_, DbConnection>) -> Result<Vec<SyncPair>, String> {
-    config::load_pairs(db.inner(), false)
+pub async fn cmd_get_sync_pairs(db: State<'_, DbConnection>) -> Result<Vec<SyncPair>, String> {
+    config::load_pairs(db.inner().clone(), false).await
 }
 
 #[tauri::command]
@@ -198,10 +201,7 @@ pub async fn cmd_remove_sync_pair(
     pair_id: i64,
 ) -> Result<(), String> {
     app.state::<SyncEngine>().shutdown_and_wait().await?;
-    {
-        let connection = db
-            .lock()
-            .map_err(|_| "Database lock poisoned".to_string())?;
+    crate::db::with_connection(db.inner().clone(), move |connection| {
         connection
             .execute("BEGIN IMMEDIATE TRANSACTION")
             .map_err(|error| error.to_string())?;
@@ -232,8 +232,10 @@ pub async fn cmd_remove_sync_pair(
                 return Err(error);
             }
         }
-    }
-    app.state::<SyncEngine>().start()
+        Ok(())
+    })
+    .await?;
+    app.state::<SyncEngine>().start().await
 }
 
 #[tauri::command]
@@ -242,10 +244,10 @@ pub async fn cmd_get_sync_status(engine: State<'_, SyncEngine>) -> Result<SyncSt
 }
 
 #[tauri::command]
-pub fn cmd_get_sync_conflicts(db: State<'_, DbConnection>) -> Result<Vec<SyncConflict>, String> {
-    let connection = db
-        .lock()
-        .map_err(|_| "Database lock poisoned".to_string())?;
+pub async fn cmd_get_sync_conflicts(
+    db: State<'_, DbConnection>,
+) -> Result<Vec<SyncConflict>, String> {
+    crate::db::with_connection(db.inner().clone(), |connection| {
     let mut statement = connection.prepare(
         "SELECT s.pair_id, s.relative_path, p.local_path, p.label FROM sync_state s JOIN sync_pairs p ON p.id = s.pair_id WHERE s.sync_status = 'conflict' ORDER BY s.pair_id, s.relative_path",
     ).map_err(|error| error.to_string())?;
@@ -259,16 +261,15 @@ pub fn cmd_get_sync_conflicts(db: State<'_, DbConnection>) -> Result<Vec<SyncCon
         });
     }
     Ok(conflicts)
+    }).await
 }
 
 #[tauri::command]
-pub fn cmd_get_sync_log(
+pub async fn cmd_get_sync_log(
     db: State<'_, DbConnection>,
     limit: Option<i64>,
 ) -> Result<Vec<SyncLogEntry>, String> {
-    let connection = db
-        .lock()
-        .map_err(|_| "Database lock poisoned".to_string())?;
+    crate::db::with_connection(db.inner().clone(), move |connection| {
     let mut statement = connection.prepare(
         "SELECT id, pair_id, action, relative_path, detail, created_at FROM sync_log ORDER BY id DESC LIMIT ?",
     ).map_err(|error| error.to_string())?;
@@ -287,6 +288,7 @@ pub fn cmd_get_sync_log(
         });
     }
     Ok(entries)
+    }).await
 }
 
 #[tauri::command]
@@ -304,30 +306,31 @@ pub async fn cmd_resolve_conflict(
         return Err("Unknown conflict resolution".to_string());
     }
     app.state::<SyncEngine>().shutdown_and_wait().await?;
-    {
-        let connection = db
-            .lock()
-            .map_err(|_| "Database lock poisoned".to_string())?;
+    let path_for_db = path.clone();
+    let resolution_for_db = resolution.clone();
+    crate::db::with_connection(db.inner().clone(), move |connection| {
         let mut statement = connection.prepare(
             "UPDATE sync_state SET sync_status = ? WHERE pair_id = ? AND relative_path = ? AND sync_status = 'conflict'",
         ).map_err(|error| error.to_string())?;
         statement
-            .bind((1, resolution.as_str()))
+            .bind((1, resolution_for_db.as_str()))
             .map_err(|error| error.to_string())?;
         statement
             .bind((2, pair_id))
             .map_err(|error| error.to_string())?;
         statement
-            .bind((3, path.as_str()))
+            .bind((3, path_for_db.as_str()))
             .map_err(|error| error.to_string())?;
         statement.next().map_err(|error| error.to_string())?;
-    }
+        Ok(())
+    }).await?;
     config::log_sync(
-        db.inner(),
+        db.inner().clone(),
         Some(pair_id),
-        "resolve_conflict",
-        Some(&path),
-        Some(&resolution),
-    );
-    app.state::<SyncEngine>().start()
+        "resolve_conflict".to_string(),
+        Some(path),
+        Some(resolution),
+    )
+    .await;
+    app.state::<SyncEngine>().start().await
 }

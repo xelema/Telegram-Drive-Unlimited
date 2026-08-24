@@ -589,6 +589,17 @@ textarea:disabled {
   border-color: rgba(255, 255, 255, 0.12);
 }
 
+@media (pointer: coarse) {
+  .image-viewer-toolbar .viewer-control {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+
+  .image-viewer-toolbar {
+    gap: 0.125rem;
+  }
+}
+
 .file-card-container {
   container-type: inline-size;
 }
@@ -804,4 +815,89 @@ textarea:disabled {
 .scrollbar-none {
   -ms-overflow-style: none;  /* IE and Edge */
   scrollbar-width: none;  /* Firefox */
+}
+
+/* ── Android / Google TV ten-foot interface ───────────────── */
+/* Applied only after the native Android bridge confirms TV UI mode. */
+.tv-mode body {
+  cursor: none;
+  overscroll-behavior: none;
+}
+
+.tv-shell header {
+  min-height: 5.5rem;
+  padding: 1.25rem 3rem;
+}
+
+.tv-shell header h1 {
+  font-size: 1.5rem;
+  line-height: 2rem;
+}
+
+.tv-shell main {
+  padding: 1.5rem 3rem 14rem;
+  scroll-padding: 7rem 0 10rem;
+}
+
+.tv-shell button,
+.tv-shell a[href],
+.tv-shell [role="button"],
+.tv-shell input,
+.tv-shell select,
+.tv-shell textarea {
+  min-height: 3rem;
+}
+
+.tv-shell .text-xs,
+.tv-shell .text-\[10px\] {
+  font-size: 1rem !important;
+  line-height: 1.5rem !important;
+}
+
+.tv-shell .text-sm {
+  font-size: 1.125rem !important;
+  line-height: 1.75rem !important;
+}
+
+.tv-shell button:focus-visible,
+.tv-shell a[href]:focus-visible,
+.tv-shell [role="button"]:focus-visible,
+.tv-shell input:focus-visible,
+.tv-shell select:focus-visible,
+.tv-shell textarea:focus-visible {
+  outline: 4px solid var(--color-telegram-primary, #2aabee) !important;
+  outline-offset: 4px;
+  box-shadow: 0 0 0 7px rgba(42, 171, 238, 0.28), 0 12px 35px rgba(0, 0, 0, 0.45) !important;
+  transform: scale(1.035);
+  position: relative;
+  z-index: 60;
+}
+
+.tv-primary-nav {
+  bottom: 1.5rem !important;
+  left: 20rem !important;
+  right: 2rem !important;
+  padding: 0.75rem 1rem;
+}
+
+.tv-primary-nav button {
+  min-width: 9rem;
+}
+
+.tv-sponsor-placement {
+  bottom: 8rem !important;
+  left: 20rem !important;
+  right: 2rem !important;
+}
+
+.tv-sponsor-placement #adsterra-banner-container {
+  border-radius: 0.75rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tv-shell button:focus-visible,
+  .tv-shell a[href]:focus-visible,
+  .tv-shell [role="button"]:focus-visible {
+    transform: none;
+  }
 }

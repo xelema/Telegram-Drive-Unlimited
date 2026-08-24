@@ -100,15 +100,34 @@ const MIGRATION_LEDGER_COLUMNS: &[&str] =
     &["version", "name", "checksum", "applied_at", "app_version"];
 const SYNC_SETTING_COLUMNS: &[&str] = &["key", "value"];
 const SYNC_PAIR_COLUMNS: &[&str] = &[
-    "id", "local_path", "channel_id", "folder_key", "label", "sync_direction",
-    "is_active", "created_at",
+    "id",
+    "local_path",
+    "channel_id",
+    "folder_key",
+    "label",
+    "sync_direction",
+    "is_active",
+    "created_at",
 ];
 const SYNC_STATE_COLUMNS: &[&str] = &[
-    "id", "pair_id", "relative_path", "local_hash", "remote_hash", "file_size",
-    "local_mtime", "remote_date", "message_id", "sync_status",
+    "id",
+    "pair_id",
+    "relative_path",
+    "local_hash",
+    "remote_hash",
+    "file_size",
+    "local_mtime",
+    "remote_date",
+    "message_id",
+    "sync_status",
 ];
 const SYNC_LOG_COLUMNS: &[&str] = &[
-    "id", "pair_id", "action", "relative_path", "detail", "created_at",
+    "id",
+    "pair_id",
+    "action",
+    "relative_path",
+    "detail",
+    "created_at",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -377,13 +396,23 @@ fn validate_sync_migration(conn: &Connection, has_sync: bool) -> Result<(), Stri
         .map_err(|error| error.to_string())?;
     let has_record = statement.next().map_err(|error| error.to_string())? == State::Row;
     if has_record != has_sync {
-        return Err("Folder-sync tables and their migration record do not match. No changes were made.".to_string());
+        return Err(
+            "Folder-sync tables and their migration record do not match. No changes were made."
+                .to_string(),
+        );
     }
     if has_record {
-        let name = statement.read::<String, _>(0).map_err(|error| error.to_string())?;
-        let checksum = statement.read::<String, _>(1).map_err(|error| error.to_string())?;
+        let name = statement
+            .read::<String, _>(0)
+            .map_err(|error| error.to_string())?;
+        let checksum = statement
+            .read::<String, _>(1)
+            .map_err(|error| error.to_string())?;
         if name != SYNC_MIGRATION_NAME || checksum != sync_migration_checksum() {
-            return Err("Folder-sync migration does not match this build. No changes were made.".to_string());
+            return Err(
+                "Folder-sync migration does not match this build. No changes were made."
+                    .to_string(),
+            );
         }
     }
     Ok(())

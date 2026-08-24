@@ -40,7 +40,7 @@ export default function DesignGallery() {
     return (
       <main className="h-screen overflow-hidden bg-app-canvas p-8 text-app-text">
         <h1 className="text-xl font-semibold">Sponsor placement preview</h1>
-        <DesktopAdBanner />
+        <DesktopAdBanner previewContent="A quick message from our sponsor" />
       </main>
     );
   }

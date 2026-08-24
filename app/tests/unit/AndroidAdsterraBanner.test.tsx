@@ -1,27 +1,48 @@
-import { render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import AdsterraBanner from '../../src/components/shared/AdsterraBanner';
 
 const { supporterStatus } = vi.hoisted(() => ({
   supporterStatus: { current: { state: 'inactive', ad_free: false } },
 }));
 
-vi.mock('../../src/hooks/usePlatform', () => ({ usePlatform: () => ({ isAndroid: true }) }));
+const { platformInfo, openSponsorLink } = vi.hoisted(() => ({
+  platformInfo: { current: { isAndroid: true, isTelevision: false } },
+  openSponsorLink: vi.fn(),
+}));
+
+const store = vi.hoisted(() => ({
+  get: vi.fn(),
+  set: vi.fn(async () => undefined),
+  delete: vi.fn(async () => false),
+  save: vi.fn(async () => undefined),
+}));
+
+vi.mock('../../src/hooks/usePlatform', () => ({ usePlatform: () => platformInfo.current }));
 vi.mock('../../src/context/SupporterContext', () => ({
   useSupporter: () => ({ status: supporterStatus.current }),
 }));
-vi.mock('../../src/services/sponsorLinks', () => ({ openSponsorLink: vi.fn() }));
+vi.mock('../../src/services/sponsorLinks', () => ({
+  openSponsorLink,
+}));
 vi.mock('@tauri-apps/plugin-store', () => ({
-  load: vi.fn(async () => ({
-    get: vi.fn(async () => false),
-    set: vi.fn(async () => undefined),
-    save: vi.fn(async () => undefined),
-  })),
+  load: vi.fn(async () => store),
 }));
 
 describe('Android sponsor visibility', () => {
   beforeEach(() => {
     supporterStatus.current = { state: 'inactive', ad_free: false };
+    platformInfo.current = { isAndroid: true, isTelevision: false };
+    openSponsorLink.mockReset();
+    store.get.mockReset();
+    store.get.mockResolvedValue(undefined);
+    store.set.mockClear();
+    store.delete.mockClear();
+    store.save.mockClear();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('shows the sponsor placement for a free Android user', async () => {
@@ -39,5 +60,41 @@ describe('Android sponsor visibility', () => {
     supporterStatus.current = { state: 'loading', ad_free: false };
     render(<AdsterraBanner visible />);
     await waitFor(() => expect(screen.queryByRole('complementary', { name: /sponsored content/i })).toBeNull());
+  });
+
+  it('provides a remote-focusable sponsor action on Android TV', async () => {
+    platformInfo.current = { isAndroid: true, isTelevision: true };
+    render(<AdsterraBanner visible />);
+
+    const sponsorAction = await screen.findByRole('button', { name: /sponsored — view offer/i });
+    fireEvent.click(sponsorAction);
+    expect(openSponsorLink).toHaveBeenCalledOnce();
+  });
+
+  it('returns 15 minutes after the user closes it', async () => {
+    render(<AdsterraBanner visible />);
+    await screen.findByRole('complementary', { name: /sponsored content/i });
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-24T12:00:00Z'));
+    fireEvent.click(screen.getByRole('button', { name: /close ad/i }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+    expect(screen.queryByRole('complementary', { name: /sponsored content/i })).toBeNull();
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(15 * 60 * 1_000 - 301); });
+    expect(screen.queryByRole('complementary', { name: /sponsored content/i })).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(screen.getByRole('complementary', { name: /sponsored content/i })).toBeTruthy();
+    expect(store.set).toHaveBeenCalledWith('adBannerDismissedAt', expect.any(Number));
+  });
+
+  it('migrates a legacy permanent dismissal into a 15-minute cooldown', async () => {
+    store.get.mockImplementation(async (key: string) => key === 'adBannerDismissed');
+
+    render(<AdsterraBanner visible />);
+
+    await waitFor(() => expect(store.set).toHaveBeenCalledWith('adBannerDismissedAt', expect.any(Number)));
+    expect(screen.queryByRole('complementary', { name: /sponsored content/i })).toBeNull();
+    expect(store.delete).toHaveBeenCalledWith('adBannerDismissed');
   });
 });

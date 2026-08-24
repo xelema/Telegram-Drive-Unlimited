@@ -112,8 +112,8 @@ pub fn import_recovery_bundle(bundle: &[u8], recovery_passphrase: &[u8]) -> Cryp
             .try_into()
             .map_err(|_| CryptoError::truncated())?,
     ) as usize;
-    if ciphertext_length < policy::AEAD_TAG_LENGTH
-        || ciphertext_length > MAX_RECOVERY_PAYLOAD + policy::AEAD_TAG_LENGTH
+    if !(policy::AEAD_TAG_LENGTH..=MAX_RECOVERY_PAYLOAD + policy::AEAD_TAG_LENGTH)
+        .contains(&ciphertext_length)
         || bundle.len() != RECOVERY_HEADER_SIZE + ciphertext_length
     {
         return Err(CryptoError::header_invalid(

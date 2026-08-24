@@ -1,23 +1,23 @@
-use actix_web::{get, post, delete, patch, web, HttpRequest, HttpResponse, Responder};
-use actix_multipart::Multipart;
-use futures::{StreamExt, TryStreamExt};
-use tokio::io::{AsyncRead, AsyncWriteExt};
-use actix_web::web::Bytes;
-use std::task::{Context, Poll};
-use crate::commands::TelegramState;
-use crate::commands::utils::{media_size, resolve_peer, map_error};
-use crate::commands::{create_folder_inner, delete_folder_inner, rename_folder_inner};
-use crate::commands::preview::THUMBNAIL_EXTS;
-use crate::models::FolderMetadata;
 use crate::bandwidth::BandwidthManager;
+use crate::commands::preview::THUMBNAIL_EXTS;
+use crate::commands::utils::{map_error, media_size, resolve_peer};
+use crate::commands::TelegramState;
+use crate::commands::{create_folder_inner, delete_folder_inner, rename_folder_inner};
+use crate::models::FolderMetadata;
 use crate::vpn_optimizer::NetworkConfig;
+use actix_multipart::Multipart;
+use actix_web::web::Bytes;
+use actix_web::{delete, get, patch, post, web, HttpRequest, HttpResponse, Responder};
+use futures::{StreamExt, TryStreamExt};
 use grammers_client::types::{Media, Peer};
 use grammers_client::InputMessage;
 use grammers_tl_types as tl;
 use serde::Serialize;
-use std::sync::Arc;
 use std::collections::HashMap;
 use std::io::Write;
+use std::sync::Arc;
+use std::task::{Context, Poll};
+use tokio::io::{AsyncRead, AsyncWriteExt};
 
 /// Shared state for the API server — holds the key hash for auth checks
 pub struct ApiState {
@@ -50,25 +50,25 @@ fn json_error(code: &str, message: &str, status: u16) -> HttpResponse {
             message: message.to_string(),
         },
     };
-    HttpResponse::build(actix_web::http::StatusCode::from_u16(status).unwrap())
-        .json(body)
+    HttpResponse::build(actix_web::http::StatusCode::from_u16(status).unwrap()).json(body)
 }
 
-fn api_registered_encrypted(
-    db_pool: &crate::db::DbConnection,
+async fn api_registered_encrypted(
+    db_pool: crate::db::DbConnection,
     folder_id: Option<i64>,
     message_id: i32,
 ) -> Result<bool, String> {
-    let connection = db_pool.lock().map_err(|_| "DB poisoned".to_string())?;
     let folder_key = folder_id
         .map(|id| id.to_string())
         .unwrap_or_else(|| "home".to_string());
-    let mut statement = connection
-        .prepare("SELECT 1 FROM encrypted_files WHERE folder_key = ? AND message_id = ? AND record_state = 'active'")
-        .map_err(|error| error.to_string())?;
-    statement.bind((1, folder_key.as_str())).map_err(|error| error.to_string())?;
-    statement.bind((2, i64::from(message_id))).map_err(|error| error.to_string())?;
-    Ok(matches!(statement.next(), Ok(sqlite::State::Row)))
+    crate::db::with_connection(db_pool, move |connection| {
+        let mut statement = connection
+            .prepare("SELECT 1 FROM encrypted_files WHERE folder_key = ? AND message_id = ? AND record_state = 'active'")
+            .map_err(|error| error.to_string())?;
+        statement.bind((1, folder_key.as_str())).map_err(|error| error.to_string())?;
+        statement.bind((2, i64::from(message_id))).map_err(|error| error.to_string())?;
+        Ok(matches!(statement.next(), Ok(sqlite::State::Row)))
+    }).await
 }
 
 struct CleanupStream {
@@ -120,12 +120,10 @@ fn peer_to_input_peer(peer: &Peer) -> Result<tl::enums::InputPeer, String> {
                 access_hash,
             }))
         }
-        Peer::Channel(c) => {
-            Ok(tl::enums::InputPeer::Channel(tl::types::InputPeerChannel {
-                channel_id: c.raw.id,
-                access_hash: c.raw.access_hash.ok_or("No access hash for channel")?,
-            }))
-        }
+        Peer::Channel(c) => Ok(tl::enums::InputPeer::Channel(tl::types::InputPeerChannel {
+            channel_id: c.raw.id,
+            access_hash: c.raw.access_hash.ok_or("No access hash for channel")?,
+        })),
         _ => Err("Unsupported peer type".to_string()),
     }
 }
@@ -151,7 +149,9 @@ fn spawn_cache_cleanup(
             if let Ok(entries) = std::fs::read_dir(&prev_dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if !path.is_file() { continue; }
+                    if !path.is_file() {
+                        continue;
+                    }
                     if let Some(fname) = path.file_name().and_then(|n| n.to_str()) {
                         if fname.starts_with(&prefix) {
                             let _ = std::fs::remove_file(&path);
@@ -167,13 +167,16 @@ fn spawn_cache_cleanup(
 fn check_auth(req: &HttpRequest, api_state: &web::Data<ApiState>) -> Result<(), HttpResponse> {
     let key_hash = match &api_state.key_hash {
         Some(h) => h,
-        None => return Err(json_error("NO_KEY_CONFIGURED", "No API key has been configured. Generate one in Settings.", 401)),
+        None => {
+            return Err(json_error(
+                "NO_KEY_CONFIGURED",
+                "No API key has been configured. Generate one in Settings.",
+                401,
+            ))
+        }
     };
 
-    let provided = req
-        .headers()
-        .get("X-API-Key")
-        .and_then(|v| v.to_str().ok());
+    let provided = req.headers().get("X-API-Key").and_then(|v| v.to_str().ok());
 
     match provided {
         Some(key) if crate::commands::api_settings::verify_key(key, key_hash) => Ok(()),
@@ -264,7 +267,9 @@ async fn api_list_files(
     };
 
     let query_string = req.query_string();
-    let has_folder_id = query_string.split('&').any(|p| p.starts_with("folder_id=") || p == "folder_id");
+    let has_folder_id = query_string
+        .split('&')
+        .any(|p| p.starts_with("folder_id=") || p == "folder_id");
 
     let mut peers_to_scan = Vec::new();
     if !has_folder_id {
@@ -298,7 +303,7 @@ async fn api_list_files(
                 }
             }
         }
-        
+
         let resolved = match resolve_peer(&client, parsed_id, &tg_state.peer_cache).await {
             Ok(p) => p,
             Err(e) => return json_error("PEER_ERROR", &e, 400),
@@ -312,7 +317,7 @@ async fn api_list_files(
         if let Some(offset_id) = query.offset_id {
             msgs = msgs.offset_id(offset_id);
         }
-        
+
         // When listing all, limit scan per folder to prevent rate limit timeouts
         if !has_folder_id {
             msgs = msgs.limit(100);
@@ -336,7 +341,11 @@ async fn api_list_files(
                         let doc_name = d.name().to_string();
                         // Prefer the message caption (set by rename via EditMessage)
                         let caption = msg.text();
-                        let display_name = if caption.is_empty() { doc_name } else { caption.to_string() };
+                        let display_name = if caption.is_empty() {
+                            doc_name
+                        } else {
+                            caption.to_string()
+                        };
                         (display_name, d.mime_type().map(|s| s.to_string()))
                     }
                     Media::Photo(_) => ("Photo.jpg".to_string(), Some("image/jpeg".into())),
@@ -429,11 +438,10 @@ async fn api_list_files(
 
     // Sparse fieldsets
     let mut final_data = Vec::new();
-    let fields_list: Option<Vec<String>> = query.fields.as_ref().map(|f| {
-        f.split(',')
-            .map(|s| s.trim().to_string())
-            .collect()
-    });
+    let fields_list: Option<Vec<String>> = query
+        .fields
+        .as_ref()
+        .map(|f| f.split(',').map(|s| s.trim().to_string()).collect());
 
     for file in paginated_files {
         let mut map = serde_json::Map::new();
@@ -519,7 +527,11 @@ async fn api_get_file(
                         Media::Document(d) => {
                             let doc_name = d.name().to_string();
                             let caption = msg.text();
-                            let display_name = if caption.is_empty() { doc_name } else { caption.to_string() };
+                            let display_name = if caption.is_empty() {
+                                doc_name
+                            } else {
+                                caption.to_string()
+                            };
                             (display_name, d.mime_type().map(|s| s.to_string()))
                         }
                         Media::Photo(_) => ("Photo.jpg".to_string(), Some("image/jpeg".into())),
@@ -555,8 +567,14 @@ async fn api_download_file(
     }
 
     let message_id = path.into_inner() as i32;
-    match api_registered_encrypted(db_pool.get_ref(), query.folder_id, message_id) {
-        Ok(true) => return json_error("ENCRYPTED_ROUTE_UNAVAILABLE", "Encrypted API downloads require a scoped decryption credential and are disabled", 409),
+    match api_registered_encrypted(db_pool.get_ref().clone(), query.folder_id, message_id).await {
+        Ok(true) => {
+            return json_error(
+                "ENCRYPTED_ROUTE_UNAVAILABLE",
+                "Encrypted API downloads require a scoped decryption credential and are disabled",
+                409,
+            )
+        }
         Ok(false) => {}
         Err(error) => return json_error("ENCRYPTION_STATE_UNKNOWN", &error, 503),
     }
@@ -589,7 +607,10 @@ async fn api_download_file(
                 }
                 if let Some(media) = msg.media() {
                     let mime = match &media {
-                        Media::Document(d) => d.mime_type().unwrap_or("application/octet-stream").to_string(),
+                        Media::Document(d) => d
+                            .mime_type()
+                            .unwrap_or("application/octet-stream")
+                            .to_string(),
                         _ => "application/octet-stream".to_string(),
                     };
                     let filename = match &media {
@@ -599,7 +620,11 @@ async fn api_download_file(
                     };
 
                     return crate::server::build_media_response(
-                        &client, &media, &req, &mime, Some(&filename),
+                        &client,
+                        &media,
+                        &req,
+                        &mime,
+                        Some(&filename),
                         crate::server::StreamingExtras {
                             extra_headers: vec![],
                             log_label: "API download",
@@ -652,15 +677,19 @@ async fn api_bulk_files(
         None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
     };
 
-    let ids: Vec<i32> = body.file_ids.iter().filter_map(|val| {
-        if let Some(i) = val.as_i64() {
-            Some(i as i32)
-        } else if let Some(s) = val.as_str() {
-            s.parse::<i32>().ok()
-        } else {
-            None
-        }
-    }).collect();
+    let ids: Vec<i32> = body
+        .file_ids
+        .iter()
+        .filter_map(|val| {
+            if let Some(i) = val.as_i64() {
+                Some(i as i32)
+            } else if let Some(s) = val.as_str() {
+                s.parse::<i32>().ok()
+            } else {
+                None
+            }
+        })
+        .collect();
 
     let source_folder: Option<i64> = body.folder_id.as_ref().and_then(|val| {
         if let Some(i) = val.as_i64() {
@@ -672,19 +701,42 @@ async fn api_bulk_files(
         }
     });
 
-    let target_folder: Option<i64> = body.payload.as_ref().and_then(|p| p.folder_id.as_ref()).and_then(|val| {
-        if let Some(i) = val.as_i64() {
-            Some(i)
-        } else if let Some(s) = val.as_str() {
-            s.parse::<i64>().ok()
-        } else {
-            None
-        }
-    });
+    let target_folder: Option<i64> = body
+        .payload
+        .as_ref()
+        .and_then(|p| p.folder_id.as_ref())
+        .and_then(|val| {
+            if let Some(i) = val.as_i64() {
+                Some(i)
+            } else if let Some(s) = val.as_str() {
+                s.parse::<i64>().ok()
+            } else {
+                None
+            }
+        });
 
-    let contains_encrypted = ids.iter().any(|message_id| {
-        api_registered_encrypted(db_pool.get_ref(), source_folder, *message_id).unwrap_or(true)
-    });
+    let ids_for_check = ids.clone();
+    let folder_key = source_folder
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "home".to_string());
+    let contains_encrypted = crate::db::with_connection(
+        db_pool.get_ref().clone(),
+        move |connection| {
+            for message_id in ids_for_check {
+                let mut statement = connection
+                    .prepare("SELECT 1 FROM encrypted_files WHERE folder_key = ? AND message_id = ? AND record_state = 'active'")
+                    .map_err(|error| error.to_string())?;
+                statement.bind((1, folder_key.as_str())).map_err(|error| error.to_string())?;
+                statement.bind((2, i64::from(message_id))).map_err(|error| error.to_string())?;
+                if matches!(statement.next(), Ok(sqlite::State::Row)) {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        },
+    )
+    .await
+    .unwrap_or(true);
     if contains_encrypted && body.action != "delete" {
         return json_error(
             "ENCRYPTED_BULK_ACTION_UNAVAILABLE",
@@ -702,16 +754,23 @@ async fn api_bulk_files(
             if let Err(e) = client.delete_messages(&peer, &ids).await {
                 return json_error("DELETE_FAILED", &e.to_string(), 500);
             }
-            if let Ok(connection) = db_pool.lock() {
-                let folder_key = source_folder.map(|id| id.to_string()).unwrap_or_else(|| "home".to_string());
-                for message_id in &ids {
-                    if let Ok(mut statement) = connection.prepare("DELETE FROM encrypted_files WHERE folder_key = ? AND message_id = ?") {
+            let folder_key = source_folder
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "home".to_string());
+            let ids_for_registry = ids.clone();
+            let _ = crate::db::with_connection(db_pool.get_ref().clone(), move |connection| {
+                for message_id in &ids_for_registry {
+                    if let Ok(mut statement) = connection.prepare(
+                        "DELETE FROM encrypted_files WHERE folder_key = ? AND message_id = ?",
+                    ) {
                         let _ = statement.bind((1, folder_key.as_str()));
                         let _ = statement.bind((2, i64::from(*message_id)));
                         let _ = statement.next();
                     }
                 }
-            }
+                Ok(())
+            })
+            .await;
 
             // Clean up stale thumbnail and preview caches for deleted messages.
             let source_folder_key = source_folder
@@ -725,20 +784,33 @@ async fn api_bulk_files(
             );
         }
         "move" => {
-            let source_peer = match resolve_peer(&client, source_folder, &tg_state.peer_cache).await {
+            let source_peer = match resolve_peer(&client, source_folder, &tg_state.peer_cache).await
+            {
                 Ok(p) => p,
                 Err(e) => return json_error("PEER_ERROR", &e, 400),
             };
-            let target_peer = match resolve_peer(&client, target_folder, &tg_state.peer_cache).await {
+            let target_peer = match resolve_peer(&client, target_folder, &tg_state.peer_cache).await
+            {
                 Ok(p) => p,
                 Err(e) => return json_error("PEER_ERROR", &e, 400),
             };
             if source_folder != target_folder {
-                if let Err(e) = client.forward_messages(&target_peer, &ids, &source_peer).await {
-                    return json_error("MOVE_FORWARD_FAILED", &format!("Forward failed: {}", e), 500);
+                if let Err(e) = client
+                    .forward_messages(&target_peer, &ids, &source_peer)
+                    .await
+                {
+                    return json_error(
+                        "MOVE_FORWARD_FAILED",
+                        &format!("Forward failed: {}", e),
+                        500,
+                    );
                 }
                 if let Err(e) = client.delete_messages(&source_peer, &ids).await {
-                    return json_error("MOVE_DELETE_FAILED", &format!("Delete original failed: {}", e), 500);
+                    return json_error(
+                        "MOVE_DELETE_FAILED",
+                        &format!("Delete original failed: {}", e),
+                        500,
+                    );
                 }
 
                 // Clean up stale thumbnail and preview caches for the old message IDs.
@@ -763,10 +835,11 @@ async fn api_bulk_files(
 
             // Download all files in async context, then delegate zip I/O
             // to spawn_blocking so we never block an Actix worker thread.
-            let mut entries: Vec<(String, Vec<u8>)> = Vec::new();                        let mut total_bytes: u64 = 0;
-                        let max_bytes = net_config.archive_max_bytes();
+            let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
+            let mut total_bytes: u64 = 0;
+            let max_bytes = net_config.archive_max_bytes();
 
-                        for mid in &ids {
+            for mid in &ids {
                 let messages = match client.get_messages_by_id(&peer, &[*mid]).await {
                     Ok(m) => m,
                     Err(_) => continue,
@@ -800,7 +873,11 @@ async fn api_bulk_files(
                 }
             }
 
-            let temp_zip_path = std::env::temp_dir().join(format!("archive_{}_{}.zip", rand::random::<u32>(), rand::random::<u32>()));
+            let temp_zip_path = std::env::temp_dir().join(format!(
+                "archive_{}_{}.zip",
+                rand::random::<u32>(),
+                rand::random::<u32>()
+            ));
             let zip_path_for_task = temp_zip_path.clone();
 
             // All zip I/O runs on a blocking thread — never touches Actix workers.
@@ -831,7 +908,8 @@ async fn api_bulk_files(
                         Err(e)
                     }
                 }
-            }).await;
+            })
+            .await;
 
             match archive_result {
                 Ok(Ok(())) => {}
@@ -894,11 +972,19 @@ async fn api_search_files(
 
     let search_q = match query.q.as_deref() {
         Some(q) if !q.trim().is_empty() => q,
-        _ => return json_error("INVALID_QUERY", "Search query parameter 'q' is required and cannot be empty", 400),
+        _ => {
+            return json_error(
+                "INVALID_QUERY",
+                "Search query parameter 'q' is required and cannot be empty",
+                400,
+            )
+        }
     };
 
     let query_string = req.query_string();
-    let has_folder_id = query_string.split('&').any(|p| p.starts_with("folder_id=") || p == "folder_id");
+    let has_folder_id = query_string
+        .split('&')
+        .any(|p| p.starts_with("folder_id=") || p == "folder_id");
 
     let mut peers_to_scan = Vec::new();
     if !has_folder_id {
@@ -930,7 +1016,7 @@ async fn api_search_files(
                 }
             }
         }
-        
+
         let resolved = match resolve_peer(&client, parsed_id, &tg_state.peer_cache).await {
             Ok(p) => p,
             Err(e) => return json_error("PEER_ERROR", &e, 400),
@@ -948,13 +1034,17 @@ async fn api_search_files(
                     Media::Document(d) => {
                         let doc_name = d.name().to_string();
                         let caption = msg.text();
-                        let display_name = if caption.is_empty() { doc_name } else { caption.to_string() };
+                        let display_name = if caption.is_empty() {
+                            doc_name
+                        } else {
+                            caption.to_string()
+                        };
                         (display_name, d.mime_type().map(|s| s.to_string()))
                     }
                     Media::Photo(_) => ("Photo.jpg".to_string(), Some("image/jpeg".into())),
                     _ => ("Unknown".to_string(), None),
                 };
-                
+
                 if name.to_lowercase().contains(&search_q.to_lowercase()) {
                     matching_files.push(ApiFile {
                         id: msg.id() as i64,
@@ -971,8 +1061,6 @@ async fn api_search_files(
 
     HttpResponse::Ok().json(matching_files)
 }
-
-
 
 #[delete("/api/v1/files/{message_id}")]
 async fn api_delete_file(
@@ -1002,16 +1090,22 @@ async fn api_delete_file(
 
     match client.delete_messages(&peer, &[message_id]).await {
         Ok(_) => {
-            if let Ok(connection) = db_pool.lock() {
-                let folder_key = folder_id.map(|id| id.to_string()).unwrap_or_else(|| "home".to_string());
-                if let Ok(mut statement) = connection.prepare("DELETE FROM encrypted_files WHERE folder_key = ? AND message_id = ?") {
+            let folder_key = folder_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "home".to_string());
+            let _ = crate::db::with_connection(db_pool.get_ref().clone(), move |connection| {
+                if let Ok(mut statement) = connection
+                    .prepare("DELETE FROM encrypted_files WHERE folder_key = ? AND message_id = ?")
+                {
                     let _ = statement.bind((1, folder_key.as_str()));
                     let _ = statement.bind((2, i64::from(message_id)));
                     let _ = statement.next();
                 }
-            }
+                Ok(())
+            })
+            .await;
             HttpResponse::Ok().json(serde_json::json!({ "success": true }))
-        },
+        }
         Err(e) => json_error("DELETE_FAILED", &e.to_string(), 500),
     }
 }
@@ -1056,25 +1150,33 @@ async fn api_copy_file(
     // Resolve the registry state before changing Telegram. Treat an unavailable
     // registry as a hard failure so an encrypted copy can never silently lose
     // the metadata required to decrypt it.
-    let source_is_encrypted = match api_registered_encrypted(
-        db_pool.get_ref(),
-        source_folder_id,
-        message_id,
-    ) {
-        Ok(value) => value,
-        Err(e) => return json_error("ENCRYPTION_REGISTRY_UNAVAILABLE", &e, 503),
-    };
+    let source_is_encrypted =
+        match api_registered_encrypted(db_pool.get_ref().clone(), source_folder_id, message_id)
+            .await
+        {
+            Ok(value) => value,
+            Err(e) => return json_error("ENCRYPTION_REGISTRY_UNAVAILABLE", &e, 503),
+        };
 
-    match client.forward_messages(&target_peer, &[message_id], &source_peer).await {
+    match client
+        .forward_messages(&target_peer, &[message_id], &source_peer)
+        .await
+    {
         Ok(forwarded) => {
             if source_is_encrypted {
-                let new_id = forwarded.first().and_then(|message| message.as_ref()).map(|message| message.id());
+                let new_id = forwarded
+                    .first()
+                    .and_then(|message| message.as_ref())
+                    .map(|message| message.id());
                 let Some(new_id) = new_id else {
-                    return json_error("ENCRYPTED_COPY_RECONCILIATION_REQUIRED", "Telegram copied the file but did not return its new identifier", 500);
+                    return json_error(
+                        "ENCRYPTED_COPY_RECONCILIATION_REQUIRED",
+                        "Telegram copied the file but did not return its new identifier",
+                        500,
+                    );
                 };
 
-                let registry_result = (|| -> Result<(), String> {
-                    let connection = db_pool.lock().map_err(|e| e.to_string())?;
+                let registry_result = crate::db::with_connection(db_pool.get_ref().clone(), move |connection| {
                     let source_key = source_folder_id.map(|id| id.to_string()).unwrap_or_else(|| "home".to_string());
                     let target_key = target_folder_id.map(|id| id.to_string()).unwrap_or_else(|| "home".to_string());
                     let mut statement = connection.prepare(
@@ -1086,11 +1188,16 @@ async fn api_copy_file(
                     statement.bind((4, i64::from(message_id))).map_err(|e| e.to_string())?;
                     statement.next().map_err(|e| e.to_string())?;
                     Ok(())
-                })();
+                }).await;
 
                 if registry_result.is_err()
                     || !matches!(
-                        api_registered_encrypted(db_pool.get_ref(), target_folder_id, new_id),
+                        api_registered_encrypted(
+                            db_pool.get_ref().clone(),
+                            target_folder_id,
+                            new_id
+                        )
+                        .await,
                         Ok(true)
                     )
                 {
@@ -1102,7 +1209,7 @@ async fn api_copy_file(
                 }
             }
             HttpResponse::Ok().json(serde_json::json!({ "success": true }))
-        },
+        }
         Err(e) => json_error("COPY_FAILED", &e.to_string(), 500),
     }
 }
@@ -1128,7 +1235,7 @@ async fn api_update_file(
         return e;
     }
     let message_id = path.into_inner();
-    match api_registered_encrypted(db_pool.get_ref(), body.source_folder_id, message_id) {
+    match api_registered_encrypted(db_pool.get_ref().clone(), body.source_folder_id, message_id).await {
         Ok(true) => return json_error(
             "ENCRYPTED_UPDATE_UNAVAILABLE",
             "Encrypted rename/move through the local API is disabled until authenticated metadata and registry updates are supported",
@@ -1147,17 +1254,24 @@ async fn api_update_file(
     // Rename first — edits the original message's caption so the
     // updated name is carried over if a move (forward) follows.
     if let Some(ref new_name) = body.name {
-        let rename_peer = match resolve_peer(&client, body.source_folder_id, &tg_state.peer_cache).await {
-            Ok(p) => p,
-            Err(e) => return json_error("PEER_ERROR", &e, 400),
-        };
+        let rename_peer =
+            match resolve_peer(&client, body.source_folder_id, &tg_state.peer_cache).await {
+                Ok(p) => p,
+                Err(e) => return json_error("PEER_ERROR", &e, 400),
+            };
 
         // Verify the message exists before attempting to edit it.
         // This avoids a cryptic MESSAGE_ID_INVALID RPC error when the message
         // was moved or deleted since the file list was loaded.
         let messages = match client.get_messages_by_id(&rename_peer, &[message_id]).await {
             Ok(msgs) => msgs,
-            Err(e) => return json_error("FETCH_ERROR", &format!("Failed to fetch message for rename: {}", e), 500),
+            Err(e) => {
+                return json_error(
+                    "FETCH_ERROR",
+                    &format!("Failed to fetch message for rename: {}", e),
+                    500,
+                )
+            }
         };
         if messages.iter().flatten().next().is_none() {
             return json_error(
@@ -1175,19 +1289,22 @@ async fn api_update_file(
             Err(e) => return json_error("PEER_CONVERT_ERROR", &e, 400),
         };
 
-        if let Err(e) = client.invoke(&tl::functions::messages::EditMessage {
-            peer: input_peer,
-            id: message_id,
-            no_webpage: false,
-            invert_media: false,
-            message: Some(new_name.clone()),
-            media: None,
-            reply_markup: None,
-            entities: None,
-            schedule_date: None,
-            quick_reply_shortcut_id: None,
-            schedule_repeat_period: None,
-        }).await {
+        if let Err(e) = client
+            .invoke(&tl::functions::messages::EditMessage {
+                peer: input_peer,
+                id: message_id,
+                no_webpage: false,
+                invert_media: false,
+                message: Some(new_name.clone()),
+                media: None,
+                reply_markup: None,
+                entities: None,
+                schedule_date: None,
+                quick_reply_shortcut_id: None,
+                schedule_repeat_period: None,
+            })
+            .await
+        {
             return json_error("RENAME_FAILED", &e.to_string(), 500);
         }
     }
@@ -1195,16 +1312,21 @@ async fn api_update_file(
     if let Some(target_folder_id) = body.folder_id {
         let source_folder_id = body.source_folder_id;
         if source_folder_id != body.folder_id {
-            let source_peer = match resolve_peer(&client, source_folder_id, &tg_state.peer_cache).await {
-                Ok(p) => p,
-                Err(e) => return json_error("SOURCE_PEER_ERROR", &e, 400),
-            };
-            let target_peer = match resolve_peer(&client, Some(target_folder_id), &tg_state.peer_cache).await {
-                Ok(p) => p,
-                Err(e) => return json_error("TARGET_PEER_ERROR", &e, 400),
-            };
+            let source_peer =
+                match resolve_peer(&client, source_folder_id, &tg_state.peer_cache).await {
+                    Ok(p) => p,
+                    Err(e) => return json_error("SOURCE_PEER_ERROR", &e, 400),
+                };
+            let target_peer =
+                match resolve_peer(&client, Some(target_folder_id), &tg_state.peer_cache).await {
+                    Ok(p) => p,
+                    Err(e) => return json_error("TARGET_PEER_ERROR", &e, 400),
+                };
 
-            if let Err(e) = client.forward_messages(&target_peer, &[message_id], &source_peer).await {
+            if let Err(e) = client
+                .forward_messages(&target_peer, &[message_id], &source_peer)
+                .await
+            {
                 return json_error("MOVE_FORWARD_FAILED", &e.to_string(), 500);
             }
             if let Err(e) = client.delete_messages(&source_peer, &[message_id]).await {
@@ -1246,7 +1368,11 @@ async fn api_upload_file(
         None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
     };
 
-    let temp_path = std::env::temp_dir().join(format!("upload_{}_{}", rand::random::<u32>(), rand::random::<u32>()));
+    let temp_path = std::env::temp_dir().join(format!(
+        "upload_{}_{}",
+        rand::random::<u32>(),
+        rand::random::<u32>()
+    ));
     let mut file = match tokio::fs::File::create(&temp_path).await {
         Ok(f) => f,
         Err(e) => return json_error("TEMP_FILE_CREATE_FAILED", &e.to_string(), 500),
@@ -1258,7 +1384,9 @@ async fn api_upload_file(
 
     while let Ok(Some(mut field)) = payload.try_next().await {
         let content_disposition = field.content_disposition();
-        let name = content_disposition.and_then(|cd| cd.get_name()).unwrap_or("");
+        let name = content_disposition
+            .and_then(|cd| cd.get_name())
+            .unwrap_or("");
 
         if name == "file" {
             if let Some(fname) = content_disposition.and_then(|cd| cd.get_filename()) {
@@ -1336,7 +1464,9 @@ async fn api_upload_file(
         }
     };
 
-    let upload_res = client.upload_stream(&mut open_file, file_size as usize, filename.clone()).await;
+    let upload_res = client
+        .upload_stream(&mut open_file, file_size as usize, filename.clone())
+        .await;
     let uploaded_file = match upload_res {
         Ok(uf) => uf,
         Err(e) => {
@@ -1363,7 +1493,12 @@ async fn api_upload_file(
             }
             Err(e) => {
                 let err = map_error(e);
-                log::warn!("send_message attempt {}/{}: {}", attempt + 1, max_retries + 1, err);
+                log::warn!(
+                    "send_message attempt {}/{}: {}",
+                    attempt + 1,
+                    max_retries + 1,
+                    err
+                );
 
                 if respect_flood && err.starts_with("FLOOD_WAIT_") {
                     if let Ok(secs) = err.trim_start_matches("FLOOD_WAIT_").parse::<u64>() {
@@ -1432,7 +1567,13 @@ async fn api_list_folders(
             discovered.insert(id, dialog.peer.clone());
             let name = c.raw.title.clone();
             if name.to_lowercase().contains("[td]") {
-                let display_name = name.replace(" [TD]", "").replace(" [td]", "").replace("[TD]", "").replace("[td]", "").trim().to_string();
+                let display_name = name
+                    .replace(" [TD]", "")
+                    .replace(" [td]", "")
+                    .replace("[TD]", "")
+                    .replace("[td]", "")
+                    .trim()
+                    .to_string();
                 let username = c.raw.username.clone();
                 let is_public = username.is_some();
                 folders.push(FolderMetadata {
@@ -1586,7 +1727,13 @@ async fn api_storage_stats(
         if let Peer::Channel(ref c) = dialog.peer {
             let name = c.raw.title.clone();
             if name.to_lowercase().contains("[td]") {
-                let display_name = name.replace(" [TD]", "").replace(" [td]", "").replace("[TD]", "").replace("[td]", "").trim().to_string();
+                let display_name = name
+                    .replace(" [TD]", "")
+                    .replace(" [td]", "")
+                    .replace("[TD]", "")
+                    .replace("[td]", "")
+                    .trim()
+                    .to_string();
                 peers_to_scan.push((Some(c.raw.id), display_name, dialog.peer.clone()));
             }
         }
@@ -1605,7 +1752,10 @@ async fn api_storage_stats(
             if let Some(doc) = msg.media() {
                 let size = media_size(&doc);
                 let mime = match doc {
-                    Media::Document(d) => d.mime_type().unwrap_or("application/octet-stream").to_string(),
+                    Media::Document(d) => d
+                        .mime_type()
+                        .unwrap_or("application/octet-stream")
+                        .to_string(),
                     Media::Photo(_) => "image/jpeg".to_string(),
                     _ => continue,
                 };
@@ -1629,11 +1779,14 @@ async fn api_storage_stats(
         });
     }
 
-    let mime_types = mime_map.into_iter().map(|(mime_type, (file_count, size_bytes))| MimeStat {
-        mime_type,
-        file_count,
-        size_bytes,
-    }).collect();
+    let mime_types = mime_map
+        .into_iter()
+        .map(|(mime_type, (file_count, size_bytes))| MimeStat {
+            mime_type,
+            file_count,
+            size_bytes,
+        })
+        .collect();
 
     HttpResponse::Ok().json(StorageStatsResponse {
         total_storage_used_bytes,
@@ -1688,19 +1841,24 @@ async fn api_storage_duplicates(
             if let Some(doc) = msg.media() {
                 let size = media_size(&doc);
                 let (name, mime) = match doc {
-                    Media::Document(d) => (d.name().to_string(), d.mime_type().map(|s| s.to_string())),
+                    Media::Document(d) => {
+                        (d.name().to_string(), d.mime_type().map(|s| s.to_string()))
+                    }
                     Media::Photo(_) => ("Photo.jpg".to_string(), Some("image/jpeg".into())),
                     _ => continue,
                 };
 
-                file_groups.entry((name.clone(), size)).or_default().push(ApiFile {
-                    id: msg.id() as i64,
-                    folder_id: fid,
-                    name,
-                    size,
-                    mime_type: mime,
-                    created_at: msg.date().to_string(),
-                });
+                file_groups
+                    .entry((name.clone(), size))
+                    .or_default()
+                    .push(ApiFile {
+                        id: msg.id() as i64,
+                        folder_id: fid,
+                        name,
+                        size,
+                        mime_type: mime,
+                        created_at: msg.date().to_string(),
+                    });
             }
         }
     }
@@ -1736,7 +1894,13 @@ async fn api_empty_folders(
         if let Peer::Channel(ref c) = dialog.peer {
             let name = c.raw.title.clone();
             if name.to_lowercase().contains("[td]") {
-                let display_name = name.replace(" [TD]", "").replace(" [td]", "").replace("[TD]", "").replace("[td]", "").trim().to_string();
+                let display_name = name
+                    .replace(" [TD]", "")
+                    .replace(" [td]", "")
+                    .replace("[TD]", "")
+                    .replace("[td]", "")
+                    .trim()
+                    .to_string();
                 folders_to_check.push((c.raw.id, display_name, dialog.peer.clone()));
             }
         }
@@ -1782,8 +1946,14 @@ async fn api_get_file_thumbnail(
     }
     let message_id = path.into_inner();
     let folder_id = query.folder_id;
-    match api_registered_encrypted(db_pool.get_ref(), folder_id, message_id) {
-        Ok(true) => return json_error("ENCRYPTED_ROUTE_UNAVAILABLE", "Encrypted thumbnails are not exposed by the local API", 409),
+    match api_registered_encrypted(db_pool.get_ref().clone(), folder_id, message_id).await {
+        Ok(true) => {
+            return json_error(
+                "ENCRYPTED_ROUTE_UNAVAILABLE",
+                "Encrypted thumbnails are not exposed by the local API",
+                409,
+            )
+        }
         Ok(false) => {}
         Err(error) => return json_error("ENCRYPTION_STATE_UNKNOWN", &error, 503),
     }
@@ -1812,7 +1982,11 @@ async fn api_get_file_thumbnail(
                     if document.name().to_ascii_lowercase().ends_with(".tdenc")
             )
         {
-            return json_error("ENCRYPTED_ROUTE_UNAVAILABLE", "Encrypted thumbnails are not exposed by the local API", 409);
+            return json_error(
+                "ENCRYPTED_ROUTE_UNAVAILABLE",
+                "Encrypted thumbnails are not exposed by the local API",
+                409,
+            );
         }
         if let Some(media) = m.media() {
             let (is_image, ext) = match &media {
@@ -1833,7 +2007,11 @@ async fn api_get_file_thumbnail(
             };
 
             if is_image {
-                let temp_path = std::env::temp_dir().join(format!("thumb_{}_{}", message_id, rand::random::<u32>()));
+                let temp_path = std::env::temp_dir().join(format!(
+                    "thumb_{}_{}",
+                    message_id,
+                    rand::random::<u32>()
+                ));
                 let temp_path_str = temp_path.to_string_lossy().to_string();
 
                 let thumbs = match &media {
@@ -1842,7 +2020,11 @@ async fn api_get_file_thumbnail(
                     _ => vec![],
                 };
 
-                let download_success = if let Some(thumb) = thumbs.iter().filter(|t| t.size() > 0).max_by_key(|t| t.size()) {
+                let download_success = if let Some(thumb) = thumbs
+                    .iter()
+                    .filter(|t| t.size() > 0)
+                    .max_by_key(|t| t.size())
+                {
                     client.download_media(thumb, &temp_path_str).await.is_ok()
                 } else {
                     client.download_media(&media, &temp_path_str).await.is_ok()
@@ -1890,8 +2072,14 @@ async fn api_media_info(
     }
     let message_id = path.into_inner();
     let folder_id = query.folder_id;
-    match api_registered_encrypted(db_pool.get_ref(), folder_id, message_id) {
-        Ok(true) => return json_error("ENCRYPTED_ROUTE_UNAVAILABLE", "Encrypted media metadata is not exposed by the local API", 409),
+    match api_registered_encrypted(db_pool.get_ref().clone(), folder_id, message_id).await {
+        Ok(true) => {
+            return json_error(
+                "ENCRYPTED_ROUTE_UNAVAILABLE",
+                "Encrypted media metadata is not exposed by the local API",
+                409,
+            )
+        }
         Ok(false) => {}
         Err(error) => return json_error("ENCRYPTION_STATE_UNKNOWN", &error, 503),
     }
@@ -1924,7 +2112,11 @@ async fn api_media_info(
                 if document.name().to_ascii_lowercase().ends_with(".tdenc")
         )
     {
-        return json_error("ENCRYPTED_ROUTE_UNAVAILABLE", "Encrypted media metadata is not exposed by the local API", 409);
+        return json_error(
+            "ENCRYPTED_ROUTE_UNAVAILABLE",
+            "Encrypted media metadata is not exposed by the local API",
+            409,
+        );
     }
 
     let media = match msg.media() {
@@ -1966,22 +2158,22 @@ async fn api_media_info(
 /// Register all API routes on the Actix App
 pub fn configure_api(cfg: &mut web::ServiceConfig) {
     cfg.service(api_health)
-       .service(api_list_files)
-       .service(api_get_file)
-       .service(api_download_file)
-       .service(api_bulk_files)
-       .service(api_search_files)
-       .service(api_delete_file)
-       .service(api_copy_file)
-       .service(api_update_file)
-       .service(api_upload_file)
-       .service(api_list_folders)
-       .service(api_create_folder)
-       .service(api_rename_folder)
-       .service(api_delete_folder)
-       .service(api_storage_stats)
-       .service(api_storage_duplicates)
-       .service(api_empty_folders)
-       .service(api_get_file_thumbnail)
-       .service(api_media_info);
+        .service(api_list_files)
+        .service(api_get_file)
+        .service(api_download_file)
+        .service(api_bulk_files)
+        .service(api_search_files)
+        .service(api_delete_file)
+        .service(api_copy_file)
+        .service(api_update_file)
+        .service(api_upload_file)
+        .service(api_list_folders)
+        .service(api_create_folder)
+        .service(api_rename_folder)
+        .service(api_delete_folder)
+        .service(api_storage_stats)
+        .service(api_storage_duplicates)
+        .service(api_empty_folders)
+        .service(api_get_file_thumbnail)
+        .service(api_media_info);
 }

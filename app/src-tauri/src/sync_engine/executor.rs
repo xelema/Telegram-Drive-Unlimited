@@ -533,7 +533,14 @@ pub async fn execute(
             Ok(()) => (true, None),
             Err(error) => (false, Some(error)),
         };
-        log_sync(db, Some(pair.id), &action, Some(&path), detail.as_deref());
+        log_sync(
+            db.clone(),
+            Some(pair.id),
+            action.clone(),
+            Some(path.clone()),
+            detail.clone(),
+        )
+        .await;
         let result = ExecutionResult {
             relative_path: path,
             action,

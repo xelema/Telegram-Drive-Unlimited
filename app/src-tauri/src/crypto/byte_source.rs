@@ -88,11 +88,7 @@ impl LogicalMediaSource for PlaintextSource {
         &self.metadata
     }
 
-    fn read_range(
-        &self,
-        start: u64,
-        end: u64,
-    ) -> BoxFuture<'_, CryptoResult<Vec<u8>>> {
+    fn read_range(&self, start: u64, end: u64) -> BoxFuture<'_, CryptoResult<Vec<u8>>> {
         Box::pin(async move {
             let start = start as usize;
             let end = (end as usize).min(self.data.len() - 1);
@@ -104,9 +100,7 @@ impl LogicalMediaSource for PlaintextSource {
     }
 
     fn stream_all(&self) -> BoxFuture<'_, CryptoResult<Vec<u8>>> {
-        Box::pin(async move {
-            Ok(self.data.clone())
-        })
+        Box::pin(async move { Ok(self.data.clone()) })
     }
 
     fn is_accessible(&self) -> bool {

@@ -142,7 +142,14 @@ pub async fn ensure_client_initialized(
 
     let mut connection_params = grammers_mtsender::ConnectionParams::default();
     if let Some(proxy_url) = net_config.effective_proxy_url() {
-        log::info!("Using proxy: {}", proxy_url);
+        let proxy = net_config.proxy.read().map_err(|error| error.to_string())?;
+        log::info!(
+            "Using configured {} proxy at {}:{} (credentials redacted)",
+            proxy.proxy_type,
+            proxy.host,
+            proxy.port
+        );
+        drop(proxy);
         connection_params.proxy_url = Some(proxy_url);
     }
 

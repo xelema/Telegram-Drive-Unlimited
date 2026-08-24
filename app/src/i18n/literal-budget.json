@@ -1,0 +1,4 @@
+{
+  "maxFindings": 580,
+  "policy": "This is a temporary no-regression ceiling. Lower it whenever literals are extracted; increases require an explicit review."
+}

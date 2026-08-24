@@ -2,9 +2,24 @@ import type { Env, PayPalCapture, PayPalOrder } from './types';
 
 interface CachedAccessToken {
   environment: string;
+  clientId: string;
   value: string;
   expiresAt: number;
 }
+
+interface WebhookVerificationFields {
+  auth_algo: string;
+  cert_url: string;
+  transmission_id: string;
+  transmission_sig: string;
+  transmission_time: string;
+  webhook_id: string;
+}
+
+export type PayPalWebhookVerification =
+  | { status: 'verified' }
+  | { status: 'invalid'; reason: 'headers' | 'event' | 'signature' }
+  | { status: 'unavailable' };
 
 let cachedAccessToken: CachedAccessToken | null = null;
 
@@ -13,7 +28,12 @@ function apiOrigin(env: Env): string {
 }
 
 async function accessToken(env: Env): Promise<string> {
-  if (cachedAccessToken && cachedAccessToken.environment === env.PAYPAL_ENVIRONMENT && cachedAccessToken.expiresAt > Date.now() + 60_000) {
+  if (
+    cachedAccessToken
+    && cachedAccessToken.environment === env.PAYPAL_ENVIRONMENT
+    && cachedAccessToken.clientId === env.PAYPAL_CLIENT_ID
+    && cachedAccessToken.expiresAt > Date.now() + 60_000
+  ) {
     return cachedAccessToken.value;
   }
 
@@ -30,6 +50,7 @@ async function accessToken(env: Env): Promise<string> {
   const body = await response.json<{ access_token: string; expires_in: number }>();
   cachedAccessToken = {
     environment: env.PAYPAL_ENVIRONMENT,
+    clientId: env.PAYPAL_CLIENT_ID,
     value: body.access_token,
     expiresAt: Date.now() + Math.max(60, body.expires_in) * 1000,
   };
@@ -121,19 +142,96 @@ export function validateCompletedOrder(env: Env, order: PayPalOrder, expectedCla
   return capture;
 }
 
-export async function verifyPayPalWebhook(env: Env, headers: Headers, rawEvent: string): Promise<boolean> {
-  const verificationFields = JSON.stringify({
-    auth_algo: headers.get('paypal-auth-algo'),
-    cert_url: headers.get('paypal-cert-url'),
-    transmission_id: headers.get('paypal-transmission-id'),
-    transmission_sig: headers.get('paypal-transmission-sig'),
-    transmission_time: headers.get('paypal-transmission-time'),
-    webhook_id: env.PAYPAL_WEBHOOK_ID,
-  });
-  const verificationBody = `${verificationFields.slice(0, -1)},"webhook_event":${rawEvent}}`;
-  const verification = await paypalRequest<{ verification_status: string }>(env, '/v1/notifications/verify-webhook-signature', {
-    method: 'POST',
-    body: verificationBody,
-  });
-  return verification.verification_status === 'SUCCESS';
+function boundedHeader(headers: Headers, name: string, maximumLength: number): string | null {
+  const value = headers.get(name);
+  if (!value || value.length > maximumLength || /\s/.test(value)) return null;
+  return value;
+}
+
+function allowedCertificateUrl(env: Env, value: string): boolean {
+  try {
+    const url = new URL(value);
+    const expectedHosts = env.PAYPAL_ENVIRONMENT === 'live'
+      ? new Set(['api-m.paypal.com', 'api.paypal.com'])
+      : new Set(['api-m.sandbox.paypal.com', 'api.sandbox.paypal.com']);
+    return url.protocol === 'https:'
+      && expectedHosts.has(url.hostname)
+      && url.port === ''
+      && url.username === ''
+      && url.password === ''
+      && url.search === ''
+      && url.hash === ''
+      && url.pathname.startsWith('/v1/notifications/certs/');
+  } catch {
+    return false;
+  }
+}
+
+export function validatedWebhookVerificationFields(env: Env, headers: Headers): WebhookVerificationFields | null {
+  const authAlgo = boundedHeader(headers, 'paypal-auth-algo', 100);
+  const certUrl = boundedHeader(headers, 'paypal-cert-url', 500);
+  const transmissionId = boundedHeader(headers, 'paypal-transmission-id', 50);
+  const transmissionSig = boundedHeader(headers, 'paypal-transmission-sig', 500);
+  const transmissionTime = boundedHeader(headers, 'paypal-transmission-time', 100);
+  const webhookId = env.PAYPAL_WEBHOOK_ID;
+
+  if (
+    authAlgo !== 'SHA256withRSA'
+    || !certUrl
+    || !allowedCertificateUrl(env, certUrl)
+    || !transmissionId
+    || /^\d+$/.test(transmissionId)
+    || !transmissionSig
+    || !/^[A-Za-z0-9+/]+={0,2}$/.test(transmissionSig)
+    || !transmissionTime
+    || !Number.isFinite(Date.parse(transmissionTime))
+    || !/^[A-Za-z0-9_-]{1,50}$/.test(webhookId)
+  ) {
+    return null;
+  }
+
+  return {
+    auth_algo: authAlgo,
+    cert_url: certUrl,
+    transmission_id: transmissionId,
+    transmission_sig: transmissionSig,
+    transmission_time: transmissionTime,
+    webhook_id: webhookId,
+  };
+}
+
+export async function verifyPayPalWebhook(
+  env: Env,
+  headers: Headers,
+  rawEvent: string,
+): Promise<PayPalWebhookVerification> {
+  const verificationFields = validatedWebhookVerificationFields(env, headers);
+  if (!verificationFields) return { status: 'invalid', reason: 'headers' };
+
+  try {
+    const webhookEvent = JSON.parse(rawEvent) as unknown;
+    if (!webhookEvent || typeof webhookEvent !== 'object' || Array.isArray(webhookEvent)) {
+      return { status: 'invalid', reason: 'event' };
+    }
+  } catch {
+    return { status: 'invalid', reason: 'event' };
+  }
+
+  // PayPal verifies the event bytes sent by the webhook. Build only the outer
+  // verification envelope so the original event text is inserted unchanged.
+  const fieldsJson = JSON.stringify(verificationFields);
+  const verificationBody = `${fieldsJson.slice(0, -1)},\"webhook_event\":${rawEvent}}`;
+
+  try {
+    const verification = await paypalRequest<{ verification_status: string }>(
+      env,
+      '/v1/notifications/verify-webhook-signature',
+      { method: 'POST', body: verificationBody },
+    );
+    return verification.verification_status === 'SUCCESS'
+      ? { status: 'verified' }
+      : { status: 'invalid', reason: 'signature' };
+  } catch {
+    return { status: 'unavailable' };
+  }
 }

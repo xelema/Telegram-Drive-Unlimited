@@ -1,37 +1,92 @@
-import { useCallback, useState, useEffect } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { usePlatform } from '../../hooks/usePlatform';
 import { load } from '@tauri-apps/plugin-store';
 import { ExternalLink, X } from 'lucide-react';
 import { useSupporter } from '../../context/SupporterContext';
 import { openSponsorLink } from '../../services/sponsorLinks';
-import { shouldShowSponsorContent } from '../../services/supporterVisibility';
+import {
+  shouldShowSponsorContent,
+  sponsorAdCooldownRemaining,
+} from '../../services/supporterVisibility';
 
 interface AdsterraBannerProps {
   visible: boolean;
 }
 
-const DISMISSED_KEY = 'adBannerDismissed';
+const DISMISSED_AT_KEY = 'adBannerDismissedAt';
+const LEGACY_DISMISSED_KEY = 'adBannerDismissed';
+
+function parseDismissedAt(value: unknown): number | null {
+  const parsed = typeof value === 'number'
+    ? value
+    : typeof value === 'string'
+      ? Number.parseInt(value, 10)
+      : Number.NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
 
 /** Clickable sponsor banner for Android. The offer always opens in an external browser. */
 export default function AdsterraBanner({ visible }: AdsterraBannerProps) {
-  const { isAndroid } = usePlatform();
+  const { isAndroid, isTelevision } = usePlatform();
   const { status: supporterStatus } = useSupporter();
-  const [dismissed, setDismissed] = useState(false);
+  const dismissAnimationRef = useRef<number | null>(null);
+  const [dismissedAt, setDismissedAt] = useState<number | null>(null);
   const [exiting, setExiting] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
-  // Restore persisted dismissal state on mount
+  // Restore the timestamp-based cooldown and migrate the previous permanent dismissal.
   useEffect(() => {
     let cancelled = false;
-    load('config.json')
-      .then((store) => store.get<boolean>(DISMISSED_KEY))
-      .then((wasDismissed) => {
-        if (!cancelled && wasDismissed) setDismissed(true);
+    void load('config.json')
+      .then(async (store) => {
+        let restoredAt = parseDismissedAt(await store.get<unknown>(DISMISSED_AT_KEY));
+        const legacyDismissed = await store.get<boolean>(LEGACY_DISMISSED_KEY);
+        let storeChanged = false;
+
+        if (restoredAt === null && legacyDismissed) {
+          restoredAt = Date.now();
+          await store.set(DISMISSED_AT_KEY, restoredAt);
+          storeChanged = true;
+        }
+        if (legacyDismissed !== undefined) {
+          await store.delete(LEGACY_DISMISSED_KEY);
+          storeChanged = true;
+        }
+
+        if (restoredAt !== null && sponsorAdCooldownRemaining(restoredAt) === 0) {
+          restoredAt = null;
+          await store.delete(DISMISSED_AT_KEY);
+          storeChanged = true;
+        }
+        if (storeChanged) await store.save();
+        return restoredAt;
+      })
+      .then((restoredAt) => {
+        if (!cancelled) setDismissedAt(restoredAt);
         if (!cancelled) setLoaded(true);
       })
-      .catch(() => setLoaded(true));
-    return () => { cancelled = true; };
+      .catch(() => {
+        if (!cancelled) setLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+      if (dismissAnimationRef.current !== null) window.clearTimeout(dismissAnimationRef.current);
+    };
   }, []);
+
+  useEffect(() => {
+    const remaining = sponsorAdCooldownRemaining(dismissedAt);
+    if (remaining === 0) return;
+
+    const timer = window.setTimeout(() => {
+      setDismissedAt(null);
+      setExiting(false);
+      void load('config.json')
+        .then((store) => store.delete(DISMISSED_AT_KEY).then(() => store.save()))
+        .catch(() => {});
+    }, remaining);
+    return () => window.clearTimeout(timer);
+  }, [dismissedAt]);
 
   const handleClick = useCallback(async (e: React.MouseEvent) => {
     e.preventDefault();
@@ -42,18 +97,27 @@ export default function AdsterraBanner({ visible }: AdsterraBannerProps) {
   const handleDismiss = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    // Persist dismissal to store so it survives app restarts
+    if (dismissAnimationRef.current !== null) return;
+    const timestamp = Date.now();
+    // Persist the cooldown so the 15-minute cadence survives app restarts.
     load('config.json')
-      .then((store) => store.set(DISMISSED_KEY, true).then(() => store.save()))
+      .then(async (store) => {
+        await store.set(DISMISSED_AT_KEY, timestamp);
+        await store.delete(LEGACY_DISMISSED_KEY);
+        await store.save();
+      })
       .catch(() => {});
-    // Trigger fade-out animation, then fully dismiss
     setExiting(true);
-    setTimeout(() => setDismissed(true), 300);
+    dismissAnimationRef.current = window.setTimeout(() => {
+      setDismissedAt(timestamp);
+      setExiting(false);
+      dismissAnimationRef.current = null;
+    }, 300);
   }, []);
 
-  // Don't render until store check completes, or once dismissed.
-  // Using !loaded prevents a flash on restart when the banner was previously dismissed.
-  if (!isAndroid || !loaded || dismissed || !shouldShowSponsorContent(supporterStatus)) {
+  // Don't render until store check completes, or while the recurrence cooldown is active.
+  // Using !loaded prevents a flash on restart when a dismissal was persisted.
+  if (!isAndroid || !loaded || sponsorAdCooldownRemaining(dismissedAt) > 0 || !shouldShowSponsorContent(supporterStatus)) {
     return null;
   }
 
@@ -78,7 +142,7 @@ export default function AdsterraBanner({ visible }: AdsterraBannerProps) {
         className="quiet-control flex flex-1 items-center justify-center gap-2 px-4 py-2.5 text-metadata font-medium text-app-text-secondary hover:bg-app-hover hover:text-app-text"
       >
         <ExternalLink className="h-3 w-3 text-app-accent" />
-        <span className="sponsored-label border-0">Sponsored</span>
+        <span className="sponsored-label border-0">{isTelevision ? 'Sponsored — View offer' : 'Sponsored'}</span>
       </button>
       <button
         onClick={handleDismiss}

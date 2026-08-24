@@ -9,6 +9,7 @@ use rand::Rng;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, Weak};
 use std::time::{Duration, Instant, SystemTime};
 use tauri::{Emitter, Manager, State};
@@ -20,6 +21,7 @@ pub const THUMBNAIL_EXTS: &[&str] = &["thumb.jpg", "jpg", "jpeg", "png", "gif", 
 
 const PREVIEW_CACHE_MAX_FILES: usize = 30;
 const PREVIEW_CACHE_MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
+static PREVIEW_CACHE_LIMIT_BYTES: AtomicU64 = AtomicU64::new(PREVIEW_CACHE_MAX_TOTAL_BYTES);
 const THUMBNAIL_CACHE_MAX_FILES: usize = 500;
 const THUMBNAIL_CACHE_MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 const THUMBNAIL_MAX_DIMENSION: u32 = 1024;
@@ -28,25 +30,26 @@ type DownloadLock = tokio::sync::Mutex<()>;
 static DOWNLOAD_LOCKS: LazyLock<Mutex<HashMap<String, Weak<DownloadLock>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-fn is_registered_encrypted(
-    db_pool: &DbConnection,
+async fn is_registered_encrypted(
+    db_pool: DbConnection,
     folder_id: Option<i64>,
     message_id: i32,
 ) -> Result<bool, String> {
-    let connection = db_pool.lock().map_err(|_| "DB poisoned".to_string())?;
     let folder_key = folder_id
         .map(|id| id.to_string())
         .unwrap_or_else(|| "home".to_string());
-    let mut statement = connection
-        .prepare("SELECT 1 FROM encrypted_files WHERE folder_key = ? AND message_id = ? AND record_state = 'active'")
-        .map_err(|error| error.to_string())?;
-    statement
-        .bind((1, folder_key.as_str()))
-        .map_err(|error| error.to_string())?;
-    statement
-        .bind((2, i64::from(message_id)))
-        .map_err(|error| error.to_string())?;
-    Ok(matches!(statement.next(), Ok(sqlite::State::Row)))
+    crate::db::with_connection(db_pool, move |connection| {
+        let mut statement = connection
+            .prepare("SELECT 1 FROM encrypted_files WHERE folder_key = ? AND message_id = ? AND record_state = 'active'")
+            .map_err(|error| error.to_string())?;
+        statement
+            .bind((1, folder_key.as_str()))
+            .map_err(|error| error.to_string())?;
+        statement
+            .bind((2, i64::from(message_id)))
+            .map_err(|error| error.to_string())?;
+        Ok(matches!(statement.next(), Ok(sqlite::State::Row)))
+    }).await
 }
 
 fn download_lock(key: String) -> Arc<DownloadLock> {
@@ -87,7 +90,7 @@ async fn find_cached_file(cache_dir: &Path, stem: &str) -> Option<PathBuf> {
             Some(name) => name,
             None => continue,
         };
-        if !name.starts_with(&prefix) || name.ends_with(".part") {
+        if !name.starts_with(&prefix) || name.ends_with(".part") || name.ends_with(".pin") {
             continue;
         }
         let meta = match entry.metadata().await {
@@ -109,9 +112,7 @@ async fn find_cached_file(cache_dir: &Path, stem: &str) -> Option<PathBuf> {
 async fn mark_cache_file_used(path: PathBuf) {
     let _ = tokio::task::spawn_blocking(move || {
         let file = std::fs::OpenOptions::new().write(true).open(path)?;
-        file.set_times(
-            std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()),
-        )
+        file.set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()))
     })
     .await;
 }
@@ -239,13 +240,18 @@ async fn prune_preview_cache(
             if !path.is_file() {
                 continue;
             }
+            if path.extension().and_then(|extension| extension.to_str()) == Some("pin") {
+                continue;
+            }
             #[cfg(target_os = "android")]
             if path.extension().and_then(|extension| extension.to_str()) == Some("part") {
                 continue;
             }
-            let preserved = preserve_path
-                .as_ref()
-                .is_some_and(|preserve| preserve == &path);
+            let pin_marker = path.with_extension("pin");
+            let preserved = pin_marker.is_file()
+                || preserve_path
+                    .as_ref()
+                    .is_some_and(|preserve| preserve == &path);
             if let Ok(meta) = entry.metadata() {
                 let modified = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
                 files.push((path, modified, meta.len(), preserved));
@@ -253,7 +259,8 @@ async fn prune_preview_cache(
         }
         files.sort_by_key(|(_, modified, _, _)| *modified);
         let mut total_bytes: u64 = files.iter().map(|(_, _, len, _)| *len).sum();
-        while files.len() > PREVIEW_CACHE_MAX_FILES || total_bytes > PREVIEW_CACHE_MAX_TOTAL_BYTES {
+        let max_bytes = PREVIEW_CACHE_LIMIT_BYTES.load(Ordering::Relaxed);
+        while files.len() > PREVIEW_CACHE_MAX_FILES || total_bytes > max_bytes {
             if let Some(index) = files.iter().position(|(_, _, _, preserved)| !preserved) {
                 let (path, _, len, _) = files.remove(index);
                 let _ = std::fs::remove_file(&path);
@@ -296,14 +303,17 @@ async fn preview_cache_status(cache_dir: &Path) -> OfflineCacheStatus {
         file_count: 0,
         total_bytes: 0,
         max_files: PREVIEW_CACHE_MAX_FILES,
-        max_bytes: PREVIEW_CACHE_MAX_TOTAL_BYTES,
+        max_bytes: PREVIEW_CACHE_LIMIT_BYTES.load(Ordering::Relaxed),
     };
     let Ok(mut entries) = tokio::fs::read_dir(cache_dir).await else {
         return status;
     };
     while let Ok(Some(entry)) = entries.next_entry().await {
         let path = entry.path();
-        if path.extension().and_then(|extension| extension.to_str()) == Some("part") {
+        if matches!(
+            path.extension().and_then(|extension| extension.to_str()),
+            Some("part" | "pin")
+        ) {
             continue;
         }
         if let Ok(metadata) = entry.metadata().await {
@@ -314,6 +324,53 @@ async fn preview_cache_status(cache_dir: &Path) -> OfflineCacheStatus {
         }
     }
     status
+}
+
+#[tauri::command]
+pub async fn cmd_set_preview_cache_limit(max_gb: f64) -> Result<(), String> {
+    if !max_gb.is_finite() {
+        return Err("Offline media cache limit must be finite".into());
+    }
+    let clamped = max_gb.clamp(0.25, 50.0);
+    PREVIEW_CACHE_LIMIT_BYTES.store(
+        (clamped * 1024.0 * 1024.0 * 1024.0) as u64,
+        Ordering::Relaxed,
+    );
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn cmd_set_preview_pinned(
+    message_id: i32,
+    folder_id: Option<i64>,
+    pinned: bool,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let cache_dir = app_handle
+        .path()
+        .app_cache_dir()
+        .map_err(|error: tauri::Error| error.to_string())?
+        .join("previews");
+    tokio::fs::create_dir_all(&cache_dir)
+        .await
+        .map_err(|error| format!("Unable to prepare the offline media cache: {error}"))?;
+    let marker = cache_dir.join(format!("{}.pin", cache_stem(folder_id, message_id)));
+    if pinned {
+        if find_cached_file(&cache_dir, &cache_stem(folder_id, message_id))
+            .await
+            .is_none()
+        {
+            return Err("Download this file before marking it for offline use".into());
+        }
+        tokio::fs::write(marker, b"pinned")
+            .await
+            .map_err(|error| format!("Unable to preserve this offline file: {error}"))?;
+    } else if let Err(error) = tokio::fs::remove_file(marker).await {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            return Err(format!("Unable to unpin this offline file: {error}"));
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -339,8 +396,7 @@ pub async fn cmd_get_offline_files(
         .app_cache_dir()
         .map_err(|error: tauri::Error| error.to_string())?
         .join("previews");
-    let rows = {
-        let connection = db_pool.lock().map_err(|_| "DB poisoned".to_string())?;
+    let rows = crate::db::with_connection(db_pool.inner().clone(), move |connection| {
         let mut statement = connection
             .prepare(
                 "SELECT message_id, folder_id, file_name, file_size, mime_type, file_ext,
@@ -381,8 +437,9 @@ pub async fn cmd_get_offline_files(
                 statement.read::<i64, _>(10).unwrap_or(0),
             ));
         }
-        rows
-    };
+        Ok(rows)
+    })
+    .await?;
 
     let mut files = Vec::new();
     for (
@@ -537,6 +594,7 @@ async fn create_resized_thumbnail(
 /// Unlike `grammers_client::Client::download_media`, this returns an explicit
 /// error when the download produces zero bytes (e.g. stale file references or
 /// Telegram CDN stream drops).
+#[allow(clippy::too_many_arguments)] // The transfer policy inputs are independent and explicit.
 async fn download_to_file<D: grammers_client::types::Downloadable>(
     client: &grammers_client::Client,
     media: &D,
@@ -808,7 +866,7 @@ pub async fn cmd_get_preview(
     net_config: State<'_, Arc<NetworkConfig>>,
     db_pool: State<'_, DbConnection>,
 ) -> Result<String, String> {
-    if is_registered_encrypted(db_pool.inner(), folder_id, message_id)? {
+    if is_registered_encrypted(db_pool.inner().clone(), folder_id, message_id).await? {
         return Err("[ENCRYPTED_PREVIEW_UNAVAILABLE] Download and authenticate the encrypted file before opening it".to_string());
     }
     let cache_dir = app_handle
@@ -957,7 +1015,7 @@ pub async fn cmd_get_thumbnail(
     net_config: State<'_, Arc<NetworkConfig>>,
     db_pool: State<'_, DbConnection>,
 ) -> Result<String, String> {
-    if is_registered_encrypted(db_pool.inner(), folder_id, message_id)? {
+    if is_registered_encrypted(db_pool.inner().clone(), folder_id, message_id).await? {
         return Ok(String::new());
     }
     let thumbnail_dir = app_handle
@@ -1285,7 +1343,10 @@ mod tests {
         prune_preview_cache(test_dir.clone(), None).await;
 
         assert!(recently_viewed.exists());
-        assert_eq!(preview_cache_status(&test_dir).await.file_count, PREVIEW_CACHE_MAX_FILES);
+        assert_eq!(
+            preview_cache_status(&test_dir).await.file_count,
+            PREVIEW_CACHE_MAX_FILES
+        );
         let _ = std::fs::remove_dir_all(test_dir);
     }
 

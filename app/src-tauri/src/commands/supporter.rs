@@ -5,7 +5,10 @@ use keyring::Entry;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::path::PathBuf;
+use std::{
+    io::Write,
+    path::{Path, PathBuf},
+};
 use tauri::{AppHandle, Manager};
 
 #[cfg(not(target_os = "android"))]
@@ -47,6 +50,20 @@ struct EntitlementClaims {
     issued_at: i64,
     expires_at: i64,
     offline_until: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct EntitlementHeader {
+    alg: String,
+    typ: String,
+    kid: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EntitlementAccess {
+    Active,
+    OfflineGrace,
+    Expired,
 }
 
 #[derive(Debug, Serialize)]
@@ -134,13 +151,73 @@ fn save_state(app: &AppHandle, state: &SupporterLocalState) -> Result<(), String
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("Unable to create app data directory: {error}"))?;
     }
-    let temporary = path.with_extension("json.tmp");
     let bytes = serde_json::to_vec_pretty(state)
         .map_err(|error| format!("Unable to encode supporter state: {error}"))?;
-    std::fs::write(&temporary, bytes)
+    persist_state_file(&path, &bytes)
+}
+
+fn persist_state_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let temporary = path.with_extension("json.tmp");
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).truncate(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&temporary)
         .map_err(|error| format!("Unable to save supporter state: {error}"))?;
-    std::fs::rename(temporary, path)
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|error| format!("Unable to save supporter state: {error}"))?;
+    drop(file);
+    replace_state_file(&temporary, path)
         .map_err(|error| format!("Unable to commit supporter state: {error}"))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn replace_state_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    std::fs::rename(source, destination)
+}
+
+#[cfg(target_os = "windows")]
+fn replace_state_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    let source = windows_extended_path(source);
+    let destination = windows_extended_path(destination);
+    let result = unsafe {
+        windows_sys::Win32::Storage::FileSystem::MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            windows_sys::Win32::Storage::FileSystem::MOVEFILE_REPLACE_EXISTING
+                | windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_extended_path(path: &Path) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    let path: Vec<u16> = path.as_os_str().encode_wide().collect();
+    const SLASH: u16 = b'\\' as u16;
+    const QUESTION: u16 = b'?' as u16;
+    let mut extended = if path.starts_with(&[SLASH, SLASH, QUESTION, SLASH]) {
+        path
+    } else if path.starts_with(&[SLASH, SLASH]) {
+        "\\\\?\\UNC\\"
+            .encode_utf16()
+            .chain(path.into_iter().skip(2))
+            .collect()
+    } else {
+        "\\\\?\\".encode_utf16().chain(path).collect()
+    };
+    extended.push(0);
+    extended
 }
 
 #[cfg(not(target_os = "android"))]
@@ -433,6 +510,19 @@ fn parse_and_verify_token_with_key(
         )
         .map_err(|_| "Supporter token signature could not be verified".to_string())?;
 
+    let entitlement_header: EntitlementHeader = serde_json::from_slice(
+        &URL_SAFE_NO_PAD
+            .decode(header)
+            .map_err(|_| "Supporter token header is invalid".to_string())?,
+    )
+    .map_err(|_| "Supporter token header is invalid".to_string())?;
+    if entitlement_header.alg != "EdDSA"
+        || entitlement_header.typ != "TD-SUPPORTER"
+        || entitlement_header.kid != "v1"
+    {
+        return Err("Supporter token header is not supported".to_string());
+    }
+
     let claims: EntitlementClaims = serde_json::from_slice(
         &URL_SAFE_NO_PAD
             .decode(payload)
@@ -445,7 +535,25 @@ fn parse_and_verify_token_with_key(
     if claims.device_key_hash != sha256_base64url(expected_device_public_key) {
         return Err("Supporter token belongs to a different device".to_string());
     }
+    if claims.entitlement_id.is_empty()
+        || claims.terms_version.is_empty()
+        || claims.issued_at < 0
+        || claims.issued_at > claims.expires_at
+        || claims.expires_at > claims.offline_until
+    {
+        return Err("Supporter token validity claims are invalid".to_string());
+    }
     Ok(claims)
+}
+
+fn entitlement_access_at(claims: &EntitlementClaims, now: i64) -> EntitlementAccess {
+    if now <= claims.expires_at {
+        EntitlementAccess::Active
+    } else if now <= claims.offline_until {
+        EntitlementAccess::OfflineGrace
+    } else {
+        EntitlementAccess::Expired
+    }
 }
 
 fn unix_time() -> i64 {
@@ -545,21 +653,19 @@ fn status_from_state(state: &SupporterLocalState) -> SupporterStatus {
     match parse_and_verify_token(token, device_public_key) {
         Ok(claims) => {
             let now = unix_time();
-            let (status, ad_free, message) = if now <= claims.expires_at {
-                (
+            let (status, ad_free, message) = match entitlement_access_at(&claims, now) {
+                EntitlementAccess::Active => (
                     "active",
                     true,
                     "Verified ad-free supporter access is active.".to_string(),
-                )
-            } else if now <= claims.offline_until {
-                ("needs_refresh", true, "Ad-free access is active during the offline grace period. Connect to refresh verification.".to_string())
-            } else {
-                (
+                ),
+                EntitlementAccess::OfflineGrace => ("needs_refresh", true, "Ad-free access is active during the offline grace period. Connect to refresh verification.".to_string()),
+                EntitlementAccess::Expired => (
                     "expired",
                     false,
                     "Supporter verification expired. Connect to refresh or use your recovery code."
                         .to_string(),
-                )
+                ),
             };
             SupporterStatus {
                 state: status,
@@ -813,6 +919,32 @@ pub async fn cmd_refresh_supporter(app: AppHandle) -> Result<SupporterStatus, St
 mod tests {
     use super::*;
 
+    fn test_claims(device_public_key: &str) -> EntitlementClaims {
+        EntitlementClaims {
+            iss: "telegram-drive-supporter".to_string(),
+            aud: "telegram-drive-desktop".to_string(),
+            entitlement_id: "entitlement-1".to_string(),
+            device_key_hash: sha256_base64url(device_public_key),
+            terms_version: "2026-08-11".to_string(),
+            issued_at: 1_700_000_000,
+            expires_at: 1_800_000_000,
+            offline_until: 1_800_604_800,
+        }
+    }
+
+    fn signed_token(
+        signing_key: &SigningKey,
+        header_json: &[u8],
+        claims: &EntitlementClaims,
+    ) -> String {
+        let header = URL_SAFE_NO_PAD.encode(header_json);
+        let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(claims).unwrap());
+        let signing_input = format!("{header}.{payload}");
+        let signature =
+            URL_SAFE_NO_PAD.encode(signing_key.sign(signing_input.as_bytes()).to_bytes());
+        format!("{signing_input}.{signature}")
+    }
+
     #[test]
     fn recovery_style_device_hash_is_stable() {
         assert_eq!(
@@ -850,27 +982,96 @@ mod tests {
         let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
         let device_key = SigningKey::from_bytes(&[11_u8; 32]);
         let device_public_key = public_key(&device_key);
-        let claims = EntitlementClaims {
-            iss: "telegram-drive-supporter".to_string(),
-            aud: "telegram-drive-desktop".to_string(),
-            entitlement_id: "entitlement-1".to_string(),
-            device_key_hash: sha256_base64url(&device_public_key),
-            terms_version: "2026-08-11".to_string(),
-            issued_at: 1_700_000_000,
-            expires_at: 1_800_000_000,
-            offline_until: 1_800_604_800,
-        };
-        let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"EdDSA","typ":"TD-SUPPORTER","kid":"v1"}"#);
-        let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap());
-        let signing_input = format!("{header}.{payload}");
-        let signature =
-            URL_SAFE_NO_PAD.encode(signing_key.sign(signing_input.as_bytes()).to_bytes());
-        let token = format!("{signing_input}.{signature}");
+        let claims = test_claims(&device_public_key);
+        let token = signed_token(
+            &signing_key,
+            br#"{"alg":"EdDSA","typ":"TD-SUPPORTER","kid":"v1"}"#,
+            &claims,
+        );
         let verification_key = URL_SAFE_NO_PAD.encode(signing_key.verifying_key().to_bytes());
 
         let verified =
             parse_and_verify_token_with_key(&token, &device_public_key, &verification_key).unwrap();
         assert_eq!(verified.entitlement_id, "entitlement-1");
         assert_eq!(verified.terms_version, "2026-08-11");
+    }
+
+    #[test]
+    fn signed_entitlement_rejects_an_unsupported_header() {
+        let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
+        let device_key = SigningKey::from_bytes(&[11_u8; 32]);
+        let device_public_key = public_key(&device_key);
+        let claims = test_claims(&device_public_key);
+        let token = signed_token(
+            &signing_key,
+            br#"{"alg":"none","typ":"TD-SUPPORTER","kid":"v1"}"#,
+            &claims,
+        );
+        let verification_key = URL_SAFE_NO_PAD.encode(signing_key.verifying_key().to_bytes());
+
+        let error = parse_and_verify_token_with_key(&token, &device_public_key, &verification_key)
+            .unwrap_err();
+        assert_eq!(error, "Supporter token header is not supported");
+    }
+
+    #[test]
+    fn signed_entitlement_rejects_reversed_validity_dates() {
+        let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
+        let device_key = SigningKey::from_bytes(&[11_u8; 32]);
+        let device_public_key = public_key(&device_key);
+        let mut claims = test_claims(&device_public_key);
+        claims.offline_until = claims.expires_at - 1;
+        let token = signed_token(
+            &signing_key,
+            br#"{"alg":"EdDSA","typ":"TD-SUPPORTER","kid":"v1"}"#,
+            &claims,
+        );
+        let verification_key = URL_SAFE_NO_PAD.encode(signing_key.verifying_key().to_bytes());
+
+        let error = parse_and_verify_token_with_key(&token, &device_public_key, &verification_key)
+            .unwrap_err();
+        assert_eq!(error, "Supporter token validity claims are invalid");
+    }
+
+    #[test]
+    fn cached_entitlement_keeps_access_through_the_offline_grace_boundary() {
+        let device_key = SigningKey::from_bytes(&[11_u8; 32]);
+        let claims = test_claims(&public_key(&device_key));
+
+        assert_eq!(
+            entitlement_access_at(&claims, claims.expires_at),
+            EntitlementAccess::Active
+        );
+        assert_eq!(
+            entitlement_access_at(&claims, claims.expires_at + 1),
+            EntitlementAccess::OfflineGrace
+        );
+        assert_eq!(
+            entitlement_access_at(&claims, claims.offline_until),
+            EntitlementAccess::OfflineGrace
+        );
+        assert_eq!(
+            entitlement_access_at(&claims, claims.offline_until + 1),
+            EntitlementAccess::Expired
+        );
+    }
+
+    #[test]
+    fn cached_entitlement_state_can_be_replaced_after_refresh() {
+        let directory = std::env::temp_dir().join(format!(
+            "telegram-drive-supporter-state-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("supporter-entitlement-v1.json");
+
+        persist_state_file(&path, br#"{"entitlement_token":"old"}"#).unwrap();
+        persist_state_file(&path, br#"{"entitlement_token":"refreshed"}"#).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            r#"{"entitlement_token":"refreshed"}"#
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, File, X } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { ChevronLeft, ChevronRight, File, Maximize, Scan, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { listen } from '@tauri-apps/api/event';
 import { TelegramFile } from '../../../types';
 import { isImageFile } from '../../../utils';
@@ -14,6 +15,20 @@ import {
 } from '../../../services/imagePreviewCache';
 
 const MAX_PREFETCH_BYTES = 25 * 1024 * 1024;
+const MIN_IMAGE_ZOOM = 0.25;
+const MAX_IMAGE_ZOOM = 16;
+const IMAGE_ZOOM_STEP = 1.25;
+
+type Point = { x: number; y: number };
+type ImageTransform = { zoom: number; pan: Point };
+
+function distance(a: Point, b: Point): number {
+    return Math.hypot(b.x - a.x, b.y - a.y);
+}
+
+function midpoint(a: Point, b: Point): Point {
+    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+}
 
 type PreviewProgress = {
     message_id: number;
@@ -45,6 +60,7 @@ export function PreviewModal({
     nextFile,
     activeFolderId,
 }: PreviewModalProps) {
+    const { t } = useTranslation();
     const { settings } = useSettings();
     const [thumbnailSrc, setThumbnailSrc] = useState<string | null>(null);
     const [fullSrc, setFullSrc] = useState<string | null>(null);
@@ -56,6 +72,86 @@ export function PreviewModal({
     const currentFileIdRef = useRef(file.id);
     currentFileIdRef.current = file.id;
     const imagePreview = isImageFile(file.name);
+    const imageViewportRef = useRef<HTMLDivElement>(null);
+    const fullImageRef = useRef<HTMLImageElement>(null);
+    const [imageTransform, setImageTransform] = useState<ImageTransform>({ zoom: 1, pan: { x: 0, y: 0 } });
+    const imageTransformRef = useRef(imageTransform);
+    const [imageInteracting, setImageInteracting] = useState(false);
+    const activePointersRef = useRef(new Map<number, Point>());
+    const pointerGestureRef = useRef<
+        | { type: 'pan'; start: Point; startPan: Point }
+        | { type: 'pinch'; startDistance: number; startZoom: number; startCenter: Point; startPan: Point }
+        | null
+    >(null);
+    const pointerStartRef = useRef<{ point: Point; time: number } | null>(null);
+    const gestureHadMultiplePointersRef = useRef(false);
+    const lastTouchTapRef = useRef<{ point: Point; time: number } | null>(null);
+
+    const commitImageTransform = useCallback((next: ImageTransform) => {
+        imageTransformRef.current = next;
+        setImageTransform(next);
+    }, []);
+
+    const clampPan = useCallback((pan: Point, zoom: number): Point => {
+        const viewport = imageViewportRef.current;
+        const image = fullImageRef.current;
+        if (!viewport || !image) return zoom <= 1 ? { x: 0, y: 0 } : pan;
+
+        const maxX = Math.max(0, (image.clientWidth * zoom - viewport.clientWidth) / 2);
+        const maxY = Math.max(0, (image.clientHeight * zoom - viewport.clientHeight) / 2);
+        return {
+            x: Math.max(-maxX, Math.min(maxX, pan.x)),
+            y: Math.max(-maxY, Math.min(maxY, pan.y)),
+        };
+    }, []);
+
+    const zoomImageTo = useCallback((requestedZoom: number, focalPoint?: Point) => {
+        const viewport = imageViewportRef.current;
+        const current = imageTransformRef.current;
+        const zoom = Math.max(MIN_IMAGE_ZOOM, Math.min(MAX_IMAGE_ZOOM, requestedZoom));
+        let pan = current.pan;
+
+        if (viewport && focalPoint && current.zoom > 0) {
+            const bounds = viewport.getBoundingClientRect();
+            const focalOffset = {
+                x: focalPoint.x - (bounds.left + bounds.width / 2),
+                y: focalPoint.y - (bounds.top + bounds.height / 2),
+            };
+            const ratio = zoom / current.zoom;
+            pan = {
+                x: focalOffset.x - (focalOffset.x - current.pan.x) * ratio,
+                y: focalOffset.y - (focalOffset.y - current.pan.y) * ratio,
+            };
+        }
+
+        commitImageTransform({ zoom, pan: clampPan(pan, zoom) });
+    }, [clampPan, commitImageTransform]);
+
+    const fitImage = useCallback(() => {
+        commitImageTransform({ zoom: 1, pan: { x: 0, y: 0 } });
+    }, [commitImageTransform]);
+
+    const showActualImageSize = useCallback(() => {
+        const image = fullImageRef.current;
+        if (!image || image.clientWidth <= 0 || image.clientHeight <= 0) return;
+        const actualSizeZoom = Math.max(
+            image.naturalWidth / image.clientWidth,
+            image.naturalHeight / image.clientHeight,
+            1,
+        );
+        zoomImageTo(actualSizeZoom);
+    }, [zoomImageTo]);
+
+    const panImageBy = useCallback((x: number, y: number) => {
+        const current = imageTransformRef.current;
+        const pan = clampPan({ x: current.pan.x + x, y: current.pan.y + y }, current.zoom);
+        commitImageTransform({ ...current, pan });
+    }, [clampPan, commitImageTransform]);
+
+    const toggleImageZoom = useCallback((point?: Point) => {
+        if (imageTransformRef.current.zoom > 1.05) fitImage();
+        else zoomImageTo(2, point);
+    }, [fitImage, zoomImageTo]);
 
     useEffect(() => {
         let disposed = false;
@@ -94,6 +190,10 @@ export function PreviewModal({
         setLoading(true);
         setProgress(cachedPreview ? 100 : 0);
         setError(null);
+        fitImage();
+        activePointersRef.current.clear();
+        pointerGestureRef.current = null;
+        setImageInteracting(false);
 
         if (imagePreview && !cachedThumbnail) {
             loadThumbnail(file.id, activeFolderId).then((src) => {
@@ -119,7 +219,7 @@ export function PreviewModal({
             setError(String(loadError));
             setLoading(false);
         });
-    }, [file.id, file.name, activeFolderId, imagePreview]);
+    }, [file.id, file.name, activeFolderId, imagePreview, fitImage]);
 
     // Prefetch only the likely next image, after the current one is fully decoded and
     // the browser is idle. Avoid speculative downloads when a bandwidth cap is active.
@@ -154,6 +254,136 @@ export function PreviewModal({
     }, [fullReady, nextFile, activeFolderId, settings.vpnMode, settings.bandwidthLimitDownKBs]);
 
     useEffect(() => {
+        if (!fullReady) return;
+        const viewport = imageViewportRef.current;
+        if (!viewport) return;
+
+        const keepTransformInBounds = () => {
+            const current = imageTransformRef.current;
+            commitImageTransform({ ...current, pan: clampPan(current.pan, current.zoom) });
+        };
+        const observer = typeof ResizeObserver !== 'undefined'
+            ? new ResizeObserver(keepTransformInBounds)
+            : null;
+        observer?.observe(viewport);
+        window.addEventListener('resize', keepTransformInBounds);
+        return () => {
+            observer?.disconnect();
+            window.removeEventListener('resize', keepTransformInBounds);
+        };
+    }, [fullReady, clampPan, commitImageTransform]);
+
+    const handleImageWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
+        if (!fullReady) return;
+        event.preventDefault();
+        const factor = Math.exp(-event.deltaY * 0.002);
+        zoomImageTo(imageTransformRef.current.zoom * factor, { x: event.clientX, y: event.clientY });
+    }, [fullReady, zoomImageTo]);
+
+    const handleImagePointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+        if (!fullReady || event.button !== 0) return;
+        event.preventDefault();
+        const point = { x: event.clientX, y: event.clientY };
+        activePointersRef.current.set(event.pointerId, point);
+        try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* unsupported WebView */ }
+
+        if (activePointersRef.current.size === 1) {
+            pointerStartRef.current = { point, time: Date.now() };
+            gestureHadMultiplePointersRef.current = false;
+            pointerGestureRef.current = {
+                type: 'pan',
+                start: point,
+                startPan: imageTransformRef.current.pan,
+            };
+        } else {
+            gestureHadMultiplePointersRef.current = true;
+            const [first, second] = [...activePointersRef.current.values()];
+            pointerGestureRef.current = {
+                type: 'pinch',
+                startDistance: Math.max(1, distance(first, second)),
+                startZoom: imageTransformRef.current.zoom,
+                startCenter: midpoint(first, second),
+                startPan: imageTransformRef.current.pan,
+            };
+        }
+        setImageInteracting(true);
+    }, [fullReady]);
+
+    const handleImagePointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+        if (!activePointersRef.current.has(event.pointerId)) return;
+        event.preventDefault();
+        activePointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+        const gesture = pointerGestureRef.current;
+        if (!gesture) return;
+
+        if (activePointersRef.current.size >= 2 && gesture.type === 'pinch') {
+            const [first, second] = [...activePointersRef.current.values()];
+            const center = midpoint(first, second);
+            const zoom = Math.max(
+                MIN_IMAGE_ZOOM,
+                Math.min(MAX_IMAGE_ZOOM, gesture.startZoom * distance(first, second) / gesture.startDistance),
+            );
+            const viewport = imageViewportRef.current;
+            let pan = gesture.startPan;
+            if (viewport) {
+                const bounds = viewport.getBoundingClientRect();
+                const startFocal = {
+                    x: gesture.startCenter.x - (bounds.left + bounds.width / 2),
+                    y: gesture.startCenter.y - (bounds.top + bounds.height / 2),
+                };
+                const ratio = zoom / gesture.startZoom;
+                pan = {
+                    x: startFocal.x - (startFocal.x - gesture.startPan.x) * ratio + center.x - gesture.startCenter.x,
+                    y: startFocal.y - (startFocal.y - gesture.startPan.y) * ratio + center.y - gesture.startCenter.y,
+                };
+            }
+            commitImageTransform({ zoom, pan: clampPan(pan, zoom) });
+        } else if (activePointersRef.current.size === 1 && gesture.type === 'pan') {
+            const current = [...activePointersRef.current.values()][0];
+            const pan = {
+                x: gesture.startPan.x + current.x - gesture.start.x,
+                y: gesture.startPan.y + current.y - gesture.start.y,
+            };
+            const zoom = imageTransformRef.current.zoom;
+            commitImageTransform({ zoom, pan: clampPan(pan, zoom) });
+        }
+    }, [clampPan, commitImageTransform]);
+
+    const finishImagePointer = useCallback((event: React.PointerEvent<HTMLDivElement>, allowTap: boolean) => {
+        const endPoint = { x: event.clientX, y: event.clientY };
+        const pointerStart = pointerStartRef.current;
+        const wasSingleTouch = event.pointerType === 'touch' && !gestureHadMultiplePointersRef.current;
+        try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* unsupported WebView */ }
+        activePointersRef.current.delete(event.pointerId);
+
+        if (allowTap && wasSingleTouch && pointerStart
+            && Date.now() - pointerStart.time < 350
+            && distance(pointerStart.point, endPoint) < 12) {
+            const previousTap = lastTouchTapRef.current;
+            if (previousTap && Date.now() - previousTap.time < 325 && distance(previousTap.point, endPoint) < 32) {
+                toggleImageZoom(endPoint);
+                lastTouchTapRef.current = null;
+            } else {
+                lastTouchTapRef.current = { point: endPoint, time: Date.now() };
+            }
+        }
+
+        if (activePointersRef.current.size === 1) {
+            const remaining = [...activePointersRef.current.values()][0];
+            pointerGestureRef.current = {
+                type: 'pan',
+                start: remaining,
+                startPan: imageTransformRef.current.pan,
+            };
+        } else if (activePointersRef.current.size === 0) {
+            pointerGestureRef.current = null;
+            pointerStartRef.current = null;
+            gestureHadMultiplePointersRef.current = false;
+            setImageInteracting(false);
+        }
+    }, [toggleImageZoom]);
+
+    useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
             const target = event.target as HTMLElement;
             if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
@@ -161,7 +391,26 @@ export function PreviewModal({
             }
 
             const key = event.key.toLowerCase();
-            if (event.key === 'ArrowRight' || key === 'l') {
+            if (imagePreview && (event.key === '+' || event.key === '=')) {
+                event.preventDefault();
+                zoomImageTo(imageTransformRef.current.zoom * IMAGE_ZOOM_STEP);
+            } else if (imagePreview && event.key === '-') {
+                event.preventDefault();
+                zoomImageTo(imageTransformRef.current.zoom / IMAGE_ZOOM_STEP);
+            } else if (imagePreview && key === '0') {
+                event.preventDefault();
+                fitImage();
+            } else if (imagePreview && key === '1') {
+                event.preventDefault();
+                showActualImageSize();
+            } else if (imagePreview && imageTransformRef.current.zoom > 1.05 && event.key.startsWith('Arrow')) {
+                event.preventDefault();
+                const amount = event.shiftKey ? 160 : 64;
+                if (event.key === 'ArrowRight') panImageBy(-amount, 0);
+                else if (event.key === 'ArrowLeft') panImageBy(amount, 0);
+                else if (event.key === 'ArrowDown') panImageBy(0, -amount);
+                else if (event.key === 'ArrowUp') panImageBy(0, amount);
+            } else if (event.key === 'ArrowRight' || key === 'l') {
                 event.preventDefault();
                 onNext?.();
             } else if (event.key === 'ArrowLeft' || key === 'j') {
@@ -175,7 +424,7 @@ export function PreviewModal({
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [onClose, onNext, onPrev]);
+    }, [onClose, onNext, onPrev, imagePreview, zoomImageTo, fitImage, showActualImageSize, panImageBy]);
 
     return (
         <div className="viewer-overlay fixed inset-0 z-[150] flex items-center justify-center p-4" onClick={onClose}>
@@ -217,14 +466,25 @@ export function PreviewModal({
                 )}
 
                 {!error && imagePreview && (
-                    <div className="viewer-panel relative flex h-[85vh] w-full items-center justify-center">
+                    <div
+                        ref={imageViewportRef}
+                        className={`viewer-panel relative flex h-[85vh] w-full items-center justify-center ${imageTransform.zoom > 1 ? (imageInteracting ? 'cursor-grabbing' : 'cursor-grab') : 'cursor-zoom-in'}`}
+                        style={{ touchAction: 'none', overscrollBehavior: 'contain' }}
+                        onWheel={handleImageWheel}
+                        onPointerDown={handleImagePointerDown}
+                        onPointerMove={handleImagePointerMove}
+                        onPointerUp={(event) => finishImagePointer(event, true)}
+                        onPointerCancel={(event) => finishImagePointer(event, false)}
+                        onDoubleClick={(event) => toggleImageZoom({ x: event.clientX, y: event.clientY })}
+                    >
                         {thumbnailSrc && !fullReady && (
                             <img
                                 src={thumbnailSrc}
                                 decoding="async"
-                                className="max-h-full max-w-full scale-[1.01] bg-black object-contain blur-[2px]"
+                                className="pointer-events-none max-h-full max-w-full scale-[1.01] select-none bg-black object-contain blur-[2px]"
                                 alt=""
                                 aria-hidden="true"
+                                draggable={false}
                                 onError={() => {
                                     forgetThumbnail(file.id, activeFolderId);
                                     setThumbnailSrc(null);
@@ -234,9 +494,17 @@ export function PreviewModal({
 
                         {fullSrc && (
                             <img
+                                ref={fullImageRef}
                                 src={fullSrc}
                                 decoding="async"
-                                className={`absolute inset-0 m-auto max-h-full max-w-full bg-black object-contain transition-opacity duration-200 ${fullReady ? 'opacity-100' : 'opacity-0'}`}
+                                draggable={false}
+                                className={`pointer-events-none absolute inset-0 m-auto max-h-full max-w-full select-none bg-black object-contain ${fullReady ? 'opacity-100' : 'opacity-0'}`}
+                                style={{
+                                    transform: `translate3d(${imageTransform.pan.x}px, ${imageTransform.pan.y}px, 0) scale(${imageTransform.zoom})`,
+                                    transformOrigin: 'center center',
+                                    transition: imageInteracting ? 'none' : 'transform 160ms ease-out, opacity 200ms',
+                                    willChange: 'transform',
+                                }}
                                 alt={file.name}
                                 onLoad={(event) => {
                                     const image = event.currentTarget;
@@ -259,6 +527,64 @@ export function PreviewModal({
                                     setLoading(false);
                                 }}
                             />
+                        )}
+
+                        {fullReady && (
+                            <div
+                                className="image-viewer-toolbar viewer-toolbar absolute start-1/2 top-3 z-30 -translate-x-1/2 rtl:translate-x-1/2"
+                                onPointerDown={(event) => event.stopPropagation()}
+                                onDoubleClick={(event) => event.stopPropagation()}
+                                onWheel={(event) => event.stopPropagation()}
+                            >
+                                <button
+                                    type="button"
+                                    className="viewer-control disabled:opacity-35"
+                                    onClick={() => zoomImageTo(imageTransformRef.current.zoom / IMAGE_ZOOM_STEP)}
+                                    disabled={imageTransform.zoom <= MIN_IMAGE_ZOOM + 0.001}
+                                    title={t('common.zoom_out_shortcut')}
+                                    aria-label={t('common.zoom_out')}
+                                >
+                                    <ZoomOut className="h-4 w-4" />
+                                </button>
+                                <button
+                                    type="button"
+                                    className="min-w-14 rounded-md px-1.5 text-[11px] tabular-nums text-white/80 hover:bg-white/10"
+                                    onClick={fitImage}
+                                    title={t('common.fit_image_shortcut')}
+                                    aria-label={`${t('common.current_zoom', { percent: Math.round(imageTransform.zoom * 100) })}. ${t('common.fit_image')}`}
+                                >
+                                    {Math.round(imageTransform.zoom * 100)}%
+                                </button>
+                                <button
+                                    type="button"
+                                    className="viewer-control disabled:opacity-35"
+                                    onClick={() => zoomImageTo(imageTransformRef.current.zoom * IMAGE_ZOOM_STEP)}
+                                    disabled={imageTransform.zoom >= MAX_IMAGE_ZOOM - 0.001}
+                                    title={t('common.zoom_in_shortcut')}
+                                    aria-label={t('common.zoom_in')}
+                                >
+                                    <ZoomIn className="h-4 w-4" />
+                                </button>
+                                <span className="mx-0.5 h-5 w-px bg-white/10" aria-hidden="true" />
+                                <button
+                                    type="button"
+                                    className="viewer-control"
+                                    onClick={fitImage}
+                                    title={t('common.fit_image_shortcut')}
+                                    aria-label={t('common.fit_image')}
+                                >
+                                    <Maximize className="h-4 w-4" />
+                                </button>
+                                <button
+                                    type="button"
+                                    className="viewer-control"
+                                    onClick={showActualImageSize}
+                                    title={t('common.actual_size_shortcut')}
+                                    aria-label={t('common.actual_size')}
+                                >
+                                    <Scan className="h-4 w-4" />
+                                </button>
+                            </div>
                         )}
 
                         {loading && (

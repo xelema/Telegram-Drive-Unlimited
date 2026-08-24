@@ -20,6 +20,7 @@ import { SettingsRow, SettingsStepper, SettingsToggle } from './settings/Setting
 import { AboutSettingsTab, AdvancedSettingsTab, EncryptionSettingsTab, GeneralSettingsTab, PrivacySettingsTab, ProxySettingsTab, SharingSettingsTab, ThemeSettingsTab, VpnSettingsTab, WebDavSettingsTab } from './settings/SettingsTabs';
 import { FfmpegInstallNotice } from '../../shared/FfmpegInstallNotice';
 import { SyncSettingsPanel } from '../sync/SyncSettingsPanel';
+import { DesktopBehaviorSettings } from './settings/DesktopBehaviorSettings';
 
 interface SettingsModalProps {
     isOpen: boolean;
@@ -32,6 +33,7 @@ interface ApiSettings {
     port: number;
     key_set: boolean;
     running: boolean;
+    last_error: string | null;
 }
 
 interface WebDavSettings {
@@ -195,7 +197,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
     };
 
     // API settings state
-    const [apiSettings, setApiSettings] = useState<ApiSettings>({ enabled: false, port: 8550, key_set: false, running: false });
+    const [apiSettings, setApiSettings] = useState<ApiSettings>({ enabled: false, port: 8550, key_set: false, running: false, last_error: null });
     const [apiPort, setApiPort] = useState('8550');
     const [apiLoading, setApiLoading] = useState(false);
     const [generatedKey, setGeneratedKey] = useState<string | null>(null);
@@ -446,7 +448,11 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                 port,
             });
             setApiSettings(updatedSettings);
-            toast.success(updatedSettings.enabled ? t('settings.api_server_started') : t('settings.api_server_stopped'));
+            if (updatedSettings.last_error) {
+                toast.error(updatedSettings.last_error);
+            } else {
+                toast.success(updatedSettings.enabled ? t('settings.api_server_started') : t('settings.api_server_stopped'));
+            }
         } catch (e) {
             toast.error(t('settings.api_update_failed', { error: e }));
         } finally {
@@ -468,7 +474,11 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                 port,
             });
             setApiSettings(updatedSettings);
-            toast.success(t('settings.api_port_updated', { port }));
+            if (updatedSettings.last_error) {
+                toast.error(updatedSettings.last_error);
+            } else {
+                toast.success(t('settings.api_port_updated', { port }));
+            }
         } catch (e) {
             toast.error(t('settings.api_port_update_failed', { error: e }));
         } finally {
@@ -568,7 +578,11 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                 writeEnabled: webDavSettings.write_enabled,
             });
             setWebDavSettings(updatedSettings);
-            toast.success(updatedSettings.enabled ? t('settings.webdav_started') : t('settings.webdav_stopped_toast'));
+            if (updatedSettings.last_error) {
+                toast.error(updatedSettings.last_error);
+            } else {
+                toast.success(updatedSettings.enabled ? t('settings.webdav_started') : t('settings.webdav_stopped_toast'));
+            }
         } catch (error) {
             toast.error(t('settings.webdav_update_failed', { error }));
         } finally {
@@ -597,7 +611,11 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                     return previous;
                 }
             });
-            toast.success(t('settings.webdav_port_updated', { port }));
+            if (updatedSettings.last_error) {
+                toast.error(updatedSettings.last_error);
+            } else {
+                toast.success(t('settings.webdav_port_updated', { port }));
+            }
         } catch (error) {
             setWebDavPort(webDavSettings.port.toString());
             toast.error(t('settings.webdav_update_failed', { error }));
@@ -628,6 +646,9 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                 writeEnabled: nextWriteEnabled,
             });
             setWebDavSettings(updatedSettings);
+            if (updatedSettings.last_error) {
+                toast.error(updatedSettings.last_error);
+            }
         } catch (error) {
             toast.error(t('settings.webdav_update_failed', { error }));
         } finally {
@@ -752,6 +773,9 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                             </section>
 
                             {/* Language & Region Section */}
+                            <DesktopBehaviorSettings />
+
+                            {/* Language & Region Section */}
                             <section className="space-y-3">
                                 <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
                                     <Languages className="w-3.5 h-3.5" />
@@ -814,6 +838,13 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                                         <span className={`absolute top-0.5 start-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${apiSettings.enabled ? 'translate-x-5 rtl:-translate-x-5' : 'translate-x-0'}`} />
                                     </button>
                                 </div>
+
+                                {apiSettings.last_error && (
+                                    <div className="rounded-lg border border-red-500/20 bg-red-500/5 p-3">
+                                        <p className="text-xs font-medium text-red-300">{t('settings.webdav_last_error')}</p>
+                                        <p className="mt-1 break-words font-mono text-[11px] text-red-300/80">{apiSettings.last_error}</p>
+                                    </div>
+                                )}
 
                                 {/* Port */}
                                 <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
@@ -1362,13 +1393,31 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                                         <p className="text-sm text-telegram-text font-medium">{t('common.password')}</p>
                                         <p className="text-xs text-telegram-subtext">{t('settings.optional')}</p>
                                     </div>
-                                    <input
-                                        type="password"
-                                        placeholder={t('settings.optional')}
-                                        value={settings.proxyPassword}
-                                        onChange={e => updateSetting('proxyPassword', e.target.value)}
-                                        className="w-40 bg-telegram-bg border border-telegram-border rounded-md px-2 py-1 text-sm text-telegram-text text-right focus:outline-none focus:border-telegram-primary/50 transition placeholder:text-telegram-subtext/40"
-                                    />
+                                    <div className="flex items-center gap-2">
+                                        <input
+                                            type="password"
+                                            placeholder={t('settings.optional')}
+                                            value={settings.proxyPassword}
+                                            onChange={e => updateSetting('proxyPassword', e.target.value)}
+                                            className="w-40 bg-telegram-bg border border-telegram-border rounded-md px-2 py-1 text-sm text-telegram-text text-right focus:outline-none focus:border-telegram-primary/50 transition placeholder:text-telegram-subtext/40"
+                                        />
+                                        <button
+                                            type="button"
+                                            aria-label={`${t('settings.clear')} ${t('common.password')}`}
+                                            title={`${t('settings.clear')} ${t('common.password')}`}
+                                            onClick={async () => {
+                                                try {
+                                                    await invoke('cmd_clear_proxy_secret');
+                                                    updateSetting('proxyPassword', '');
+                                                } catch (error) {
+                                                    toast.error(String(error));
+                                                }
+                                            }}
+                                            className="rounded-md border border-telegram-border px-2 py-1 text-xs text-telegram-subtext transition hover:border-telegram-primary/50 hover:text-telegram-text"
+                                        >
+                                            {t('settings.clear')}
+                                        </button>
+                                    </div>
                                 </div>
 
                                 {/* Info note */}

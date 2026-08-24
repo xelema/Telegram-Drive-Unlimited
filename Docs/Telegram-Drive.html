@@ -573,10 +573,10 @@
     <section class="section section-rule" id="android">
       <div class="shell phone-stage">
         <div class="phone-copy">
-          <p class="eyebrow">Android companion</p>
+          <p class="eyebrow">Android and Google TV</p>
           <h2>Your workspace, away from the desk.</h2>
-          <p class="section-lede">The Android beta brings touch-first folder navigation, uploads, transfers, sharing, and settings to Android 7.0 and newer.</p>
-          <p><a class="text-link" href="https://github.com/caamer20/Telegram-Drive/releases/tag/Androidv3.0.0beta" target="_blank" rel="noopener noreferrer">View the Android beta release ↗</a></p>
+          <p class="section-lede">The signed Android release supports phones, tablets, Android TV, and Google TV on Android 7.0 and newer, including in-app media playback and resilient background transfers.</p>
+          <p><a class="text-link" href="https://github.com/caamer20/Telegram-Drive/releases" target="_blank" rel="noopener noreferrer">View Android releases ↗</a></p>
         </div>
         <div class="phones" aria-label="Android app screenshots">
           <div class="phone"><img src="assets/android-folders.webp" width="560" height="1247" loading="lazy" alt="Telegram-Drive file workspace on Android" data-lightbox></div>
@@ -619,14 +619,14 @@
         <div class="section-head center">
           <p class="eyebrow">Download</p>
           <h2>Choose your platform.</h2>
-          <p class="section-lede">Desktop installers come from the latest GitHub release. Android remains a separate beta track.</p>
+          <p class="section-lede">Desktop installers and signed Android sideload packages come from GitHub Releases.</p>
         </div>
         <div class="release-summary" aria-live="polite"><strong id="releaseTag">Latest release</strong><span id="releaseDate">Checking GitHub…</span><span id="releaseDownloads"></span></div>
         <div class="download-grid" id="downloadGrid">
           <article class="download-card" data-platform="windows"><span class="download-label">Desktop</span><h3>Windows</h3><p>Windows 10 or 11 · x64</p><div class="download-links"><a class="button primary" href="https://github.com/caamer20/Telegram-Drive/releases" target="_blank" rel="noopener noreferrer">View Windows download</a></div></article>
           <article class="download-card" data-platform="macos"><span class="download-label">Desktop</span><h3>macOS</h3><p>Apple silicon and Intel</p><div class="download-links"><a class="button primary" href="https://github.com/caamer20/Telegram-Drive/releases" target="_blank" rel="noopener noreferrer">View macOS downloads</a></div></article>
           <article class="download-card" data-platform="linux"><span class="download-label">Desktop</span><h3>Linux</h3><p>AppImage, Debian, and RPM</p><div class="download-links"><a class="button primary" href="https://github.com/caamer20/Telegram-Drive/releases" target="_blank" rel="noopener noreferrer">View Linux downloads</a></div></article>
-          <article class="download-card" data-platform="android"><span class="download-label">Beta</span><h3>Android</h3><p>Android 7.0+ · unsigned APK</p><div class="download-links"><a class="button" href="https://github.com/caamer20/Telegram-Drive/releases/tag/Androidv3.0.0beta" target="_blank" rel="noopener noreferrer">View Android beta</a></div></article>
+          <article class="download-card" data-platform="android"><span class="download-label">Sideload</span><h3>Android + Google TV</h3><p>Android 7.0+ · signed universal APK</p><div class="download-links"><a class="button" href="https://github.com/caamer20/Telegram-Drive/releases" target="_blank" rel="noopener noreferrer">View Android releases</a></div></article>
         </div>
       </div>
     </section>
@@ -880,8 +880,8 @@
         if (detected) document.querySelector(`[data-platform="${detected}"]`)?.classList.add('recommended');
         const heroDownload = document.getElementById('heroDownload');
         if (detected === 'android') {
-          heroDownload.href = 'https://github.com/caamer20/Telegram-Drive/releases/tag/Androidv3.0.0beta';
-          heroDownload.textContent = 'View Android beta';
+          heroDownload.href = REPO_RELEASES;
+          heroDownload.textContent = 'View Android releases';
         } else if (detected) {
           const asset = preferredAsset(assets, detected);
           if (asset) {

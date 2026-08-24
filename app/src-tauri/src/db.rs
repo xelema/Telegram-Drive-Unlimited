@@ -5,6 +5,27 @@ use tauri::{AppHandle, Manager};
 
 pub type DbConnection = Arc<Mutex<sqlite::Connection>>;
 
+/// Run one complete SQLite operation on Tauri's blocking pool.
+///
+/// The connection mutex is acquired inside the blocking closure and can never
+/// cross an async suspension point. Callers should keep an entire logical
+/// operation or transaction in one closure rather than awaiting between SQL
+/// statements.
+pub async fn with_connection<T, F>(db: DbConnection, operation: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(&sqlite::Connection) -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || {
+        let connection = db
+            .lock()
+            .map_err(|_| "Database lock poisoned".to_string())?;
+        operation(&connection)
+    })
+    .await
+    .map_err(|error| format!("Database task failed: {error}"))?
+}
+
 /// Maximum number of retry attempts for database initialization
 const MAX_DB_INIT_RETRIES: u32 = 5;
 
@@ -406,5 +427,115 @@ fn run_encryption_migration(conn: &sqlite::Connection) -> Result<(), String> {
             let _ = conn.execute("ROLLBACK");
             Err(error)
         }
+    }
+}
+
+#[cfg(test)]
+mod async_boundary_tests {
+    use super::*;
+
+    fn rust_sources(root: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(root).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                rust_sources(&path, files);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                files.push(path);
+            }
+        }
+    }
+
+    #[test]
+    fn runtime_code_cannot_lock_sqlite_connections_directly() {
+        let source_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        rust_sources(&source_root, &mut files);
+        let forbidden = [
+            "db.lock(",
+            "db_pool.lock(",
+            "database.lock(",
+            "db_conn.lock(",
+            "connection.lock(",
+            "conn.lock(",
+            "self.db.lock(",
+        ];
+
+        for path in files {
+            if path == source_root.join("db.rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).unwrap();
+            let compact = source
+                .chars()
+                .filter(|character| !character.is_whitespace())
+                .collect::<String>();
+            for pattern in forbidden {
+                assert!(
+                    !compact.contains(pattern),
+                    "{} directly locks a possible SQLite connection with {pattern}; use db::with_connection",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn blocking_sqlite_work_does_not_stall_the_async_runtime() {
+        let database = Arc::new(Mutex::new(sqlite::open(":memory:").unwrap()));
+        let started = std::time::Instant::now();
+        let database_work = with_connection(database, |_| {
+            std::thread::sleep(Duration::from_millis(60));
+            Ok(())
+        });
+        let runtime_tick = async {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            started.elapsed()
+        };
+        let (_, tick_elapsed) = tokio::join!(database_work, runtime_tick);
+        assert!(tick_elapsed < Duration::from_millis(40));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_transactions_are_serialized_without_lost_updates() {
+        let database = Arc::new(Mutex::new(sqlite::open(":memory:").unwrap()));
+        database
+            .lock()
+            .unwrap()
+            .execute(
+                "CREATE TABLE counter (value INTEGER NOT NULL); INSERT INTO counter VALUES (0)",
+            )
+            .unwrap();
+
+        let operations = (0..48).map(|_| {
+            let database = database.clone();
+            tokio::spawn(async move {
+                with_connection(database, |connection| {
+                    connection
+                        .execute(
+                            "BEGIN IMMEDIATE TRANSACTION;
+                             UPDATE counter SET value = value + 1;
+                             COMMIT;",
+                        )
+                        .map_err(|error| error.to_string())
+                })
+                .await
+            })
+        });
+        for operation in operations {
+            operation.await.unwrap().unwrap();
+        }
+
+        let count = with_connection(database, |connection| {
+            let mut statement = connection
+                .prepare("SELECT value FROM counter")
+                .map_err(|error| error.to_string())?;
+            statement.next().map_err(|error| error.to_string())?;
+            statement
+                .read::<i64, _>(0)
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .unwrap();
+        assert_eq!(count, 48);
     }
 }

@@ -4,12 +4,16 @@ on:
   pull_request:
     paths:
       - "app/**"
+      - ".github/workflows/android.yml"
       - ".github/workflows/desktop-sync-ci.yml"
+      - ".github/workflows/release.yml"
   push:
     branches: [main, develop]
     paths:
       - "app/**"
+      - ".github/workflows/android.yml"
       - ".github/workflows/desktop-sync-ci.yml"
+      - ".github/workflows/release.yml"
   workflow_dispatch:
 
 permissions:
@@ -50,6 +54,15 @@ jobs:
         working-directory: app
         run: npm ci
 
+      - name: Test frontend behavior and architecture invariants
+        working-directory: app
+        run: npm test
+
+      - name: Validate localization resources
+        if: runner.os == 'Linux'
+        working-directory: app
+        run: npm run i18n:check
+
       - name: Build frontend
         working-directory: app
         run: npm run build
@@ -57,3 +70,44 @@ jobs:
       - name: Test Rust library and sync invariants
         working-directory: app/src-tauri
         run: cargo test --lib
+
+      - name: Verify Rust formatting
+        if: runner.os == 'Linux'
+        working-directory: app/src-tauri
+        run: cargo fmt --all -- --check
+
+      - name: Lint native targets without warnings
+        working-directory: app/src-tauri
+        run: cargo clippy --lib --all-targets -- -D warnings
+
+      - name: Build the native Tauri application without installers
+        working-directory: app
+        run: npm run tauri -- build --no-bundle
+
+  desktop-ui-e2e:
+    name: Desktop UI end-to-end
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: app
+        run: npm ci
+      - name: Install Chromium
+        working-directory: app
+        run: npx playwright install --with-deps chromium
+      - name: Run desktop UI end-to-end and visual regression tests
+        working-directory: app
+        run: npm run visual:test
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-ui-e2e-report
+          path: app/test-results
+          if-no-files-found: ignore

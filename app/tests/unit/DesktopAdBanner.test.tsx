@@ -24,7 +24,7 @@ describe('DesktopAdBanner', () => {
     vi.useRealTimers();
   });
 
-  it('starts its countdown after the creative loads and dismisses for 45 minutes', async () => {
+  it('starts its countdown after the creative loads and returns after 15 minutes', async () => {
     render(<DesktopAdBanner />);
     const iframe = screen.getByTitle('Sponsored advertisement') as HTMLIFrameElement;
 
@@ -48,9 +48,9 @@ describe('DesktopAdBanner', () => {
     expect(screen.queryByRole('complementary')).toBeNull();
     expect(localStorage.getItem('desktopAdDismissedAt')).not.toBeNull();
 
-    await act(async () => { await vi.advanceTimersByTimeAsync(44 * 60 * 1000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(14 * 60 * 1000); });
     expect(screen.queryByRole('complementary')).toBeNull();
-    await act(async () => { await vi.advanceTimersByTimeAsync(61 * 1000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(60 * 1000); });
     expect(screen.getByRole('complementary')).toBeTruthy();
   });
 

@@ -38,7 +38,7 @@ pub struct SyncEngine {
     task: Mutex<Option<JoinHandle<()>>>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncStatus {
     pub enabled: bool,
@@ -47,19 +47,6 @@ pub struct SyncStatus {
     pub pending_ops: usize,
     pub conflicts: usize,
     pub last_error: Option<String>,
-}
-
-impl Default for SyncStatus {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            running: false,
-            active_pairs: 0,
-            pending_ops: 0,
-            conflicts: 0,
-            last_error: None,
-        }
-    }
 }
 
 impl SyncEngine {
@@ -75,9 +62,9 @@ impl SyncEngine {
         }
     }
 
-    pub fn start(&self) -> Result<(), String> {
-        let settings = load_settings(&self.db)?;
-        let pairs = load_pairs(&self.db, true)?;
+    pub async fn start(&self) -> Result<(), String> {
+        let settings = load_settings(self.db.clone()).await?;
+        let pairs = load_pairs(self.db.clone(), true).await?;
         if !settings.enabled {
             let status = self.status.clone();
             let app = self.app_handle.clone();
@@ -142,7 +129,7 @@ impl SyncEngine {
 
     pub async fn restart(&self) -> Result<(), String> {
         self.shutdown_and_wait().await?;
-        self.start()
+        self.start().await
     }
 }
 
@@ -227,12 +214,19 @@ async fn engine_loop(
                 }
                 Err(error) => {
                     log::error!("Folder sync pair {} paused: {error}", pair.id);
-                    log_sync(&db, Some(pair.id), "error", None, Some(&error));
+                    log_sync(
+                        db.clone(),
+                        Some(pair.id),
+                        "error".to_string(),
+                        None,
+                        Some(error.clone()),
+                    )
+                    .await;
                     last_error = Some(error);
                 }
             }
         }
-        conflicts = conflicts.max(count_conflicts(&db).unwrap_or(conflicts));
+        conflicts = conflicts.max(count_conflicts(&db).await.unwrap_or(conflicts));
         {
             let mut current = status.write().await;
             current.running = false;
@@ -253,17 +247,17 @@ async fn engine_loop(
     emit_status(&app, &status).await;
 }
 
-fn count_conflicts(db: &DbConnection) -> Result<usize, String> {
-    let connection = db
-        .lock()
-        .map_err(|_| "Database lock poisoned".to_string())?;
-    let mut statement = connection
-        .prepare("SELECT COUNT(*) FROM sync_state WHERE sync_status = 'conflict'")
-        .map_err(|error| error.to_string())?;
-    if statement.next().map_err(|error| error.to_string())? == State::Row {
-        return Ok(statement.read::<i64, _>(0).unwrap_or(0).max(0) as usize);
-    }
-    Ok(0)
+async fn count_conflicts(db: &DbConnection) -> Result<usize, String> {
+    crate::db::with_connection(db.clone(), |connection| {
+        let mut statement = connection
+            .prepare("SELECT COUNT(*) FROM sync_state WHERE sync_status = 'conflict'")
+            .map_err(|error| error.to_string())?;
+        if statement.next().map_err(|error| error.to_string())? == State::Row {
+            return Ok(statement.read::<i64, _>(0).unwrap_or(0).max(0) as usize);
+        }
+        Ok(0)
+    })
+    .await
 }
 
 fn hash_file(path: &Path) -> Result<String, String> {
@@ -459,10 +453,8 @@ async fn scan_remote_once(
     Ok(tree)
 }
 
-fn load_synced_tree(db: &DbConnection, pair_id: i64) -> Result<SyncedTree, String> {
-    let connection = db
-        .lock()
-        .map_err(|_| "Database lock poisoned".to_string())?;
+async fn load_synced_tree(db: &DbConnection, pair_id: i64) -> Result<SyncedTree, String> {
+    crate::db::with_connection(db.clone(), move |connection| {
     let mut statement = connection.prepare(
         "SELECT relative_path, local_hash, remote_hash, file_size, local_mtime, remote_date, message_id, sync_status FROM sync_state WHERE pair_id = ?",
     ).map_err(|error| error.to_string())?;
@@ -491,9 +483,10 @@ fn load_synced_tree(db: &DbConnection, pair_id: i64) -> Result<SyncedTree, Strin
         );
     }
     Ok(tree)
+    }).await
 }
 
-fn upsert_state(
+async fn upsert_state(
     db: &DbConnection,
     pair_id: i64,
     path: &str,
@@ -501,9 +494,11 @@ fn upsert_state(
     remote: Option<&TreeEntry>,
     status: &str,
 ) -> Result<(), String> {
-    let connection = db
-        .lock()
-        .map_err(|_| "Database lock poisoned".to_string())?;
+    let path = path.to_string();
+    let local = local.cloned();
+    let remote = remote.cloned();
+    let status = status.to_string();
+    crate::db::with_connection(db.clone(), move |connection| {
     let mut statement = connection.prepare(
         "INSERT INTO sync_state (pair_id, relative_path, local_hash, remote_hash, file_size, local_mtime, remote_date, message_id, sync_status)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -513,79 +508,86 @@ fn upsert_state(
         .bind((1, pair_id))
         .map_err(|error| error.to_string())?;
     statement
-        .bind((2, path))
+        .bind((2, path.as_str()))
         .map_err(|error| error.to_string())?;
     statement
-        .bind::<(usize, Option<&str>)>((3, local.map(|entry| entry.hash.as_str())))
+        .bind::<(usize, Option<&str>)>((3, local.as_ref().map(|entry| entry.hash.as_str())))
         .map_err(|error| error.to_string())?;
     statement
-        .bind::<(usize, Option<&str>)>((4, remote.map(|entry| entry.hash.as_str())))
+        .bind::<(usize, Option<&str>)>((4, remote.as_ref().map(|entry| entry.hash.as_str())))
         .map_err(|error| error.to_string())?;
     statement
         .bind((
             5,
             local
-                .or(remote)
+                .as_ref()
+                .or(remote.as_ref())
                 .map(|entry| entry.file_size as i64)
                 .unwrap_or(0),
         ))
         .map_err(|error| error.to_string())?;
     statement
-        .bind::<(usize, Option<i64>)>((6, local.and_then(|entry| entry.modified_at)))
+        .bind::<(usize, Option<i64>)>((6, local.as_ref().and_then(|entry| entry.modified_at)))
         .map_err(|error| error.to_string())?;
     statement
-        .bind::<(usize, Option<i64>)>((7, remote.and_then(|entry| entry.modified_at)))
+        .bind::<(usize, Option<i64>)>((7, remote.as_ref().and_then(|entry| entry.modified_at)))
         .map_err(|error| error.to_string())?;
     statement
-        .bind::<(usize, Option<i64>)>((8, remote.and_then(|entry| entry.message_id).map(i64::from)))
+        .bind::<(usize, Option<i64>)>((8, remote.as_ref().and_then(|entry| entry.message_id).map(i64::from)))
         .map_err(|error| error.to_string())?;
     statement
-        .bind((9, status))
+        .bind((9, status.as_str()))
         .map_err(|error| error.to_string())?;
     statement.next().map_err(|error| error.to_string())?;
     Ok(())
+    }).await
 }
 
-fn delete_state(db: &DbConnection, pair_id: i64, path: &str) -> Result<(), String> {
-    let connection = db
-        .lock()
-        .map_err(|_| "Database lock poisoned".to_string())?;
-    let mut statement = connection
-        .prepare("DELETE FROM sync_state WHERE pair_id = ? AND relative_path = ?")
-        .map_err(|error| error.to_string())?;
-    statement
-        .bind((1, pair_id))
-        .map_err(|error| error.to_string())?;
-    statement
-        .bind((2, path))
-        .map_err(|error| error.to_string())?;
-    statement.next().map_err(|error| error.to_string())?;
-    Ok(())
+async fn delete_state(db: &DbConnection, pair_id: i64, path: &str) -> Result<(), String> {
+    let path = path.to_string();
+    crate::db::with_connection(db.clone(), move |connection| {
+        let mut statement = connection
+            .prepare("DELETE FROM sync_state WHERE pair_id = ? AND relative_path = ?")
+            .map_err(|error| error.to_string())?;
+        statement
+            .bind((1, pair_id))
+            .map_err(|error| error.to_string())?;
+        statement
+            .bind((2, path.as_str()))
+            .map_err(|error| error.to_string())?;
+        statement.next().map_err(|error| error.to_string())?;
+        Ok(())
+    })
+    .await
 }
 
-fn set_state_status(
+async fn set_state_status(
     db: &DbConnection,
     pair_id: i64,
     path: &str,
     status: &str,
 ) -> Result<(), String> {
-    let connection = db
-        .lock()
-        .map_err(|_| "Database lock poisoned".to_string())?;
-    let mut statement = connection
-        .prepare("UPDATE sync_state SET sync_status = ? WHERE pair_id = ? AND relative_path = ?")
-        .map_err(|error| error.to_string())?;
-    statement
-        .bind((1, status))
-        .map_err(|error| error.to_string())?;
-    statement
-        .bind((2, pair_id))
-        .map_err(|error| error.to_string())?;
-    statement
-        .bind((3, path))
-        .map_err(|error| error.to_string())?;
-    statement.next().map_err(|error| error.to_string())?;
-    Ok(())
+    let path = path.to_string();
+    let status = status.to_string();
+    crate::db::with_connection(db.clone(), move |connection| {
+        let mut statement = connection
+            .prepare(
+                "UPDATE sync_state SET sync_status = ? WHERE pair_id = ? AND relative_path = ?",
+            )
+            .map_err(|error| error.to_string())?;
+        statement
+            .bind((1, status.as_str()))
+            .map_err(|error| error.to_string())?;
+        statement
+            .bind((2, pair_id))
+            .map_err(|error| error.to_string())?;
+        statement
+            .bind((3, path.as_str()))
+            .map_err(|error| error.to_string())?;
+        statement.next().map_err(|error| error.to_string())?;
+        Ok(())
+    })
+    .await
 }
 
 async fn reconcile_pair(
@@ -596,13 +598,13 @@ async fn reconcile_pair(
     shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(usize, usize, Option<String>), String> {
     let local = scan_local(&pair.local_path).await?;
-    let synced = load_synced_tree(db, pair.id)?;
+    let synced = load_synced_tree(db, pair.id).await?;
     let remote = scan_remote(app, pair, &synced, shutdown.clone()).await?;
     for vanished_path in synced
         .keys()
         .filter(|path| !local.contains_key(*path) && !remote.contains_key(*path))
     {
-        delete_state(db, pair.id, vanished_path)?;
+        delete_state(db, pair.id, vanished_path).await?;
     }
     let mut operations =
         planner::plan_for_direction(&local, &remote, &synced, &pair.sync_direction).map_err(
@@ -621,7 +623,7 @@ async fn reconcile_pair(
         .filter(|operation| matches!(operation, SyncOperation::Conflict { .. }))
     {
         if synced.contains_key(operation.path()) {
-            set_state_status(db, pair.id, operation.path(), "conflict")?;
+            set_state_status(db, pair.id, operation.path(), "conflict").await?;
         } else {
             upsert_state(
                 db,
@@ -630,7 +632,8 @@ async fn reconcile_pair(
                 local.get(operation.path()),
                 remote.get(operation.path()),
                 "conflict",
-            )?;
+            )
+            .await?;
         }
     }
     // Existing unchanged entries need no transfer or database write. Keeping
@@ -665,12 +668,13 @@ async fn reconcile_pair(
                 {
                     log::warn!("Uploaded replacement but could not remove superseded Telegram message {old_message_id}: {error}");
                     log_sync(
-                        db,
+                        db.clone(),
                         Some(pair.id),
-                        "cleanup_remote_version",
-                        Some(&result.relative_path),
-                        Some(&error),
-                    );
+                        "cleanup_remote_version".to_string(),
+                        Some(result.relative_path.clone()),
+                        Some(error),
+                    )
+                    .await;
                 }
             }
         }
@@ -693,11 +697,12 @@ async fn reconcile_pair(
                 local.get(&result.relative_path),
                 Some(&remote_stub),
                 "syncing",
-            )?;
+            )
+            .await?;
         }
     }
     let local_after = scan_local(&pair.local_path).await?;
-    let mapped = load_synced_tree(db, pair.id)?;
+    let mapped = load_synced_tree(db, pair.id).await?;
     let remote_after = scan_remote(app, pair, &mapped, shutdown).await?;
     for result in results {
         if !result.success {
@@ -719,7 +724,7 @@ async fn reconcile_pair(
                 "error"
             };
             if synced.contains_key(&result.relative_path) {
-                set_state_status(db, pair.id, &result.relative_path, status)?;
+                set_state_status(db, pair.id, &result.relative_path, status).await?;
             } else {
                 upsert_state(
                     db,
@@ -728,7 +733,8 @@ async fn reconcile_pair(
                     local_after.get(&result.relative_path),
                     remote_after.get(&result.relative_path),
                     status,
-                )?;
+                )
+                .await?;
             }
             continue;
         }
@@ -742,7 +748,7 @@ async fn reconcile_pair(
         };
         let remote_entry = remote_after.get(&result.relative_path);
         if local_entry.is_none() && remote_entry.is_none() {
-            delete_state(db, pair.id, &result.relative_path)?;
+            delete_state(db, pair.id, &result.relative_path).await?;
         } else {
             upsert_state(
                 db,
@@ -751,7 +757,8 @@ async fn reconcile_pair(
                 local_entry,
                 remote_entry,
                 "synced",
-            )?;
+            )
+            .await?;
         }
     }
     Ok((pending, conflicts, execution_error))

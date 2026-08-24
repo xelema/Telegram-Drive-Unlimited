@@ -1,7 +1,7 @@
 {
   "name": "app",
   "private": true,
-  "version": "3.0.0",
+  "version": "3.5.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -14,6 +14,8 @@
     "i18n:types": "node scripts/i18n/generate-key-types.cjs",
     "i18n:pseudo": "node scripts/i18n/generate-pseudo-locales.cjs",
     "i18n:check": "npm run i18n:types && npm run i18n:validate && npm run i18n:scan",
+    "android:jni:check": "node scripts/check-android-jni-contract.cjs",
+    "android:version:check": "node scripts/verify-android-release-version.cjs",
     "visual:test": "playwright test",
     "visual:update": "playwright test --update-snapshots"
   },

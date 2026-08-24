@@ -1,5 +1,18 @@
-pub mod models;
 pub mod crypto;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub mod desktop_lifecycle;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub mod desktop_notifications;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub mod desktop_power;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub mod desktop_preferences;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub mod desktop_tray;
+pub mod linux_startup;
+pub mod models;
+#[cfg(not(target_os = "android"))]
+mod network_keepalive;
 
 /// Initialize COM in Multi-Threaded Apartment mode on Windows worker threads.
 /// Tauri's main thread uses STA (required for WebView2/DragDrop), so any spawned
@@ -20,7 +33,10 @@ fn init_com_on_worker_thread() {
     let hr = unsafe { CoInitializeEx(std::ptr::null(), COINIT_MULTITHREADED) };
     match hr {
         S_OK | S_FALSE => {
-            log::info!("COM MTA initialized on worker thread (hr=0x{:x})", hr as u32);
+            log::info!(
+                "COM MTA initialized on worker thread (hr=0x{:x})",
+                hr as u32
+            );
         }
         RPC_E_CHANGED_MODE => {
             // Thread was already initialized with a different apartment model.
@@ -39,37 +55,41 @@ fn init_com_on_worker_thread() {
     }
 }
 
-pub mod commands;
 pub mod bandwidth;
-pub mod vpn_optimizer;
+pub mod commands;
+pub mod proxy_secret;
 pub mod socks5_bridge;
+pub mod temp_artifacts;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub mod transfer_engine;
+pub mod vpn_optimizer;
 
 use tauri::{Emitter, Manager};
 
-
-use tokio::sync::Mutex;
-use std::sync::Arc;
-use std::collections::{HashMap, HashSet};
-use commands::TelegramState;
 use commands::streaming::StreamConfig;
+use commands::TelegramState;
 use rand::Rng;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
-
-pub mod server;
+pub mod android_security;
+pub mod android_updates;
 pub mod api_routes;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-pub mod webdav;
+pub mod crypto_commands;
 pub mod db;
 mod db_migrations;
-pub mod share_routes;
-pub mod upload_service;
-pub mod jni_cache;
-pub mod transcode;
 pub mod fmp4_remux;
+pub mod jni_cache;
 pub mod mp4_utils;
-pub mod crypto_commands;
+pub mod server;
+mod server_lifecycle;
+pub mod share_routes;
 pub mod sync_engine;
-
+pub mod transcode;
+pub mod upload_service;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub mod webdav;
 
 /// Single source of truth for the Actix streaming server port.
 /// Referenced in lib.rs (server startup) and exposed to the frontend
@@ -87,66 +107,74 @@ fn generate_stream_token() -> String {
 /// from the RunEvent::Exit handler for graceful Ctrl+C termination.
 pub struct ActixServerHandle(pub Arc<std::sync::Mutex<Option<actix_web::dev::ServerHandle>>>);
 
-/// Tracks whether the API server is currently running (for the frontend status dot)
-pub struct ApiServerRunning(pub Arc<std::sync::atomic::AtomicBool>);
+/// Serialized lifecycle for the restartable desktop REST API server.
+pub struct ApiServerLifecycle(pub Arc<server_lifecycle::LocalServerLifecycle>);
 
-/// Holds the API server stop handle separately so we can restart it independently
-pub struct ApiServerHandle(pub Arc<std::sync::Mutex<Option<actix_web::dev::ServerHandle>>>);
-
-/// Tracks whether the local WebDAV server is accepting connections.
-pub struct WebDavServerRunning(pub Arc<std::sync::atomic::AtomicBool>);
-
-/// Stores the most recent WebDAV bind/startup error for display in Settings.
-pub struct WebDavServerLastError(pub Arc<std::sync::Mutex<Option<String>>>);
-
-/// Holds the WebDAV server stop handle so settings can restart it independently.
-pub struct WebDavServerHandle(pub Arc<std::sync::Mutex<Option<actix_web::dev::ServerHandle>>>);
+/// Serialized lifecycle for the restartable desktop WebDAV server.
+pub struct WebDavServerLifecycle(pub Arc<server_lifecycle::LocalServerLifecycle>);
 
 /// Restart (or stop) the API server based on current settings.
 /// Called from Tauri commands when the user changes API settings.
 #[cfg(not(target_os = "android"))]
-pub fn restart_api_server(app: &tauri::AppHandle) {
-    // Stop existing API server if running
-    let api_handle_arc = app.state::<ApiServerHandle>().0.clone();
-    let old_handle = api_handle_arc.lock().ok().and_then(|mut g| g.take());
+pub async fn restart_api_server(app: &tauri::AppHandle) -> Result<(), String> {
+    let lifecycle = app.state::<ApiServerLifecycle>().0.clone();
+    let generation = lifecycle.request_restart();
+    let _operation = lifecycle.lock_operation().await;
+    if !lifecycle.is_current(generation) {
+        return Ok(());
+    }
+
+    let old_handle = lifecycle.take_handle();
     if let Some(handle) = old_handle {
         log::info!("Stopping existing API server...");
-        drop(handle.stop(true));
-        // Give it a moment to release the port
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        handle.stop(true).await;
+    }
+    if !lifecycle.is_current(generation) {
+        return Ok(());
     }
 
     let settings = commands::api_settings::load_settings(app);
-    let running_flag = app.state::<ApiServerRunning>().0.clone();
-
     if !settings.enabled {
-        running_flag.store(false, std::sync::atomic::Ordering::Relaxed);
         log::info!("API server disabled");
-        return;
+        return Ok(());
     }
 
     // Need TelegramState to share with the API server
     let tg_state = Arc::new(app.state::<TelegramState>().inner().clone());
-    let bw_manager = app.state::<Arc<bandwidth::BandwidthManager>>().inner().clone();
-    let net_config = app.state::<Arc<vpn_optimizer::NetworkConfig>>().inner().clone();
+    let bw_manager = app
+        .state::<Arc<bandwidth::BandwidthManager>>()
+        .inner()
+        .clone();
+    let net_config = app
+        .state::<Arc<vpn_optimizer::NetworkConfig>>()
+        .inner()
+        .clone();
     let db_pool = app.state::<db::DbConnection>().inner().clone();
     let api_port = settings.port;
     let key_hash = settings.key_hash.clone();
-    let handle_for_thread = api_handle_arc.clone();
+    let lifecycle_for_thread = lifecycle.clone();
 
     // Resolve cache dirs before the thread spawn since app is a reference
-    let preview_dir = app.path().app_cache_dir().unwrap_or_default().join("previews");
-    let thumbnail_dir = app.path().app_data_dir().unwrap_or_default().join("thumbnails");
+    let preview_dir = app
+        .path()
+        .app_cache_dir()
+        .unwrap_or_default()
+        .join("previews");
+    let thumbnail_dir = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_default()
+        .join("thumbnails");
 
+    let (startup_sender, startup_receiver) = tokio::sync::oneshot::channel();
     std::thread::spawn(move || {
         #[cfg(target_os = "windows")]
         init_com_on_worker_thread();
         let sys = actix_rt::System::new();
         sys.block_on(async move {
+            let mut startup_sender = Some(startup_sender);
             let api_state_data = actix_web::web::Data::new(tg_state);
-            let api_state = actix_web::web::Data::new(api_routes::ApiState {
-                key_hash,
-            });
+            let api_state = actix_web::web::Data::new(api_routes::ApiState { key_hash });
             let cache_dirs = actix_web::web::Data::new(api_routes::CacheDirs {
                 thumbnail_dir,
                 preview_dir,
@@ -156,8 +184,28 @@ pub fn restart_api_server(app: &tauri::AppHandle) {
             let api_db = actix_web::web::Data::new(db_pool);
 
             log::info!("Starting REST API server on port {}", api_port);
+            let listener = match server_lifecycle::bind_loopback_with_retry(
+                api_port,
+                &lifecycle_for_thread,
+                generation,
+            )
+            .await
+            {
+                Ok(Some(listener)) => listener,
+                Ok(None) => {
+                    let _ = startup_sender.take().unwrap().send(Ok(()));
+                    return;
+                }
+                Err(error) => {
+                    let message = format!("Could not start REST API on port {api_port}: {error}");
+                    log::error!("{message}");
+                    lifecycle_for_thread.set_error(generation, message.clone());
+                    let _ = startup_sender.take().unwrap().send(Err(message));
+                    return;
+                }
+            };
 
-            match actix_web::HttpServer::new(move || {
+            let server = match actix_web::HttpServer::new(move || {
                 let cors = actix_cors::Cors::default()
                     .allowed_origin_fn(|origin, _req_head| {
                         let origin_bytes = origin.as_bytes();
@@ -183,60 +231,79 @@ pub fn restart_api_server(app: &tauri::AppHandle) {
                     .app_data(api_db.clone())
                     .configure(api_routes::configure_api)
             })
-            .bind(("127.0.0.1", api_port)) {
-                Ok(bound) => {
-                    let server = bound.run();
-                    *handle_for_thread.lock().unwrap() = Some(server.handle());
-                    running_flag.store(true, std::sync::atomic::Ordering::Relaxed);
-                    log::info!("REST API server started on http://127.0.0.1:{}", api_port);
-                    server.await.ok();
+            .listen(listener)
+            {
+                Ok(bound) => bound.run(),
+                Err(error) => {
+                    let message = format!("Could not start REST API on port {api_port}: {error}");
+                    log::error!("{message}");
+                    lifecycle_for_thread.set_error(generation, message.clone());
+                    let _ = startup_sender.take().unwrap().send(Err(message));
+                    return;
                 }
-                Err(e) => {
-                    running_flag.store(false, std::sync::atomic::Ordering::Relaxed);
-                    log::error!("Failed to start API server on port {}: {}", api_port, e);
-                }
+            };
+            if !lifecycle_for_thread.install_handle(generation, server.handle()) {
+                server.handle().stop(false).await;
+                let _ = startup_sender.take().unwrap().send(Ok(()));
+                let _ = server.await;
+                return;
             }
+            log::info!("REST API server started on http://127.0.0.1:{}", api_port);
+            let _ = startup_sender.take().unwrap().send(Ok(()));
+            let result = server.await;
+            let error = result
+                .err()
+                .map(|value| format!("REST API server stopped: {value}"));
+            lifecycle_for_thread.server_finished(generation, error);
         });
     });
+
+    match startup_receiver.await {
+        Ok(result) => result,
+        Err(_) => {
+            let message = "REST API startup task ended unexpectedly".to_string();
+            lifecycle.set_error(generation, message.clone());
+            Err(message)
+        }
+    }
 }
 
 /// Restart (or stop) the API server based on current settings.
 /// Called from Tauri commands when the user changes API settings.
 #[cfg(target_os = "android")]
-pub fn restart_api_server(_app: &tauri::AppHandle) {
+pub async fn restart_api_server(_app: &tauri::AppHandle) -> Result<(), String> {
     log::info!("REST API disabled on mobile.");
+    Ok(())
 }
 
 /// Restart (or stop) the loopback-only WebDAV server using persisted settings.
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-pub fn restart_webdav_server(app: &tauri::AppHandle) {
-    use std::sync::atomic::Ordering;
-
-    let handle_arc = app.state::<WebDavServerHandle>().0.clone();
-    let old_handle = handle_arc.lock().ok().and_then(|mut handle| handle.take());
-    if let Some(handle) = old_handle {
-        log::info!("Stopping existing WebDAV server...");
-        drop(handle.stop(false));
-        std::thread::sleep(std::time::Duration::from_millis(200));
+pub async fn restart_webdav_server(app: &tauri::AppHandle) -> Result<(), String> {
+    let lifecycle = app.state::<WebDavServerLifecycle>().0.clone();
+    let generation = lifecycle.request_restart();
+    let _operation = lifecycle.lock_operation().await;
+    if !lifecycle.is_current(generation) {
+        return Ok(());
     }
 
-    let running = app.state::<WebDavServerRunning>().0.clone();
-    let last_error = app.state::<WebDavServerLastError>().0.clone();
-    running.store(false, Ordering::Relaxed);
-    if let Ok(mut error) = last_error.lock() {
-        *error = None;
+    let old_handle = lifecycle.take_handle();
+    if let Some(handle) = old_handle {
+        log::info!("Stopping existing WebDAV server...");
+        handle.stop(true).await;
+    }
+    if !lifecycle.is_current(generation) {
+        return Ok(());
     }
 
     let settings = commands::webdav_settings::load_settings(app);
     if !settings.enabled {
         log::info!("WebDAV server disabled");
-        return;
+        return Ok(());
     }
     let Some(token_hash) = settings.token_hash else {
-        if let Ok(mut error) = last_error.lock() {
-            *error = Some("Generate a WebDAV connection link before enabling the server".to_string());
-        }
-        return;
+        let message = "Generate a WebDAV connection link before enabling the server".to_string();
+        lifecycle.set_error(generation, message.clone());
+        return Err(message);
     };
 
     let telegram_state = Arc::new(app.state::<TelegramState>().inner().clone());
@@ -252,27 +319,27 @@ pub fn restart_webdav_server(app: &tauri::AppHandle) {
     let staging_dir = match app.path().app_cache_dir() {
         Ok(path) => path.join("webdav-staging"),
         Err(error) => {
-            if let Ok(mut value) = last_error.lock() {
-                *value = Some(format!("Could not resolve the WebDAV cache directory: {error}"));
-            }
-            return;
+            let message = format!("Could not resolve the WebDAV cache directory: {error}");
+            lifecycle.set_error(generation, message.clone());
+            return Err(message);
         }
     };
     let port = settings.port;
     let write_enabled = settings.write_enabled;
-    let thread_handle = handle_arc.clone();
+    let lifecycle_for_thread = lifecycle.clone();
 
+    let (startup_sender, startup_receiver) = tokio::sync::oneshot::channel();
     std::thread::spawn(move || {
         #[cfg(target_os = "windows")]
         init_com_on_worker_thread();
         let system = actix_rt::System::new();
         system.block_on(async move {
+            let mut startup_sender = Some(startup_sender);
             if let Err(error) = tokio::fs::create_dir_all(&staging_dir).await {
                 let message = format!("Could not create the WebDAV staging directory: {error}");
                 log::error!("{message}");
-                if let Ok(mut value) = last_error.lock() {
-                    *value = Some(message);
-                }
+                lifecycle_for_thread.set_error(generation, message.clone());
+                let _ = startup_sender.take().unwrap().send(Err(message));
                 return;
             }
             if let Ok(mut entries) = tokio::fs::read_dir(&staging_dir).await {
@@ -300,56 +367,90 @@ pub fn restart_webdav_server(app: &tauri::AppHandle) {
             let auth = actix_web::web::Data::new(auth);
 
             log::info!("Starting WebDAV server on 127.0.0.1:{port}");
-            match actix_web::HttpServer::new(move || {
-                actix_web::App::new()
-                    .app_data(handler.clone())
-                    .app_data(auth.clone())
-                    .service(
-                        actix_web::web::resource("/{tail:.*}")
-                            .to(webdav::webdav_handler),
-                    )
-            })
-            .bind(("127.0.0.1", port))
+            let listener = match server_lifecycle::bind_loopback_with_retry(
+                port,
+                &lifecycle_for_thread,
+                generation,
+            )
+            .await
             {
-                Ok(bound) => {
-                    let server = bound.run();
-                    if let Ok(mut value) = thread_handle.lock() {
-                        *value = Some(server.handle());
-                    }
-                    running.store(true, Ordering::Relaxed);
-                    log::info!("WebDAV server started on http://127.0.0.1:{port}");
-                    let _ = server.await;
-                    running.store(false, Ordering::Relaxed);
+                Ok(Some(listener)) => listener,
+                Ok(None) => {
+                    let _ = startup_sender.take().unwrap().send(Ok(()));
+                    return;
                 }
                 Err(error) => {
                     let message = format!("Could not start WebDAV on port {port}: {error}");
                     log::error!("{message}");
-                    if let Ok(mut value) = last_error.lock() {
-                        *value = Some(message);
-                    }
+                    lifecycle_for_thread.set_error(generation, message.clone());
+                    let _ = startup_sender.take().unwrap().send(Err(message));
+                    return;
                 }
+            };
+
+            let server = match actix_web::HttpServer::new(move || {
+                actix_web::App::new()
+                    .app_data(handler.clone())
+                    .app_data(auth.clone())
+                    .service(actix_web::web::resource("/{tail:.*}").to(webdav::webdav_handler))
+            })
+            .listen(listener)
+            {
+                Ok(bound) => bound.run(),
+                Err(error) => {
+                    let message = format!("Could not start WebDAV on port {port}: {error}");
+                    log::error!("{message}");
+                    lifecycle_for_thread.set_error(generation, message.clone());
+                    let _ = startup_sender.take().unwrap().send(Err(message));
+                    return;
+                }
+            };
+            if !lifecycle_for_thread.install_handle(generation, server.handle()) {
+                server.handle().stop(false).await;
+                let _ = startup_sender.take().unwrap().send(Ok(()));
+                let _ = server.await;
+                return;
             }
+            log::info!("WebDAV server started on http://127.0.0.1:{port}");
+            let _ = startup_sender.take().unwrap().send(Ok(()));
+            let result = server.await;
+            let error = result
+                .err()
+                .map(|value| format!("WebDAV server stopped: {value}"));
+            lifecycle_for_thread.server_finished(generation, error);
         });
     });
+
+    match startup_receiver.await {
+        Ok(result) => result,
+        Err(_) => {
+            let message = "WebDAV startup task ended unexpectedly".to_string();
+            lifecycle.set_error(generation, message.clone());
+            Err(message)
+        }
+    }
 }
 
 #[cfg(any(target_os = "android", target_os = "ios"))]
-pub fn restart_webdav_server(_app: &tauri::AppHandle) {
+pub async fn restart_webdav_server(_app: &tauri::AppHandle) -> Result<(), String> {
     log::info!("WebDAV hosting is disabled on mobile platforms.");
+    Ok(())
 }
 
 #[tauri::command]
-fn cmd_open_file_externally(path: String, app_handle: tauri::AppHandle) -> Result<(), String> {
+fn cmd_open_file_externally(path: String, _app_handle: tauri::AppHandle) -> Result<(), String> {
     #[cfg(target_os = "android")]
     {
         let ctx = ndk_context::android_context();
         let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
             .map_err(|e| format!("Failed to resolve JVM: {}", e))?;
-        let mut env = vm.attach_current_thread()
+        let mut env = vm
+            .attach_current_thread()
             .map_err(|e| format!("Failed to attach thread: {}", e))?;
-        
+
         if let Some(main_class) = crate::jni_cache::get_main_activity_jclass() {
-            let path_jstr = env.new_string(&path)
+            let path_jstr = env
+                .new_string(&path)
                 .map_err(|e| format!("Failed to create path JString: {}", e))?;
 
             let lower_ext = std::path::Path::new(&path)
@@ -357,7 +458,7 @@ fn cmd_open_file_externally(path: String, app_handle: tauri::AppHandle) -> Resul
                 .and_then(|ext| ext.to_str())
                 .unwrap_or("")
                 .to_lowercase();
-                
+
             let mime_type = match lower_ext.as_str() {
                 "jpg" | "jpeg" => "image/jpeg",
                 "png" => "image/png",
@@ -380,20 +481,27 @@ fn cmd_open_file_externally(path: String, app_handle: tauri::AppHandle) -> Resul
                 _ => "application/octet-stream",
             };
 
-            let mime_jstr = env.new_string(mime_type)
+            let mime_jstr = env
+                .new_string(mime_type)
                 .map_err(|e| format!("Failed to create mime JString: {}", e))?;
 
-            let success = env.call_static_method(
-                &main_class,
-                "openFileExternally",
-                "(Ljava/lang/String;Ljava/lang/String;)Z",
-                &[
-                    jni::objects::JValue::from(&path_jstr),
-                    jni::objects::JValue::from(&mime_jstr),
-                ],
-            ).map_err(|e| format!("Failed to call static JNI method openFileExternally: {}", e))?;
+            let success = env
+                .call_static_method(
+                    &main_class,
+                    "openFileExternally",
+                    "(Ljava/lang/String;Ljava/lang/String;)Z",
+                    &[
+                        jni::objects::JValue::from(&path_jstr),
+                        jni::objects::JValue::from(&mime_jstr),
+                    ],
+                )
+                .map_err(|e| {
+                    format!("Failed to call static JNI method openFileExternally: {}", e)
+                })?;
 
-            let success_bool = success.z().map_err(|e| format!("Failed to parse boolean result: {}", e))?;
+            let success_bool = success
+                .z()
+                .map_err(|e| format!("Failed to parse boolean result: {}", e))?;
             if !success_bool {
                 return Err("Failed to launch intent from Kotlin".to_string());
             }
@@ -405,9 +513,117 @@ fn cmd_open_file_externally(path: String, app_handle: tauri::AppHandle) -> Resul
     #[cfg(not(target_os = "android"))]
     {
         use tauri_plugin_opener::OpenerExt;
-        app_handle.opener().open_path(&path, None::<&str>)
+        _app_handle
+            .opener()
+            .open_path(&path, None::<&str>)
             .map_err(|e| e.to_string())
     }
+}
+
+#[tauri::command]
+fn cmd_open_android_stream_player(
+    stream_url: String,
+    title: String,
+    mime_type: String,
+    media_id: String,
+    preferences_json: String,
+) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        if !stream_url.starts_with("http://localhost:") {
+            return Err(
+                "Android media streams must use the authenticated localhost server".to_string(),
+            );
+        }
+        if media_id.is_empty() || media_id.len() > 128 {
+            return Err("Android media ID is invalid".to_string());
+        }
+        let preferences: serde_json::Value = serde_json::from_str(&preferences_json)
+            .map_err(|_| "Android media preferences are invalid".to_string())?;
+        if !preferences.is_object() || preferences_json.len() > 2_048 {
+            return Err("Android media preferences are invalid".to_string());
+        }
+        let ctx = ndk_context::android_context();
+        let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
+            .map_err(|e| format!("Failed to resolve JVM: {e}"))?;
+        let mut env = vm
+            .attach_current_thread()
+            .map_err(|e| format!("Failed to attach thread: {e}"))?;
+        let main_class = crate::jni_cache::get_main_activity_jclass()
+            .ok_or_else(|| "MainActivity reference is not cached in JNI cache".to_string())?;
+        let url = env.new_string(stream_url).map_err(|e| e.to_string())?;
+        let title = env.new_string(title).map_err(|e| e.to_string())?;
+        let mime = env.new_string(mime_type).map_err(|e| e.to_string())?;
+        let media_id = env.new_string(media_id).map_err(|e| e.to_string())?;
+        let preferences = env
+            .new_string(preferences_json)
+            .map_err(|e| e.to_string())?;
+        let result = env.call_static_method(
+            &main_class,
+            "openMediaStream",
+            "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Z",
+            &[
+                jni::objects::JValue::from(&url),
+                jni::objects::JValue::from(&title),
+                jni::objects::JValue::from(&mime),
+                jni::objects::JValue::from(&media_id),
+                jni::objects::JValue::from(&preferences),
+            ],
+        ).map_err(|e| format!("Failed to open the Android media player: {e}"))?;
+        if result.z().map_err(|e| e.to_string())? {
+            Ok(())
+        } else {
+            Err("Android rejected the media stream".to_string())
+        }
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (stream_url, title, mime_type, media_id, preferences_json);
+        Err("The native stream player is only available on Android".to_string())
+    }
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AndroidPlaybackHistoryEntry {
+    media_id: String,
+    title: String,
+    position_ms: u64,
+    duration_ms: u64,
+    completed: bool,
+    last_played_at: u64,
+}
+
+#[tauri::command]
+fn cmd_get_android_playback_history() -> Result<Vec<AndroidPlaybackHistoryEntry>, String> {
+    #[cfg(target_os = "android")]
+    {
+        let ctx = ndk_context::android_context();
+        let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
+            .map_err(|error| format!("Failed to resolve JVM: {error}"))?;
+        let mut env = vm
+            .attach_current_thread()
+            .map_err(|error| format!("Failed to attach playback history: {error}"))?;
+        let main_class = crate::jni_cache::get_main_activity_jclass()
+            .ok_or("MainActivity reference not cached")?;
+        let value = env
+            .call_static_method(
+                &main_class,
+                "getPlaybackHistory",
+                "()Ljava/lang/String;",
+                &[],
+            )
+            .map_err(|error| format!("Failed to read playback history: {error}"))?;
+        let value = jni::objects::JString::from(value.l().map_err(|error| error.to_string())?);
+        let json: String = env
+            .get_string(&value)
+            .map_err(|error| format!("Failed to decode playback history: {error}"))?
+            .into();
+        return serde_json::from_str(&json)
+            .map_err(|error| format!("Failed to parse playback history: {error}"));
+    }
+    #[cfg(not(target_os = "android"))]
+    Ok(Vec::new())
 }
 
 /// Called by the frontend on mount (Android only) to check whether files were
@@ -419,17 +635,17 @@ fn cmd_get_pending_share_count() -> Result<i32, String> {
     let ctx = ndk_context::android_context();
     let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
         .map_err(|e| format!("Failed to resolve JVM: {}", e))?;
-    let mut env = vm.attach_current_thread()
+    let mut env = vm
+        .attach_current_thread()
         .map_err(|e| format!("Failed to attach thread: {}", e))?;
 
     if let Some(main_class) = crate::jni_cache::get_main_activity_jclass() {
-        let count = env.call_static_method(
-            &main_class,
-            "getAndClearShareCount",
-            "()I",
-            &[],
-        ).map_err(|e| format!("Failed to call getAndClearShareCount: {}", e))?;
-        let count_int = count.i().map_err(|e| format!("Failed to parse share count: {}", e))?;
+        let count = env
+            .call_static_method(&main_class, "getAndClearShareCount", "()I", &[])
+            .map_err(|e| format!("Failed to call getAndClearShareCount: {}", e))?;
+        let count_int = count
+            .i()
+            .map_err(|e| format!("Failed to parse share count: {}", e))?;
         Ok(count_int)
     } else {
         Err("MainActivity reference not cached".to_string())
@@ -440,6 +656,37 @@ fn cmd_get_pending_share_count() -> Result<i32, String> {
 #[tauri::command]
 fn cmd_get_pending_share_count() -> Result<i32, String> {
     Ok(0) // Share intents are Android-only
+}
+
+#[cfg(target_os = "android")]
+#[tauri::command]
+fn cmd_get_pending_android_transfer_action() -> Result<String, String> {
+    let ctx = ndk_context::android_context();
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
+        .map_err(|error| format!("Failed to resolve JVM: {error}"))?;
+    let mut env = vm
+        .attach_current_thread()
+        .map_err(|error| format!("Failed to attach transfer-action check: {error}"))?;
+    let main_class =
+        crate::jni_cache::get_main_activity_jclass().ok_or("MainActivity reference not cached")?;
+    let value = env
+        .call_static_method(
+            &main_class,
+            "getAndClearPendingTransferAction",
+            "()Ljava/lang/String;",
+            &[],
+        )
+        .map_err(|error| format!("Failed to read the pending transfer action: {error}"))?;
+    let value = jni::objects::JString::from(value.l().map_err(|error| error.to_string())?);
+    env.get_string(&value)
+        .map(|result| result.into())
+        .map_err(|error| format!("Failed to decode the pending transfer action: {error}"))
+}
+
+#[cfg(not(target_os = "android"))]
+#[tauri::command]
+fn cmd_get_pending_android_transfer_action() -> Result<String, String> {
+    Ok(String::new())
 }
 
 /// Returns a list of files that were shared into the app via Android's share sheet
@@ -458,21 +705,21 @@ fn cmd_list_cached_files() -> Result<Vec<CachedFileEntry>, String> {
     let ctx = ndk_context::android_context();
     let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
         .map_err(|e| format!("Failed to resolve JVM: {}", e))?;
-    let mut env = vm.attach_current_thread()
+    let mut env = vm
+        .attach_current_thread()
         .map_err(|e| format!("Failed to attach thread: {}", e))?;
 
     if let Some(main_class) = crate::jni_cache::get_main_activity_jclass() {
-        let json_val = env.call_static_method(
-            &main_class,
-            "listCachedFiles",
-            "()Ljava/lang/String;",
-            &[],
-        ).map_err(|e| format!("Failed to call listCachedFiles: {}", e))?;
+        let json_val = env
+            .call_static_method(&main_class, "listCachedFiles", "()Ljava/lang/String;", &[])
+            .map_err(|e| format!("Failed to call listCachedFiles: {}", e))?;
 
-        let json_jstr: jni::objects::JString = json_val.l()
+        let json_jstr: jni::objects::JString = json_val
+            .l()
             .map_err(|e| format!("listCachedFiles result is not a string: {}", e))?
             .into();
-        let json_str: String = env.get_string(&json_jstr)
+        let json_str: String = env
+            .get_string(&json_jstr)
             .map_err(|e| format!("Failed to read listCachedFiles result: {}", e))?
             .into();
 
@@ -498,18 +745,21 @@ fn cmd_remove_cached_path(uri: String) -> Result<(), String> {
     let ctx = ndk_context::android_context();
     let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
         .map_err(|e| format!("Failed to resolve JVM: {}", e))?;
-    let mut env = vm.attach_current_thread()
+    let mut env = vm
+        .attach_current_thread()
         .map_err(|e| format!("Failed to attach thread: {}", e))?;
 
     if let Some(main_class) = crate::jni_cache::get_main_activity_jclass() {
-        let j_uri = env.new_string(&uri)
+        let j_uri = env
+            .new_string(&uri)
             .map_err(|e| format!("Failed to create URI string: {}", e))?;
         env.call_static_method(
             &main_class,
             "removeCachedPath",
             "(Ljava/lang/String;)V",
             &[jni::objects::JValue::from(&j_uri)],
-        ).map_err(|e| format!("Failed to call removeCachedPath: {}", e))?;
+        )
+        .map_err(|e| format!("Failed to call removeCachedPath: {}", e))?;
         let _ = env.exception_clear();
         Ok(())
     } else {
@@ -526,57 +776,105 @@ fn cmd_remove_cached_path(_uri: String) -> Result<(), String> {
 /// Gather system diagnostics and environment info for debugging.
 /// Returns a formatted string suitable for copying to clipboard.
 #[tauri::command]
-fn cmd_get_system_diagnostics(
-    app: tauri::AppHandle,
-) -> Result<String, String> {
-    let mut lines: Vec<String> = Vec::new();
-
-    lines.push("=== Telegram Drive Diagnostics ===".into());
-    lines.push(format!("Package: {}", env!("CARGO_PKG_NAME")));
-    lines.push(format!("Version: {}", env!("CARGO_PKG_VERSION")));
-
-    // OS info
-    lines.push(format!("OS: {} {}", std::env::consts::OS, std::env::consts::ARCH));
-
-    #[cfg(target_os = "linux")]
+fn cmd_get_system_diagnostics(app: tauri::AppHandle) -> Result<String, String> {
+    #[cfg(target_os = "android")]
     {
-        lines.push(format!("XDG_SESSION_TYPE: {}",
-            std::env::var("XDG_SESSION_TYPE").unwrap_or_else(|_| "unknown".into())));
-        lines.push(format!("XDG_CURRENT_DESKTOP: {}",
-            std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_else(|_| "unknown".into())));
-        lines.push(format!("WEBKIT_DISABLE_DMABUF_RENDERER: {}",
-            std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").unwrap_or_else(|_| "unset".into())));
+        let _ = app;
+        let context = ndk_context::android_context();
+        let vm = unsafe { jni::JavaVM::from_raw(context.vm().cast()) }
+            .map_err(|error| format!("Unable to access Android diagnostics: {error}"))?;
+        let mut env = vm
+            .attach_current_thread()
+            .map_err(|error| format!("Unable to attach Android diagnostics: {error}"))?;
+        let main_class = jni_cache::get_main_activity_jclass()
+            .ok_or("Android diagnostics are still initializing")?;
+        let value = env
+            .call_static_method(
+                &main_class,
+                "getSystemDiagnosticsJson",
+                "()Ljava/lang/String;",
+                &[],
+            )
+            .map_err(|error| format!("Unable to collect Android diagnostics: {error}"))?
+            .l()
+            .map_err(|error| format!("Android diagnostics returned an invalid value: {error}"))?;
+        let json: String = env
+            .get_string(&jni::objects::JString::from(value))
+            .map_err(|error| format!("Unable to read Android diagnostics: {error}"))?
+            .into();
+        let parsed: serde_json::Value = serde_json::from_str(&json)
+            .map_err(|_| "Android diagnostics returned malformed data".to_string())?;
+        let pretty = serde_json::to_string_pretty(&parsed)
+            .map_err(|error| format!("Unable to format Android diagnostics: {error}"))?;
+        return Ok(format!(
+            "=== Telegram Drive Diagnostics ===\n{pretty}\n=================================="
+        ));
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(not(target_os = "android"))]
     {
-        lines.push("Package Type: macOS bundle".to_string());
+        let mut lines: Vec<String> = Vec::new();
+
+        lines.push("=== Telegram Drive Diagnostics ===".into());
+        lines.push(format!("Package: {}", env!("CARGO_PKG_NAME")));
+        lines.push(format!("Version: {}", env!("CARGO_PKG_VERSION")));
+
+        // OS info
+        lines.push(format!(
+            "OS: {} {}",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        ));
+
+        #[cfg(target_os = "linux")]
+        {
+            lines.push(format!(
+                "XDG_SESSION_TYPE: {}",
+                std::env::var("XDG_SESSION_TYPE").unwrap_or_else(|_| "unknown".into())
+            ));
+            lines.push(format!(
+                "XDG_CURRENT_DESKTOP: {}",
+                std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_else(|_| "unknown".into())
+            ));
+            lines.push(format!(
+                "WEBKIT_DISABLE_DMABUF_RENDERER: {}",
+                std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").unwrap_or_else(|_| "unset".into())
+            ));
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            lines.push("Package Type: macOS bundle".to_string());
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            lines.push("Package Type: Windows installer".to_string());
+        }
+
+        // App data dir
+        if let Ok(dir) = app.path().app_data_dir() {
+            lines.push(format!("App Data: {}", dir.display()));
+        }
+
+        // Check for FFmpeg
+        #[cfg(unix)]
+        {
+            let which = std::process::Command::new("which")
+                .arg("ffmpeg")
+                .output()
+                .ok()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+            lines.push(format!(
+                "FFmpeg: {}",
+                which.unwrap_or_else(|| "not found".into())
+            ));
+        }
+
+        lines.push("==================================".into());
+
+        Ok(lines.join("\n"))
     }
-
-    #[cfg(target_os = "windows")]
-    {
-        lines.push("Package Type: Windows installer".to_string());
-    }
-
-    // App data dir
-    if let Ok(dir) = app.path().app_data_dir() {
-        lines.push(format!("App Data: {}", dir.display()));
-    }
-
-    // Check for FFmpeg
-    #[cfg(unix)]
-    {
-        let which = std::process::Command::new("which")
-            .arg("ffmpeg")
-            .output()
-            .ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
-        lines.push(format!("FFmpeg: {}", which.unwrap_or_else(|| "not found".into())));
-    }
-
-    lines.push("==================================".into());
-
-    Ok(lines.join("\n"))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -590,7 +888,21 @@ pub fn run() {
         Arc::new(std::sync::Mutex::new(None));
     let server_handle_for_setup = server_handle.clone();
 
-    let builder = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+
+    // This must be the first desktop plugin so a secondary process cannot
+    // initialize its own transfer engine before it is redirected here.
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        if let Err(error) = desktop_lifecycle::show_main_window(
+            app,
+            desktop_lifecycle::DesktopNavigationRequest::home(),
+        ) {
+            log::warn!("Could not restore the existing application instance: {error}");
+        }
+    }));
+
+    let builder = builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_store::Builder::default().build())
@@ -600,6 +912,9 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_clipboard_manager::init());
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let builder = builder.plugin(tauri_plugin_notification::init());
 
     // The updater plugin is not supported on Android and can cause crashes
     // (APKs are managed by the Play Store; the plugin attempts restricted FS ops).
@@ -611,6 +926,36 @@ pub fn run() {
 
     let app = builder
         .setup(move |app| {
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            {
+                let preferences = desktop_preferences::DesktopPreferencesState::load(app.handle())
+                    .map_err(|error| {
+                        log::error!("Failed to initialize desktop preferences: {error}");
+                        error
+                    })?;
+                app.manage(preferences);
+                app.manage(desktop_lifecycle::DesktopLifecycleState::default());
+
+                match desktop_tray::initialize(app.handle()) {
+                    Ok(tray) => {
+                        app.manage(tray);
+                    }
+                    Err(error) => {
+                        // Close-to-background remains disabled because tray_ready
+                        // was never set. The visible app is still fully usable.
+                        log::error!("System tray is unavailable; background close is disabled: {error}");
+                    }
+                }
+
+                let notifications =
+                    desktop_notifications::DesktopNotificationCoordinator::initialize(app.handle())
+                        .map_err(|error| {
+                            log::error!("Failed to initialize desktop notifications: {error}");
+                            error
+                        })?;
+                app.manage(notifications);
+            }
+
             #[cfg(target_os = "android")]
             {
                 // SAFETY NET: Wrap all Android JNI initialization in catch_unwind to prevent
@@ -712,27 +1057,27 @@ pub fn run() {
             let crypto_vault_path = crypto_data_dir.join("encryption").join("vault.v2");
             let crypto_vault = Box::new(crypto::vault::file::FileVault::new(crypto_vault_path));
             let crypto_state = crypto::state::CryptoState::new(crypto_vault);
-            let crypto_state_for_timer = crypto_state.clone();
+            let crypto_state_for_auto_lock = crypto_state.clone();
             app.manage(crypto_state);
             let crypto_app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
                 loop {
-                    interval.tick().await;
-                    if crypto_state_for_timer.check_auto_lock() {
-                        crypto_state_for_timer.lock();
-                        let _ = crypto_app_handle.emit("vault-locked", "auto_lock");
-                    }
+                    crypto_state_for_auto_lock.wait_until_auto_locked().await;
+                    let _ = crypto_app_handle.emit("vault-locked", "auto_lock");
                 }
             });
 
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            {
+                let power_monitor = desktop_power::DesktopPowerMonitor::new();
+                power_monitor.start(app.handle().clone());
+                app.manage(power_monitor);
+            }
+
             app.manage(ActixServerHandle(server_handle_for_setup.clone()));
-            app.manage(ApiServerHandle(Arc::new(std::sync::Mutex::new(None))));
-            app.manage(ApiServerRunning(Arc::new(std::sync::atomic::AtomicBool::new(false))));
-            app.manage(WebDavServerHandle(Arc::new(std::sync::Mutex::new(None))));
-            app.manage(WebDavServerRunning(Arc::new(std::sync::atomic::AtomicBool::new(false))));
-            app.manage(WebDavServerLastError(Arc::new(std::sync::Mutex::new(None))));
-            
+            app.manage(ApiServerLifecycle(server_lifecycle::LocalServerLifecycle::new()));
+            app.manage(WebDavServerLifecycle(server_lifecycle::LocalServerLifecycle::new()));
+
             // Initialize TranscodeManager for HLS streaming
             let app_data_dir = app.path().app_data_dir().map_err(|e| {
                 log::error!("Failed to get app data dir: {}", e);
@@ -777,50 +1122,94 @@ pub fn run() {
                 e
             })?;
             app.manage(db_pool.clone());
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            {
+                let transfer_engine = transfer_engine::TransferEngine::initialize(app.handle().clone())
+                    .map_err(|error| {
+                        log::error!("Failed to initialize durable transfer engine: {error}");
+                        error
+                    })?;
+                let initial_jobs = transfer_engine.startup_snapshot();
+                app.manage(transfer_engine.clone());
+                if let Some(notifications) = app.try_state::<
+                    Arc<desktop_notifications::DesktopNotificationCoordinator>,
+                >() {
+                    notifications.seed(initial_jobs);
+                    notifications.start();
+                }
+                transfer_engine.start();
+            }
             let sync_engine = sync_engine::SyncEngine::new(db_pool.clone(), app.handle().clone());
             app.manage(sync_engine);
-            if let Err(error) = app.state::<sync_engine::SyncEngine>().start() {
-                log::error!("Failed to initialize folder sync engine: {error}");
-            }
+            let app_for_sync = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = app_for_sync.state::<sync_engine::SyncEngine>().start().await {
+                    log::error!("Failed to initialize folder sync engine: {error}");
+                }
+            });
 
-            // Start Streaming Server on dedicated thread (Actix needs its own runtime)
-            // Disabled on Android: actix_rt::System creates a second Tokio runtime that
-            // conflicts with Tauri's runtime and crashes the process on launch.
-            #[cfg(not(target_os = "android"))]
-            {
-                let state = Arc::new(app.state::<TelegramState>().inner().clone());
-                let token_for_server = stream_token.clone();
-                let handle_for_thread = server_handle_for_setup.clone();
-                let db_pool_for_server = db_pool.clone();
-                let transcode_for_server = transcode_arc.clone();
-                std::thread::spawn(move || {
-                    #[cfg(target_os = "windows")]
-                    init_com_on_worker_thread();
-                    let sys = actix_rt::System::new();
-                    sys.block_on(async move {
-                        match server::start_server(state, STREAM_PORT, token_for_server, db_pool_for_server, transcode_for_server).await {
-                            Ok(server) => {
-                                if let Ok(mut handle) = handle_for_thread.lock() {
-                                    *handle = Some(server.handle());
-                                }
-                                // Now await the server — blocks until stopped
-                                server.await.ok();
+            // Actix Web's Server future runs on Tokio without requiring a separate
+            // actix_rt::System. Sharing Tauri's runtime avoids nested-runtime
+            // panics on Android while preserving the same loopback server and
+            // route graph on desktop.
+            let state = Arc::new(app.state::<TelegramState>().inner().clone());
+            let token_for_server = stream_token.clone();
+            let handle_for_runtime = server_handle_for_setup.clone();
+            let db_pool_for_server = db_pool.clone();
+            let transcode_for_server = transcode_arc.clone();
+            tauri::async_runtime::spawn(async move {
+                match server::start_server(
+                    state,
+                    STREAM_PORT,
+                    token_for_server,
+                    db_pool_for_server,
+                    transcode_for_server,
+                )
+                .await
+                {
+                    Ok(server) => {
+                        let server_handle = server.handle();
+                        let handle_was_stored = match handle_for_runtime.lock() {
+                            Ok(mut handle) => {
+                                *handle = Some(server_handle);
+                                true
                             }
-                            Err(e) => log::error!("Streaming server failed: {}", e),
+                            Err(error) => {
+                                log::error!("Could not retain streaming server handle: {error}");
+                                false
+                            }
+                        };
+                        if !handle_was_stored {
+                            server.handle().stop(false).await;
+                            return;
                         }
-                    });
-                });
-            }
-            #[cfg(target_os = "android")]
-            {
-                log::info!("Streaming server disabled on Android (Actix runtime conflict avoidance).");
-            }
 
-            // Start API server if enabled in settings
-            restart_api_server(app.handle());
+                        if let Err(error) = server.await {
+                            log::error!("Streaming server stopped with an error: {error}");
+                        } else {
+                            log::info!("Streaming server stopped.");
+                        }
+                        if let Ok(mut handle) = handle_for_runtime.lock() {
+                            *handle = None;
+                        }
+                    }
+                    Err(error) => log::error!("Streaming server failed to start: {error}"),
+                }
+            });
 
-            // Start WebDAV server if enabled in settings.
-            restart_webdav_server(app.handle());
+            // Start independently configured local servers without blocking setup.
+            let api_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = restart_api_server(&api_app).await {
+                    log::error!("REST API startup failed: {error}");
+                }
+            });
+            let webdav_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = restart_webdav_server(&webdav_app).await {
+                    log::error!("WebDAV startup failed: {error}");
+                }
+            });
 
             // Start VPN keep-alive background task
             // Disabled on Android: unnecessary on mobile and spawn_blocking may
@@ -837,21 +1226,9 @@ pub fn run() {
                             continue;
                         }
                         tokio::time::sleep(std::time::Duration::from_secs(interval as u64)).await;
-                        // TCP ping to Telegram DC2 (best-effort)
-                        let _ = tauri::async_runtime::spawn_blocking(|| {
-                            use std::net::TcpStream;
-                            let addr: std::net::SocketAddr = match "149.154.167.50:443".parse() {
-                            Ok(a) => a,
-                            Err(e) => {
-                                log::error!("VPN keep-alive: failed to parse DC2 address: {}", e);
-                                return;
-                            }
-                        };
-                        let _ = TcpStream::connect_timeout(
-                                &addr,
-                                std::time::Duration::from_secs(5),
-                            );
-                        }).await;
+                        // Resolve Telegram dynamically so keep-alive follows DNS
+                        // changes and is not coupled to one datacenter address.
+                        let _ = network_keepalive::probe_telegram().await;
                     }
                 });
             }
@@ -872,8 +1249,10 @@ pub fn run() {
             commands::initiate_upload,
             commands::cmd_upload_from_url,
             cmd_open_file_externally,
+            cmd_open_android_stream_player,
             upload_service::cmd_start_foreground_service,
             upload_service::cmd_stop_foreground_service,
+            upload_service::cmd_update_foreground_service,
             commands::cmd_connect,
             commands::cmd_log,
             commands::cmd_delete_file,
@@ -889,6 +1268,8 @@ pub fn run() {
             commands::cmd_clean_preview_cache,
             commands::cmd_get_offline_cache_status,
             commands::cmd_get_offline_files,
+            commands::cmd_set_preview_cache_limit,
+            commands::cmd_set_preview_pinned,
             commands::cmd_logout,
             commands::cmd_scan_folders,
             commands::cmd_search_global,
@@ -923,12 +1304,58 @@ pub fn run() {
             commands::cmd_check_connection,
             commands::cmd_is_network_available,
             commands::cmd_get_android_network_status,
+            commands::cmd_get_android_transfer_environment,
+            commands::cmd_configure_android_transfer_recovery,
             commands::cmd_test_proxy_traffic,
             commands::cmd_reconnect_with_network_settings,
             commands::cmd_clean_cache,
             commands::cmd_get_thumbnail,
             commands::cmd_get_stream_info,
             commands::cmd_cancel_transfer,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            transfer_engine::cmd_transfer_enqueue,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            transfer_engine::cmd_transfer_enqueue_many,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            transfer_engine::cmd_transfer_list,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            transfer_engine::cmd_transfer_set_limits,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            transfer_engine::cmd_transfer_pause,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            transfer_engine::cmd_transfer_resume,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            transfer_engine::cmd_transfer_cancel,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            transfer_engine::cmd_transfer_retry,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            transfer_engine::cmd_transfer_supply_prompt_token,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            transfer_engine::cmd_transfer_pause_all,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            transfer_engine::cmd_transfer_resume_all,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            transfer_engine::cmd_transfer_cancel_all,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            transfer_engine::cmd_transfer_clear_terminal,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            desktop_preferences::cmd_get_desktop_preferences,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            desktop_preferences::cmd_update_desktop_preferences,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            desktop_preferences::cmd_set_desktop_lock_on_sleep,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            desktop_notifications::cmd_get_notification_permission,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            desktop_notifications::cmd_request_notification_permission,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            desktop_lifecycle::cmd_desktop_frontend_ready,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            desktop_lifecycle::cmd_desktop_frontend_unready,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            desktop_lifecycle::cmd_show_main_window,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            desktop_lifecycle::cmd_quit_application,
             commands::cmd_auth_qr_login,
             commands::cmd_auth_qr_poll,
             commands::cmd_get_api_settings,
@@ -941,6 +1368,8 @@ pub fn run() {
             commands::cmd_zip_folder,
             commands::cmd_delete_temp_zip,
             commands::cmd_apply_proxy_settings,
+            commands::cmd_migrate_proxy_secret,
+            commands::cmd_clear_proxy_secret,
             commands::cmd_get_proxy_status,
             commands::cmd_apply_vpn_settings,
             commands::cmd_get_network_config,
@@ -952,9 +1381,16 @@ pub fn run() {
             commands::cmd_toggle_folder_visibility,
             commands::cmd_export_folder_invite,
             cmd_get_pending_share_count,
+            cmd_get_pending_android_transfer_action,
+            cmd_get_android_playback_history,
             cmd_list_cached_files,
             cmd_remove_cached_path,
             cmd_get_system_diagnostics,
+            android_updates::cmd_check_android_update,
+            android_updates::cmd_download_and_install_android_update,
+            android_security::cmd_get_android_authentication_available,
+            android_security::cmd_android_authenticate,
+            android_security::cmd_configure_android_privacy,
             commands::cmd_get_video_metadata,
             commands::cmd_get_video_metadata_batch,
             transcode::cmd_get_transcode_capabilities,
@@ -987,6 +1423,7 @@ pub fn run() {
             crypto_commands::cmd_unlock_vault,
             crypto_commands::cmd_change_vault_passphrase,
             crypto_commands::cmd_lock_vault,
+            crypto_commands::cmd_record_vault_activity,
             crypto_commands::cmd_stage_file_passphrase,
             crypto_commands::cmd_get_vault_status,
             crypto_commands::cmd_export_vault_recovery,
@@ -1000,17 +1437,80 @@ pub fn run() {
 
     let graceful_sync_exit_started = Arc::new(std::sync::atomic::AtomicBool::new(false));
     app.run(move |app_handle, event| {
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        if let tauri::RunEvent::WindowEvent {
+            label,
+            event: tauri::WindowEvent::CloseRequested { api, .. },
+            ..
+        } = &event
+        {
+            if label == "main" {
+                let lifecycle = app_handle.state::<desktop_lifecycle::DesktopLifecycleState>();
+                let preferences =
+                    app_handle.state::<desktop_preferences::DesktopPreferencesState>();
+                if lifecycle.should_hide_on_close(&preferences) {
+                    api.prevent_close();
+                    if let Some(window) = app_handle.get_webview_window("main") {
+                        match window.hide() {
+                            Ok(()) => lifecycle.mark_hidden(app_handle),
+                            Err(error) => log::error!(
+                                "Could not hide the main window; it will remain visible: {error}"
+                            ),
+                        }
+                    }
+                    return;
+                }
+                lifecycle.mark_explicit_exit();
+            }
+        }
+
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        if matches!(&event, tauri::RunEvent::Resumed) {
+            if let Some(power_monitor) =
+                app_handle.try_state::<Arc<desktop_power::DesktopPowerMonitor>>()
+            {
+                power_monitor.check_for_suspend(app_handle);
+            }
+        }
+
         if let tauri::RunEvent::ExitRequested { code, api, .. } = &event {
             if !graceful_sync_exit_started.swap(true, std::sync::atomic::Ordering::SeqCst) {
                 api.prevent_exit();
                 let app_handle = app_handle.clone();
                 let exit_code = code.unwrap_or(0);
                 tauri::async_runtime::spawn(async move {
-                    if let Some(sync_engine) =
-                        app_handle.try_state::<sync_engine::SyncEngine>()
-                    {
+                    if let Some(sync_engine) = app_handle.try_state::<sync_engine::SyncEngine>() {
                         if let Err(error) = sync_engine.shutdown_and_wait().await {
                             log::error!("Folder sync did not shut down cleanly: {error}");
+                        }
+                    }
+                    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                    if let Some(transfer_engine) =
+                        app_handle.try_state::<Arc<transfer_engine::TransferEngine>>()
+                    {
+                        transfer_engine.begin_shutdown();
+                    }
+                    if let Some(streaming_server) = app_handle.try_state::<ActixServerHandle>() {
+                        let handle = streaming_server
+                            .0
+                            .lock()
+                            .ok()
+                            .and_then(|mut value| value.take());
+                        if let Some(handle) = handle {
+                            log::info!("Stopping Actix streaming server...");
+                            handle.stop(true).await;
+                        }
+                    }
+                    if let Some(api_server) = app_handle.try_state::<ApiServerLifecycle>() {
+                        if let Some(handle) = api_server.0.begin_shutdown() {
+                            log::info!("Stopping REST API server...");
+                            handle.stop(true).await;
+                        }
+                    }
+                    if let Some(webdav_server) = app_handle.try_state::<WebDavServerLifecycle>() {
+                        if let Some(handle) = webdav_server.0.begin_shutdown() {
+                            log::info!("Stopping WebDAV server...");
+                            handle.stop(true).await;
                         }
                     }
                     app_handle.exit(exit_code);
@@ -1036,31 +1536,36 @@ pub fn run() {
                 let _ = tx.send(());
             }
 
-            // 2. Stop the Actix streaming server (graceful)
+            // 2. The streaming server is normally awaited during ExitRequested.
+            // Keep an immediate fallback for forced/platform exits that bypass it.
             let server_arc = app_handle.state::<ActixServerHandle>().0.clone();
             let server_handle = server_arc.lock().ok().and_then(|mut g| g.take());
             if let Some(handle) = server_handle {
-                log::info!("Stopping Actix streaming server...");
-                drop(handle.stop(true));
+                log::info!("Stopping Actix streaming server immediately...");
+                tauri::async_runtime::spawn(async move {
+                    handle.stop(false).await;
+                });
             }
 
-            // 3. Stop the API server (graceful)
-            let api_arc = app_handle.state::<ApiServerHandle>().0.clone();
-            let api_handle = api_arc.lock().ok().and_then(|mut g| g.take());
-            if let Some(handle) = api_handle {
-                log::info!("Stopping API server...");
-                drop(handle.stop(true));
+            // 3. Immediate fallbacks for local servers when ExitRequested was bypassed.
+            if let Some(handle) = app_handle.state::<ApiServerLifecycle>().0.begin_shutdown() {
+                log::info!("Stopping REST API server immediately...");
+                tauri::async_runtime::spawn(async move {
+                    handle.stop(false).await;
+                });
+            }
+            if let Some(handle) = app_handle
+                .state::<WebDavServerLifecycle>()
+                .0
+                .begin_shutdown()
+            {
+                log::info!("Stopping WebDAV server immediately...");
+                tauri::async_runtime::spawn(async move {
+                    handle.stop(false).await;
+                });
             }
 
-            // 4. Stop the WebDAV server (graceful)
-            let webdav_arc = app_handle.state::<WebDavServerHandle>().0.clone();
-            let webdav_handle = webdav_arc.lock().ok().and_then(|mut handle| handle.take());
-            if let Some(handle) = webdav_handle {
-                log::info!("Stopping WebDAV server...");
-                drop(handle.stop(true));
-            }
-
-            // 5. Stop local SOCKS5 proxy bridge (if running)
+            // 4. Stop local SOCKS5 proxy bridge (if running)
             if let Some(net_config) = app_handle.try_state::<Arc<vpn_optimizer::NetworkConfig>>() {
                 log::info!("Stopping SOCKS5 bridge...");
                 net_config.stop_http_bridge();

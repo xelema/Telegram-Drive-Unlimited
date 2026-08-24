@@ -125,8 +125,7 @@ impl FileVault {
                 .try_into()
                 .map_err(|_| CryptoError::truncated())?,
         ) as usize;
-        if ciphertext_length < policy::AEAD_TAG_LENGTH
-            || ciphertext_length > MAX_VAULT_CIPHERTEXT
+        if !(policy::AEAD_TAG_LENGTH..=MAX_VAULT_CIPHERTEXT).contains(&ciphertext_length)
             || bytes.len() != VAULT_HEADER_SIZE + ciphertext_length
         {
             return Err(CryptoError::header_invalid(
@@ -630,7 +629,10 @@ mod tests {
         };
         let mut restarted = FileVault::new(path.clone());
         restarted.unlock(b"new vault passphrase").unwrap();
-        assert_eq!(original_key.expose(), restarted.wrapping_key().unwrap().expose());
+        assert_eq!(
+            original_key.expose(),
+            restarted.wrapping_key().unwrap().expose()
+        );
         let _ = std::fs::remove_file(path);
     }
 
@@ -640,11 +642,19 @@ mod tests {
         let mut vault = FileVault::new(path.clone());
         vault.create(b"existing vault passphrase").unwrap();
         let original_key = vault.wrapping_key().unwrap().clone();
-        assert!(vault.import_bundle(b"modified bundle", b"recovery passphrase").is_err());
-        assert_eq!(original_key.expose(), vault.wrapping_key().unwrap().expose());
+        assert!(vault
+            .import_bundle(b"modified bundle", b"recovery passphrase")
+            .is_err());
+        assert_eq!(
+            original_key.expose(),
+            vault.wrapping_key().unwrap().expose()
+        );
         vault.lock();
         vault.unlock(b"existing vault passphrase").unwrap();
-        assert_eq!(original_key.expose(), vault.wrapping_key().unwrap().expose());
+        assert_eq!(
+            original_key.expose(),
+            vault.wrapping_key().unwrap().expose()
+        );
         let _ = std::fs::remove_file(path);
     }
 }

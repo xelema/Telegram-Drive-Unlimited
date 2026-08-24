@@ -38,12 +38,13 @@ pub async fn cmd_record_file_opened(
     created_at: Option<String>,
     encryption_state: Option<String>,
 ) -> Result<(), String> {
-    let connection = db_pool.lock().map_err(|_| "DB poisoned".to_string())?;
-    let now = chrono::Utc::now().timestamp();
-    let key = folder_key(folder_id);
-    let mut statement = connection
-        .prepare(
-            "INSERT INTO file_activity (
+    let database = db_pool.inner().clone();
+    crate::db::with_connection(database, move |connection| {
+        let now = chrono::Utc::now().timestamp();
+        let key = folder_key(folder_id);
+        let mut statement = connection
+            .prepare(
+                "INSERT INTO file_activity (
             folder_key, folder_id, message_id, file_name, file_size, mime_type,
             file_ext, created_at, encryption_state, last_opened_at, open_count
          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
@@ -57,40 +58,42 @@ pub async fn cmd_record_file_opened(
             encryption_state = excluded.encryption_state,
             last_opened_at = excluded.last_opened_at,
             open_count = file_activity.open_count + 1",
-        )
-        .map_err(|error| error.to_string())?;
-    statement
-        .bind((1, key.as_str()))
-        .map_err(|error| error.to_string())?;
-    statement
-        .bind((2, folder_id))
-        .map_err(|error| error.to_string())?;
-    statement
-        .bind((3, message_id))
-        .map_err(|error| error.to_string())?;
-    statement
-        .bind((4, file_name.as_str()))
-        .map_err(|error| error.to_string())?;
-    statement
-        .bind((5, i64::try_from(file_size).unwrap_or(i64::MAX)))
-        .map_err(|error| error.to_string())?;
-    statement
-        .bind((6, mime_type.as_deref()))
-        .map_err(|error| error.to_string())?;
-    statement
-        .bind((7, file_ext.as_deref()))
-        .map_err(|error| error.to_string())?;
-    statement
-        .bind((8, created_at.as_deref().unwrap_or("")))
-        .map_err(|error| error.to_string())?;
-    statement
-        .bind((9, encryption_state.as_deref().unwrap_or("plain")))
-        .map_err(|error| error.to_string())?;
-    statement
-        .bind((10, now))
-        .map_err(|error| error.to_string())?;
-    statement.next().map_err(|error| error.to_string())?;
-    Ok(())
+            )
+            .map_err(|error| error.to_string())?;
+        statement
+            .bind((1, key.as_str()))
+            .map_err(|error| error.to_string())?;
+        statement
+            .bind((2, folder_id))
+            .map_err(|error| error.to_string())?;
+        statement
+            .bind((3, message_id))
+            .map_err(|error| error.to_string())?;
+        statement
+            .bind((4, file_name.as_str()))
+            .map_err(|error| error.to_string())?;
+        statement
+            .bind((5, i64::try_from(file_size).unwrap_or(i64::MAX)))
+            .map_err(|error| error.to_string())?;
+        statement
+            .bind((6, mime_type.as_deref()))
+            .map_err(|error| error.to_string())?;
+        statement
+            .bind((7, file_ext.as_deref()))
+            .map_err(|error| error.to_string())?;
+        statement
+            .bind((8, created_at.as_deref().unwrap_or("")))
+            .map_err(|error| error.to_string())?;
+        statement
+            .bind((9, encryption_state.as_deref().unwrap_or("plain")))
+            .map_err(|error| error.to_string())?;
+        statement
+            .bind((10, now))
+            .map_err(|error| error.to_string())?;
+        statement.next().map_err(|error| error.to_string())?;
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -113,11 +116,12 @@ pub async fn cmd_set_file_activity_flag(
         "pinned" => "is_pinned",
         _ => return Err("Unknown file activity flag".to_string()),
     };
-    let connection = db_pool.lock().map_err(|_| "DB poisoned".to_string())?;
-    let now = chrono::Utc::now().timestamp();
-    let key = folder_key(folder_id);
-    let sql = format!(
-        "INSERT INTO file_activity (
+    let database = db_pool.inner().clone();
+    crate::db::with_connection(database, move |connection| {
+        let now = chrono::Utc::now().timestamp();
+        let key = folder_key(folder_id);
+        let sql = format!(
+            "INSERT INTO file_activity (
             folder_key, folder_id, message_id, file_name, file_size, mime_type,
             file_ext, created_at, encryption_state, last_opened_at, open_count, {column}
          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
@@ -130,43 +134,45 @@ pub async fn cmd_set_file_activity_flag(
             created_at = excluded.created_at,
             encryption_state = excluded.encryption_state,
             {column} = excluded.{column}"
-    );
-    let mut statement = connection.prepare(sql).map_err(|error| error.to_string())?;
-    statement
-        .bind((1, key.as_str()))
-        .map_err(|error| error.to_string())?;
-    statement
-        .bind((2, folder_id))
-        .map_err(|error| error.to_string())?;
-    statement
-        .bind((3, message_id))
-        .map_err(|error| error.to_string())?;
-    statement
-        .bind((4, file_name.as_str()))
-        .map_err(|error| error.to_string())?;
-    statement
-        .bind((5, i64::try_from(file_size).unwrap_or(i64::MAX)))
-        .map_err(|error| error.to_string())?;
-    statement
-        .bind((6, mime_type.as_deref()))
-        .map_err(|error| error.to_string())?;
-    statement
-        .bind((7, file_ext.as_deref()))
-        .map_err(|error| error.to_string())?;
-    statement
-        .bind((8, created_at.as_deref().unwrap_or("")))
-        .map_err(|error| error.to_string())?;
-    statement
-        .bind((9, encryption_state.as_deref().unwrap_or("plain")))
-        .map_err(|error| error.to_string())?;
-    statement
-        .bind((10, now))
-        .map_err(|error| error.to_string())?;
-    statement
-        .bind((11, if value { 1 } else { 0 }))
-        .map_err(|error| error.to_string())?;
-    statement.next().map_err(|error| error.to_string())?;
-    Ok(())
+        );
+        let mut statement = connection.prepare(sql).map_err(|error| error.to_string())?;
+        statement
+            .bind((1, key.as_str()))
+            .map_err(|error| error.to_string())?;
+        statement
+            .bind((2, folder_id))
+            .map_err(|error| error.to_string())?;
+        statement
+            .bind((3, message_id))
+            .map_err(|error| error.to_string())?;
+        statement
+            .bind((4, file_name.as_str()))
+            .map_err(|error| error.to_string())?;
+        statement
+            .bind((5, i64::try_from(file_size).unwrap_or(i64::MAX)))
+            .map_err(|error| error.to_string())?;
+        statement
+            .bind((6, mime_type.as_deref()))
+            .map_err(|error| error.to_string())?;
+        statement
+            .bind((7, file_ext.as_deref()))
+            .map_err(|error| error.to_string())?;
+        statement
+            .bind((8, created_at.as_deref().unwrap_or("")))
+            .map_err(|error| error.to_string())?;
+        statement
+            .bind((9, encryption_state.as_deref().unwrap_or("plain")))
+            .map_err(|error| error.to_string())?;
+        statement
+            .bind((10, now))
+            .map_err(|error| error.to_string())?;
+        statement
+            .bind((11, if value { 1 } else { 0 }))
+            .map_err(|error| error.to_string())?;
+        statement.next().map_err(|error| error.to_string())?;
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -191,37 +197,40 @@ pub async fn cmd_get_file_activity(
                 created_at, encryption_state, is_favorite, is_pinned, last_opened_at
          FROM file_activity WHERE {predicate} ORDER BY {order} LIMIT ?"
     );
-    let connection = db_pool.lock().map_err(|_| "DB poisoned".to_string())?;
-    let mut statement = connection.prepare(sql).map_err(|error| error.to_string())?;
-    statement
-        .bind((1, limit.unwrap_or(200).clamp(1, 1_000)))
-        .map_err(|error| error.to_string())?;
-    let mut rows = Vec::new();
-    while let sqlite::State::Row = statement.next().map_err(|error| error.to_string())? {
-        rows.push(LocalFileActivity {
-            id: statement
-                .read::<i64, _>(0)
-                .map_err(|error| error.to_string())?,
-            folder_id: statement
-                .read::<Option<i64>, _>(1)
-                .map_err(|error| error.to_string())?,
-            name: statement
-                .read::<String, _>(2)
-                .map_err(|error| error.to_string())?,
-            size: statement.read::<i64, _>(3).unwrap_or(0).max(0) as u64,
-            mime_type: statement.read::<Option<String>, _>(4).ok().flatten(),
-            file_ext: statement.read::<Option<String>, _>(5).ok().flatten(),
-            created_at: statement.read::<String, _>(6).unwrap_or_default(),
-            icon_type: "file".to_string(),
-            encryption_state: statement
-                .read::<String, _>(7)
-                .unwrap_or_else(|_| "plain".to_string()),
-            is_favorite: statement.read::<i64, _>(8).unwrap_or(0) != 0,
-            is_pinned: statement.read::<i64, _>(9).unwrap_or(0) != 0,
-            last_opened_at: statement.read::<i64, _>(10).unwrap_or(0),
-        });
-    }
-    Ok(rows)
+    let database = db_pool.inner().clone();
+    crate::db::with_connection(database, move |connection| {
+        let mut statement = connection.prepare(sql).map_err(|error| error.to_string())?;
+        statement
+            .bind((1, limit.unwrap_or(200).clamp(1, 1_000)))
+            .map_err(|error| error.to_string())?;
+        let mut rows = Vec::new();
+        while let sqlite::State::Row = statement.next().map_err(|error| error.to_string())? {
+            rows.push(LocalFileActivity {
+                id: statement
+                    .read::<i64, _>(0)
+                    .map_err(|error| error.to_string())?,
+                folder_id: statement
+                    .read::<Option<i64>, _>(1)
+                    .map_err(|error| error.to_string())?,
+                name: statement
+                    .read::<String, _>(2)
+                    .map_err(|error| error.to_string())?,
+                size: statement.read::<i64, _>(3).unwrap_or(0).max(0) as u64,
+                mime_type: statement.read::<Option<String>, _>(4).ok().flatten(),
+                file_ext: statement.read::<Option<String>, _>(5).ok().flatten(),
+                created_at: statement.read::<String, _>(6).unwrap_or_default(),
+                icon_type: "file".to_string(),
+                encryption_state: statement
+                    .read::<String, _>(7)
+                    .unwrap_or_else(|_| "plain".to_string()),
+                is_favorite: statement.read::<i64, _>(8).unwrap_or(0) != 0,
+                is_pinned: statement.read::<i64, _>(9).unwrap_or(0) != 0,
+                last_opened_at: statement.read::<i64, _>(10).unwrap_or(0),
+            });
+        }
+        Ok(rows)
+    })
+    .await
 }
 
 #[cfg(test)]

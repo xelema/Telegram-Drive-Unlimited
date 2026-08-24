@@ -117,7 +117,7 @@ impl CoreHeader {
         let chunk_size = policy::validate_chunk_size(u32_at(data, 30))?;
         let key_slot_table_length = u32_at(data, 34);
         if key_slot_table_length == 0
-            || key_slot_table_length as usize % policy::KEY_SLOT_SIZE != 0
+            || !(key_slot_table_length as usize).is_multiple_of(policy::KEY_SLOT_SIZE)
             || key_slot_table_length as usize
                 > policy::MAX_KEY_SLOTS.saturating_mul(policy::KEY_SLOT_SIZE)
         {

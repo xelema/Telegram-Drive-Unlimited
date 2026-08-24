@@ -1,5 +1,5 @@
 import { useRef, useState, useCallback } from 'react';
-import { DownloadCloud, Trash2, Pencil, CheckSquare, X, Check, FolderInput, MoreVertical, Eye, Link, Copy } from 'lucide-react';
+import { DownloadCloud, Trash2, Pencil, CheckSquare, X, Check, FolderInput, MoreVertical, Eye, Link, Copy, Pin, PinOff } from 'lucide-react';
 import { FileTypeIcon } from '../shared/FileTypeIcon';
 import { ActionPopover, ActionItem } from './ActionPopover';
 import { TelegramFile, TelegramFolder } from '../../types';
@@ -21,11 +21,13 @@ interface TouchFileListProps {
   onBulkShare?: () => void;
   onShare?: (file: TelegramFile) => void;
   onCopyTelegramLink?: (file: TelegramFile) => void;
+  onKeepOffline?: (file: TelegramFile) => void;
+  onRemoveOffline?: (file: TelegramFile) => void;
   folders: TelegramFolder[];
   activeFolderId: number | null;
 }
 
-export function TouchFileList({ files, isLoading, onDownload, onDelete, onPreview, onRename, selectedIds, onToggleSelection, onSelectAll, onClearSelection, onBulkDelete, onBulkDownload, onBulkMove, onBulkShare, onShare, onCopyTelegramLink, folders, activeFolderId }: TouchFileListProps) {
+export function TouchFileList({ files, isLoading, onDownload, onDelete, onPreview, onRename, selectedIds, onToggleSelection, onSelectAll, onClearSelection, onBulkDelete, onBulkDownload, onBulkMove, onBulkShare, onShare, onCopyTelegramLink, onKeepOffline, onRemoveOffline, folders, activeFolderId }: TouchFileListProps) {
   const [selectionMode, setSelectionMode] = useState(false);
   const [showMovePicker, setShowMovePicker] = useState(false);
   const [actionMenuFile, setActionMenuFile] = useState<TelegramFile | null>(null);
@@ -89,6 +91,20 @@ export function TouchFileList({ files, isLoading, onDownload, onDelete, onPrevie
         onClick: () => onRename(file),
       },
     ];
+    if (file.type !== 'folder' && onKeepOffline) {
+      actions.push({
+        label: 'Keep offline',
+        icon: <Pin className="w-4 h-4" />,
+        onClick: () => onKeepOffline(file),
+      });
+    }
+    if (file.type !== 'folder' && file.offline_available && onRemoveOffline) {
+      actions.push({
+        label: 'Remove offline copy',
+        icon: <PinOff className="w-4 h-4" />,
+        onClick: () => onRemoveOffline(file),
+      });
+    }
     if (file.type !== 'folder' && onShare) {
       actions.push({
         label: 'Share Link',
@@ -115,7 +131,7 @@ export function TouchFileList({ files, isLoading, onDownload, onDelete, onPrevie
       destructive: true,
     });
     return actions;
-  }, [onPreview, onDownload, onRename, onDelete, onShare, onCopyTelegramLink, folders, activeFolderId]);
+  }, [onPreview, onDownload, onRename, onDelete, onShare, onCopyTelegramLink, onKeepOffline, onRemoveOffline, folders, activeFolderId]);
 
   return (
     <>
@@ -272,6 +288,8 @@ export function TouchFileList({ files, isLoading, onDownload, onDelete, onPrevie
               return (
                 <div
                   key={file.id}
+                  role="button"
+                  tabIndex={0}
                   onPointerDown={(e) => handlePointerDown(e, file)}
                   onPointerMove={handlePointerMove}
                   onPointerUp={handlePointerUp}
@@ -286,6 +304,13 @@ export function TouchFileList({ files, isLoading, onDownload, onDelete, onPrevie
                       onToggleSelection(file.id);
                     } else {
                       onPreview(file);
+                    }
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      if (isSelectionActive) onToggleSelection(file.id);
+                      else onPreview(file);
                     }
                   }}
                   className={`flex items-center justify-between p-3.5 rounded-2xl bg-telegram-hover/15 border transition-all duration-200 cursor-pointer active:bg-telegram-hover/35 ${

@@ -1,8 +1,8 @@
 import React, { useState, useEffect, Suspense } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { load } from "@tauri-apps/plugin-store";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AuthWizard } from "./components/shared/AuthWizard";
+import { AppProviders } from "./components/shared/AppProviders";
 import { ErrorBoundary } from "./components/shared/ErrorBoundary";
 import { UpdateBanner } from "./components/shared/UpdateBanner";
 import { useUpdateCheck } from "./hooks/useUpdateCheck";
@@ -22,15 +22,11 @@ const AccessibilityAudit = import.meta.env.DEV
   : null;
 
 import { Toaster, toast } from "sonner";
-import { ConfirmProvider } from "./context/ConfirmContext";
-import { ThemeProvider, useTheme } from "./context/ThemeContext";
-import { SettingsProvider } from "./context/SettingsContext";
-import { UploadChoiceProvider } from "./context/UploadChoiceContext";
+import { useTheme } from "./context/ThemeContext";
 import { CrashReportingConsent } from "./components/shared/CrashReportingConsent";
 import { configureCrashTelemetry } from "./services/crashTelemetry";
 import { TelegramCooldownBanner } from "./components/shared/TelegramCooldownBanner";
 import { WhatsNewDialog } from "./components/shared/WhatsNewDialog";
-import { EncryptionProvider } from "./hooks/useEncryption.tsx";
 import { useSettings } from "./context/SettingsContext";
 import { useTranslation } from "react-i18next";
 
@@ -38,10 +34,7 @@ import { getLanguageInfo } from "./i18n/languages";
 import { resolveLanguagePreference } from "./i18n/resolveLanguage";
 import { version as appVersion } from "../package.json";
 import { consumeWhatsNew, type WhatsNewDetails } from "./services/updateReliability";
-import { SupporterProvider } from "./context/SupporterContext";
-import { SyncProvider } from "./context/SyncContext";
-
-const queryClient = new QueryClient();
+import { useTvSpatialNavigation } from "./hooks/useTvSpatialNavigation";
 
 type AuthStatus = "loading" | "authenticated" | "unauthenticated";
 
@@ -61,7 +54,8 @@ function AppContent() {
   const [whatsNew, setWhatsNew] = useState<WhatsNewDetails | null>(() => consumeWhatsNew(appVersion));
   const { theme } = useTheme();
   const { available, version, downloading, progress, phase, downloadAndInstall, dismissUpdate } = useUpdateCheck();
-  const { isMobile } = usePlatform();
+  const { isMobile, isTelevision } = usePlatform();
+  useTvSpatialNavigation(isTelevision);
   const { settings, updateSetting, isLoaded } = useSettings();
   const { i18n } = useTranslation();
 
@@ -104,6 +98,11 @@ function AppContent() {
       document.body.classList.remove('performance-mode');
     }
   }, [settings.performanceMode, isLoaded]);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('tv-mode', isTelevision);
+    return () => document.documentElement.classList.remove('tv-mode');
+  }, [isTelevision]);
 
   // On mount: check for a saved session and auto-restore it.
   // This is the SINGLE source of truth for the initial connection.
@@ -253,34 +252,18 @@ function App() {
   );
 
   return (
-    <ErrorBoundary>
-      <ThemeProvider>
-        <QueryClientProvider client={queryClient}>
-          <ConfirmProvider>
-            <SettingsProvider>
-              <SupporterProvider>
-              <SyncProvider>
-              <UploadChoiceProvider>
-              <EncryptionProvider>
-              {AccessibilityAudit && (
-                <Suspense fallback={null}><AccessibilityAudit /></Suspense>
-              )}
-              {showDesignGallery && DesignGallery ? (
-                <Suspense fallback={<div className="h-screen bg-app-canvas" />}>
-                  <DesignGallery />
-                </Suspense>
-              ) : (
-                <AppContent />
-              )}
-              </EncryptionProvider>
-              </UploadChoiceProvider>
-              </SyncProvider>
-              </SupporterProvider>
-            </SettingsProvider>
-          </ConfirmProvider>
-        </QueryClientProvider>
-      </ThemeProvider>
-    </ErrorBoundary>
+    <AppProviders>
+      {AccessibilityAudit && (
+        <Suspense fallback={null}><AccessibilityAudit /></Suspense>
+      )}
+      {showDesignGallery && DesignGallery ? (
+        <Suspense fallback={<div className="h-screen bg-app-canvas" />}>
+          <DesignGallery />
+        </Suspense>
+      ) : (
+        <AppContent />
+      )}
+    </AppProviders>
   );
 }
 

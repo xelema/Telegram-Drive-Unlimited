@@ -173,7 +173,8 @@ impl TelegramDavFs {
         // The desktop app persists the folder/channel index locally. Use it as a
         // fallback so the WebDAV root remains useful during a delayed Telegram
         // dialog refresh or when a channel's legacy title lacks the [TD] marker.
-        if let Ok(connection) = self.db.lock() {
+        let cached_folders = crate::db::with_connection(self.db.clone(), |connection| {
+            let mut folders = Vec::new();
             if let Ok(mut statement) = connection
                 .prepare("SELECT channel_id, name FROM folder_metadata ORDER BY display_order ASC")
             {
@@ -184,13 +185,19 @@ impl TelegramDavFs {
                     let Ok(name) = statement.read::<String, _>(1) else {
                         continue;
                     };
-                    if !raw_folders
-                        .iter()
-                        .any(|(folder_id, _, _)| *folder_id == Some(channel_id))
-                    {
-                        raw_folders.push((Some(channel_id), name, UNIX_EPOCH));
-                    }
+                    folders.push((channel_id, name));
                 }
+            }
+            Ok(folders)
+        })
+        .await
+        .unwrap_or_default();
+        for (channel_id, name) in cached_folders {
+            if !raw_folders
+                .iter()
+                .any(|(folder_id, _, _)| *folder_id == Some(channel_id))
+            {
+                raw_folders.push((Some(channel_id), name, UNIX_EPOCH));
             }
         }
 
@@ -230,24 +237,19 @@ impl TelegramDavFs {
         let folder_key = folder_id
             .map(|id| id.to_string())
             .unwrap_or_else(|| "home".to_string());
-        let Ok(connection) = self.db.lock() else {
-            return HashSet::new();
-        };
-        let Ok(mut statement) = connection.prepare(
-            "SELECT message_id FROM encrypted_files WHERE folder_key = ? AND record_state = 'active'",
-        ) else {
-            return HashSet::new();
-        };
-        if statement.bind((1, folder_key.as_str())).is_err() {
-            return HashSet::new();
-        }
-        let mut ids = HashSet::new();
-        while matches!(statement.next(), Ok(sqlite::State::Row)) {
-            if let Ok(id) = statement.read::<i64, _>(0) {
-                ids.insert(id as i32);
+        crate::db::with_connection(self.db.clone(), move |connection| {
+            let mut statement = connection.prepare(
+                "SELECT message_id FROM encrypted_files WHERE folder_key = ? AND record_state = 'active'",
+            ).map_err(|error| error.to_string())?;
+            statement.bind((1, folder_key.as_str())).map_err(|error| error.to_string())?;
+            let mut ids = HashSet::new();
+            while matches!(statement.next(), Ok(sqlite::State::Row)) {
+                if let Ok(id) = statement.read::<i64, _>(0) {
+                    ids.insert(id as i32);
+                }
             }
-        }
-        ids
+            Ok(ids)
+        }).await.unwrap_or_default()
     }
 
     async fn refresh_folder(&self, folder_path: &str) -> FsResult<()> {
@@ -848,6 +850,9 @@ impl DavFileSystem for TelegramDavFs {
     }
 }
 
+// Both variants own substantial async state. Boxing the media would add indirection to every
+// read, while the enum itself is already heap-owned behind DavFile trait objects.
+#[allow(clippy::large_enum_variant)]
 enum TelegramDavFile {
     Read {
         client: grammers_client::Client,
@@ -1396,15 +1401,19 @@ mod tests {
 
     #[test]
     fn staged_writes_accept_put_and_lock_null_but_reject_append() {
-        let mut put = OpenOptions::default();
-        put.write = true;
-        put.create = true;
-        put.truncate = true;
+        let put = OpenOptions {
+            write: true,
+            create: true,
+            truncate: true,
+            ..Default::default()
+        };
         assert!(supports_staged_write(&put));
 
-        let mut lock_null = OpenOptions::default();
-        lock_null.write = true;
-        lock_null.create = true;
+        let lock_null = OpenOptions {
+            write: true,
+            create: true,
+            ..Default::default()
+        };
         assert!(supports_staged_write(&lock_null));
 
         let mut append = lock_null.clone();

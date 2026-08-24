@@ -1,0 +1,187 @@
+name: Android CI
+
+on:
+  workflow_call:
+  pull_request:
+    paths:
+      - 'app/**'
+      - '.github/workflows/android.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      NDK_VERSION: 30.0.14904198
+      HAS_ANDROID_SIGNING_KEY: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+      HAS_TAURI_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+      PRODUCTION_ANDROID_BUILD: ${{ github.event_name != 'pull_request' }}
+      TELEGRAM_DRIVE_SUPPORTER_SERVICE_URL: ${{ vars.SUPPORTER_SERVICE_URL }}
+      TELEGRAM_DRIVE_SUPPORTER_PUBLIC_KEY: ${{ vars.SUPPORTER_PUBLIC_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - name: Install Android SDK and NDK inputs
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager \
+            'platforms;android-36' \
+            'build-tools;36.0.0' \
+            'emulator' \
+            'system-images;android-36;google_apis;x86_64' \
+            'system-images;android-36;google-tv;x86_64' \
+            "ndk;${NDK_VERSION}"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+
+      - name: Install frontend dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Reproduce Android project inputs
+        working-directory: app
+        run: |
+          npm run tauri android init
+          node scripts/apply-android-overrides.cjs
+
+      - name: Verify JNI bridge contract and generated inputs
+        working-directory: app
+        run: npm run android:jni:check -- --generated
+
+      - name: Compile Android JVM and instrumentation tests
+        working-directory: app/src-tauri/gen/android
+        run: ./gradlew :app:testUniversalReleaseUnitTest :app:compileUniversalDebugAndroidTestKotlin
+
+      - name: Require protected signing for production
+        if: env.PRODUCTION_ANDROID_BUILD == 'true'
+        env:
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_SIGNING_CERT_SHA256: ${{ secrets.ANDROID_SIGNING_CERT_SHA256 }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          test "$HAS_ANDROID_SIGNING_KEY" = "true"
+          test -n "$ANDROID_KEY_ALIAS"
+          test -n "$ANDROID_KEY_PASSWORD"
+          test -n "$ANDROID_SIGNING_CERT_SHA256"
+          test "$HAS_TAURI_SIGNING_KEY" = "true"
+          test -n "$TAURI_SIGNING_PRIVATE_KEY"
+
+      - name: Configure protected release signing
+        if: env.HAS_ANDROID_SIGNING_KEY == 'true'
+        working-directory: app
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/telegram-drive.jks"
+          test -n "$ANDROID_KEY_ALIAS"
+          test -n "$ANDROID_KEY_PASSWORD"
+          if [ -z "$ANDROID_KEYSTORE_PASSWORD" ]; then ANDROID_KEYSTORE_PASSWORD="$ANDROID_KEY_PASSWORD"; fi
+          printf 'keyAlias=%s\nkeyPassword=%s\nstorePassword=%s\nstoreFile=%s\n' "$ANDROID_KEY_ALIAS" "$ANDROID_KEY_PASSWORD" "$ANDROID_KEYSTORE_PASSWORD" "$RUNNER_TEMP/telegram-drive.jks" > src-tauri/gen/android/app/keystore.properties
+
+      - name: Prepare updater signing key
+        if: env.HAS_ANDROID_SIGNING_KEY == 'true'
+        shell: node {0}
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          const fs = require('fs');
+          const key = process.env.KEY.trim();
+          if (!key) throw new Error('TAURI_SIGNING_PRIVATE_KEY is required for Android release manifests.');
+          const normalized = key.startsWith('untrusted comment:')
+            ? Buffer.from(key).toString('base64')
+            : key;
+          fs.appendFileSync(process.env.GITHUB_ENV, `TAURI_PRIVATE_KEY=${normalized}\n`);
+
+      - name: Build universal APK and App Bundle
+        working-directory: app
+        env:
+          ORG_GRADLE_PROJECT_telegramDrive_requireReleaseSigning: ${{ env.PRODUCTION_ANDROID_BUILD }}
+        run: npm run tauri android build -- --target aarch64 armv7 i686 x86_64 --apk true --aab true --ci
+
+      - name: Verify JNI methods survived R8
+        working-directory: app
+        run: npm run android:jni:check -- --generated --r8-seeds src-tauri/gen/android/app/build/outputs/mapping/universalRelease/seeds.txt
+
+      - name: Verify ABIs and 16 KB page-size compatibility
+        working-directory: app
+        run: bash scripts/verify-android-artifacts.sh
+
+      - name: Allow hardware-accelerated Android emulators
+        shell: bash
+        run: |
+          if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; fi
+
+      - name: Run phone instrumentation tests
+        working-directory: app
+        env:
+          ANDROID_EMULATOR_API: '36'
+          ANDROID_AVD_HOME: ${{ runner.temp }}/telegram-drive-phone-avd
+        run: bash scripts/run-android-emulator-tests.sh phone
+
+      - name: Run Google TV instrumentation tests
+        working-directory: app
+        env:
+          ANDROID_EMULATOR_API: '36'
+          ANDROID_AVD_HOME: ${{ runner.temp }}/telegram-drive-google-tv-avd
+        run: bash scripts/run-android-emulator-tests.sh google-tv
+
+      - name: Upload Android instrumentation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-drive-android-instrumentation-reports
+          path: |
+            app/src-tauri/gen/android/app/build/reports/androidTests/
+            app/src-tauri/gen/android/app/build/outputs/androidTest-results/
+            ${{ runner.temp }}/telegram-drive-phone-avd/*.txt
+            ${{ runner.temp }}/telegram-drive-phone-avd/*.log
+            ${{ runner.temp }}/telegram-drive-google-tv-avd/*.txt
+            ${{ runner.temp }}/telegram-drive-google-tv-avd/*.log
+          if-no-files-found: warn
+
+      - name: Verify release certificate and package Android artifacts
+        if: env.HAS_ANDROID_SIGNING_KEY == 'true'
+        working-directory: app
+        env:
+          ANDROID_SIGNING_CERT_SHA256: ${{ secrets.ANDROID_SIGNING_CERT_SHA256 }}
+          TAURI_PRIVATE_KEY: ${{ env.TAURI_PRIVATE_KEY }}
+          TAURI_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: bash scripts/package-android-release.sh
+
+      - name: Upload Android artifacts
+        if: env.HAS_ANDROID_SIGNING_KEY == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-drive-android-signed
+          path: |
+            app/android-release/*
+          if-no-files-found: error

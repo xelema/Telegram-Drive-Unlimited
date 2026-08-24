@@ -55,6 +55,7 @@ import { useConfirm } from '../../context/ConfirmContext';
 import { useSupporter } from '../../context/SupporterContext';
 import { DEFAULT_SEARCH_FILTERS, filterAndRankFiles, type FileSearchFilters } from '../../services/fileSearch';
 import { isSupporterPromptDue, shouldOfferNewSupporterPurchase, SUPPORTER_VALUE_MOMENT_EVENT } from '../../services/supporterVisibility';
+import { markDesktopFrontendReady, markDesktopFrontendUnready, type DesktopNavigationRequest } from '../../services/desktopLifecycle';
 
 const sameFile = (left: TelegramFile, right: TelegramFile) => (
     left.id === right.id && (left.folder_id ?? null) === (right.folder_id ?? null)
@@ -94,6 +95,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     const [showMoveModal, setShowMoveModal] = useState(false);
     const [showSettings, setShowSettings] = useState(false);
     const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>('general');
+    const [transferCenterOpenRequest, setTransferCenterOpenRequest] = useState(0);
     const [showShortcuts, setShowShortcuts] = useState(false);
     const [showHelp, setShowHelp] = useState(false);
     const [showSupporterReminder, setShowSupporterReminder] = useState(false);
@@ -135,6 +137,44 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     const [renameFolder, setRenameFolder] = useState<{ id: number; name: string } | null>(null);
     const [moveFileTarget, setMoveFileTarget] = useState<TelegramFile | null>(null);
     const [renameFileTarget, setRenameFileTarget] = useState<TelegramFile | null>(null);
+
+    useEffect(() => {
+        let cancelled = false;
+        let unlisten: (() => void) | undefined;
+        let unlistenBackgroundHint: (() => void) | undefined;
+        const initializeBridge = async () => {
+            const [disposeNavigation, disposeBackgroundHint] = await Promise.all([
+                listen<DesktopNavigationRequest>('desktop-navigation-request', ({ payload }) => {
+                    if (payload.target === 'transfers') {
+                        setTransferCenterOpenRequest(value => value + 1);
+                    } else if (payload.target === 'settings') {
+                        setSettingsInitialTab('general');
+                        setShowSettings(true);
+                    }
+                }),
+                listen('desktop-background-hint', () => {
+                    toast.info(t('settings.desktop_background_hint'));
+                }),
+            ]);
+            if (cancelled) {
+                disposeNavigation();
+                disposeBackgroundHint();
+                return;
+            }
+            unlisten = disposeNavigation;
+            unlistenBackgroundHint = disposeBackgroundHint;
+            await markDesktopFrontendReady();
+        };
+        void initializeBridge().catch(() => {
+            // Browser previews do not expose the desktop event or command bridge.
+        });
+        return () => {
+            cancelled = true;
+            unlisten?.();
+            unlistenBackgroundHint?.();
+            void markDesktopFrontendUnready().catch(() => {});
+        };
+    }, [t]);
 
     const recordSupporterPromptShown = useCallback(() => {
         updateSetting('supporterPromptLastShownAt', Date.now());
@@ -238,7 +278,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     });
 
 
-    const { uploadQueue, setUploadQueue, handleManualUpload, handleFolderUpload, handleDropUpload, handleUrlUpload, cancelAll: cancelUploads, pauseAll: pauseUploads, resumeAll: resumeUploads, cancelItem: cancelUploadItem, retryItem: retryUploadItem } = useFileUpload(activeFolderId, store);
+    const { uploadQueue, handleManualUpload, handleFolderUpload, handleDropUpload, handleUrlUpload, clearFinished: clearUploads, cancelAll: cancelUploads, pauseAll: pauseUploads, resumeAll: resumeUploads, cancelItem: cancelUploadItem, retryItem: retryUploadItem } = useFileUpload(activeFolderId, store);
     const { downloadQueue, queueDownload, queueBulkDownload, clearFinished: clearDownloads, cancelAll: cancelDownloads, pauseAll: pauseDownloads, resumeAll: resumeDownloads, cancelItem: cancelDownloadItem, retryItem: retryDownloadItem } = useFileDownload(store);
 
     const {
@@ -974,9 +1014,10 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
 
 
             <TransferCenter
+                openRequest={transferCenterOpenRequest}
                 uploads={uploadQueue}
                 downloads={downloadQueue}
-                onClearUploads={() => setUploadQueue(q => q.filter(i => i.status !== 'success' && i.status !== 'error' && i.status !== 'cancelled'))}
+                onClearUploads={clearUploads}
                 onCancelUploads={cancelUploads}
                 onPauseUploads={pauseUploads}
                 onResumeUploads={resumeUploads}

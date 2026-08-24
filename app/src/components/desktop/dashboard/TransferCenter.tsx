@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { CheckCircle2, ChevronDown, ChevronUp, Download, Pause, Play, RotateCcw, UploadCloud, X } from 'lucide-react';
 import type { DownloadItem, QueueItem } from '../../../types';
 import { formatBytes } from '../../../utils';
 
 interface TransferCenterProps {
+  openRequest?: number;
   uploads: QueueItem[];
   downloads: DownloadItem[];
   onClearUploads: () => void;
@@ -47,6 +48,7 @@ function StatusLabel({ status }: { status: QueueItem['status'] | DownloadItem['s
 }
 
 export function TransferCenter({
+  openRequest = 0,
   uploads,
   downloads,
   onClearUploads,
@@ -63,6 +65,9 @@ export function TransferCenter({
   onRetryDownload,
 }: TransferCenterProps) {
   const [expanded, setExpanded] = useState(true);
+  useEffect(() => {
+    if (openRequest > 0) setExpanded(true);
+  }, [openRequest]);
   if (uploads.length === 0 && downloads.length === 0) return null;
 
   const activeUploads = uploads.filter((item) => ['pending', 'uploading', 'downloading', 'encrypting', 'verifying'].includes(item.status)).length;

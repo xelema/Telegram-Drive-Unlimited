@@ -26,9 +26,10 @@ interface SettingsToggleProps {
   checked: boolean;
   label: string;
   onChange: () => void;
+  disabled?: boolean;
 }
 
-export function SettingsToggle({ checked, label, onChange }: SettingsToggleProps) {
+export function SettingsToggle({ checked, label, onChange, disabled = false }: SettingsToggleProps) {
   return (
     <button
       type="button"
@@ -36,7 +37,8 @@ export function SettingsToggle({ checked, label, onChange }: SettingsToggleProps
       aria-checked={checked}
       aria-label={label}
       onClick={onChange}
-      className={`relative h-6 w-11 rounded-full transition-colors duration-200 ${checked ? 'bg-telegram-primary' : 'bg-telegram-border'}`}
+      disabled={disabled}
+      className={`relative h-6 w-11 rounded-full transition-colors duration-200 disabled:cursor-not-allowed disabled:opacity-45 ${checked ? 'bg-telegram-primary' : 'bg-telegram-border'}`}
     >
       <span className={`absolute start-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform duration-200 ${checked ? 'translate-x-5 rtl:-translate-x-5' : 'translate-x-0'}`} />
     </button>

@@ -273,12 +273,10 @@ impl TranscodeManager {
     pub fn total_cache_size(&self) -> u64 {
         let mut total: u64 = 0;
         let walker = walkdir::WalkDir::new(&self.cache_root).min_depth(1);
-        for entry_result in walker {
-            if let Ok(entry) = entry_result {
-                if entry.file_type().is_file() {
-                    if let Ok(meta) = entry.metadata() {
-                        total += meta.len();
-                    }
+        for entry in walker.into_iter().flatten() {
+            if entry.file_type().is_file() {
+                if let Ok(meta) = entry.metadata() {
+                    total += meta.len();
                 }
             }
         }
@@ -297,16 +295,14 @@ impl TranscodeManager {
         // Collect all files with their modification times
         let mut files: Vec<(PathBuf, u64, SystemTime)> = Vec::new();
         let walker = walkdir::WalkDir::new(&self.cache_root).min_depth(1);
-        for entry_result in walker {
-            if let Ok(entry) = entry_result {
-                if entry.file_type().is_file() {
-                    if let Ok(meta) = entry.metadata() {
-                        files.push((
-                            entry.path().to_path_buf(),
-                            meta.len(),
-                            meta.modified().unwrap_or(UNIX_EPOCH),
-                        ));
-                    }
+        for entry in walker.into_iter().flatten() {
+            if entry.file_type().is_file() {
+                if let Ok(meta) = entry.metadata() {
+                    files.push((
+                        entry.path().to_path_buf(),
+                        meta.len(),
+                        meta.modified().unwrap_or(UNIX_EPOCH),
+                    ));
                 }
             }
         }
@@ -718,7 +714,7 @@ pub async fn run_transcode(
                             let secs = parse_time_to_secs(time_str);
                             if let Some(dur) = duration_secs {
                                 if dur > 0.0 {
-                                    let pct = (secs / dur as f64) as f32;
+                                    let pct = (secs / dur) as f32;
                                     if (pct - last_progress).abs() > 0.01 {
                                         last_progress = pct.clamp(0.0, 0.99);
                                         progress_callback(last_progress);
@@ -1290,7 +1286,7 @@ pub async fn cmd_set_transcode_cache_limit(
     max_gb: u32,
     manager: tauri::State<'_, Arc<TranscodeManager>>,
 ) -> Result<(), String> {
-    let gb = std::cmp::max(1, std::cmp::min(50, max_gb));
+    let gb = max_gb.clamp(1, 50);
     let max_bytes = (gb as u64) * 1024 * 1024 * 1024;
     manager.set_max_cache_bytes(max_bytes).await;
     log::info!(
@@ -2068,21 +2064,26 @@ mod cache_tests {
         let playlist_response = actix_web::test::call_service(&service, playlist_request).await;
         assert!(playlist_response.status().is_success());
         let playlist_body = actix_web::test::read_body(playlist_response).await;
-        assert!(String::from_utf8_lossy(&playlist_body)
-            .contains("segment_000.ts?token=abc123"));
+        assert!(String::from_utf8_lossy(&playlist_body).contains("segment_000.ts?token=abc123"));
 
         let segment_request = actix_web::test::TestRequest::get()
             .uri("/hls/123_456/480p/segment_000.ts?token=abc123")
             .to_request();
         let segment_response = actix_web::test::call_service(&service, segment_request).await;
         assert!(segment_response.status().is_success());
-        assert_eq!(actix_web::test::read_body(segment_response).await.as_ref(), &[1, 2, 3, 4]);
+        assert_eq!(
+            actix_web::test::read_body(segment_response).await.as_ref(),
+            &[1, 2, 3, 4]
+        );
 
         let unauthenticated_request = actix_web::test::TestRequest::get()
             .uri("/hls/123_456/480p/segment_000.ts")
             .to_request();
         let unauthenticated_response =
             actix_web::test::call_service(&service, unauthenticated_request).await;
-        assert_eq!(unauthenticated_response.status(), actix_web::http::StatusCode::FORBIDDEN);
+        assert_eq!(
+            unauthenticated_response.status(),
+            actix_web::http::StatusCode::FORBIDDEN
+        );
     }
 }

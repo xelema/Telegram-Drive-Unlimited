@@ -1,11 +1,11 @@
-use actix_web::{get, post, web, HttpRequest, HttpResponse, Responder, cookie::Cookie};
-use crate::commands::TelegramState;
 use crate::commands::utils::resolve_peer;
+use crate::commands::TelegramState;
 use crate::db::DbConnection;
+use actix_web::{cookie::Cookie, get, post, web, HttpRequest, HttpResponse, Responder};
 use grammers_client::types::Media;
-use sha2::{Sha256, Digest};
-use std::sync::Arc;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
+use std::sync::Arc;
 
 #[derive(Clone)]
 struct SharedLinkRow {
@@ -37,16 +37,19 @@ fn generate_cookie_val(token: &str, password_hash: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn get_share_by_token(db: &DbConnection, token: &str) -> Result<Option<SharedLinkRow>, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
-    let mut stmt = conn
+async fn get_share_by_token(
+    db: DbConnection,
+    token: String,
+) -> Result<Option<SharedLinkRow>, String> {
+    crate::db::with_connection(db, move |conn| {
+        let mut stmt = conn
         .prepare(
             "SELECT id, folder_id, message_id, file_name, file_size, password_hash, password_salt, expires_at, revoked 
              FROM shared_links WHERE id = ?"
         )
         .map_err(|e| e.to_string())?;
-    
-    stmt.bind((1, token)).map_err(|e| e.to_string())?;
+
+        stmt.bind((1, token.as_str())).map_err(|e| e.to_string())?;
 
     if let sqlite::State::Row = stmt.next().map_err(|e| e.to_string())? {
         let id = stmt.read::<String, _>("id").map_err(|e| e.to_string())?;
@@ -59,7 +62,7 @@ fn get_share_by_token(db: &DbConnection, token: &str) -> Result<Option<SharedLin
         let expires_at = stmt.read::<Option<i64>, _>("expires_at").ok().flatten();
         let revoked = stmt.read::<i64, _>("revoked").map_err(|e| e.to_string())? != 0;
 
-        Ok(Some(SharedLinkRow {
+            Ok(Some(SharedLinkRow {
             _id: id,
             folder_id,
             message_id,
@@ -69,10 +72,11 @@ fn get_share_by_token(db: &DbConnection, token: &str) -> Result<Option<SharedLin
             _password_salt,
             expires_at,
             revoked,
-        }))
-    } else {
-        Ok(None)
-    }
+            }))
+        } else {
+            Ok(None)
+        }
+    }).await
 }
 
 /// Renders the password entry form for protected share links.
@@ -83,129 +87,196 @@ fn get_share_by_token(db: &DbConnection, token: &str) -> Result<Option<SharedLin
 /// Actix streaming server (127.0.0.1/0.0.0.0:14201), not the public internet,
 /// so the XSS attack surface is minimal.
 fn escape_html(input: &str) -> String {
-    input.replace('&', "&amp;")
-         .replace('<', "&lt;")
-         .replace('>', "&gt;")
-         .replace('"', "&quot;")
-         .replace('\'', "&#x27;")
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#x27;")
 }
 
 fn resolve_req_lang(req: &HttpRequest) -> (&'static str, &'static str) {
     if let Some(query) = req.uri().query() {
         let query = query.to_ascii_lowercase();
-        if query.contains("lang=ar") { return ("ar", "rtl"); }
-        if query.contains("lang=zh-tw") || query.contains("lang=zh-hk") || query.contains("lang=zh-hant") { return ("zh-TW", "ltr"); }
-        if query.contains("lang=bn") { return ("bn-BD", "ltr"); }
-        if query.contains("lang=th") { return ("th-TH", "ltr"); }
-        if query.contains("lang=fil") || query.contains("lang=tl") { return ("fil-PH", "ltr"); }
-        if query.contains("lang=es") { return ("es", "ltr"); }
-        if query.contains("lang=ru") { return ("ru", "ltr"); }
-        if query.contains("lang=fr") { return ("fr", "ltr"); }
-        if query.contains("lang=de") { return ("de", "ltr"); }
-        if query.contains("lang=pt") { return ("pt-BR", "ltr"); }
-        if query.contains("lang=zh") { return ("zh-CN", "ltr"); }
-        if query.contains("lang=vi") { return ("vi", "ltr"); }
+        if query.contains("lang=ar") {
+            return ("ar", "rtl");
+        }
+        if query.contains("lang=zh-tw")
+            || query.contains("lang=zh-hk")
+            || query.contains("lang=zh-hant")
+        {
+            return ("zh-TW", "ltr");
+        }
+        if query.contains("lang=bn") {
+            return ("bn-BD", "ltr");
+        }
+        if query.contains("lang=th") {
+            return ("th-TH", "ltr");
+        }
+        if query.contains("lang=fil") || query.contains("lang=tl") {
+            return ("fil-PH", "ltr");
+        }
+        if query.contains("lang=es") {
+            return ("es", "ltr");
+        }
+        if query.contains("lang=ru") {
+            return ("ru", "ltr");
+        }
+        if query.contains("lang=fr") {
+            return ("fr", "ltr");
+        }
+        if query.contains("lang=de") {
+            return ("de", "ltr");
+        }
+        if query.contains("lang=pt") {
+            return ("pt-BR", "ltr");
+        }
+        if query.contains("lang=zh") {
+            return ("zh-CN", "ltr");
+        }
+        if query.contains("lang=vi") {
+            return ("vi", "ltr");
+        }
     }
     if let Some(accept) = req.headers().get("Accept-Language") {
         if let Ok(val) = accept.to_str() {
             let val = val.to_ascii_lowercase();
-            if val.contains("ar") { return ("ar", "rtl"); }
-            if val.contains("zh-tw") || val.contains("zh-hk") || val.contains("zh-hant") { return ("zh-TW", "ltr"); }
-            if val.contains("bn") { return ("bn-BD", "ltr"); }
-            if val.contains("th") { return ("th-TH", "ltr"); }
-            if val.contains("fil") || val.contains("tl-ph") { return ("fil-PH", "ltr"); }
-            if val.contains("es") { return ("es", "ltr"); }
-            if val.contains("ru") { return ("ru", "ltr"); }
-            if val.contains("fr") { return ("fr", "ltr"); }
-            if val.contains("de") { return ("de", "ltr"); }
-            if val.contains("pt") { return ("pt-BR", "ltr"); }
-            if val.contains("zh") { return ("zh-CN", "ltr"); }
-            if val.contains("vi") { return ("vi", "ltr"); }
+            if val.contains("ar") {
+                return ("ar", "rtl");
+            }
+            if val.contains("zh-tw") || val.contains("zh-hk") || val.contains("zh-hant") {
+                return ("zh-TW", "ltr");
+            }
+            if val.contains("bn") {
+                return ("bn-BD", "ltr");
+            }
+            if val.contains("th") {
+                return ("th-TH", "ltr");
+            }
+            if val.contains("fil") || val.contains("tl-ph") {
+                return ("fil-PH", "ltr");
+            }
+            if val.contains("es") {
+                return ("es", "ltr");
+            }
+            if val.contains("ru") {
+                return ("ru", "ltr");
+            }
+            if val.contains("fr") {
+                return ("fr", "ltr");
+            }
+            if val.contains("de") {
+                return ("de", "ltr");
+            }
+            if val.contains("pt") {
+                return ("pt-BR", "ltr");
+            }
+            if val.contains("zh") {
+                return ("zh-CN", "ltr");
+            }
+            if val.contains("vi") {
+                return ("vi", "ltr");
+            }
         }
     }
     ("en", "ltr")
 }
 
-fn render_password_form(req: &HttpRequest, file_name: &str, token: &str, error: Option<&str>) -> HttpResponse {
+fn render_password_form(
+    req: &HttpRequest,
+    file_name: &str,
+    token: &str,
+    error: Option<&str>,
+) -> HttpResponse {
     let (lang, dir) = resolve_req_lang(req);
     let safe_file_name = escape_html(file_name);
-    let (title_text, heading_text, desc_text, file_label, password_placeholder, btn_text, incorrect_password) =
-        match lang {
-            "es" => (
-                "Archivo protegido con contraseña",
-                "Ingrese contraseña",
-                "Este enlace está protegido con contraseña.",
-                "Archivo",
-                "Contraseña",
-                "Verificar y descargar",
-                "Contraseña incorrecta. Inténtelo de nuevo.",
-            ),
-            "ru" => (
-                "Файл защищен паролем",
-                "Введите пароль",
-                "Эта ссылка защищена паролем.",
-                "Файл",
-                "Пароль",
-                "Проверить и скачать",
-                "Неверный пароль. Повторите попытку.",
-            ),
-            "vi" => (
-                "Tệp được bảo vệ bằng mật khẩu",
-                "Nhập mật khẩu",
-                "Liên kết chia sẻ này được bảo vệ bằng mật khẩu.",
-                "Tệp",
-                "Mật khẩu",
-                "Xác minh và tải xuống",
-                "Mật khẩu không đúng. Vui lòng thử lại.",
-            ),
-            "bn-BD" => (
-                "পাসওয়ার্ড-সুরক্ষিত ফাইল",
-                "পাসওয়ার্ড লিখুন",
-                "এই শেয়ার লিঙ্কটি পাসওয়ার্ড দিয়ে সুরক্ষিত।",
-                "ফাইল",
-                "পাসওয়ার্ড",
-                "যাচাই করে ডাউনলোড করুন",
-                "পাসওয়ার্ডটি সঠিক নয়। আবার চেষ্টা করুন।",
-            ),
-            "th-TH" => (
-                "ไฟล์ที่ป้องกันด้วยรหัสผ่าน",
-                "ป้อนรหัสผ่าน",
-                "ลิงก์แชร์นี้ได้รับการป้องกันด้วยรหัสผ่าน",
-                "ไฟล์",
-                "รหัสผ่าน",
-                "ตรวจสอบและดาวน์โหลด",
-                "รหัสผ่านไม่ถูกต้อง โปรดลองอีกครั้ง",
-            ),
-            "fil-PH" => (
-                "File na Protektado ng Password",
-                "Ilagay ang Password",
-                "Protektado ng password ang share link na ito.",
-                "File",
-                "Password",
-                "I-verify at I-download",
-                "Mali ang password. Pakisubukang muli.",
-            ),
-            "zh-TW" => (
-                "密碼保護的檔案",
-                "輸入密碼",
-                "此分享連結受密碼保護。",
-                "檔案",
-                "密碼",
-                "驗證並下載",
-                "密碼不正確，請再試一次。",
-            ),
-            _ => (
-                "Password Protected File",
-                "Enter Password",
-                "This share link is password-protected.",
-                "File",
-                "Password",
-                "Verify & Download",
-                "Incorrect password. Please try again.",
-            ),
-        };
+    let (
+        title_text,
+        heading_text,
+        desc_text,
+        file_label,
+        password_placeholder,
+        btn_text,
+        incorrect_password,
+    ) = match lang {
+        "es" => (
+            "Archivo protegido con contraseña",
+            "Ingrese contraseña",
+            "Este enlace está protegido con contraseña.",
+            "Archivo",
+            "Contraseña",
+            "Verificar y descargar",
+            "Contraseña incorrecta. Inténtelo de nuevo.",
+        ),
+        "ru" => (
+            "Файл защищен паролем",
+            "Введите пароль",
+            "Эта ссылка защищена паролем.",
+            "Файл",
+            "Пароль",
+            "Проверить и скачать",
+            "Неверный пароль. Повторите попытку.",
+        ),
+        "vi" => (
+            "Tệp được bảo vệ bằng mật khẩu",
+            "Nhập mật khẩu",
+            "Liên kết chia sẻ này được bảo vệ bằng mật khẩu.",
+            "Tệp",
+            "Mật khẩu",
+            "Xác minh và tải xuống",
+            "Mật khẩu không đúng. Vui lòng thử lại.",
+        ),
+        "bn-BD" => (
+            "পাসওয়ার্ড-সুরক্ষিত ফাইল",
+            "পাসওয়ার্ড লিখুন",
+            "এই শেয়ার লিঙ্কটি পাসওয়ার্ড দিয়ে সুরক্ষিত।",
+            "ফাইল",
+            "পাসওয়ার্ড",
+            "যাচাই করে ডাউনলোড করুন",
+            "পাসওয়ার্ডটি সঠিক নয়। আবার চেষ্টা করুন।",
+        ),
+        "th-TH" => (
+            "ไฟล์ที่ป้องกันด้วยรหัสผ่าน",
+            "ป้อนรหัสผ่าน",
+            "ลิงก์แชร์นี้ได้รับการป้องกันด้วยรหัสผ่าน",
+            "ไฟล์",
+            "รหัสผ่าน",
+            "ตรวจสอบและดาวน์โหลด",
+            "รหัสผ่านไม่ถูกต้อง โปรดลองอีกครั้ง",
+        ),
+        "fil-PH" => (
+            "File na Protektado ng Password",
+            "Ilagay ang Password",
+            "Protektado ng password ang share link na ito.",
+            "File",
+            "Password",
+            "I-verify at I-download",
+            "Mali ang password. Pakisubukang muli.",
+        ),
+        "zh-TW" => (
+            "密碼保護的檔案",
+            "輸入密碼",
+            "此分享連結受密碼保護。",
+            "檔案",
+            "密碼",
+            "驗證並下載",
+            "密碼不正確，請再試一次。",
+        ),
+        _ => (
+            "Password Protected File",
+            "Enter Password",
+            "This share link is password-protected.",
+            "File",
+            "Password",
+            "Verify & Download",
+            "Incorrect password. Please try again.",
+        ),
+    };
     let error_html = match error {
-        Some(_) => format!("<div class=\"error\">{}</div>", escape_html(incorrect_password)),
+        Some(_) => format!(
+            "<div class=\"error\">{}</div>",
+            escape_html(incorrect_password)
+        ),
         None => "".to_string(),
     };
 
@@ -294,7 +365,17 @@ fn render_password_form(req: &HttpRequest, file_name: &str, token: &str, error: 
     </div>
 </body>
 </html>"#,
-        lang, dir, title_text, heading_text, desc_text, file_label, safe_file_name, error_html, token, password_placeholder, btn_text
+        lang,
+        dir,
+        title_text,
+        heading_text,
+        desc_text,
+        file_label,
+        safe_file_name,
+        error_html,
+        token,
+        password_placeholder,
+        btn_text
     );
 
     HttpResponse::Ok()
@@ -310,28 +391,28 @@ async fn get_shared_file(
     tg_state: web::Data<Arc<TelegramState>>,
 ) -> impl Responder {
     let token = path.into_inner();
-    
-    let row = match get_share_by_token(&db_conn, &token) {
+
+    let row = match get_share_by_token(db_conn.get_ref().clone(), token.clone()).await {
         Ok(Some(r)) => r,
         Ok(None) => return HttpResponse::NotFound().body("Shared link not found"),
         Err(e) => {
             log::error!("DB error resolving token {}: {}", token, e);
-            return HttpResponse::InternalServerError().body("Internal server error")
+            return HttpResponse::InternalServerError().body("Internal server error");
         }
     };
-    
+
     // Check validation (revocation and expiration)
     if row.revoked {
         return HttpResponse::NotFound().body("This shared link has been revoked");
     }
-    
+
     if let Some(expiry) = row.expires_at {
         let now = chrono::Utc::now().timestamp();
         if expiry < now {
             return HttpResponse::Gone().body("This shared link has expired");
         }
     }
-    
+
     // Check password protection
     if let Some(hash) = &row.password_hash {
         let mut authenticated = false;
@@ -341,19 +422,19 @@ async fn get_shared_file(
                 authenticated = true;
             }
         }
-        
+
         if !authenticated {
             return render_password_form(&req, &row.file_name, &token, None);
         }
     }
-    
+
     // Retrieve and stream the file from Telegram
     let client_opt = { tg_state.client.lock().await.clone() };
     let client = match client_opt {
         Some(c) => c,
         None => return HttpResponse::ServiceUnavailable().body("Telegram client is not connected"),
     };
-    
+
     let peer = match resolve_peer(&client, row.folder_id, &tg_state.peer_cache).await {
         Ok(p) => p,
         Err(e) => {
@@ -361,19 +442,26 @@ async fn get_shared_file(
             return HttpResponse::InternalServerError().body("Failed to locate folder");
         }
     };
-    
+
     match client.get_messages_by_id(peer, &[row.message_id]).await {
         Ok(messages) => {
             if let Some(Some(msg)) = messages.first() {
                 if let Some(media) = msg.media() {
                     let mime = match &media {
-                        Media::Document(d) => d.mime_type().unwrap_or("application/octet-stream").to_string(),
+                        Media::Document(d) => d
+                            .mime_type()
+                            .unwrap_or("application/octet-stream")
+                            .to_string(),
                         _ => "application/octet-stream".to_string(),
                     };
                     let filename = &row.file_name;
 
                     return crate::server::build_media_response(
-                        &client, &media, &req, &mime, Some(filename),
+                        &client,
+                        &media,
+                        &req,
+                        &mime,
+                        Some(filename),
                         crate::server::StreamingExtras {
                             extra_headers: vec![],
                             log_label: "Share download",
@@ -398,25 +486,25 @@ async fn verify_shared_file_password(
     db_conn: web::Data<DbConnection>,
 ) -> impl Responder {
     let token = path.into_inner();
-    
-    let row = match get_share_by_token(&db_conn, &token) {
+
+    let row = match get_share_by_token(db_conn.get_ref().clone(), token.clone()).await {
         Ok(Some(r)) => r,
         Ok(None) => return HttpResponse::NotFound().body("Shared link not found"),
         Err(e) => {
             log::error!("DB error resolving token {}: {}", token, e);
-            return HttpResponse::InternalServerError().body("Internal server error")
+            return HttpResponse::InternalServerError().body("Internal server error");
         }
     };
-    
+
     if row.revoked {
         return HttpResponse::NotFound().body("This shared link has been revoked");
     }
-    
+
     let hash = match &row.password_hash {
         Some(h) => h,
         None => return HttpResponse::BadRequest().body("No password required for this link"),
     };
-    
+
     if verify_password(&form.password, hash) {
         // Set session cookie (30 min).
         // NOTE: The streaming share server binds to 0.0.0.0 over plain HTTP (not HTTPS),
@@ -430,19 +518,24 @@ async fn verify_shared_file_password(
             .same_site(actix_web::cookie::SameSite::Strict)
             .max_age(actix_web::cookie::time::Duration::minutes(30))
             .finish();
-            
+
         HttpResponse::Found()
             .insert_header(("Location", format!("/d/{}", token)))
             .cookie(cookie)
             .finish()
     } else {
-        render_password_form(&req, &row.file_name, &token, Some("Incorrect password. Please try again."))
+        render_password_form(
+            &req,
+            &row.file_name,
+            &token,
+            Some("Incorrect password. Please try again."),
+        )
     }
 }
 
 pub fn configure_share_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(get_shared_file)
-       .service(verify_shared_file_password);
+        .service(verify_shared_file_password);
 }
 
 #[cfg(test)]
@@ -471,8 +564,8 @@ mod tests {
             ("zh-TW", "zh-TW"),
             ("zh-Hant", "zh-TW"),
         ] {
-            let request = TestRequest::with_uri(&format!("/d/example?lang={locale}"))
-                .to_http_request();
+            let request =
+                TestRequest::with_uri(&format!("/d/example?lang={locale}")).to_http_request();
             assert_eq!(resolve_req_lang(&request), (expected, "ltr"));
         }
 

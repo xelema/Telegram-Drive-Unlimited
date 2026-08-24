@@ -174,34 +174,34 @@ Localization is still being completed: some non-English entries currently fall b
 - A configured proxy routes traffic according to the selected proxy settings. Review and trust your own proxy provider.
 - Optional ad-free activation contacts the Telegram Drive supporter verification service. It stores no purchaser email and receives no Telegram credentials or file activity; see the [Privacy Policy](PRIVACY.md) and [Supporter Terms](SUPPORTER_TERMS.md).
 
-## Android beta (pre-built unsigned APK)
+## Android and Google TV (signed sideload)
 
-A pre-built **unsigned Android beta APK** is available from the [Telegram Drive v3.0.0 beta release](https://github.com/caamer20/Telegram-Drive/releases/tag/Androidv4.0.0beta).
-
-> [!WARNING]
-> The APK is not signed and is not distributed through Google Play. Installing an unsigned sideloaded build carries additional authenticity and update risks.
+Telegram Drive's universal Android release supports phones, tablets, Android TV, and Google TV. It is distributed as a signed APK through GitHub Releases and is not distributed through Google Play. Android media streams inside the app with native playback, system media controls, playback resume, subtitles/audio tracks, playback speed, and Picture-in-Picture where the device supports it.
 
 ### Sideloading
 
-1. Download `Telegram-Drive-v4.0.0-beta.apk` from the [Android beta release](https://github.com/caamer20/Telegram-Drive/releases/tag/Androidv4.0.0beta).
-2. On Android, open **Settings → Apps → Special app access → Install unknown apps** and grant permission to the browser or file manager used for the APK.
-3. Open the APK and choose **Install**.
-4. Enter your own Telegram API ID and API hash on first launch.
+1. Download the signed `Telegram-Drive-vX.Y.Z-android-universal.apk` and `SHA256SUMS` from the matching [GitHub release](https://github.com/caamer20/Telegram-Drive/releases).
+2. Verify the APK checksum against `SHA256SUMS`.
+3. On Android, open **Settings → Apps → Special app access → Install unknown apps** and grant permission to the browser or file manager used for the APK.
+4. Open the APK and choose **Install**.
+5. Enter your own Telegram API ID and API hash on first launch.
 
 Compatibility notes:
 
 - The current Android project has `minSdk 24`, corresponding to Android 7.0 or newer.
-- The pre-built Android release is a separate community/beta track from the primary desktop releases.
-- On devices that block the beta because of target-SDK policy, advanced users can attempt installation with ADB:
+- Google TV users can transfer the APK to the television or install it with ADB:
 
   ```bash
-  adb install --bypass-low-target-sdk-block Telegram-Drive-v2.1.5-beta.apk
+  adb install Telegram-Drive-vX.Y.Z-android-universal.apk
   ```
+
+- In-app sideload updates verify signed release metadata and the downloaded APK hash before opening Android's package installer.
+- Release maintainers should use the [Android/Google TV release runbook](Docs/ANDROID_SIDELOAD_RELEASE.md).
 
 ## Screenshots
 
 > [!NOTE]
-> These images document the currently published desktop and Android builds. They do not yet show every part of the unreleased 2.0.0 Quiet Utility redesign.
+> These images document representative desktop and Android workflows and may not show every part of the current interface.
 
 ### Desktop
 
@@ -295,6 +295,7 @@ cd src-tauri && cargo test --lib
 ## Project documentation
 
 - [Changelog](CHANGELOG.md)
+- [Architecture remediation and release handoff](ARCHITECTURE_REMEDIATION.md)
 - [Supporter terms](SUPPORTER_TERMS.md)
 - [Supporter service operations](SUPPORTER_SERVICE.md)
 - [REST API endpoint reference](REST_API_Documentation.md)
