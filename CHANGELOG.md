@@ -2,7 +2,7 @@
 
 ### Release Overview
 
-Telegram Drive 3.5 is a major reliability, security, media, and platform release. It moves critical transfer and desktop-lifecycle work into durable native services, strengthens file and network boundaries, expands the Android application into a signed phone, tablet, Android TV, and Google TV release, and adds professional image-viewing and media-recovery behavior.
+Telegram Drive 3.5 is a major desktop reliability, security, and media release. It moves critical transfer and application-lifecycle work into durable native services, strengthens file and network boundaries, and adds professional image-viewing and media-recovery behavior across Windows, macOS, and Linux.
 
 ### Desktop-Native Experience
 
@@ -39,24 +39,13 @@ Telegram Drive 3.5 is a major reliability, security, media, and platform release
 - Improved adaptive playback recovery with native-video fallback, bounded startup handling, safer file changes, and clearer remux state transitions.
 - Prevented the streaming-conversion overlay from remaining visible after playback has already started.
 - Added desktop image-viewer controls for zoom in, zoom out, fit to window, actual size, zoom percentage, wheel zoom, panning, double-click zoom, and keyboard navigation.
-- Added touch-first image interaction with pinch-to-zoom, drag panning, double-tap zoom, bounded transforms, and gesture isolation for Android devices.
 - Preserved progressive thumbnail loading and full-resolution image replacement while zooming or navigating between files.
-
-### Android, Android TV, and Google TV
-
-- Promoted Android from a separate unsigned beta into the primary signed release workflow for phones, tablets, Android TV, and Google TV on Android 7.0 and newer.
-- Added native in-app media playback with system transport controls, playback-position restoration, playback speed, audio and subtitle track selection, orientation handling, and Picture-in-Picture where supported.
-- Added resilient Android transfer recovery using foreground services, scheduled recovery work, persisted queue state, reboot recovery, and actionable battery-optimization guidance.
-- Added secure Android reauthentication and device-credential integration for sensitive application state.
-- Added signed sideload-update metadata, package and version checks, SHA-256 verification, and a controlled handoff to the Android package installer.
-- Added television launcher presentation, remote-focus navigation, Android TV instrumentation coverage, and a dedicated Google TV release path.
-- Added reproducible Android overrides, release-minification safeguards for JNI methods, four-ABI packaging, and 16 KB native-library alignment verification.
 
 ### Synchronization, Networking, and Platform Reliability
 
 - Preserved folder-sync deletion guards, conflict handling, portable naming, atomic replacement, retry classification, and vault-aware behavior while moving database access onto safe asynchronous boundaries.
 - Changed network keep-alive probes to resolve Telegram hostnames dynamically instead of depending on a fixed datacenter address.
-- Isolated desktop and Android capabilities so mobile-only permissions cannot leak into desktop builds.
+- Isolated desktop capabilities so platform-specific permissions cannot leak into production desktop builds.
 - Centralized application provider ownership and Query Client lifetime to prevent cross-mount state leakage and initialization-order ambiguity.
 - Improved startup and shutdown ownership for streaming, synchronization, notification, and transfer services.
 
@@ -64,22 +53,19 @@ Telegram Drive 3.5 is a major reliability, security, media, and platform release
 
 - Expanded pull-request checks across Windows, macOS, and Linux with frontend tests, production compilation, Rust tests, formatting, linting, and packaging smoke coverage.
 - Added tag-gated release preflight checks before any draft release or installer build can begin.
-- Added reproducible signed Android APK and App Bundle generation, emulator coverage for phone and Google TV profiles, artifact integrity checks, and release-manifest validation.
-- Added operational runbooks for Android sideload releases, signing-key backup, upgrade verification, service backup, and restore drills.
-- Updated the product website and project documentation for the unified desktop and Android release model.
+- Added operational runbooks for desktop signing-key backup, upgrade verification, service backup, and restore drills.
+- Updated the product website and project documentation for the Windows, macOS, and Linux release model.
 
 ### Compatibility and Upgrade Notes
 
 - Existing Telegram sessions, folders, settings, encrypted files, share links, synchronization mappings, and recovery material remain compatible.
 - Legacy proxy credentials are migrated to secure operating system storage after the native backend confirms successful persistence.
-- Existing Android installations can upgrade in place only when they use the same package identity and trusted signing certificate; follow the sideload release documentation when moving from an unsigned development build.
-- Android background execution remains subject to device-manufacturer battery policy. The application preserves recoverable queue state when the operating system stops background work.
 - Some video formats still depend on platform codec availability or FFmpeg. The player now provides bounded fallback and recovery behavior when direct streaming is unavailable.
 
 ### Verification
 
 - All 108 frontend tests passed across 32 test files.
-- All 137 Rust library tests and all 8 Android URI integration tests passed.
+- All 137 Rust library tests passed.
 - All 36 supporter-service tests, TypeScript validation, and the production Worker bundle dry-run passed.
 - All 6 Playwright visual-regression scenarios passed.
 - Production TypeScript and frontend builds passed.

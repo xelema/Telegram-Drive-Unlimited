@@ -7,7 +7,7 @@ function workflow(name: string): string {
 }
 
 describe('release safety gates', () => {
-  it('blocks draft release creation on application, Worker, and Android verification', () => {
+  it('blocks draft release creation on application and Worker verification', () => {
     const release = workflow('release.yml');
     const createReleaseJob = release.slice(
       release.indexOf('  create-release:'),
@@ -18,12 +18,12 @@ describe('release safety gates', () => {
     expect(release).toContain('run: npm test');
     expect(release).toContain('run: cargo test --lib');
     expect(release).toContain('npx wrangler deploy --dry-run');
-    expect(release).toContain('uses: ./.github/workflows/android.yml');
-    expect(createReleaseJob).toContain('needs: [verify-release, build-android]');
+    expect(createReleaseJob).toContain('needs: verify-release');
   });
 
-  it('keeps the reusable Android gate universal and artifact-verified', () => {
+  it('keeps Android verification independent from the desktop-only release', () => {
     const android = workflow('android.yml');
+    const release = workflow('release.yml');
 
     expect(android).toMatch(/on:\s*\n\s+workflow_call:/);
     expect(android).toContain('--target aarch64 armv7 i686 x86_64');
@@ -33,7 +33,9 @@ describe('release safety gates', () => {
     expect(android).toContain('ANDROID_SIGNING_CERT_SHA256');
     expect(android).toContain('bash scripts/package-android-release.sh');
     expect(android).toContain("if: env.HAS_ANDROID_SIGNING_KEY == 'true'");
-    expect(workflow('release.yml')).toContain('telegram-drive-android-signed');
+    expect(release).not.toContain('uses: ./.github/workflows/android.yml');
+    expect(release).not.toContain('telegram-drive-android-signed');
+    expect(release).not.toContain('android-update.json');
   });
 
   it('runs frontend regression tests in the native desktop matrix', () => {
