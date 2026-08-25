@@ -9,6 +9,14 @@ d1/telegram-drive-supporter/YYYY/MM/DD/telegram-drive-supporter-YYYYMMDDTHHMMSSZ
 
 Cloudflare D1 Time Travel remains the fastest recovery option for a recent accidental write. The R2 SQL exports provide independent, longer-term recovery from a bad migration, dropped table, or incident outside the Time Travel retention window.
 
+## Runtime separation and initial setup status
+
+This independent backup workflow was introduced with v3.5.0. Earlier releases did not run it, which is why missing backup credentials did not previously appear as a GitHub Actions failure.
+
+The scheduled job intentionally validates all required GitHub secrets before it contacts production D1. If configuration is missing, it exits with an error before exporting, uploading, or modifying supporter data. The failure means that a new independent R2 recovery copy was not created; it does **not** mean that checkout, license activation, entitlement refresh, recovery codes, ad removal, the live Worker, or production D1 stopped working.
+
+Backup health must never become a runtime dependency of the $5 lifetime supporter flow. Do not disable or mark this job successful merely to hide missing disaster-recovery configuration. Either complete the one-time private R2 setup below or make an explicit repository-owner decision to remove this backup strategy and accept the reduced recovery protection.
+
 ## One-time setup
 
 Create a private R2 bucket dedicated to backups and give its API token object read/write access only to that bucket. Configure these GitHub Actions repository secrets:

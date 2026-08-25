@@ -2,6 +2,9 @@
 
 The desktop supporter feature is backed by a Cloudflare Worker, D1, and PayPal Orders v2. The service verifies payment before issuing an Ed25519-signed entitlement bound to a desktop device key. It deliberately does not request or store purchaser email addresses.
 
+> [!IMPORTANT]
+> The $5 one-time lifetime ad-free promise is a protected compatibility contract. Before changing this service, entitlement handling, advertisement visibility, secure storage, or release configuration, read [the supporter license invariants](SUPPORTER_LICENSE_INVARIANTS.md). Existing purchasers must retain their entitlement across updates and must never be required to pay again because of a refactor, refresh, outage, or backup failure.
+
 ## Security and privacy model
 
 - PayPal credentials, the webhook ID, the Ed25519 private JWK, and recovery-code keys are Cloudflare Worker secrets and must never be committed or placed in GitHub variables.
