@@ -94,6 +94,9 @@ export interface DetailedCacheInfo {
   entries: CacheEntry[];
   total_bytes: number;
   max_bytes: number;
+  scan_in_progress: boolean;
+  last_scanned_at: number | null;
+  last_error: string | null;
 }
 
 export type TranscodeJobPhase = 'idle' | 'preparing' | 'caching' | 'transcoding' | 'ready' | 'failed';

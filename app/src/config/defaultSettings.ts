@@ -2,6 +2,8 @@ import type { Settings } from '../types/settings';
 
 export const DEFAULT_SETTINGS: Settings = {
   viewMode: 'grid',
+  fileSortField: 'name',
+  fileSortDirection: 'asc',
   autoUpdate: true,
   maxConcurrentUploads: 6,
   maxConcurrentDownloads: 6,

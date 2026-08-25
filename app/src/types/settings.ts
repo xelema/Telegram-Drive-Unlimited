@@ -2,6 +2,8 @@ import type { LanguagePreference } from '../i18n/languages';
 
 export interface Settings {
   viewMode: 'grid' | 'list';
+  fileSortField: 'name' | 'size' | 'date';
+  fileSortDirection: 'asc' | 'desc';
   autoUpdate: boolean;
   maxConcurrentUploads: number;
   maxConcurrentDownloads: number;

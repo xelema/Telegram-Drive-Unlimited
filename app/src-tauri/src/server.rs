@@ -902,6 +902,7 @@ mod streaming_runtime_tests {
             runner_shutdown: Arc::new(std::sync::Mutex::new(None)),
             runner_count: Arc::new(AtomicU32::new(0)),
             peer_cache: Arc::new(RwLock::new(HashMap::new())),
+            active_file_loads: Arc::new(RwLock::new(HashMap::new())),
             cancelled_transfers: Arc::new(RwLock::new(HashSet::new())),
         })
     }

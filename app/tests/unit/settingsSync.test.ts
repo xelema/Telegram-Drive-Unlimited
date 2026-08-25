@@ -13,6 +13,8 @@ describe('settings sync allowlist', () => {
     });
 
     expect(syncable.language).toBe('ja');
+    expect(syncable.fileSortField).toBe('name');
+    expect(syncable.fileSortDirection).toBe('asc');
     expect(syncable).not.toHaveProperty('proxyPassword');
     expect(syncable).not.toHaveProperty('proxyUsername');
     expect(syncable).not.toHaveProperty('supporterMode');

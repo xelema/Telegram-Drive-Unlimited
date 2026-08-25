@@ -338,6 +338,49 @@ pub fn init_db(app: &AppHandle) -> Result<DbConnection, String> {
         })?;
     }
 
+    // Local-first Telegram file metadata inventory schema v3. Remote Telegram
+    // messages remain authoritative; this index only makes warm folder opens
+    // immediate while a request-correlated reconciliation runs in background.
+    {
+        let (migration_name, migration_checksum) = db_migrations::file_inventory_migration_record();
+        let sql = format!(
+            "BEGIN IMMEDIATE TRANSACTION;
+            CREATE TABLE IF NOT EXISTS file_inventory (
+                folder_key TEXT NOT NULL,
+                folder_id INTEGER,
+                message_id INTEGER NOT NULL,
+                file_name TEXT NOT NULL,
+                file_size INTEGER NOT NULL DEFAULT 0,
+                mime_type TEXT,
+                file_ext TEXT,
+                created_at TEXT NOT NULL DEFAULT '',
+                icon_type TEXT NOT NULL DEFAULT 'file',
+                encryption_state TEXT NOT NULL DEFAULT 'plain',
+                last_seen_scan TEXT NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (folder_key, message_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_file_inventory_folder
+                ON file_inventory(folder_key, message_id DESC);
+            CREATE TABLE IF NOT EXISTS file_inventory_state (
+                folder_key TEXT PRIMARY KEY,
+                completed_at INTEGER NOT NULL,
+                file_count INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT OR IGNORE INTO app_schema_migrations
+                (version, name, checksum, applied_at, app_version)
+                VALUES (3, '{}', '{}', {}, '{}');
+            COMMIT;",
+            migration_name.replace('\'', "''"),
+            migration_checksum,
+            chrono::Utc::now().timestamp(),
+            env!("CARGO_PKG_VERSION").replace('\'', "''"),
+        );
+        retry_initialization_step("file inventory migration", || {
+            conn.execute(&sql).map_err(|error| error.to_string())
+        })?;
+    }
+
     log::info!("SQLite database initialized successfully using sqlite crate.");
     Ok(Arc::new(Mutex::new(conn)))
 }

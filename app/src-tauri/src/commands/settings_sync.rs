@@ -59,6 +59,8 @@ const NUMBER_RANGES: &[(&str, i64, i64)] = &[
 
 const STRING_VALUES: &[(&str, &[&str])] = &[
     ("viewMode", &["grid", "list"]),
+    ("fileSortField", &["name", "size", "date"]),
+    ("fileSortDirection", &["asc", "desc"]),
     (
         "language",
         &[
@@ -440,6 +442,8 @@ mod tests {
     fn settings_round_trip_and_authenticate() {
         let settings = json!({
             "viewMode": "list",
+            "fileSortField": "date",
+            "fileSortDirection": "desc",
             "language": "ja",
             "maxConcurrentUploads": 8,
             "encryptionProtectMetadata": true
@@ -465,6 +469,8 @@ mod tests {
     #[test]
     fn invalid_values_are_rejected() {
         assert!(sanitize_settings(json!({ "viewMode": "tiles" })).is_err());
+        assert!(sanitize_settings(json!({ "fileSortField": "owner" })).is_err());
+        assert!(sanitize_settings(json!({ "fileSortDirection": "sideways" })).is_err());
         assert!(sanitize_settings(json!({ "maxConcurrentUploads": 10_000 })).is_err());
         assert!(encrypt_settings(
             json!({ "viewMode": "grid" }),

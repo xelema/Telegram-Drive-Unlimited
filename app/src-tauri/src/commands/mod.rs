@@ -41,6 +41,9 @@ pub struct TelegramState {
     /// Populated lazily on first resolve_peer call, eagerly during cmd_scan_folders.
     /// Cleared on logout.
     pub peer_cache: Arc<tokio::sync::RwLock<HashMap<i64, Peer>>>,
+    /// Current request generation for each folder file load. Replacing a
+    /// generation cooperatively stops stale remote scans and their events.
+    pub active_file_loads: Arc<tokio::sync::RwLock<HashMap<String, String>>>,
     /// Set of transfer IDs that have been cancelled. Checked cooperatively
     /// in upload/download chunk loops. Cleared on logout.
     pub cancelled_transfers: Arc<tokio::sync::RwLock<HashSet<String>>>,
@@ -51,6 +54,7 @@ pub mod archive;
 pub mod auth;
 pub mod crash_reporting;
 pub mod file_activity;
+pub mod file_inventory;
 pub mod folder_groups;
 pub mod fs;
 pub mod network;
@@ -73,6 +77,7 @@ pub use archive::*;
 pub use auth::*;
 pub use crash_reporting::*;
 pub use file_activity::*;
+pub use file_inventory::*;
 pub use folder_groups::*;
 pub use fs::*;
 pub use network::*;

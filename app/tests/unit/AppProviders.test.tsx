@@ -92,6 +92,7 @@ describe('AppProviders', () => {
       </AppProviders>,
     );
     const firstClient = clients.at(-1);
+    expect(firstClient?.getDefaultOptions().queries?.refetchOnWindowFocus).toBe(false);
 
     firstTree.rerender(
       <AppProviders>

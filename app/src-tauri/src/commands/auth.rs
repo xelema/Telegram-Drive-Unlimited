@@ -312,6 +312,7 @@ pub async fn cmd_logout(
     *state.api_id.lock().await = None;
     *state.session.lock().await = None;
     crate::commands::utils::clear_peer_cache(&state.peer_cache).await;
+    state.active_file_loads.write().await.clear();
     state.cancelled_transfers.write().await.clear();
 
     // 4. Remove Session File

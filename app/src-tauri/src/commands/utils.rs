@@ -25,11 +25,15 @@ pub async fn resolve_peer(
             }
         }
 
-        // Slow path: scan dialogs and populate cache
+        // Slow path: take the write lock for the duration of discovery. This
+        // intentionally single-flights cache population so startup folder
+        // discovery and a file request cannot walk every dialog concurrently.
+        let mut cache = peer_cache.write().await;
+        if let Some(peer) = cache.get(&fid) {
+            return Ok(peer.clone());
+        }
         log::debug!("Peer cache miss for folder_id={}, scanning dialogs...", fid);
-        let mut found: Option<Peer> = None;
         let mut dialogs = client.iter_dialogs();
-        let mut discovered = HashMap::new();
         while let Some(dialog) = dialogs.next().await.map_err(|e| e.to_string())? {
             let peer_id = match &dialog.peer {
                 Peer::Channel(c) => Some(c.raw.id),
@@ -37,20 +41,15 @@ pub async fn resolve_peer(
                 _ => None,
             };
             if let Some(id) = peer_id {
-                discovered.insert(id, dialog.peer.clone());
+                cache.insert(id, dialog.peer.clone());
                 if id == fid {
-                    found = Some(dialog.peer.clone());
-                    // Don't break — keep scanning to warm the cache
+                    // A targeted file open should not wait for the rest of the
+                    // account merely to warm an optional in-memory cache.
+                    return Ok(dialog.peer);
                 }
             }
         }
-
-        {
-            let mut cache = peer_cache.write().await;
-            cache.extend(discovered);
-        }
-
-        found.ok_or_else(|| format!("Folder/Chat {} not found", fid))
+        Err(format!("Folder/Chat {} not found", fid))
     } else {
         match client.get_me().await {
             Ok(me) => Ok(Peer::User(me)),

@@ -36,6 +36,24 @@ describe('settings persistence', () => {
     expect(merged.maxConcurrentUploads).toBe(2);
     expect(merged.proxyType).toBe('socks5');
     expect(merged.maxConcurrentDownloads).toBe(DEFAULT_SETTINGS.maxConcurrentDownloads);
+    expect(merged.fileSortField).toBe('name');
+    expect(merged.fileSortDirection).toBe('asc');
+  });
+
+  it('round-trips the file sorting preference', async () => {
+    const stored = {
+      ...DEFAULT_SETTINGS,
+      fileSortField: 'date' as const,
+      fileSortDirection: 'desc' as const,
+    };
+    const store: SettingsStore = {
+      get: vi.fn(async () => stored),
+      set: vi.fn(),
+      save: vi.fn(),
+    };
+    const loaded = await readPersistedSettings(DEFAULT_SETTINGS, async () => store);
+    expect(loaded.fileSortField).toBe('date');
+    expect(loaded.fileSortDirection).toBe('desc');
   });
 
   it('reads and writes through the store adapter', async () => {

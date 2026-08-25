@@ -1,3 +1,30 @@
+## [3.6.0] - 2026-08-25
+
+### Desktop File Listing Reliability
+
+- Added a versioned local SQLite file inventory so previously scanned folders render immediately while Telegram reconciliation continues in the background.
+- Correlated file-list chunks with their originating request and cooperatively cancelled stale scans, preventing older refreshes from clearing or overwriting newer results.
+- Reduced initial chunk latency and preserved visible cached rows when Telegram is slow or temporarily unavailable.
+- Kept the local inventory synchronized after file uploads, renames, moves, deletions, and activity-flag changes.
+
+### Linux Startup and Refresh Performance
+
+- Removed repeated focus-driven account rescans and added a six-hour folder-discovery freshness window with an explicit manual refresh path.
+- Reused verified folder metadata and peer discovery results instead of repeating expensive full-channel requests on every startup.
+- Added timing diagnostics for file scans, folder discovery, and transcode-cache reconciliation to make platform-specific performance measurable.
+
+### Preferences and Transcode Cache
+
+- Persisted file sort field and direction across restarts and synchronized them with the existing settings profile.
+- Replaced synchronous transcode-cache traversal with an immediate snapshot backed by single-flight background reconciliation.
+- Removed the misleading 12-second cache failure path, retained the last healthy snapshot during refresh, and made background cleanup safe around newly started transcodes.
+
+### Compatibility and Verification
+
+- Existing Telegram sessions, supporter entitlements, encrypted-file records, folder mappings, and synchronization settings remain compatible.
+- All 114 frontend tests and all 139 Rust library tests passed.
+- Production frontend compilation, Rust formatting, and release diff validation passed.
+
 ## [3.5.0] - 2026-08-24
 
 ### Release Overview

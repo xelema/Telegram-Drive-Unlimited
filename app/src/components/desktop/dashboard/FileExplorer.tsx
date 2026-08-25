@@ -125,7 +125,7 @@ export function FileExplorer({
             }
             return sortDirection === 'asc' ? comparison : -comparison;
         });
-    }, [files, sortField, sortDirection]);
+    }, [files, settings.language, sortField, sortDirection]);
 
     const handlePreviewRequest = useCallback((file: TelegramFile) => {
         onPreview(file, sortedFiles);

@@ -13,6 +13,7 @@ import { useUploadChoice, type UploadChoice } from '../context/UploadChoiceConte
 import { triggerHaptic } from '../services/feedback';
 import { isTransientNetworkError, restoreUploadQueue, serializeUploadQueue } from '../services/transferQueuePolicy';
 import { announceSupporterValueMoment } from '../services/supporterVisibility';
+import { invalidateFolderFileQueries } from '../services/fileListRefresh';
 import {
     clearTerminalTransfers,
     configureDesktopTransferLimits,
@@ -129,7 +130,7 @@ export function useFileUpload(
                 if (job.status === 'completed') {
                     triggerHaptic('success');
                     announceSupporterValueMoment('upload_completed');
-                    void queryClient.invalidateQueries({ queryKey: ['files', job.folderId] });
+                    void invalidateFolderFileQueries(queryClient, job.folderId);
                 } else if (job.status === 'failed') {
                     toast.error(`Upload failed for ${job.filename}: ${job.error || 'Unknown error'}`);
                 } else if (job.status === 'waiting_for_unlock') {
@@ -363,7 +364,7 @@ export function useFileUpload(
                 setUploadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'success', progress: 100 } : i));
                 triggerHaptic('success');
                 announceSupporterValueMoment('upload_completed');
-                queryClient.invalidateQueries({ queryKey: ['files', item.folderId] });
+                void invalidateFolderFileQueries(queryClient, item.folderId);
             }
             if (!keepTemporaryFileForResume) await cleanupResumableSource(item);
         } catch (e) {

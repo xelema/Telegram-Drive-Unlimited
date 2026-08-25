@@ -3,6 +3,8 @@ import type { Settings } from '../types/settings';
 
 export const SYNCABLE_SETTING_KEYS = [
   'viewMode',
+  'fileSortField',
+  'fileSortDirection',
   'autoUpdate',
   'maxConcurrentUploads',
   'maxConcurrentDownloads',

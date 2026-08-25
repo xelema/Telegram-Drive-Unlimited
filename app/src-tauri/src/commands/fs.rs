@@ -2265,11 +2265,12 @@ pub async fn cmd_rename_file(
     let folder_key = folder_id
         .map(|id| id.to_string())
         .unwrap_or_else(|| "home".to_string());
+    let lookup_folder_key = folder_key.clone();
     let encrypted = crate::db::with_connection(db_pool.inner().clone(), move |connection| {
         let mut statement = connection
             .prepare("SELECT 1 FROM encrypted_files WHERE folder_key = ? AND message_id = ? AND record_state = 'active'")
             .map_err(|error| error.to_string())?;
-        statement.bind((1, folder_key.as_str())).map_err(|error| error.to_string())?;
+        statement.bind((1, lookup_folder_key.as_str())).map_err(|error| error.to_string())?;
         statement.bind((2, i64::from(message_id))).map_err(|error| error.to_string())?;
         Ok(matches!(statement.next(), Ok(sqlite::State::Row)))
     }).await?;
@@ -2324,7 +2325,7 @@ pub async fn cmd_rename_file(
             id: message_id,
             no_webpage: false,
             invert_media: false,
-            message: Some(new_name),
+            message: Some(new_name.clone()),
             media: None,
             reply_markup: None,
             entities: None,
@@ -2334,6 +2335,28 @@ pub async fn cmd_rename_file(
         })
         .await
         .map_err(|e| format!("Failed to rename file: {}", e))?;
+
+    let inventory_name = new_name.clone();
+    if let Err(error) = crate::db::with_connection(db_pool.inner().clone(), move |connection| {
+        let mut inventory = connection
+            .prepare("UPDATE file_inventory SET file_name = ?, updated_at = ? WHERE folder_key = ? AND message_id = ?")
+            .map_err(|error| error.to_string())?;
+        inventory.bind((1, inventory_name.as_str())).map_err(|error| error.to_string())?;
+        inventory.bind((2, chrono::Utc::now().timestamp())).map_err(|error| error.to_string())?;
+        inventory.bind((3, folder_key.as_str())).map_err(|error| error.to_string())?;
+        inventory.bind((4, i64::from(message_id))).map_err(|error| error.to_string())?;
+        inventory.next().map_err(|error| error.to_string())?;
+        let mut activity = connection
+            .prepare("UPDATE file_activity SET file_name = ? WHERE folder_key = ? AND message_id = ?")
+            .map_err(|error| error.to_string())?;
+        activity.bind((1, inventory_name.as_str())).map_err(|error| error.to_string())?;
+        activity.bind((2, folder_key.as_str())).map_err(|error| error.to_string())?;
+        activity.bind((3, i64::from(message_id))).map_err(|error| error.to_string())?;
+        activity.next().map_err(|error| error.to_string())?;
+        Ok(())
+    }).await {
+        log::warn!("Remote rename succeeded but the local inventory update failed: {error}");
+    }
 
     Ok(true)
 }
@@ -2381,22 +2404,40 @@ pub async fn cmd_delete_file(
         .map(|id| id.to_string())
         .unwrap_or_else(|| "home".to_string());
     let cleanup = crate::db::with_connection(db_pool.inner().clone(), move |connection| {
-        let mut statement = connection
-            .prepare("DELETE FROM encrypted_files WHERE folder_key = ? AND message_id = ?")
+        connection
+            .execute("BEGIN IMMEDIATE")
             .map_err(|error| error.to_string())?;
-        statement
-            .bind((1, folder_key.as_str()))
-            .map_err(|error| error.to_string())?;
-        statement
-            .bind((2, i64::from(message_id)))
-            .map_err(|error| error.to_string())?;
-        statement.next().map_err(|error| error.to_string())?;
-        Ok(())
+        let cleanup = (|| {
+            for table in ["encrypted_files", "file_inventory", "file_activity"] {
+                let mut statement = connection
+                    .prepare(format!(
+                        "DELETE FROM {table} WHERE folder_key = ? AND message_id = ?"
+                    ))
+                    .map_err(|error| error.to_string())?;
+                statement
+                    .bind((1, folder_key.as_str()))
+                    .map_err(|error| error.to_string())?;
+                statement
+                    .bind((2, i64::from(message_id)))
+                    .map_err(|error| error.to_string())?;
+                statement.next().map_err(|error| error.to_string())?;
+            }
+            Ok::<(), String>(())
+        })();
+        match cleanup {
+            Ok(()) => connection
+                .execute("COMMIT")
+                .map_err(|error| error.to_string()),
+            Err(error) => {
+                let _ = connection.execute("ROLLBACK");
+                Err(error)
+            }
+        }
     })
     .await;
     if let Err(error) = cleanup {
         log::error!(
-            "Remote delete succeeded but encrypted registry cleanup failed: {}",
+            "Remote delete succeeded but local metadata cleanup failed: {}",
             error
         );
     }
@@ -3253,6 +3294,7 @@ pub async fn cmd_move_files(
             })
             .collect::<Option<Vec<_>>>();
         if let Some(relocations) = relocations {
+            let inventory_relocations = relocations.clone();
             let registry_result = crate::db::with_connection(db_pool.inner().clone(), move |connection| {
                 connection.execute("BEGIN IMMEDIATE").map_err(|error| error.to_string())?;
                 let relocation = (|| {
@@ -3264,6 +3306,20 @@ pub async fn cmd_move_files(
                             statement.bind((2, i64::from(new_message_id)))?;
                             statement.bind((3, source_key.as_str()))?;
                             statement.bind((4, i64::from(old_id)))?;
+                            statement.next().map(|_| ())
+                        });
+                    update.map_err(|error| error.to_string())?;
+                }
+                for (old_id, new_message_id) in inventory_relocations {
+                    let update = connection
+                        .prepare("UPDATE file_inventory SET folder_key = ?, folder_id = ?, message_id = ?, updated_at = ? WHERE folder_key = ? AND message_id = ?")
+                        .and_then(|mut statement| {
+                            statement.bind((1, target_key.as_str()))?;
+                            statement.bind((2, target_folder_id))?;
+                            statement.bind((3, i64::from(new_message_id)))?;
+                            statement.bind((4, chrono::Utc::now().timestamp()))?;
+                            statement.bind((5, source_key.as_str()))?;
+                            statement.bind((6, i64::from(old_id)))?;
                             statement.next().map(|_| ())
                         });
                     update.map_err(|error| error.to_string())?;
@@ -3280,7 +3336,7 @@ pub async fn cmd_move_files(
             }).await;
             if let Err(error) = registry_result {
                 log::error!(
-                    "Remote move succeeded but encrypted registry relocation failed: {}",
+                    "Remote move succeeded but local metadata relocation failed: {}",
                     error
                 );
             }
@@ -3303,25 +3359,58 @@ pub async fn cmd_move_files(
 #[tauri::command]
 pub async fn cmd_get_files(
     folder_id: Option<i64>,
+    request_id: Option<String>,
     app_handle: tauri::AppHandle,
     state: State<'_, TelegramState>,
     db_pool: State<'_, DbConnection>,
     crypto_state: State<'_, crate::crypto::state::CryptoState>,
 ) -> Result<Vec<FileMetadata>, String> {
+    let scan_started_at = std::time::Instant::now();
+    let request_id = match request_id {
+        Some(request_id) if !request_id.trim().is_empty() && request_id.len() <= 128 => request_id,
+        Some(_) => return Err("A valid file-load request identifier is required".to_string()),
+        None => format!(
+            "legacy-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ),
+    };
+    let inventory_key = crate::commands::file_inventory::folder_key(folder_id);
+    let active_file_loads = state.active_file_loads.clone();
+    active_file_loads
+        .write()
+        .await
+        .insert(inventory_key.clone(), request_id.clone());
+
     let client_opt = { state.client.lock().await.clone() };
     #[cfg(debug_assertions)]
     if client_opt.is_none() {
         log::info!("[MOCK] Returning mock files for folder {:?}", folder_id);
+        let mut active = active_file_loads.write().await;
+        if active
+            .get(&inventory_key)
+            .is_some_and(|current| current == &request_id)
+        {
+            active.remove(&inventory_key);
+        }
         return Ok(Vec::new()); // No mock files for now
     }
-    let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
+    let client = match client_opt {
+        Some(client) => client,
+        None => {
+            let mut active = active_file_loads.write().await;
+            if active
+                .get(&inventory_key)
+                .is_some_and(|current| current == &request_id)
+            {
+                active.remove(&inventory_key);
+            }
+            return Err("Client not connected".to_string());
+        }
+    };
 
     // Pre-load encrypted file registry for this folder
-    let folder_key = folder_id
-        .map(|id| id.to_string())
-        .unwrap_or_else(|| "home".to_string());
-    let (encrypted_map, activity_flags): (HashMap<i32, EncryptedListInfo>, HashMap<i32, (bool, bool)>) =
-        crate::db::with_connection(db_pool.inner().clone(), move |conn| {
+    let folder_key = inventory_key.clone();
+    let local_metadata = crate::db::with_connection(db_pool.inner().clone(), move |conn| {
         let mut encrypted_map = HashMap::new();
         let query = "SELECT message_id, remote_name, envelope_version, protection_mode, metadata_protected, header_blob, plaintext_size FROM encrypted_files WHERE folder_key = ? AND record_state = 'active'";
         if let Ok(mut stmt) = conn.prepare(query) {
@@ -3361,23 +3450,88 @@ pub async fn cmd_get_files(
             }
         }
         Ok((encrypted_map, activity_flags))
-    }).await?;
+    }).await;
+    let (encrypted_map, activity_flags): (
+        HashMap<i32, EncryptedListInfo>,
+        HashMap<i32, (bool, bool)>,
+    ) = match local_metadata {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            let mut active = active_file_loads.write().await;
+            if active
+                .get(&inventory_key)
+                .is_some_and(|current| current == &request_id)
+            {
+                active.remove(&inventory_key);
+            }
+            return Err(error);
+        }
+    };
 
-    let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
+    let peer = match resolve_peer(&client, folder_id, &state.peer_cache).await {
+        Ok(peer) => peer,
+        Err(error) => {
+            let mut active = active_file_loads.write().await;
+            if active
+                .get(&inventory_key)
+                .is_some_and(|current| current == &request_id)
+            {
+                active.remove(&inventory_key);
+            }
+            return Err(error);
+        }
+    };
     let vault_key = crypto_state.get_current_wrapping_key().ok();
 
     let mut msgs = client.iter_messages(&peer);
     let mut last_msg_id: Option<i32> = None;
-    let mut safety_counter = 0;
+    let mut file_count = 0usize;
+    let mut scan_complete = true;
     const MAX_FILES_LIMIT: usize = 50000; // Hard safety cap to prevent infinite loops (50,000 files)
+    const FILE_CHUNK_SIZE: usize = 50;
+    const FILE_CHUNK_MAX_LATENCY: std::time::Duration = std::time::Duration::from_millis(400);
 
     let mut chunk = Vec::new();
+    let mut last_chunk_emitted = std::time::Instant::now();
 
-    while let Some(msg) = msgs.next().await.map_err(|e| e.to_string())? {
+    loop {
+        let next_message = match msgs.next().await {
+            Ok(message) => message,
+            Err(error) => {
+                let mut active = active_file_loads.write().await;
+                if active
+                    .get(&inventory_key)
+                    .is_some_and(|current| current == &request_id)
+                {
+                    active.remove(&inventory_key);
+                }
+                return Err(error.to_string());
+            }
+        };
+        let Some(msg) = next_message else {
+            break;
+        };
+
+        if active_file_loads
+            .read()
+            .await
+            .get(&inventory_key)
+            .is_none_or(|current| current != &request_id)
+        {
+            log::info!(
+                "Cancelled stale file scan request {} for folder {} after {:?}",
+                request_id,
+                inventory_key,
+                scan_started_at.elapsed()
+            );
+            return Ok(Vec::new());
+        }
+
         // Prevent infinite loop if API returns same message ID
         let current_msg_id = msg.id();
         if let Some(last_id) = last_msg_id {
             if current_msg_id == last_id {
+                scan_complete = false;
                 break;
             }
         }
@@ -3545,26 +3699,49 @@ pub async fn cmd_get_files(
                 is_favorite,
                 is_pinned,
             });
+            file_count += 1;
 
-            if chunk.len() >= 500 {
+            if chunk.len() >= FILE_CHUNK_SIZE
+                || last_chunk_emitted.elapsed() >= FILE_CHUNK_MAX_LATENCY
+            {
+                let active = active_file_loads.read().await;
+                if active
+                    .get(&inventory_key)
+                    .is_none_or(|current| current != &request_id)
+                {
+                    return Ok(Vec::new());
+                }
                 #[derive(Clone, serde::Serialize)]
+                #[serde(rename_all = "camelCase")]
                 struct FolderLoadPayload {
-                    #[serde(rename = "folderId")]
                     folder_id: Option<i64>,
+                    request_id: String,
                     files: Vec<FileMetadata>,
                 }
+                let emitted_files = std::mem::take(&mut chunk);
                 let _ = app_handle.emit(
                     "folder-load-chunk",
                     FolderLoadPayload {
                         folder_id,
-                        files: chunk.clone(),
+                        request_id: request_id.clone(),
+                        files: emitted_files.clone(),
                     },
                 );
+                if let Err(error) = crate::commands::file_inventory::upsert_inventory_chunk(
+                    db_pool.inner().clone(),
+                    inventory_key.clone(),
+                    request_id.clone(),
+                    emitted_files,
+                )
+                .await
+                {
+                    log::warn!("Unable to update the local file inventory: {error}");
+                }
+                drop(active);
+                last_chunk_emitted = std::time::Instant::now();
 
-                safety_counter += chunk.len();
-                chunk.clear();
-
-                if safety_counter >= MAX_FILES_LIMIT {
+                if file_count >= MAX_FILES_LIMIT {
+                    scan_complete = false;
                     break;
                 }
             }
@@ -3572,20 +3749,71 @@ pub async fn cmd_get_files(
     }
 
     if !chunk.is_empty() {
+        let active = active_file_loads.read().await;
+        if active
+            .get(&inventory_key)
+            .is_none_or(|current| current != &request_id)
+        {
+            return Ok(Vec::new());
+        }
         #[derive(Clone, serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
         struct FolderLoadPayload {
-            #[serde(rename = "folderId")]
             folder_id: Option<i64>,
+            request_id: String,
             files: Vec<FileMetadata>,
         }
+        let emitted_files = std::mem::take(&mut chunk);
         let _ = app_handle.emit(
             "folder-load-chunk",
             FolderLoadPayload {
                 folder_id,
-                files: chunk,
+                request_id: request_id.clone(),
+                files: emitted_files.clone(),
             },
         );
+        if let Err(error) = crate::commands::file_inventory::upsert_inventory_chunk(
+            db_pool.inner().clone(),
+            inventory_key.clone(),
+            request_id.clone(),
+            emitted_files,
+        )
+        .await
+        {
+            log::warn!("Unable to update the local file inventory: {error}");
+        }
+        drop(active);
     }
+
+    // Hold the generation write lock across finalization. A newer request can
+    // neither register nor persist its first chunk while this scan prunes rows.
+    let mut active = active_file_loads.write().await;
+    let request_is_current = active
+        .get(&inventory_key)
+        .is_some_and(|current| current == &request_id);
+    if request_is_current && scan_complete {
+        if let Err(error) = crate::commands::file_inventory::complete_inventory_scan(
+            db_pool.inner().clone(),
+            inventory_key.clone(),
+            request_id.clone(),
+        )
+        .await
+        {
+            log::warn!("Unable to finalize the local file inventory: {error}");
+        }
+    }
+    if request_is_current {
+        active.remove(&inventory_key);
+    }
+    drop(active);
+    log::info!(
+        "File scan request {} for folder {} completed with {} files in {:?} (complete={})",
+        request_id,
+        inventory_key,
+        file_count,
+        scan_started_at.elapsed(),
+        scan_complete
+    );
 
     Ok(Vec::new())
 }
@@ -3687,6 +3915,7 @@ pub async fn cmd_scan_folders(
     state: State<'_, TelegramState>,
     db_pool: State<'_, DbConnection>,
 ) -> Result<Vec<FolderMetadata>, String> {
+    let scan_started_at = std::time::Instant::now();
     let client_opt = { state.client.lock().await.clone() };
     #[cfg(debug_assertions)]
     if client_opt.is_none() {
@@ -3695,9 +3924,27 @@ pub async fn cmd_scan_folders(
     }
     let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
 
+    let known_folder_ids = crate::db::with_connection(db_pool.inner().clone(), |connection| {
+        let mut statement = connection
+            .prepare("SELECT channel_id FROM folder_metadata")
+            .map_err(|error| error.to_string())?;
+        let mut ids = HashSet::new();
+        while statement.next().map_err(|error| error.to_string())? == sqlite::State::Row {
+            ids.insert(
+                statement
+                    .read::<i64, _>(0)
+                    .map_err(|error| error.to_string())?,
+            );
+        }
+        Ok(ids)
+    })
+    .await?;
+
     let mut folders = Vec::new();
     let mut dialogs = client.iter_dialogs();
-    let mut discovered = HashMap::new();
+    let mut legacy_candidates = Vec::new();
+    // Serialize this complete account walk with targeted resolve_peer misses.
+    let mut peer_cache = state.peer_cache.write().await;
 
     log::info!("Starting Folder Scan...");
 
@@ -3706,7 +3953,7 @@ pub async fn cmd_scan_folders(
         match &dialog.peer {
             Peer::Channel(c) => {
                 let id = c.raw.id;
-                discovered.insert(id, dialog.peer.clone());
+                peer_cache.insert(id, dialog.peer.clone());
 
                 let name = c.raw.title.clone();
                 let access_hash = c.raw.access_hash.unwrap_or(0);
@@ -3737,43 +3984,31 @@ pub async fn cmd_scan_folders(
                     continue;
                 }
 
-                // Strategy 2: About (Only if we are the creator to avoid rate limits on third-party channels)
-                if c.raw.creator {
-                    let input_chan = tl::enums::InputChannel::Channel(tl::types::InputChannel {
-                        channel_id: c.raw.id,
-                        access_hash,
+                // A channel already verified and persisted by a previous scan
+                // does not need another GetFullChannel network round trip just
+                // because it uses the legacy About marker.
+                if known_folder_ids.contains(&id) {
+                    let username = c.raw.username.clone();
+                    folders.push(FolderMetadata {
+                        id,
+                        name,
+                        parent_id: None,
+                        is_public: username.is_some(),
+                        username,
+                        group_id: None,
+                        display_order: 0,
                     });
+                    continue;
+                }
 
-                    match client
-                        .invoke(&tl::functions::channels::GetFullChannel {
-                            channel: input_chan,
-                        })
-                        .await
-                    {
-                        Ok(tl::enums::messages::ChatFull::Full(f)) => {
-                            if let tl::enums::ChatFull::Full(cf) = f.full_chat {
-                                if cf.about.contains("[telegram-drive-folder]") {
-                                    log::info!(" -> MATCH via About: {}", name);
-                                    let username = c.raw.username.clone();
-                                    let is_public = username.is_some();
-                                    folders.push(FolderMetadata {
-                                        id,
-                                        name: name.clone(),
-                                        parent_id: None,
-                                        username,
-                                        is_public,
-                                        group_id: None,
-                                        display_order: 0,
-                                    });
-                                }
-                            }
-                        }
-                        Err(e) => log::warn!(" -> Failed to get full info: {}", e),
-                    }
+                // Strategy 2: About. Unknown legacy candidates are checked in
+                // a small bounded batch after dialog enumeration.
+                if c.raw.creator {
+                    legacy_candidates.push((id, access_hash, name, c.raw.username.clone()));
                 }
             }
             Peer::User(u) => {
-                discovered.insert(u.raw.id(), dialog.peer.clone());
+                peer_cache.insert(u.raw.id(), dialog.peer.clone());
                 log::debug!("[SCAN] Cached User Peer: {}", u.raw.id());
             }
             peer => {
@@ -3782,16 +4017,60 @@ pub async fn cmd_scan_folders(
         }
     }
 
-    {
-        let mut cache = state.peer_cache.write().await;
-        cache.extend(discovered);
-    }
+    use futures::stream::{self, StreamExt};
+    let legacy_results = stream::iter(legacy_candidates.into_iter().map(
+        |(id, access_hash, name, username)| {
+            let client = client.clone();
+            async move {
+                let channel = tl::enums::InputChannel::Channel(tl::types::InputChannel {
+                    channel_id: id,
+                    access_hash,
+                });
+                match client
+                    .invoke(&tl::functions::channels::GetFullChannel { channel })
+                    .await
+                {
+                    Ok(tl::enums::messages::ChatFull::Full(full)) => {
+                        let is_drive_folder = matches!(
+                            full.full_chat,
+                            tl::enums::ChatFull::Full(ref details)
+                                if details.about.contains("[telegram-drive-folder]")
+                        );
+                        if is_drive_folder {
+                            log::info!(" -> MATCH via About: {}", name);
+                            Some(FolderMetadata {
+                                id,
+                                name,
+                                parent_id: None,
+                                is_public: username.is_some(),
+                                username,
+                                group_id: None,
+                                display_order: 0,
+                            })
+                        } else {
+                            None
+                        }
+                    }
+                    Err(error) => {
+                        log::warn!(" -> Failed to get full info: {}", error);
+                        None
+                    }
+                }
+            }
+        },
+    ))
+    .buffer_unordered(2)
+    .collect::<Vec<_>>()
+    .await;
+    folders.extend(legacy_results.into_iter().flatten());
 
-    let cache_len = state.peer_cache.read().await.len();
+    let cache_len = peer_cache.len();
+    drop(peer_cache);
     log::info!(
-        "Scan complete. Found {} folders. Peer cache size: {}.",
+        "Scan complete. Found {} folders. Peer cache size: {}. Elapsed: {:?}.",
         folders.len(),
-        cache_len
+        cache_len,
+        scan_started_at.elapsed()
     );
 
     // Enrich folders via the local DB

@@ -21,7 +21,16 @@ interface AppProvidersProps {
  * across replaced application instances.
  */
 export function AppProviders({ children }: AppProvidersProps) {
-  const [queryClient] = useState(() => new QueryClient());
+  const [queryClient] = useState(() => new QueryClient({
+    defaultOptions: {
+      queries: {
+        // Native Telegram and filesystem commands can be expensive and are not
+        // abortable by React Query. Individual live-status queries opt in when
+        // focus refetching is actually useful.
+        refetchOnWindowFocus: false,
+      },
+    },
+  }));
 
   return (
     <ErrorBoundary>

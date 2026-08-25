@@ -1043,6 +1043,7 @@ pub fn run() {
                 runner_shutdown: Arc::new(std::sync::Mutex::new(None)),
                 runner_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
                 peer_cache: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+                active_file_loads: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
                 cancelled_transfers: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
             });
             app.manage(Arc::new(bandwidth::BandwidthManager::new(app.handle())));
@@ -1084,7 +1085,9 @@ pub fn run() {
                 e
             })?;
             let cache_root = app_data_dir.join("streaming");
-            let transcode_manager = transcode::TranscodeManager::new(cache_root);
+            let cache_limit = transcode::persisted_cache_limit_bytes(&app_data_dir);
+            let transcode_manager =
+                transcode::TranscodeManager::new_with_max_cache_bytes(cache_root, cache_limit);
             // Detect FFmpeg (non-blocking spawn)
             let app_handle = app.handle().clone();
             let ffmpeg_path_arc = transcode_manager.ffmpeg_path.clone();
@@ -1094,6 +1097,7 @@ pub fn run() {
                 }
             });
             let transcode_arc = Arc::new(transcode_manager);
+            transcode_arc.start_cache_reconciliation(true);
             app.manage(transcode_arc.clone());
             app.manage(fmp4_remux::Fmp4RemuxState::new());
             let loaded_config = vpn_optimizer::load_network_config(app.handle());
@@ -1242,6 +1246,7 @@ pub fn run() {
             commands::cmd_auth_sign_in,
             commands::cmd_auth_check_password,
             commands::cmd_get_files,
+            commands::cmd_get_cached_files,
             commands::cmd_upload_file,
             commands::cmd_stage_android_upload,
             commands::cmd_delete_android_staged_upload,

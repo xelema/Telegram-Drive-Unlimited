@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { load, type Store } from '@tauri-apps/plugin-store';
-import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { useConfirm } from '../context/ConfirmContext';
 import { TelegramFolder, FolderInviteInfo, FolderGroup } from '../types';
@@ -9,7 +8,6 @@ import { useNetworkStatus } from './useNetworkStatus';
 import { clearImageMemoryCaches } from '../services/imagePreviewCache';
 
 export function useTelegramConnection(onLogoutParent: () => void) {
-    const queryClient = useQueryClient();
     const { confirm } = useConfirm();
 
     const [folders, setFolders] = useState<TelegramFolder[]>([]);
@@ -39,6 +37,7 @@ export function useTelegramConnection(onLogoutParent: () => void) {
         const initStore = async () => {
             try {
                 let _store = await load('config.json');
+                let restoredFolderInventory = false;
                 const checkId = await _store.get<string>('api_id');
                 if (!checkId) {
                     _store = await load('settings.json');
@@ -48,13 +47,29 @@ export function useTelegramConnection(onLogoutParent: () => void) {
                     const dbFolders = await invoke<TelegramFolder[]>('cmd_get_enriched_folders');
                     if (dbFolders && dbFolders.length > 0) {
                         setFolders(dbFolders);
+                        restoredFolderInventory = true;
                     } else {
                         const savedFolders = await _store.get<TelegramFolder[]>('folders');
-                        if (savedFolders) setFolders(savedFolders);
+                        if (savedFolders) {
+                            setFolders(savedFolders);
+                            restoredFolderInventory = savedFolders.length > 0;
+                        }
                     }
                 } catch {
                     const savedFolders = await _store.get<TelegramFolder[]>('folders');
-                    if (savedFolders) setFolders(savedFolders);
+                    if (savedFolders) {
+                        setFolders(savedFolders);
+                        restoredFolderInventory = savedFolders.length > 0;
+                    }
+                }
+
+                // Existing installations already have a verified local folder
+                // inventory. Seed the new TTL marker so an upgrade does not
+                // immediately repeat an account-wide discovery scan.
+                if (restoredFolderInventory
+                    && await _store.get<number>('foldersLastSyncedAt') == null) {
+                    await _store.set('foldersLastSyncedAt', Date.now());
+                    await _store.save();
                 }
 
                 // Fetch local-first SQLite groups
@@ -78,19 +93,22 @@ export function useTelegramConnection(onLogoutParent: () => void) {
             }
         };
         initStore();
-    }, [queryClient]);
+    }, []);
 
     // Consolidated mount-sync + visibility-change listener
     useEffect(() => {
         if (!store || !isConnected) return;
 
-        const syncAndRefresh = () => {
+        const syncAndRefresh = async () => {
             if (!handleSyncFoldersRef.current) return Promise.resolve();
             if (syncInFlightRef.current) return syncInFlightRef.current;
 
             const request = (async () => {
+                const lastSyncAt = await store.get<number>('foldersLastSyncedAt');
+                const folderSyncIsFresh = typeof lastSyncAt === 'number'
+                    && Date.now() - lastSyncAt < 6 * 60 * 60_000;
+                if (folderSyncIsFresh) return;
                 await handleSyncFoldersRef.current?.(true);
-                await queryClient.invalidateQueries({ queryKey: ['files'] });
             })().finally(() => {
                 syncInFlightRef.current = null;
             });
@@ -115,7 +133,7 @@ export function useTelegramConnection(onLogoutParent: () => void) {
         return () => {
             document.removeEventListener('visibilitychange', handleVisibilityChange);
         };
-    }, [store, isConnected, queryClient]);
+    }, [store, isConnected]);
 
     useEffect(() => {
         setIsConnected(networkIsOnline);
@@ -149,6 +167,7 @@ export function useTelegramConnection(onLogoutParent: () => void) {
             const foundFolders = await invoke<TelegramFolder[]>('cmd_scan_folders');
             setFolders(foundFolders);
             await store.set('folders', foundFolders);
+            await store.set('foldersLastSyncedAt', Date.now());
             await store.save();
             await fetchGroups();
             if (!silent) {

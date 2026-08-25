@@ -11,12 +11,11 @@ export function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMe
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timeoutId));
 }
 
-export function getDetailedTranscodeCache(): Promise<DetailedCacheInfo> {
-  return withTimeout(
-    invoke<DetailedCacheInfo>('cmd_get_detailed_transcode_cache'),
-    TRANSCODE_CACHE_TIMEOUT_MS,
-    'The transcode cache did not respond within 12 seconds.',
-  );
+export function getDetailedTranscodeCache(refresh = false): Promise<DetailedCacheInfo> {
+  // The native command returns its most recent inventory snapshot immediately.
+  // Filesystem reconciliation is single-flight background work, so a frontend
+  // deadline would only mislabel a healthy but large cache as failed.
+  return invoke<DetailedCacheInfo>('cmd_get_detailed_transcode_cache', { refresh });
 }
 
 export function transcodeCacheErrorMessage(error: unknown): string {

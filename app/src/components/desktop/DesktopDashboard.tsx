@@ -56,6 +56,7 @@ import { useSupporter } from '../../context/SupporterContext';
 import { DEFAULT_SEARCH_FILTERS, filterAndRankFiles, type FileSearchFilters } from '../../services/fileSearch';
 import { isSupporterPromptDue, shouldOfferNewSupporterPurchase, SUPPORTER_VALUE_MOMENT_EVENT } from '../../services/supporterVisibility';
 import { markDesktopFrontendReady, markDesktopFrontendUnready, type DesktopNavigationRequest } from '../../services/desktopLifecycle';
+import { isCurrentFolderLoadChunk, mergeFileChunk, normalizeListedFile, updateFileQueryData, type FolderLoadChunk } from '../../services/fileListRefresh';
 
 const sameFile = (left: TelegramFile, right: TelegramFile) => (
     left.id === right.id && (left.folder_id ?? null) === (right.folder_id ?? null)
@@ -75,7 +76,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     } = useTelegramConnection(onLogout);
 
 
-    const { settings, updateSetting, isLoaded: settingsLoaded } = useSettings();
+    const { settings, updateSetting, updateSettings, isLoaded: settingsLoaded } = useSettings();
     const { confirm } = useConfirm();
     const { status: supporterStatus } = useSupporter();
 
@@ -107,9 +108,10 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     const [searchFilters, setSearchFilters] = useState<FileSearchFilters>(DEFAULT_SEARCH_FILTERS);
     const [isSearching, setIsSearching] = useState(false);
     const [folderSyncProgress, setFolderSyncProgress] = useState({ active: false, count: 0 });
+    const fileLoadSequenceRef = useRef(0);
     const [cardScale, setCardScale] = useState(1.0);
-    const [sortField, setSortField] = useState<SortField>('name');
-    const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
+    const sortField: SortField = settings.fileSortField;
+    const sortDirection: SortDirection = settings.fileSortDirection;
     const [internalDrag, setInternalDrag] = useState<{ fileIds: number[]; label: string } | null>(null);
     const dragSensors = useSensors(
         useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -118,11 +120,13 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
 
     const handleSortChange = (field: SortField) => {
         if (field === sortField) {
-            setSortDirection((direction) => direction === 'asc' ? 'desc' : 'asc');
+            updateSettings({
+                fileSortField: field,
+                fileSortDirection: sortDirection === 'asc' ? 'desc' : 'asc',
+            });
             return;
         }
-        setSortField(field);
-        setSortDirection('asc');
+        updateSettings({ fileSortField: field, fileSortDirection: 'asc' });
     };
     const [showRemoteUpload, setShowRemoteUpload] = useState(false);
     const [playingFile, setPlayingFile] = useState<TelegramFile | null>(null);
@@ -232,33 +236,58 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                 const localFiles = await invoke<TelegramFile[]>('cmd_get_file_activity', { view: activeSmartView, limit: 250 });
                 return localFiles.map((file) => ({ ...file, sizeStr: formatBytes(file.size), type: 'file' as const }));
             }
-            setFolderSyncProgress({ active: true, count: 0 });
+            const queryKey = ['files', 'folder', activeFolderId] as const;
+            const requestSequence = ++fileLoadSequenceRef.current;
+            const requestId = `desktop-${Date.now()}-${requestSequence}`;
             const accumulatedFiles = new Map<number, TelegramFile>();
-            queryClient.setQueryData(['files', 'folder', activeFolderId], []);
 
-            const unlisten = await listen<any>('folder-load-chunk', (event) => {
+            try {
+                const cachedFiles = await invoke<TelegramFile[]>('cmd_get_cached_files', {
+                    folderId: activeFolderId,
+                });
+                for (const file of cachedFiles) {
+                    accumulatedFiles.set(file.id, normalizeListedFile(file));
+                }
+                if (accumulatedFiles.size > 0) {
+                    queryClient.setQueryData(queryKey, Array.from(accumulatedFiles.values()));
+                }
+            } catch (cacheError) {
+                console.warn('[Files] Unable to read the local inventory:', cacheError);
+            }
+            if (fileLoadSequenceRef.current === requestSequence) {
+                setFolderSyncProgress({ active: true, count: accumulatedFiles.size });
+            }
+
+            const unlisten = await listen<FolderLoadChunk>('folder-load-chunk', (event) => {
                 const payload = event.payload;
-                if (payload.folderId === activeFolderId) {
-                    const newChunk: TelegramFile[] = payload.files.map((f: any) => ({
-                        ...f,
-                        sizeStr: formatBytes(f.size),
-                        type: (f.icon_type as TelegramFile['type']) || 'file'
-                    }));
-                    newChunk.forEach((file) => accumulatedFiles.set(file.id, file));
+                if (fileLoadSequenceRef.current === requestSequence
+                    && isCurrentFolderLoadChunk(payload, activeFolderId, requestId)) {
+                    const nextFiles = mergeFileChunk(accumulatedFiles, payload.files);
                     setFolderSyncProgress({ active: true, count: accumulatedFiles.size });
-                    queryClient.setQueryData(['files', 'folder', activeFolderId], Array.from(accumulatedFiles.values()));
+                    queryClient.setQueryData(queryKey, nextFiles);
                 }
             });
 
             try {
-                await invoke('cmd_get_files', { folderId: activeFolderId });
+                await invoke('cmd_get_files', { folderId: activeFolderId, requestId });
                 return Array.from(accumulatedFiles.values());
+            } catch (remoteError) {
+                if (accumulatedFiles.size > 0) {
+                    console.warn('[Files] Remote refresh failed; retaining the local inventory:', remoteError);
+                    return Array.from(accumulatedFiles.values());
+                }
+                throw remoteError;
             } finally {
                 unlisten();
-                setFolderSyncProgress((progress) => ({ ...progress, active: false }));
+                if (fileLoadSequenceRef.current === requestSequence) {
+                    setFolderSyncProgress((progress) => ({ ...progress, active: false }));
+                }
             }
         },
         enabled: !!store,
+        staleTime: 5 * 60_000,
+        refetchOnWindowFocus: false,
+        refetchOnReconnect: false,
     });
 
     const displayedFiles = useMemo(() => {
@@ -269,6 +298,16 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     }, [allFiles, searchResults, searchTerm, searchFilters]);
     const isCrossFolderView = activeSmartView !== null
         || (searchFilters.scope === 'all' && searchTerm.trim().length >= 2);
+
+    const handleManualSync = useCallback(async () => {
+        await handleSyncFolders();
+        if (activeSmartView === null) {
+            await queryClient.invalidateQueries({
+                queryKey: ['files', 'folder', activeFolderId],
+                exact: true,
+            });
+        }
+    }, [activeFolderId, activeSmartView, handleSyncFolders, queryClient]);
 
     const { data: bandwidth } = useQuery({
         queryKey: ['bandwidth'],
@@ -482,6 +521,12 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                 folderId: renameFileTarget.folder_id ?? activeFolderId,
                 newName,
             });
+            updateFileQueryData(
+                queryClient,
+                renameFileTarget.folder_id ?? activeFolderId,
+                new Set([renameFileTarget.id]),
+                file => ({ ...file, name: newName }),
+            );
             queryClient.invalidateQueries({ queryKey: ['files'] });
             toast.success(`Renamed to "${newName}"`);
         } catch (e) {
@@ -682,6 +727,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
             ]));
 
             queryClient.invalidateQueries({ queryKey: ['files'] });
+            updateFileQueryData(queryClient, sourceFolderId, new Set(idsToMove), () => null);
             setSelectedIds([]);
             toast.success(`Moved ${idsToMove.length} file(s).`);
         } catch {
@@ -783,7 +829,18 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
             flag,
             value: nextValue,
         });
-        await queryClient.invalidateQueries({ queryKey: ['files'] });
+        updateFileQueryData(
+            queryClient,
+            file.folder_id ?? activeFolderId,
+            new Set([file.id]),
+            current => ({
+                ...current,
+                [flag === 'favorite' ? 'is_favorite' : 'is_pinned']: nextValue,
+            }),
+        );
+        await queryClient.invalidateQueries({
+            queryKey: ['files', flag === 'favorite' ? 'favorites' : 'pinned'],
+        });
         toast.success(flag === 'favorite'
             ? (nextValue ? 'Added to Favorites' : 'Removed from Favorites')
             : (nextValue ? 'Pinned' : 'Unpinned'));
@@ -819,17 +876,19 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                         onSelect={async (targetFolderId: number | null) => {
                             if (moveFileTarget) {
                                 try {
+                                    const sourceFolderId = moveFileTarget.folder_id ?? activeFolderId;
                                     await invoke('cmd_move_files', {
                                         messageIds: [moveFileTarget.id],
-                                        sourceFolderId: moveFileTarget.folder_id ?? activeFolderId,
+                                        sourceFolderId,
                                         targetFolderId,
                                     });
                                     // Clean up stale thumbnail and preview cache for the old message ID
                                     await Promise.all([
-                                        invoke('cmd_delete_image_thumbnail', { messageId: moveFileTarget.id, folderId: moveFileTarget.folder_id ?? activeFolderId }).catch(() => {}),
-                                        invoke('cmd_delete_preview_for_message', { messageId: moveFileTarget.id, folderId: moveFileTarget.folder_id ?? activeFolderId }).catch(() => {}),
+                                        invoke('cmd_delete_image_thumbnail', { messageId: moveFileTarget.id, folderId: sourceFolderId }).catch(() => {}),
+                                        invoke('cmd_delete_preview_for_message', { messageId: moveFileTarget.id, folderId: sourceFolderId }).catch(() => {}),
                                     ]);
-                                    queryClient.invalidateQueries({ queryKey: ['files', activeFolderId] });
+                                    updateFileQueryData(queryClient, sourceFolderId, new Set([moveFileTarget.id]), () => null);
+                                    queryClient.invalidateQueries({ queryKey: ['files'] });
                                     toast.success(`Moved "${moveFileTarget.name}"`);
                                     setMoveFileTarget(null);
                                     setShowMoveModal(false);
@@ -906,7 +965,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                 onCreate={handleCreateFolder}
                 isSyncing={isSyncing}
                 isConnected={isConnected}
-                onSync={handleSyncFolders}
+                onSync={() => void handleManualSync()}
                 onLogout={handleLogout}
                 bandwidth={bandwidth || null}
                 onAssignFolderToGroup={handleAssignFolderToGroup}

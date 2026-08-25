@@ -252,14 +252,17 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
     }, [isOpen, fetchApiSettings, fetchWebDavSettings]);
 
     // Fetch transcode cache info
-    const fetchTranscodeCache = useCallback(async () => {
+    const fetchTranscodeCache = useCallback(async (refresh = false) => {
         const requestId = ++cacheRequestId.current;
         setCacheLoading(true);
         setCacheError(null);
         try {
-            const cacheDetails = await getDetailedTranscodeCache();
+            const cacheDetails = await getDetailedTranscodeCache(refresh);
             if (cacheRequestId.current === requestId) {
                 setTranscodeCache(cacheDetails);
+                setCacheError(cacheDetails.last_error && cacheDetails.entries.length === 0
+                    ? cacheDetails.last_error
+                    : null);
             }
         } catch (error) {
             if (cacheRequestId.current === requestId) {
@@ -303,6 +306,12 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
             fetchOfflineCache();
         }
     }, [isOpen, activeTab, fetchOfflineCache, fetchTranscodeCache, fetchTranscodeCapabilities]);
+
+    useEffect(() => {
+        if (!isOpen || activeTab !== 'general' || !transcodeCache?.scan_in_progress) return;
+        const interval = window.setInterval(() => void fetchTranscodeCache(false), 1_000);
+        return () => window.clearInterval(interval);
+    }, [activeTab, fetchTranscodeCache, isOpen, transcodeCache?.scan_in_progress]);
 
     // Poll API status while modal is open and API is enabled
     useEffect(() => {
@@ -1043,7 +1052,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                                                 <p className="text-sm text-telegram-text font-medium">{t('settings.transcode_cache')}</p>
                                                 <p className="text-xs text-telegram-subtext">
                                                     {transcodeCache
-                                                        ? `${(transcodeCache.total_bytes / 1048576).toFixed(1)} MB / ${(transcodeCache.max_bytes / 1073741824).toFixed(1)} GB`
+                                                        ? `${(transcodeCache.total_bytes / 1048576).toFixed(1)} MB / ${(transcodeCache.max_bytes / 1073741824).toFixed(1)} GB${transcodeCache.scan_in_progress ? ' · Inspecting…' : ''}`
                                                         : cacheLoading
                                                             ? t('common.loading')
                                                             : cacheError
@@ -1054,12 +1063,12 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                                         </div>
                                         <div className="flex items-center gap-1.5">
                                             <button
-                                                onClick={fetchTranscodeCache}
-                                                disabled={cacheLoading || clearingVariant !== null}
+                                                onClick={() => void fetchTranscodeCache(true)}
+                                                disabled={cacheLoading || transcodeCache?.scan_in_progress || clearingVariant !== null}
                                                 className="p-1.5 rounded-md hover:bg-telegram-hover text-telegram-subtext hover:text-telegram-text transition"
                                                 title={t('settings.refresh_links')}
                                             >
-                                                <RefreshCw className={`w-3 h-3 ${cacheLoading ? 'animate-spin' : ''}`} />
+                                                <RefreshCw className={`w-3 h-3 ${cacheLoading || transcodeCache?.scan_in_progress ? 'animate-spin' : ''}`} />
                                             </button>
                                             <button
                                                 disabled={cacheLoading || clearingVariant !== null || (!cacheError && (!transcodeCache || transcodeCache.entries.length === 0))}
@@ -1075,7 +1084,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                                                     try {
                                                         const msg = await invoke<string>('cmd_clear_transcode_cache', {});
                                                         toast.success(msg);
-                                                        await fetchTranscodeCache();
+                                                        await fetchTranscodeCache(true);
                                                     } catch (e) {
                                                         toast.error(t('settings.failed_prefix', { error: e }));
                                                     } finally {
@@ -1092,14 +1101,14 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                                     <FfmpegInstallNotice available={transcodeCapabilities?.available} />
 
                                     {/* Cache entries list */}
-                                    {cacheLoading ? (
+                                    {cacheLoading && !transcodeCache ? (
                                         <div className="flex items-center justify-center py-2" role="status" aria-label={t('common.loading')}>
                                             <RefreshCw className="w-3 h-3 text-telegram-subtext animate-spin" />
                                         </div>
                                     ) : cacheError ? (
                                         <div className="rounded-md border border-red-500/20 bg-red-500/5 p-2.5 text-center" role="alert">
                                             <p className="break-words text-[11px] text-red-300">{t('settings.failed_prefix', { error: cacheError })}</p>
-                                            <button type="button" onClick={fetchTranscodeCache} className="quiet-control mt-2 px-2.5 py-1 text-[10px] text-app-text">
+                                            <button type="button" onClick={() => void fetchTranscodeCache(true)} className="quiet-control mt-2 px-2.5 py-1 text-[10px] text-app-text">
                                                 <RefreshCw className="h-3 w-3" />
                                                 {t('settings.retry_encryption_check')}
                                             </button>

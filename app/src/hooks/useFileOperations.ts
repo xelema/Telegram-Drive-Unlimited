@@ -6,6 +6,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { useConfirm } from '../context/ConfirmContext';
 import { TelegramFile } from '../types';
+import { updateFileQueryData } from '../services/fileListRefresh';
 
 export function useFileOperations(
     activeFolderId: number | null,
@@ -36,6 +37,7 @@ export function useFileOperations(
                 invoke('cmd_delete_image_thumbnail', { messageId: id, folderId: sourceFolderId }).catch(() => {}),
                 invoke('cmd_delete_preview_for_message', { messageId: id, folderId: sourceFolderId }).catch(() => {}),
             ]);
+            updateFileQueryData(queryClient, sourceFolderId, new Set([id]), () => null);
             queryClient.invalidateQueries({ queryKey: ['files'] });
             toast.success("File deleted");
         } catch (e) {
@@ -50,6 +52,7 @@ export function useFileOperations(
 
         let success = 0;
         let fail = 0;
+        const deletedByFolder = new Map<number | null, number[]>();
         for (const id of ids) {
             const sourceFolderId = displayedFilesRef.current.find(file => file.id === id)?.folder_id ?? activeFolderId;
             try {
@@ -59,11 +62,18 @@ export function useFileOperations(
                     invoke('cmd_delete_preview_for_message', { messageId: id, folderId: sourceFolderId }).catch(() => {}),
                 ]);
                 success++;
+                deletedByFolder.set(sourceFolderId, [
+                    ...(deletedByFolder.get(sourceFolderId) ?? []),
+                    id,
+                ]);
             } catch {
                 fail++;
             }
         }
         setSelectedIds([]);
+        for (const [folderId, deletedIds] of deletedByFolder) {
+            updateFileQueryData(queryClient, folderId, new Set(deletedIds), () => null);
+        }
         queryClient.invalidateQueries({ queryKey: ['files'] });
         if (success > 0) toast.success(`Deleted ${success} files.`);
         if (fail > 0) toast.error(`Failed to delete ${fail} files.`);
@@ -138,6 +148,7 @@ export function useFileOperations(
                 invoke('cmd_delete_preview_for_message', { messageId: id, folderId: sourceFolderId }).catch(() => {}),
             ]));
             toast.success(`Moved ${ids.length} files.`);
+            updateFileQueryData(queryClient, sourceFolderId, new Set(ids), () => null);
             queryClient.invalidateQueries({ queryKey: ['files'] });
             setSelectedIds([]);
             if (onSuccess) onSuccess();

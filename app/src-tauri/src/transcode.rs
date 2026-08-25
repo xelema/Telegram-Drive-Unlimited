@@ -14,12 +14,13 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use actix_web::{web, HttpRequest, HttpResponse, Responder};
 use tokio::io::AsyncBufReadExt;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::commands::TelegramState;
 use crate::mp4_utils;
@@ -30,6 +31,22 @@ use tauri::Manager;
 
 /// Maximum total cache size in bytes (5 GB).
 pub const MAX_CACHE_BYTES: u64 = 5 * 1024 * 1024 * 1024;
+
+pub fn persisted_cache_limit_bytes(app_data_dir: &Path) -> u64 {
+    let settings_path = app_data_dir.join("settings.json");
+    let Some(gigabytes) = std::fs::read_to_string(settings_path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+        .and_then(|value| {
+            value
+                .pointer("/settings/transcodeCacheMaxGb")
+                .and_then(serde_json::Value::as_u64)
+        })
+    else {
+        return MAX_CACHE_BYTES;
+    };
+    gigabytes.clamp(1, 50) * 1024 * 1024 * 1024
+}
 
 /// Subdirectory name for the streaming cache inside app_data_dir.
 /// Originals subdirectory.
@@ -160,27 +177,120 @@ pub struct TranscodeManager {
     pub ffmpeg_path: Arc<Mutex<Option<PathBuf>>>,
     jobs: Arc<Mutex<HashMap<String, Arc<Mutex<TranscodeJob>>>>>,
     max_cache_bytes: Arc<Mutex<u64>>,
+    cache_snapshot: Arc<RwLock<CacheSnapshot>>,
+    cache_scan_in_flight: Arc<AtomicBool>,
+    cache_scan_pending: Arc<AtomicBool>,
+}
+
+#[derive(Clone, Default)]
+struct CacheSnapshot {
+    entries: Vec<CacheEntry>,
+    total_bytes: u64,
+    last_scanned_at: Option<i64>,
+    last_error: Option<String>,
 }
 
 impl TranscodeManager {
     pub fn new(cache_root: PathBuf) -> Self {
+        Self::new_with_max_cache_bytes(cache_root, MAX_CACHE_BYTES)
+    }
+
+    pub fn new_with_max_cache_bytes(cache_root: PathBuf, max_cache_bytes: u64) -> Self {
         // Ensure subdirectories exist
         let _ = std::fs::create_dir_all(cache_root.join(ORIGINALS_DIR));
         let _ = std::fs::create_dir_all(cache_root.join(HLS_DIR));
-
-        // Clean up partial output from previous sessions
-        Self::clean_partial_outputs(&cache_root);
 
         Self {
             cache_root,
             ffmpeg_path: Arc::new(Mutex::new(None)),
             jobs: Arc::new(Mutex::new(HashMap::new())),
-            max_cache_bytes: Arc::new(Mutex::new(MAX_CACHE_BYTES)),
+            max_cache_bytes: Arc::new(Mutex::new(max_cache_bytes)),
+            cache_snapshot: Arc::new(RwLock::new(CacheSnapshot::default())),
+            cache_scan_in_flight: Arc::new(AtomicBool::new(false)),
+            cache_scan_pending: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Reconcile the detailed cache inventory once on the blocking pool. The
+    /// settings command serves the last snapshot immediately while this work
+    /// is running, so large collections of HLS segments cannot block the UI.
+    pub fn start_cache_reconciliation(self: &Arc<Self>, clean_partial_outputs: bool) {
+        if self
+            .cache_scan_in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            self.cache_scan_pending.store(true, Ordering::Release);
+            return;
+        }
+        let manager = self.clone();
+        tauri::async_runtime::spawn(async move {
+            let scan_started_at = std::time::Instant::now();
+            let cache_root = manager.cache_root.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                if clean_partial_outputs {
+                    Self::clean_partial_outputs(&cache_root);
+                }
+                scan_transcode_cache(&cache_root)
+            })
+            .await
+            .map_err(|error| format!("Transcode cache inspection task failed: {error}"))
+            .and_then(|result| result);
+
+            let mut snapshot = manager.cache_snapshot.write().await;
+            match result {
+                Ok(entries) => {
+                    snapshot.total_bytes = entries
+                        .iter()
+                        .fold(0u64, |total, entry| total.saturating_add(entry.size_bytes));
+                    snapshot.entries = entries;
+                    snapshot.last_scanned_at = Some(chrono::Utc::now().timestamp());
+                    snapshot.last_error = None;
+                    log::info!(
+                        "Transcode cache reconciliation found {} variants ({} bytes) in {:?}",
+                        snapshot.entries.len(),
+                        snapshot.total_bytes,
+                        scan_started_at.elapsed()
+                    );
+                }
+                Err(error) => {
+                    log::warn!("Transcode cache reconciliation failed: {error}");
+                    snapshot.last_error = Some(error);
+                    snapshot.last_scanned_at = Some(chrono::Utc::now().timestamp());
+                }
+            }
+            drop(snapshot);
+            manager.cache_scan_in_flight.store(false, Ordering::Release);
+            if manager.cache_scan_pending.swap(false, Ordering::AcqRel) {
+                manager.start_cache_reconciliation(false);
+            }
+        });
+    }
+
+    async fn detailed_cache_snapshot(&self) -> DetailedCacheInfo {
+        let snapshot = self.cache_snapshot.read().await.clone();
+        DetailedCacheInfo {
+            entries: snapshot.entries,
+            total_bytes: snapshot.total_bytes,
+            max_bytes: self.get_max_cache_bytes().await,
+            scan_in_progress: self.cache_scan_in_flight.load(Ordering::Acquire),
+            last_scanned_at: snapshot.last_scanned_at,
+            last_error: snapshot.last_error,
         }
     }
 
     /// Clean up incomplete HLS directories from previous runs.
     fn clean_partial_outputs(cache_root: &Path) {
+        // Reconciliation is deliberately off the startup critical path. Only
+        // remove old partials so a transcode begun immediately after launch
+        // cannot race this background cleanup.
+        const STALE_PARTIAL_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+        let is_stale = |path: &Path| {
+            std::fs::metadata(path)
+                .and_then(|metadata| metadata.modified())
+                .and_then(|modified| modified.elapsed().map_err(std::io::Error::other))
+                .is_ok_and(|age| age >= STALE_PARTIAL_AGE)
+        };
         let hls_root = cache_root.join(HLS_DIR);
         if let Ok(entries) = std::fs::read_dir(&hls_root) {
             for entry in entries.flatten() {
@@ -196,7 +306,7 @@ impl TranscodeManager {
                             }
                         }
                     }
-                    if !has_playlist {
+                    if !has_playlist && is_stale(&path) {
                         log::info!("Transcode: Cleaning up partial output: {:?}", path);
                         let _ = std::fs::remove_dir_all(&path);
                     }
@@ -217,7 +327,7 @@ impl TranscodeManager {
                     } else {
                         false
                     };
-                    if should_remove {
+                    if should_remove && is_stale(&path) {
                         log::info!("Transcode: Removing incomplete file: {:?}", path);
                         let _ = std::fs::remove_file(&path);
                     }
@@ -1121,6 +1231,7 @@ pub async fn cmd_prepare_transcoded_stream(
 
         // LRU eviction after job completes
         manager_clone.evict_lru().await;
+        manager_clone.start_cache_reconciliation(false);
     });
 
     Ok(TranscodePrepareResult {
@@ -1330,7 +1441,7 @@ pub async fn cmd_get_cached_variants(
 
 // ── Detailed cache info (per-file per-quality with sizes) ──────────
 
-#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct CacheEntry {
     pub file_key: String,
     pub quality: String,
@@ -1338,11 +1449,14 @@ pub struct CacheEntry {
     pub playlist_exists: bool,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Clone, serde::Serialize)]
 pub struct DetailedCacheInfo {
     pub entries: Vec<CacheEntry>,
     pub total_bytes: u64,
     pub max_bytes: u64,
+    pub scan_in_progress: bool,
+    pub last_scanned_at: Option<i64>,
+    pub last_error: Option<String>,
 }
 
 fn scan_transcode_cache(cache_root: &Path) -> Result<Vec<CacheEntry>, String> {
@@ -1389,6 +1503,7 @@ fn scan_transcode_cache(cache_root: &Path) -> Result<Vec<CacheEntry>, String> {
                     let mut size_bytes = 0u64;
                     let files = std::fs::read_dir(&quality_path)
                         .map_err(|error| format!("Could not read a cached variant: {error}"))?;
+                    let mut observed_files = HashMap::new();
                     for file in files {
                         let file = match file {
                             Ok(entry) => entry,
@@ -1407,13 +1522,18 @@ fn scan_transcode_cache(cache_root: &Path) -> Result<Vec<CacheEntry>, String> {
                                 format!("Could not read cached segment metadata: {error}")
                             })?;
                             size_bytes = size_bytes.saturating_add(metadata.len());
+                            observed_files.insert(
+                                file.file_name().to_string_lossy().into_owned(),
+                                metadata.len(),
+                            );
                         }
                     }
                     entries.push(CacheEntry {
                         file_key: file_key.clone(),
                         quality: quality_entry.file_name().to_string_lossy().into_owned(),
                         size_bytes,
-                        playlist_exists: validate_hls_output(&quality_path).is_ok(),
+                        playlist_exists: validate_hls_inventory(&quality_path, &observed_files)
+                            .is_ok(),
                     });
                 }
             }
@@ -1470,24 +1590,63 @@ fn scan_transcode_cache(cache_root: &Path) -> Result<Vec<CacheEntry>, String> {
     Ok(entries)
 }
 
+fn validate_hls_inventory(
+    output_dir: &Path,
+    observed_files: &HashMap<String, u64>,
+) -> Result<(), String> {
+    let playlist = std::fs::read_to_string(output_dir.join("index.m3u8"))
+        .map_err(|error| format!("Failed to read HLS playlist: {error}"))?;
+    if !playlist
+        .lines()
+        .any(|line| line.trim().starts_with("#EXTINF:"))
+    {
+        return Err("HLS playlist has no segments".to_string());
+    }
+    let mut segment_count = 0usize;
+    for line in playlist.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let segment_name = line.split('?').next().unwrap_or(line);
+        let segment_path = Path::new(segment_name);
+        if segment_path.components().count() != 1
+            || segment_path.extension().and_then(|value| value.to_str()) != Some("ts")
+        {
+            return Err(format!(
+                "HLS playlist contains an invalid segment path: {line}"
+            ));
+        }
+        if observed_files.get(segment_name).copied().unwrap_or(0) == 0 {
+            return Err(format!(
+                "HLS segment {segment_name} is unavailable or empty"
+            ));
+        }
+        segment_count += 1;
+    }
+    if segment_count == 0 {
+        return Err("HLS playlist references no segment files".to_string());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn cmd_get_detailed_transcode_cache(
+    refresh: Option<bool>,
     manager: tauri::State<'_, Arc<TranscodeManager>>,
 ) -> Result<DetailedCacheInfo, String> {
-    let max_bytes = manager.get_max_cache_bytes().await;
-    let cache_root = manager.cache_root.clone();
-    let entries = tokio::task::spawn_blocking(move || scan_transcode_cache(&cache_root))
+    let manager = manager.inner().clone();
+    let has_snapshot = manager
+        .cache_snapshot
+        .read()
         .await
-        .map_err(|error| format!("Transcode cache inspection task failed: {error}"))??;
-    let total_bytes = entries
-        .iter()
-        .fold(0u64, |total, entry| total.saturating_add(entry.size_bytes));
-
-    Ok(DetailedCacheInfo {
-        entries,
-        total_bytes,
-        max_bytes,
-    })
+        .last_scanned_at
+        .is_some();
+    if !manager.cache_scan_in_flight.load(Ordering::Acquire)
+        && (refresh.unwrap_or(false) || !has_snapshot)
+    {
+        manager.start_cache_reconciliation(false);
+    }
+    Ok(manager.detailed_cache_snapshot().await)
 }
 
 // ── Clear transcode cache (all, per-file, or per-variant) ──────────
@@ -1609,8 +1768,9 @@ pub async fn cmd_clear_transcode_cache(
     quality: Option<String>,
     manager: tauri::State<'_, Arc<TranscodeManager>>,
 ) -> Result<String, String> {
+    let manager = manager.inner().clone();
     let cache_root = manager.cache_root.clone();
-    tokio::task::spawn_blocking(move || match (file_key, quality) {
+    let result = tokio::task::spawn_blocking(move || match (file_key, quality) {
         (None, None) => clear_all_transcode_cache(&cache_root),
         (Some(file_key), None) => clear_file_transcode_cache(&cache_root, &file_key),
         (Some(file_key), Some(quality)) => {
@@ -1619,7 +1779,11 @@ pub async fn cmd_clear_transcode_cache(
         (None, Some(_)) => Err("Cannot clear quality without specifying file key".to_string()),
     })
     .await
-    .map_err(|error| format!("Transcode cache clear task failed: {error}"))?
+    .map_err(|error| format!("Transcode cache clear task failed: {error}"))?;
+    if result.is_ok() {
+        manager.start_cache_reconciliation(false);
+    }
+    result
 }
 
 #[tauri::command]
