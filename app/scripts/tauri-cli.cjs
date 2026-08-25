@@ -49,9 +49,9 @@ function prepareWindowsRuntime() {
 }
 
 if (process.platform === 'win32' && args[0] === 'build') {
-  if (!args.includes('--no-bundle')) {
-    prepareWindowsRuntime();
-  }
+  // Tauri validates configured bundle resources while compiling, including
+  // --no-bundle smoke builds, so the runtime must exist for every build.
+  prepareWindowsRuntime();
 
   const hasCustomConfig = args.some(
     (argument) => argument === '--config' || argument.startsWith('--config='),

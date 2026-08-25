@@ -58,9 +58,10 @@ describe('release safety gates', () => {
     expect(release).toContain('run: cargo clippy --lib --all-targets -- -D warnings');
   });
 
-  it('keeps Windows no-bundle smoke builds independent of runtime packaging', () => {
+  it('prepares required Windows resources with PowerShell 7 and a legacy fallback', () => {
     const tauriCli = readFileSync(resolve(process.cwd(), 'scripts', 'tauri-cli.cjs'), 'utf8');
-    expect(tauriCli).toContain("if (!args.includes('--no-bundle'))");
+    expect(tauriCli).toContain('prepareWindowsRuntime();');
+    expect(tauriCli).not.toContain("if (!args.includes('--no-bundle'))");
     expect(tauriCli).toContain("['pwsh.exe', 'powershell.exe']");
   });
 
