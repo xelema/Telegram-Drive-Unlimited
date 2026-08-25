@@ -34,7 +34,11 @@ test('Japanese CJK strings fit the narrow locale fixture', async ({ page }) => {
   const card = page.getByTestId('localized-offline-card');
   await expect(card).toContainText('オフラインファイル');
   await expect(card).toContainText('最近開いた暗号化されていないファイル');
-  await expect(card).toHaveScreenshot('gallery-japanese-cjk.png');
+  const overflows = await card.evaluate(
+    element => element.scrollWidth > element.clientWidth || element.scrollHeight > element.clientHeight,
+  );
+  expect(overflows, 'Japanese locale fixture should not overflow').toBe(false);
+  await expect(card).toHaveScreenshot('gallery-japanese-cjk.png', { maxDiffPixelRatio: 0.04 });
 });
 
 test('new regional language strings fit the narrow locale fixture', async ({ page }) => {

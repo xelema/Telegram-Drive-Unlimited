@@ -41,6 +41,11 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: ''
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
@@ -48,7 +53,6 @@ jobs:
       - name: Install Android SDK and NDK inputs
         shell: bash
         run: |
-          yes | sdkmanager --licenses >/dev/null
           sdkmanager \
             'platforms;android-36' \
             'build-tools;36.0.0' \
