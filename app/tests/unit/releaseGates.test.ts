@@ -58,6 +58,12 @@ describe('release safety gates', () => {
     expect(release).toContain('run: cargo clippy --lib --all-targets -- -D warnings');
   });
 
+  it('keeps Windows no-bundle smoke builds independent of runtime packaging', () => {
+    const tauriCli = readFileSync(resolve(process.cwd(), 'scripts', 'tauri-cli.cjs'), 'utf8');
+    expect(tauriCli).toContain("if (!args.includes('--no-bundle'))");
+    expect(tauriCli).toContain("['pwsh.exe', 'powershell.exe']");
+  });
+
   it('keeps untranslated UI literal debt on a non-increasing budget', () => {
     const budget = JSON.parse(
       readFileSync(resolve(process.cwd(), 'src', 'i18n', 'literal-budget.json'), 'utf8'),

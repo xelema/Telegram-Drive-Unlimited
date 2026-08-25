@@ -10,19 +10,47 @@ function fail(message) {
   process.exit(1);
 }
 
-if (process.platform === 'win32' && args[0] === 'build') {
+function prepareWindowsRuntime() {
   const prepareScript = path.join(__dirname, 'prepare-windows-runtime.ps1');
-  const prepare = spawnSync(
-    'powershell.exe',
-    ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', prepareScript],
-    { cwd: appRoot, stdio: 'inherit' },
-  );
+  const powerShellArgs = [
+    '-NoLogo',
+    '-NoProfile',
+    '-NonInteractive',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-File',
+    prepareScript,
+  ];
+  let prepared = false;
 
-  if (prepare.error) {
-    fail(`Unable to prepare the Windows runtime: ${prepare.error.message}`);
+  for (const executable of ['pwsh.exe', 'powershell.exe']) {
+    const prepare = spawnSync(executable, powerShellArgs, {
+      cwd: appRoot,
+      stdio: 'inherit',
+    });
+
+    if (prepare.error?.code === 'ENOENT') {
+      continue;
+    }
+    if (prepare.error) {
+      fail(`Unable to prepare the Windows runtime: ${prepare.error.message}`);
+    }
+    if (prepare.status !== 0) {
+      process.exit(prepare.status ?? 1);
+    }
+
+    prepared = true;
+    break;
   }
-  if (prepare.status !== 0) {
-    process.exit(prepare.status ?? 1);
+
+  if (!prepared) {
+    fail('Unable to prepare the Windows runtime: PowerShell is not installed.');
+  }
+}
+
+if (process.platform === 'win32' && args[0] === 'build') {
+  if (!args.includes('--no-bundle')) {
+    prepareWindowsRuntime();
   }
 
   const hasCustomConfig = args.some(
