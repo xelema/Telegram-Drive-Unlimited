@@ -26,6 +26,9 @@ describe('release safety gates', () => {
     const release = workflow('release.yml');
 
     expect(android).toMatch(/on:\s*\n\s+workflow_call:/);
+    expect(android).toContain('  workflow_dispatch:');
+    expect(android).not.toContain('  pull_request:');
+    expect(android).not.toContain('  push:');
     expect(android).toContain('--target aarch64 armv7 i686 x86_64');
     expect(android).toContain('--r8-seeds');
     expect(android).toContain('bash scripts/verify-android-artifacts.sh');

@@ -200,7 +200,7 @@ pub async fn cmd_get_storage_insight(
                 .filter(|file| file.metadata.size >= threshold)
                 .map(|file| file.metadata)
                 .collect();
-            matches.sort_by(|left, right| right.size.cmp(&left.size));
+            matches.sort_by_key(|file| std::cmp::Reverse(file.size));
             matches
         }
         "old" => {
@@ -229,7 +229,7 @@ pub async fn cmd_get_storage_insight(
                 group.sort_by_key(|file| (file.folder_id, file.id));
                 matches.extend(group);
             }
-            matches.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
+            matches.sort_by_cached_key(|file| file.name.to_lowercase());
             matches
         }
         _ => return Err("Unknown storage insight".to_string()),

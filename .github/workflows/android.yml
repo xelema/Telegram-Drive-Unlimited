@@ -2,15 +2,6 @@ name: Android CI
 
 on:
   workflow_call:
-  pull_request:
-    paths:
-      - 'app/**'
-      - '.github/workflows/android.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'app/**'
-      - '.github/workflows/android.yml'
   workflow_dispatch:
 
 permissions:

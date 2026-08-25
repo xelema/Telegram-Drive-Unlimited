@@ -201,7 +201,7 @@ impl TelegramDavFs {
             }
         }
 
-        raw_folders.sort_by(|left, right| left.1.to_lowercase().cmp(&right.1.to_lowercase()));
+        raw_folders.sort_by_cached_key(|folder| folder.1.to_lowercase());
         let aliases = unique_aliases(
             raw_folders
                 .iter()
