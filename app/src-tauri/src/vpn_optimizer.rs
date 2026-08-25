@@ -450,30 +450,6 @@ fn replace_network_settings_file(
     std::fs::rename(source, destination)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn proxy_password_is_not_serialized_or_debugged() {
-        let proxy = ProxyConfig {
-            enabled: true,
-            proxy_type: "socks5".to_string(),
-            host: "proxy.example".to_string(),
-            port: 1080,
-            username: "alice".to_string(),
-            password: "top-secret".to_string(),
-        };
-        let serialized = serde_json::to_string(&proxy).unwrap();
-        let debug = format!("{proxy:?}");
-
-        assert!(!serialized.contains("top-secret"));
-        assert!(!serialized.contains("password"));
-        assert!(!debug.contains("top-secret"));
-        assert!(debug.contains("[REDACTED]"));
-    }
-}
-
 #[cfg(target_os = "windows")]
 fn replace_network_settings_file(
     source: &std::path::Path,
@@ -502,5 +478,29 @@ fn replace_network_settings_file(
         Err(std::io::Error::last_os_error())
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn proxy_password_is_not_serialized_or_debugged() {
+        let proxy = ProxyConfig {
+            enabled: true,
+            proxy_type: "socks5".to_string(),
+            host: "proxy.example".to_string(),
+            port: 1080,
+            username: "alice".to_string(),
+            password: "top-secret".to_string(),
+        };
+        let serialized = serde_json::to_string(&proxy).unwrap();
+        let debug = format!("{proxy:?}");
+
+        assert!(!serialized.contains("top-secret"));
+        assert!(!serialized.contains("password"));
+        assert!(!debug.contains("top-secret"));
+        assert!(debug.contains("[REDACTED]"));
     }
 }
