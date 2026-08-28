@@ -1,18 +1,29 @@
-# Telegram Drive REST API Documentation
+# Telegram Drive REST API Reference
 
-A clean and professional REST API specification for interacting with Telegram Drive programmatically.
+Telegram Drive includes an opt-in local REST API for automating file, folder, search, storage, thumbnail, media, and bulk operations. The API is available in the desktop app on Windows, macOS, and Linux. It is disabled by default, binds only to the loopback interface, and requires the desktop app to remain open and signed in.
+
+## Enable the API
+
+1. Open **Settings → Advanced** in the desktop app.
+2. Generate an API key and copy it immediately. The app stores only its hash, so the plaintext key cannot be shown again.
+3. Choose an unused port. The default is `8550`.
+4. Enable the REST API and confirm that its status is running.
+
+Regenerating the API key immediately invalidates the previous key. Keep the key out of source control, shell history, screenshots, and public issue reports.
 
 ## Base URL
 
-```http
-http://localhost:8550/api/v1
+```text
+http://127.0.0.1:8550/api/v1
 ```
+
+The port is configurable. Replace `8550` in examples if a different port is selected in Settings. Do not expose, proxy, or forward this loopback service to a LAN or the internet.
 
 ---
 
 ## Authentication
 
-All endpoints (except `/health`) require an API key passed via request headers.
+All endpoints except `/health` require an API key passed in the request headers.
 
 | Header | Type | Description |
 | :--- | :--- | :--- |
@@ -22,7 +33,7 @@ All endpoints (except `/health`) require an API key passed via request headers.
 
 ```bash
 curl -H "X-API-Key: YOUR_API_KEY" \
-  http://localhost:8550/api/v1/files
+  http://127.0.0.1:8550/api/v1/files
 ```
 
 ---
@@ -40,7 +51,7 @@ Check API availability, status, and running version.
 ```json
 {
   "status": "ok",
-  "version": "1.8.8"
+  "version": "x.y.z"
 }
 ```
 
@@ -65,8 +76,11 @@ Retrieve metadata for files stored in Telegram Drive.
 | `sort` | String | Field to sort by: `name`, `size`, or `created_at` |
 | `order` | String | Sort order: `asc` or `desc` |
 | `mime_type` | String | Filter files by a specific MIME type |
+| `created_after` | String | Include files created after this timestamp; use the same format returned by `created_at` |
+| `created_before` | String | Include files created before this timestamp; use the same format returned by `created_at` |
 | `size_min` | Integer | Minimum file size in bytes |
 | `size_max` | Integer | Maximum file size in bytes |
+| `fields` | String | Comma-separated response fields when a reduced representation is needed |
 
 #### Response (200 OK)
 ```json
@@ -307,6 +321,20 @@ Download selected files as a zip archive stream.
   }
 }
 ```
+
+---
+
+## Security and limitations
+
+- The API listens only on `127.0.0.1` and is intended for trusted software running on the same computer.
+- Treat the API key as a password. Any local process or user with the key can use the enabled operations.
+- Telegram Drive stores only a hash of the key and does not write the plaintext key to application logs.
+- Encrypted files fail closed for plaintext REST access, including download, thumbnail, media-info, rename/move, copy, and delete operations that are not safely supported for encrypted objects.
+- Telegram service limits, channel permissions, proxy/VPN settings, bandwidth limits, and flood waits still apply.
+- Folder Sync, WebDAV, and the REST API operate on the same Telegram channels. Allow one operation to finish before changing the same file through another integration.
+- Disabling the server or regenerating its key revokes access. The server is unavailable when the desktop app is closed or signed out.
+
+See the [Folder Sync guide](SYNC_GUIDE.md), [WebDAV guide](WEBDAV_GUIDE.md), and [Privacy Policy](PRIVACY.md) for related behavior.
 
 ---
 
