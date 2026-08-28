@@ -133,6 +133,10 @@
     "max_uploads_desc": "Max parallel uploads",
     "max_downloads_desc": "Max parallel downloads",
     "zip_folders_desc": "Compress folders into .zip before uploading",
+    "video_upload_default": "Carga de video predeterminada",
+    "video_upload_desc": "Multimedia habilita vistas previas de Telegram para MP4, M4V y MOV. Los videos protegidos siempre usan Archivo.",
+    "video_upload_file": "Archivo",
+    "video_upload_media": "Multimedia",
     "performance_compatibility": "Performance & Compatibility",
     "performance_mode_desc": "Disable blur, heavy shadows & animations",
     "linux_rendering_desc": "Disable DMA-BUF renderer (fixes GPU crashes, requires restart)",
@@ -604,5 +608,23 @@
     "continue_to_files": "Continuar a los archivos",
     "browser_note": "El contenido patrocinado se abre en su navegador.",
     "close_ad": "Cerrar anuncio"
+  },
+  "supporter_offer": {
+    "eyebrow": "Apoya Telegram Drive",
+    "ad_dismissed_title": "¿Cansado de los anuncios? ¡Paga $5 una sola vez y deja de verlos para siempre!",
+    "upload_completed_title": "¿Disfrutas de cargas fluidas? Mantén Telegram Drive sin anuncios",
+    "download_completed_title": "Tu descarga está lista: mantén las próximas transferencias sin anuncios",
+    "close_label": "Cerrar oferta de colaborador",
+    "price": "$5",
+    "price_suffix": "USD una sola vez",
+    "description": "Un pago verificado elimina para siempre todos los anuncios de patrocinadores en Telegram Drive, sin suscripción ni cargos recurrentes.",
+    "free_features": "Todas las funciones siguen siendo gratuitas, colabores o no.",
+    "benefit_lifetime": "Sin anuncios de patrocinadores de por vida",
+    "benefit_devices": "Activa hasta 3 dispositivos compatibles",
+    "benefit_updates": "Las actualizaciones normales conservan la activación",
+    "project_support": "Tu aporte único ayuda a financiar el mantenimiento y el desarrollo continuos.",
+    "privacy_note": "PayPal procesa el pago. Telegram Drive nunca recibe ni almacena los datos de tu tarjeta ni tu correo de PayPal.",
+    "secondary_action": "Ahora no",
+    "primary_action": "Ver detalles de colaborador"
   }
 }

@@ -172,6 +172,10 @@
     "max_downloads_desc": "Số lượt tải xuống song song tối đa",
     "zip_before_upload": "Nén thư mục trước khi tải lên",
     "zip_folders_desc": "Nén thư mục thành tệp .zip trước khi tải lên",
+    "video_upload_default": "Cách tải video mặc định",
+    "video_upload_desc": "Phương tiện bật bản xem trước Telegram cho MP4, M4V và MOV. Video được bảo vệ luôn dùng chế độ Tệp.",
+    "video_upload_file": "Tệp",
+    "video_upload_media": "Phương tiện",
     "performance_compatibility": "Hiệu năng & Tương thích",
     "performance_mode": "Chế độ hiệu năng",
     "performance_mode_desc": "Tắt hiệu ứng mờ, bóng đổ nặng và hoạt ảnh",
@@ -604,5 +608,23 @@
     "continue_to_files": "Tiếp tục đến tệp",
     "browser_note": "Nội dung được tài trợ sẽ mở trong trình duyệt. Bạn chỉ thấy màn hình này một lần.",
     "close_ad": "Đóng quảng cáo"
+  },
+  "supporter_offer": {
+    "eyebrow": "Ủng hộ Telegram Drive",
+    "ad_dismissed_title": "Mệt mỏi vì quảng cáo? Chỉ trả $5 một lần để không còn thấy quảng cáo!",
+    "upload_completed_title": "Thích tải lên mượt mà? Giữ Telegram Drive không quảng cáo",
+    "download_completed_title": "Tải xuống đã sẵn sàng—giữ các lần truyền sau không quảng cáo",
+    "close_label": "Đóng ưu đãi người ủng hộ",
+    "price": "5 USD",
+    "price_suffix": "chỉ một lần",
+    "description": "Một khoản thanh toán đã xác minh sẽ xóa mọi quảng cáo tài trợ khỏi Telegram Drive trọn đời—không đăng ký và không phí định kỳ.",
+    "free_features": "Mọi tính năng vẫn miễn phí dù bạn có ủng hộ hay không.",
+    "benefit_lifetime": "Không có quảng cáo tài trợ trọn đời",
+    "benefit_devices": "Kích hoạt tối đa 3 thiết bị được hỗ trợ",
+    "benefit_updates": "Các bản cập nhật thông thường vẫn giữ kích hoạt",
+    "project_support": "Khoản ủng hộ một lần của bạn giúp duy trì bảo trì và phát triển liên tục.",
+    "privacy_note": "PayPal xử lý thanh toán. Telegram Drive không nhận hoặc lưu thông tin thẻ hay email PayPal của bạn.",
+    "secondary_action": "Để sau",
+    "primary_action": "Xem chi tiết ủng hộ"
   }
 }

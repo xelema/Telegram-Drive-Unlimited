@@ -172,6 +172,10 @@
     "max_downloads_desc": "Max parallel downloads",
     "zip_before_upload": "Zip Folders Before Upload",
     "zip_folders_desc": "Compress folders into .zip before uploading",
+    "video_upload_default": "Default video upload",
+    "video_upload_desc": "Media enables Telegram previews for MP4, M4V, and MOV. Protected videos always use File.",
+    "video_upload_file": "File",
+    "video_upload_media": "Media",
     "performance_compatibility": "Performance & Compatibility",
     "performance_mode": "Performance Mode",
     "performance_mode_desc": "Disable blur, heavy shadows & animations",
@@ -604,5 +608,23 @@
     "continue_to_files": "Continue to files",
     "browser_note": "Sponsored content opens in your browser. You only see this gateway once.",
     "close_ad": "Close ad"
+  },
+  "supporter_offer": {
+    "eyebrow": "Support Telegram Drive",
+    "ad_dismissed_title": "Tired of the ads? Pay $5 one time to stop seeing all ads!",
+    "upload_completed_title": "Enjoying smooth uploads? Keep Telegram Drive ad-free",
+    "download_completed_title": "Your download is ready—keep future transfers ad-free",
+    "close_label": "Close supporter offer",
+    "price": "$5",
+    "price_suffix": "USD once",
+    "description": "One verified payment removes every sponsor ad from Telegram Drive for life—no subscription and no recurring charge.",
+    "free_features": "Every feature stays free whether you support or not.",
+    "benefit_lifetime": "No sponsor ads for life",
+    "benefit_devices": "Activate up to 3 supported devices",
+    "benefit_updates": "Normal app updates stay activated",
+    "project_support": "Your one-time support helps fund ongoing maintenance and development.",
+    "privacy_note": "PayPal handles payment. Telegram Drive never receives or stores your card details or PayPal email.",
+    "secondary_action": "Not now",
+    "primary_action": "See supporter details"
   }
 }

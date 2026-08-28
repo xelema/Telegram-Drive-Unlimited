@@ -97,11 +97,11 @@ export function SupporterProvider({ children }: { children: ReactNode }) {
   const pollCheckout = useCallback(async () => {
     const result = await invoke<CheckoutPollResult>('cmd_poll_supporter_checkout');
     if (result.recovery_code) setLatestRecoveryCode(result.recovery_code);
-    if (result.status === 'completed' || (platform.isAndroid && ['failed', 'expired'].includes(result.status))) {
+    if (result.status === 'completed' || ['failed', 'expired'].includes(result.status)) {
       await refreshStatus();
     }
     return result;
-  }, [platform.isAndroid, refreshStatus]);
+  }, [refreshStatus]);
 
   const beginCheckout = useCallback(async (termsVersion: string) => {
     const checkout = await invoke<CheckoutStarted>('cmd_begin_supporter_checkout', { acceptedTermsVersion: termsVersion });
@@ -139,7 +139,7 @@ export function SupporterProvider({ children }: { children: ReactNode }) {
   }, [platform.isAndroid, refreshEntitlement, refreshStatus]);
 
   useEffect(() => {
-    if (!platform.isAndroid || !status.checkout_pending || status.ad_free) return;
+    if (!status.checkout_pending || status.ad_free) return;
     let cancelled = false;
     let inFlight = false;
     const recoverCheckout = async () => {
@@ -164,7 +164,7 @@ export function SupporterProvider({ children }: { children: ReactNode }) {
       window.clearInterval(interval);
       document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [platform.isAndroid, pollCheckout, status.ad_free, status.checkout_pending]);
+  }, [pollCheckout, status.ad_free, status.checkout_pending]);
 
   const value = useMemo<SupporterContextValue>(() => ({
     status,

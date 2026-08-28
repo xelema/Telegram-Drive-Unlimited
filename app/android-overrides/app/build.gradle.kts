@@ -103,6 +103,7 @@ android {
                 signingConfig = signingConfigs.getByName("release")
             }
             isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 *fileTree(".") { include("**/*.pro") }
                     .plus(getDefaultProguardFile("proguard-android-optimize.txt"))
@@ -149,6 +150,7 @@ dependencies {
     implementation("androidx.activity:activity-ktx:1.10.1")
     implementation("androidx.work:work-runtime-ktx:2.10.1")
     implementation("androidx.biometric:biometric:1.1.0")
+    implementation("androidx.profileinstaller:profileinstaller:1.4.1")
     // Tauri's generated Android project currently compiles with Kotlin 1.9.
     // Media3 1.4 retains that metadata compatibility while providing the
     // ExoPlayer range-streaming, controls, and PiP APIs used by the app.

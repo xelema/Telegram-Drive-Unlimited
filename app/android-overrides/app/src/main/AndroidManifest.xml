@@ -68,7 +68,7 @@
             android:name=".MediaPlayerActivity"
             android:configChanges="orientation|keyboardHidden|screenSize|smallestScreenSize|screenLayout|uiMode"
             android:exported="false"
-            android:label="Telegram Drive player"
+            android:label="@string/media_player_title"
             android:resizeableActivity="true"
             android:supportsPictureInPicture="true"
             android:theme="@style/Theme.AppCompat.DayNight.NoActionBar" />

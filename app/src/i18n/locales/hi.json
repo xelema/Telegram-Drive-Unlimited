@@ -133,6 +133,10 @@
     "max_uploads_desc": "Max parallel uploads",
     "max_downloads_desc": "Max parallel downloads",
     "zip_folders_desc": "Compress folders into .zip before uploading",
+    "video_upload_default": "डिफ़ॉल्ट वीडियो अपलोड",
+    "video_upload_desc": "मीडिया MP4, M4V और MOV के लिए Telegram पूर्वावलोकन सक्षम करता है। सुरक्षित वीडियो हमेशा फ़ाइल के रूप में भेजे जाते हैं।",
+    "video_upload_file": "फ़ाइल",
+    "video_upload_media": "मीडिया",
     "performance_compatibility": "Performance & Compatibility",
     "performance_mode_desc": "Disable blur, heavy shadows & animations",
     "linux_rendering_desc": "Disable DMA-BUF renderer (fixes GPU crashes, requires restart)",
@@ -604,5 +608,23 @@
     "continue_to_files": "Continue to files",
     "browser_note": "Sponsored content opens in your browser. You only see this gateway once.",
     "close_ad": "Close ad"
+  },
+  "supporter_offer": {
+    "eyebrow": "Telegram Drive का समर्थन करें",
+    "ad_dismissed_title": "विज्ञापनों से परेशान हैं? एक बार $5 दें और सभी विज्ञापन हमेशा के लिए हटाएँ!",
+    "upload_completed_title": "सुचारु अपलोड पसंद हैं? Telegram Drive को विज्ञापन-मुक्त रखें",
+    "download_completed_title": "आपका डाउनलोड तैयार है—आगे के ट्रांसफ़र विज्ञापन-मुक्त रखें",
+    "close_label": "समर्थक ऑफ़र बंद करें",
+    "price": "$5",
+    "price_suffix": "USD केवल एक बार",
+    "description": "एक सत्यापित भुगतान Telegram Drive से सभी प्रायोजक विज्ञापनों को हमेशा के लिए हटा देता है—कोई सदस्यता या बार-बार शुल्क नहीं।",
+    "free_features": "आप समर्थन करें या नहीं, हर सुविधा मुफ़्त रहती है।",
+    "benefit_lifetime": "जीवन भर कोई प्रायोजक विज्ञापन नहीं",
+    "benefit_devices": "अधिकतम 3 समर्थित डिवाइस सक्रिय करें",
+    "benefit_updates": "सामान्य अपडेट के बाद सक्रियण बना रहता है",
+    "project_support": "आपका एकमुश्त समर्थन निरंतर रखरखाव और विकास में मदद करता है।",
+    "privacy_note": "भुगतान PayPal संभालता है। Telegram Drive आपके कार्ड की जानकारी या PayPal ईमेल न तो प्राप्त करता है, न संग्रहीत।",
+    "secondary_action": "अभी नहीं",
+    "primary_action": "समर्थक विवरण देखें"
   }
 }

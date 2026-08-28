@@ -66,4 +66,44 @@ describe('MobileMediaPlayer', () => {
     expect(invokeMock).toHaveBeenCalledWith('cmd_get_preview', { messageId: 42, folderId: 9 });
     expect(convertFileSrcMock).toHaveBeenCalledWith('/cache/previews/home_42.mp4');
   });
+
+  it('does not download automatically when native streaming fails', async () => {
+    invokeMock.mockRejectedValueOnce(new Error('temporary player error'));
+    render(<MobileMediaPlayer file={file} activeFolderId={9} onClose={vi.fn()} />);
+
+    expect(await screen.findByText(/temporary player error/i)).toBeTruthy();
+    expect(invokeMock.mock.calls.some(([command]) => command === 'cmd_get_preview')).toBe(false);
+  });
+
+  it('streams MIME-identified audio instead of pre-downloading it', async () => {
+    const audio = { ...file, name: 'recording.bin', mime_type: 'audio/aac' };
+    const onClose = vi.fn();
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'cmd_get_stream_info') return Promise.resolve({ base_url: 'http://localhost:1421', token: 'secret' });
+      return Promise.resolve(undefined);
+    });
+    render(<MobileMediaPlayer file={audio} activeFolderId={null} onClose={onClose} />);
+
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(invokeMock).toHaveBeenCalledWith('cmd_open_android_stream_player', expect.objectContaining({ mimeType: 'audio/aac' }));
+    expect(invokeMock.mock.calls.some(([command]) => command === 'cmd_get_preview')).toBe(false);
+  });
+
+  it('preserves the exact protected-stream capability string', async () => {
+    const onClose = vi.fn();
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'cmd_get_stream_info') return Promise.resolve({
+        base_url: 'http://localhost:1421',
+        token: 'secret',
+        operation_token: '18446744073709551615',
+      });
+      return Promise.resolve(undefined);
+    });
+    render(<MobileMediaPlayer file={file} activeFolderId={null} onClose={onClose} />);
+
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(invokeMock).toHaveBeenCalledWith('cmd_open_android_stream_player', expect.objectContaining({
+      streamUrl: 'http://localhost:1421/stream/home/42?token=secret&credential=18446744073709551615',
+    }));
+  });
 });

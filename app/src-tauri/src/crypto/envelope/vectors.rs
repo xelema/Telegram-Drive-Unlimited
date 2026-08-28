@@ -142,6 +142,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn independently_addressed_chunk_decrypts_and_authenticates() {
+        let chunk_size = policy::DEFAULT_CHUNK_SIZE as usize;
+        let mut plaintext = vec![0xA5; chunk_size];
+        plaintext.extend_from_slice(b"seekable tail");
+        let (mut ciphertext, wrapping_key) =
+            encrypt(&plaintext, br#"{"mime_type":"video/mp4"}"#).await;
+        let header = EnvelopeHeader::parse(&ciphertext).unwrap();
+        let header_length = header.core.header_length as usize;
+        let second_record_start = header_length + chunk_size + policy::AEAD_TAG_LENGTH;
+        let second_record_end =
+            second_record_start + b"seekable tail".len() + policy::AEAD_TAG_LENGTH;
+        let dek = resolve_dek(&header, &wrapping_key);
+        let reader = DecryptReader::new(&ciphertext[..header_length], dek).unwrap();
+
+        assert_eq!(
+            reader
+                .decrypt_chunk_at(1, &ciphertext[second_record_start..second_record_end])
+                .unwrap(),
+            b"seekable tail"
+        );
+
+        ciphertext[second_record_start] ^= 1;
+        assert!(reader
+            .decrypt_chunk_at(1, &ciphertext[second_record_start..second_record_end])
+            .is_err());
+    }
+
+    #[tokio::test]
     async fn mutations_truncation_and_trailing_bytes_fail_closed() {
         let (ciphertext, wrapping_key) = encrypt(b"authenticated content", b"").await;
         let header = EnvelopeHeader::parse(&ciphertext).unwrap();

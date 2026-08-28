@@ -229,6 +229,7 @@ async fn upload(
             protection_mode.clone(),
             None,
             Some(true),
+            Some("file".to_string()),
             app.clone(),
             app.state::<TelegramState>(),
             app.state::<Arc<BandwidthManager>>(),

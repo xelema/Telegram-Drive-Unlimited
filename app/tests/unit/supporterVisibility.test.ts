@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   isSupporterPromptDue,
   shouldOfferNewSupporterPurchase,
+  shouldShowSupporterPrompt,
   shouldShowSponsorContent,
   sponsorAdCooldownRemaining,
   SPONSOR_AD_INTERVAL_MS,
@@ -36,6 +37,7 @@ describe('supporter visibility', () => {
 
     expect(isSupporterPromptDue({ state: 'expired', ad_free: false }, 0)).toBe(false);
     expect(isSupporterPromptDue({ state: 'inactive', ad_free: false, recovery_code_saved: true }, 0)).toBe(false);
+    expect(shouldShowSupporterPrompt({ state: 'inactive', ad_free: false, checkout_pending: true }, 0)).toBe(false);
   });
 
   it('recovers safely from a system clock moving backwards', () => {

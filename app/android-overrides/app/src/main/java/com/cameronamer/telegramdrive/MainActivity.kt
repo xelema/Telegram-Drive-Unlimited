@@ -63,6 +63,7 @@ class MainActivity : TauriActivity() {
     private const val SUPPORTER_KEY_ALIAS = "telegram_drive_supporter_v1"
     private const val SUPPORTER_PREFERENCES = "telegram_drive_supporter_secure_v1"
     private val networkAvailable = AtomicBoolean(false)
+    @Volatile private var lastEnvironmentJson = ""
     private val fileCopyExecutor = Executors.newFixedThreadPool(2)
     private const val PRIVACY_PREFERENCES = "telegram_drive_privacy_v1"
 
@@ -202,6 +203,31 @@ class MainActivity : TauriActivity() {
         )
         appContext?.getSharedPreferences("telegram_drive_transfer_recovery_v1", Context.MODE_PRIVATE)
           ?.edit()?.remove("pending_action")?.apply()
+      }
+    }
+
+    private fun emitEnvironmentChanged() {
+      val environment = getTransferEnvironmentJson()
+      if (environment == lastEnvironmentJson) return
+      lastEnvironmentJson = environment
+      Handler(Looper.getMainLooper()).post {
+        val activity = currentActivity() ?: return@post
+        val webView = activity.findWebView(activity.findViewById(android.R.id.content)) ?: return@post
+        webView.evaluateJavascript(
+          "window.dispatchEvent(new CustomEvent('android-environment-change',{detail:$environment}))",
+          null,
+        )
+      }
+    }
+
+    fun emitPlaybackHistoryChanged() {
+      Handler(Looper.getMainLooper()).post {
+        val activity = currentActivity() ?: return@post
+        val webView = activity.findWebView(activity.findViewById(android.R.id.content)) ?: return@post
+        webView.evaluateJavascript(
+          "window.dispatchEvent(new Event('android-playback-history-change'))",
+          null,
+        )
       }
     }
 
@@ -980,6 +1006,7 @@ class MainActivity : TauriActivity() {
       capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true &&
         capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
     )
+    emitEnvironmentChanged()
   }
 
   private fun showDeviceAuthentication(reason: String, result: (Boolean) -> Unit) {

@@ -172,6 +172,10 @@
     "max_downloads_desc": "Muat turun selari maksimum",
     "zip_before_upload": "Zip Folder Sebelum Muat Naik",
     "zip_folders_desc": "Mampatkan folder ke dalam .zip sebelum memuat naik",
+    "video_upload_default": "Muat naik video lalai",
+    "video_upload_desc": "Media mendayakan pratonton Telegram untuk MP4, M4V dan MOV. Video dilindungi sentiasa menggunakan Fail.",
+    "video_upload_file": "Fail",
+    "video_upload_media": "Media",
     "performance_compatibility": "Prestasi & Keserasian",
     "performance_mode": "Mod Prestasi",
     "performance_mode_desc": "Lumpuhkan kabur, bayang-bayang tebal & animasi",
@@ -604,5 +608,23 @@
     "continue_to_files": "Teruskan ke fail",
     "browser_note": "Kandungan tajaan dibuka dalam penyemak imbas anda. Anda hanya melihat pintu masuk ini sekali sahaja.",
     "close_ad": "Tutup iklan"
+  },
+  "supporter_offer": {
+    "eyebrow": "Sokong Telegram Drive",
+    "ad_dismissed_title": "Bosan dengan iklan? Bayar $5 sekali sahaja untuk hentikan semua iklan!",
+    "upload_completed_title": "Suka muat naik yang lancar? Kekalkan Telegram Drive tanpa iklan",
+    "download_completed_title": "Muat turun anda siap—pastikan pemindahan seterusnya tanpa iklan",
+    "close_label": "Tutup tawaran penyokong",
+    "price": "$5",
+    "price_suffix": "USD sekali sahaja",
+    "description": "Satu bayaran yang disahkan membuang semua iklan penaja daripada Telegram Drive seumur hidup—tanpa langganan dan caj berulang.",
+    "free_features": "Semua ciri kekal percuma sama ada anda menyokong atau tidak.",
+    "benefit_lifetime": "Tiada iklan penaja seumur hidup",
+    "benefit_devices": "Aktifkan sehingga 3 peranti yang disokong",
+    "benefit_updates": "Kemas kini biasa mengekalkan pengaktifan",
+    "project_support": "Sokongan sekali anda membantu membiayai penyelenggaraan dan pembangunan berterusan.",
+    "privacy_note": "PayPal mengendalikan bayaran. Telegram Drive tidak menerima atau menyimpan butiran kad atau e-mel PayPal anda.",
+    "secondary_action": "Bukan sekarang",
+    "primary_action": "Lihat butiran penyokong"
   }
 }

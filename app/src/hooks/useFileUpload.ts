@@ -14,6 +14,7 @@ import { triggerHaptic } from '../services/feedback';
 import { isTransientNetworkError, restoreUploadQueue, serializeUploadQueue } from '../services/transferQueuePolicy';
 import { announceSupporterValueMoment } from '../services/supporterVisibility';
 import { invalidateFolderFileQueries } from '../services/fileListRefresh';
+import { effectiveVideoUploadMode } from '../services/videoUploadMode';
 import {
     clearTerminalTransfers,
     configureDesktopTransferLimits,
@@ -341,6 +342,7 @@ export function useFileUpload(
                     protectionMode: protection.mode,
                     promptToken: protection.promptToken,
                     protectMetadata: protection.protectMetadata ?? settings.encryptionProtectMetadata,
+                    videoUploadMode: item.videoUploadMode ?? 'file',
                 });
             } else {
                 await invoke('cmd_upload_file', {
@@ -350,6 +352,7 @@ export function useFileUpload(
                     protectionMode: protection.mode,
                     promptToken: protection.promptToken,
                     protectMetadata: protection.protectMetadata ?? settings.encryptionProtectMetadata,
+                    videoUploadMode: item.videoUploadMode ?? 'file',
                 });
             }
             // Check if cancelled during upload
@@ -495,6 +498,11 @@ export function useFileUpload(
             folderId: destinationFolderId,
             status: 'pending' as const,
             protection: protection[index],
+            videoUploadMode: effectiveVideoUploadMode(
+                paths[index],
+                protection[index],
+                settings.videoUploadMode,
+            ),
         }));
         await enqueueUploadItems(newItems);
         toast.info(t('notifications.uploads_queued', { count: paths.length }));
@@ -740,6 +748,10 @@ export function useFileUpload(
             folderId: folderId,
             status: 'pending' as const,
             protection: protection[0],
+            // The response may reveal a video filename via Content-Disposition
+            // even when the URL itself has no extension. Rust applies this
+            // preference only after it knows the downloaded file's real name.
+            videoUploadMode: protection[0].mode === 'standard' ? settings.videoUploadMode : 'file',
         };
         await enqueueUploadItems([item]);
         toast.info(`Queued remote upload from URL`);

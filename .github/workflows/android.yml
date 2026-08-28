@@ -10,7 +10,7 @@ permissions:
 jobs:
   build-android:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     env:
       NDK_VERSION: 30.0.14904198
       HAS_ANDROID_SIGNING_KEY: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
@@ -50,6 +50,7 @@ jobs:
             'emulator' \
             'system-images;android-36;google_apis;x86_64' \
             'system-images;android-36;google-tv;x86_64' \
+            'system-images;android-24;google_apis;x86_64' \
             "ndk;${NDK_VERSION}"
           echo "NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
@@ -57,6 +58,21 @@ jobs:
       - name: Install frontend dependencies
         working-directory: app
         run: npm ci
+
+      - name: Verify Android behavior and protected ad/supporter contracts
+        working-directory: app
+        run: >-
+          npm test -- --run
+          tests/unit/AndroidAdsterraBanner.test.tsx
+          tests/unit/MobileMediaPlayer.test.tsx
+          tests/unit/MobileSupporterCard.test.tsx
+          tests/unit/SupporterContext.test.tsx
+          tests/unit/androidTransferPolicy.test.ts
+          tests/unit/files.test.ts
+          tests/unit/releaseGates.test.ts
+          tests/unit/sponsorLinks.test.ts
+          tests/unit/supporterVisibility.test.ts
+          tests/unit/tvSpatialNavigation.test.ts
 
       - name: Reproduce Android project inputs
         working-directory: app
@@ -122,6 +138,21 @@ jobs:
           ORG_GRADLE_PROJECT_telegramDrive_requireReleaseSigning: ${{ env.PRODUCTION_ANDROID_BUILD }}
         run: npm run tauri android build -- --target aarch64 armv7 i686 x86_64 --apk true --aab true --ci
 
+      - name: Build smaller ABI-specific APKs
+        working-directory: app/src-tauri/gen/android
+        env:
+          ORG_GRADLE_PROJECT_telegramDrive_requireReleaseSigning: ${{ env.PRODUCTION_ANDROID_BUILD }}
+        run: >-
+          ./gradlew
+          :app:assembleArm64Release
+          :app:assembleArmRelease
+          :app:assembleX86Release
+          :app:assembleX86_64Release
+          -x :app:rustBuildArm64Release
+          -x :app:rustBuildArmRelease
+          -x :app:rustBuildX86Release
+          -x :app:rustBuildX86_64Release
+
       - name: Verify JNI methods survived R8
         working-directory: app
         run: npm run android:jni:check -- --generated --r8-seeds src-tauri/gen/android/app/build/outputs/mapping/universalRelease/seeds.txt
@@ -142,6 +173,13 @@ jobs:
           ANDROID_AVD_HOME: ${{ runner.temp }}/telegram-drive-phone-avd
         run: bash scripts/run-android-emulator-tests.sh phone
 
+      - name: Run minimum-supported Android instrumentation tests
+        working-directory: app
+        env:
+          ANDROID_EMULATOR_API: '24'
+          ANDROID_AVD_HOME: ${{ runner.temp }}/telegram-drive-phone-api24-avd
+        run: bash scripts/run-android-emulator-tests.sh phone
+
       - name: Run Google TV instrumentation tests
         working-directory: app
         env:
@@ -159,6 +197,8 @@ jobs:
             app/src-tauri/gen/android/app/build/outputs/androidTest-results/
             ${{ runner.temp }}/telegram-drive-phone-avd/*.txt
             ${{ runner.temp }}/telegram-drive-phone-avd/*.log
+            ${{ runner.temp }}/telegram-drive-phone-api24-avd/*.txt
+            ${{ runner.temp }}/telegram-drive-phone-api24-avd/*.log
             ${{ runner.temp }}/telegram-drive-google-tv-avd/*.txt
             ${{ runner.temp }}/telegram-drive-google-tv-avd/*.log
           if-no-files-found: warn

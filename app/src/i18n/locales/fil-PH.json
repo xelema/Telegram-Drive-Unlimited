@@ -172,6 +172,10 @@
     "max_downloads_desc": "Max parallel downloads",
     "zip_before_upload": "I-zip ang Mga Folder Bago Mag-upload",
     "zip_folders_desc": "I-compress ang mga folder sa .zip bago i-upload",
+    "video_upload_default": "Default na pag-upload ng video",
+    "video_upload_desc": "Pinapagana ng Media ang mga preview sa Telegram para sa MP4, M4V, at MOV. Palaging File ang gamit ng mga protektadong video.",
+    "video_upload_file": "Dokumento",
+    "video_upload_media": "Midya",
     "performance_compatibility": "Pagganap at Pagkatugma",
     "performance_mode": "Mode ng Pagganap",
     "performance_mode_desc": "Huwag paganahin ang blur, mabibigat na anino at animation",
@@ -604,5 +608,23 @@
     "continue_to_files": "Magpatuloy sa mga file",
     "browser_note": "Nagbubukas ang naka-sponsor na nilalaman sa iyong browser. Isang beses mo lang makikita ang gateway na ito.",
     "close_ad": "Isara ang ad"
+  },
+  "supporter_offer": {
+    "eyebrow": "Suportahan ang Telegram Drive",
+    "ad_dismissed_title": "Sawà ka na ba sa mga ad? Magbayad ng $5 nang isang beses para mawala ang lahat ng ad!",
+    "upload_completed_title": "Gusto mo ang maayos na upload? Panatilihing walang ad ang Telegram Drive",
+    "download_completed_title": "Handa na ang download—panatilihing walang ad ang mga susunod na transfer",
+    "close_label": "Isara ang alok sa supporter",
+    "price": "US$5",
+    "price_suffix": "USD isang beses",
+    "description": "Isang beripikadong bayad ang permanenteng nag-aalis ng lahat ng sponsor ad sa Telegram Drive—walang subscription at walang paulit-ulit na singil.",
+    "free_features": "Mananatiling libre ang lahat ng feature, sumuporta ka man o hindi.",
+    "benefit_lifetime": "Walang sponsor ad habambuhay",
+    "benefit_devices": "I-activate ang hanggang 3 suportadong device",
+    "benefit_updates": "Nananatili ang activation sa karaniwang update",
+    "project_support": "Ang minsanang suporta mo ay tumutulong pondohan ang patuloy na maintenance at development.",
+    "privacy_note": "PayPal ang nagpoproseso ng bayad. Hindi tinatanggap o iniimbak ng Telegram Drive ang card details o PayPal email mo.",
+    "secondary_action": "Hindi muna",
+    "primary_action": "Tingnan ang detalye ng supporter"
   }
 }

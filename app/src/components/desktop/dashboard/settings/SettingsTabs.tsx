@@ -184,7 +184,7 @@ function SettingsSyncSection({
 }
 
 export function SupporterSettingsSection() {
-  const { status, beginCheckout, pollCheckout, activate, refreshEntitlement } = useSupporter();
+  const { status, latestRecoveryCode, beginCheckout, pollCheckout, activate, refreshEntitlement } = useSupporter();
   const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [checkoutPending, setCheckoutPending] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -192,9 +192,9 @@ export function SupporterSettingsSection() {
   const [newRecoveryCode, setNewRecoveryCode] = useState('');
   const termsUrl = status.terms_url ?? 'https://github.com/caamer20/Telegram-Drive/blob/main/SUPPORTER_TERMS.md';
   const supportUrl = 'https://github.com/caamer20/Telegram-Drive/issues/new/choose';
-  const canPurchase = shouldOfferNewSupporterPurchase(status);
+  const canPurchase = shouldOfferNewSupporterPurchase(status) && !status.checkout_pending;
   const canRefresh = ['active', 'needs_refresh', 'expired'].includes(status.state);
-  const canRestore = !status.ad_free && !['loading', 'unavailable', 'revoked'].includes(status.state);
+  const canRestore = !status.ad_free && !status.checkout_pending && !['loading', 'unavailable', 'revoked'].includes(status.state);
   const isReturningSupporter = !status.ad_free && !canPurchase
     && (status.state === 'expired' || status.recovery_code_saved);
   const statusTitle = status.state === 'loading'
@@ -227,10 +227,8 @@ export function SupporterSettingsSection() {
   };
 
   useEffect(() => {
-    if (!checkoutPending) return;
-    const interval = window.setInterval(() => void checkPayment(true), 3_000);
-    return () => window.clearInterval(interval);
-  }, [checkoutPending]);
+    setCheckoutPending(Boolean(status.checkout_pending) && !status.ad_free);
+  }, [status.ad_free, status.checkout_pending]);
 
   const startCheckout = async () => {
     setBusy(true);
@@ -324,10 +322,10 @@ export function SupporterSettingsSection() {
         </div>
       )}
 
-      {newRecoveryCode && (
+      {(newRecoveryCode || latestRecoveryCode) && (
         <div className="mt-4 rounded-lg border border-app-warning/30 bg-app-warning/5 p-3 text-xs leading-5 text-app-text-secondary">
           <strong className="text-app-text">Save this recovery code now</strong>
-          <code className="mt-2 block select-all break-all rounded bg-app-surface-sunken px-3 py-2 font-mono text-sm text-app-text">{newRecoveryCode}</code>
+          <code className="mt-2 block select-all break-all rounded bg-app-surface-sunken px-3 py-2 font-mono text-sm text-app-text">{newRecoveryCode || latestRecoveryCode}</code>
           <p className="mt-2">It is stored in this device’s secure credential manager, but you should also keep an offline copy. Telegram Drive does not store your email and cannot reconstruct a lost code.</p>
         </div>
       )}

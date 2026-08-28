@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { DownloadItem, QueueItem } from '../types';
+import type { VideoUploadMode } from '../types/settings';
 
 export type TransferDirection = 'upload' | 'download';
 export type TransferKind = 'local_upload' | 'url_upload' | 'download';
@@ -32,6 +33,7 @@ export interface DesktopTransferJob {
     savePath?: string;
     protectionMode?: string;
     protectMetadata?: boolean;
+    videoUploadMode?: VideoUploadMode;
     tempZipPath?: string;
     progress: number;
     transferredBytes: number;
@@ -58,6 +60,7 @@ export interface DesktopTransferRequest {
     protectionMode?: string;
     promptToken?: number;
     protectMetadata?: boolean;
+    videoUploadMode?: VideoUploadMode;
     tempZipPath?: string;
     totalBytes?: number;
     initialStatus?: TransferStatus;
@@ -93,6 +96,7 @@ export const transferJobToUploadItem = (job: DesktopTransferJob): QueueItem => (
         mode: job.protectionMode as NonNullable<QueueItem['protection']>['mode'],
         protectMetadata: job.protectMetadata,
     } : undefined,
+    videoUploadMode: job.videoUploadMode,
 });
 
 export const transferJobToDownloadItem = (job: DesktopTransferJob): DownloadItem => ({
@@ -121,6 +125,7 @@ export const uploadItemToTransferRequest = (item: QueueItem): DesktopTransferReq
     protectionMode: item.protection?.mode,
     promptToken: item.protection?.promptToken,
     protectMetadata: item.protection?.protectMetadata,
+    videoUploadMode: item.videoUploadMode,
     tempZipPath: item.tempZipPath,
     totalBytes: item.totalBytes,
     initialStatus: normalizeInitialStatus(item.status),

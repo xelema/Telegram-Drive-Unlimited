@@ -11,6 +11,8 @@ import {
 
 interface AdsterraBannerProps {
   visible: boolean;
+  onSupport?: () => void;
+  onManualDismiss?: () => void;
 }
 
 const DISMISSED_AT_KEY = 'adBannerDismissedAt';
@@ -26,7 +28,7 @@ function parseDismissedAt(value: unknown): number | null {
 }
 
 /** Clickable sponsor banner for Android. The offer always opens in an external browser. */
-export default function AdsterraBanner({ visible }: AdsterraBannerProps) {
+export default function AdsterraBanner({ visible, onSupport, onManualDismiss }: AdsterraBannerProps) {
   const { isAndroid, isTelevision } = usePlatform();
   const { status: supporterStatus } = useSupporter();
   const dismissAnimationRef = useRef<number | null>(null);
@@ -112,8 +114,9 @@ export default function AdsterraBanner({ visible }: AdsterraBannerProps) {
       setDismissedAt(timestamp);
       setExiting(false);
       dismissAnimationRef.current = null;
+      onManualDismiss?.();
     }, 300);
-  }, []);
+  }, [onManualDismiss]);
 
   // Don't render until store check completes, or while the recurrence cooldown is active.
   // Using !loaded prevents a flash on restart when a dismissal was persisted.
@@ -139,11 +142,21 @@ export default function AdsterraBanner({ visible }: AdsterraBannerProps) {
     >
       <button
         onClick={handleClick}
-        className="quiet-control flex flex-1 items-center justify-center gap-2 px-4 py-2.5 text-metadata font-medium text-app-text-secondary hover:bg-app-hover hover:text-app-text"
+        className="quiet-control flex min-w-0 flex-1 items-center justify-center gap-2 px-3 py-2.5 text-metadata font-medium text-app-text-secondary hover:bg-app-hover hover:text-app-text"
       >
         <ExternalLink className="h-3 w-3 text-app-accent" />
         <span className="sponsored-label border-0">{isTelevision ? 'Sponsored — View offer' : 'Sponsored'}</span>
       </button>
+      {onSupport && (
+        <button
+          type="button"
+          onClick={(event) => { event.preventDefault(); event.stopPropagation(); onSupport(); }}
+          className="quiet-control me-9 shrink-0 border-s border-app-border-subtle px-3 py-2 text-[10px] font-semibold text-app-accent hover:bg-app-selected"
+          aria-label="Remove ads forever for $5 once"
+        >
+          Ad-free · $5 once
+        </button>
+      )}
       <button
         onClick={handleDismiss}
         className="quiet-control absolute end-1 top-1/2 -translate-y-1/2 p-1.5 text-app-text-secondary hover:text-app-text"

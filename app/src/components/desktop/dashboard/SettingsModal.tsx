@@ -704,7 +704,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                         <div className="flex min-h-16 items-center justify-between border-b border-app-border-subtle px-6 py-4">
                             <div>
                                 <h2 id="settings-dialog-title" className="text-base font-semibold text-app-text">{t('settings.title')}</h2>
-                                <p className="mt-0.5 text-xs text-app-text-tertiary">{activeTab === 'privacy' ? 'Privacy & crash reporting' : activeTab === 'advanced' ? 'Advanced connections and integrations' : t(`settings.tab_${activeTab}`)}</p>
+                                <p className="mt-0.5 text-xs text-app-text-tertiary">{activeTab === 'privacy' ? 'Privacy, crash reporting & supporter license' : activeTab === 'advanced' ? 'Advanced connections and integrations' : t(`settings.tab_${activeTab}`)}</p>
                             </div>
                             <button
                                 onClick={onClose}
@@ -723,7 +723,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                             </div>
                             {([
                                 ['Essentials', [['general', Globe, 'General transfers language updates'], ['themes', Palette, 'Appearance colors themes']] as const],
-                                ['Security & Privacy', [['privacy', Bug, 'Privacy telemetry crash reports consent'], ['encryption', Shield, 'Encryption vault security auto lock']] as const],
+                                ['Security & Privacy', [['privacy', Bug, 'Privacy telemetry crash reports consent supporter lifetime ad-free ads $5 PayPal recovery'], ['encryption', Shield, 'Encryption vault security auto lock']] as const],
                                 ['Connections', [['sync', FolderSync, 'Folder sync local directories Telegram channels'], ['sharing', Link, 'Sharing links local server']] as const],
                                 ['Advanced', [['advanced', Gauge, 'REST API proxy VPN WebDAV network integration Finder token port']] as const],
                                 ['Support', [['about', Info, 'About diagnostics version updates']] as const],
@@ -773,6 +773,23 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                                 />
 
                                 <SettingsRow icon={<FolderArchive className="h-4 w-4 text-telegram-subtext" />} title={t('settings.zip_before_upload')} description={t('settings.zip_folders_desc')} control={<SettingsToggle checked={settings.zipFolders} label={t('settings.zip_before_upload')} onChange={() => updateSetting('zipFolders', !settings.zipFolders)} />} />
+
+                                <SettingsRow
+                                    icon={<Play className="h-4 w-4 text-telegram-subtext" />}
+                                    title={t('settings.video_upload_default')}
+                                    description={t('settings.video_upload_desc')}
+                                    control={(
+                                        <select
+                                            value={settings.videoUploadMode}
+                                            onChange={event => updateSetting('videoUploadMode', event.target.value as 'file' | 'media')}
+                                            aria-label={t('settings.video_upload_default')}
+                                            className="rounded-md border border-telegram-border bg-telegram-bg px-2.5 py-1.5 text-sm text-telegram-text focus:border-telegram-primary/50 focus:outline-none"
+                                        >
+                                            <option value="file">{t('settings.video_upload_file')}</option>
+                                            <option value="media">{t('settings.video_upload_media')}</option>
+                                        </select>
+                                    )}
+                                />
 
                                 <SettingsRow icon={<Tag className="h-4 w-4 text-telegram-subtext" />} title={t('common.hide_groups')} description={t('common.hide_groups_desc')} control={<SettingsToggle checked={settings.hideGroups} label={t('common.hide_groups')} onChange={() => updateSetting('hideGroups', !settings.hideGroups)} />} />
 

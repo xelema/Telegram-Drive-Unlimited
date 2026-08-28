@@ -8,6 +8,7 @@ export const DEFAULT_SETTINGS: Settings = {
   maxConcurrentUploads: 6,
   maxConcurrentDownloads: 6,
   zipFolders: true,
+  videoUploadMode: 'file',
   language: 'system',
   crashReportingEnabled: false,
   crashReportingConsentSeen: false,

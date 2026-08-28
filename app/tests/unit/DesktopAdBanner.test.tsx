@@ -25,7 +25,8 @@ describe('DesktopAdBanner', () => {
   });
 
   it('starts its countdown after the creative loads and returns after 15 minutes', async () => {
-    render(<DesktopAdBanner />);
+    const onManualDismiss = vi.fn();
+    render(<DesktopAdBanner onManualDismiss={onManualDismiss} />);
     const iframe = screen.getByTitle('Sponsored advertisement') as HTMLIFrameElement;
 
     expect(screen.getByText('Loading…')).toBeTruthy();
@@ -47,6 +48,7 @@ describe('DesktopAdBanner', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(200); });
     expect(screen.queryByRole('complementary')).toBeNull();
     expect(localStorage.getItem('desktopAdDismissedAt')).not.toBeNull();
+    expect(onManualDismiss).not.toHaveBeenCalled();
 
     await act(async () => { await vi.advanceTimersByTimeAsync(14 * 60 * 1000); });
     expect(screen.queryByRole('complementary')).toBeNull();
@@ -54,14 +56,14 @@ describe('DesktopAdBanner', () => {
     expect(screen.getByRole('complementary')).toBeTruthy();
   });
 
-  it('renders the isolated provider frame without a manual close button', async () => {
+  it('renders the isolated provider frame with ad-free and manual-dismiss actions', async () => {
     render(<DesktopAdBanner onSupport={() => {}} />);
     const iframe = screen.getByTitle('Sponsored advertisement');
 
     expect(iframe.getAttribute('src')).toContain('http://localhost:14201/ad-banner?cycle=');
     expect(iframe.getAttribute('sandbox')).toBe('allow-scripts allow-same-origin');
-    expect(screen.queryByRole('button', { name: /dismiss|close ad/i })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Support development and hide ads' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /close ad/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Remove ads forever for $5 once' })).toBeTruthy();
 
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Open sponsored content in browser' }));
@@ -76,7 +78,18 @@ describe('DesktopAdBanner', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(12_000); });
     expect(screen.getByText('Sponsored content unavailable')).toBeTruthy();
     expect(screen.getByText('Closes in 10s')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /dismiss|close ad/i })).toBeNull();
+    expect(screen.getByRole('button', { name: /close ad/i })).toBeTruthy();
+  });
+
+  it('reports only a manual dismissal after its exit animation', async () => {
+    const onManualDismiss = vi.fn();
+    render(<DesktopAdBanner onManualDismiss={onManualDismiss} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /close ad/i }));
+    expect(onManualDismiss).not.toHaveBeenCalled();
+    await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+
+    expect(onManualDismiss).toHaveBeenCalledOnce();
   });
 
   it('accepts load messages only from its loopback ad frame', () => {

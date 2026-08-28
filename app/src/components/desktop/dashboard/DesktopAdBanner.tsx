@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { Heart } from 'lucide-react';
+import { Heart, X } from 'lucide-react';
 import { useSupporter } from '../../../context/SupporterContext';
 import { openSponsorLink } from '../../../services/sponsorLinks';
 import {
@@ -19,6 +19,7 @@ type AdLoadStatus = 'loading' | 'loaded' | 'fallback';
 interface DesktopAdBannerProps {
   suppressed?: boolean;
   onSupport?: () => void;
+  onManualDismiss?: () => void;
   previewContent?: ReactNode;
 }
 
@@ -39,11 +40,13 @@ function saveDismissedAt(timestamp: number): void {
   }
 }
 
-export function DesktopAdBanner({ suppressed = false, onSupport, previewContent }: DesktopAdBannerProps) {
+export function DesktopAdBanner({ suppressed = false, onSupport, onManualDismiss, previewContent }: DesktopAdBannerProps) {
   const { status: supporterStatus } = useSupporter();
   const isPreview = previewContent !== undefined;
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const sessionDismissedAtRef = useRef<number | null>(null);
+  const dismissTimerRef = useRef<number | null>(null);
+  const dismissingRef = useRef(false);
   const [visible, setVisible] = useState(false);
   const [exiting, setExiting] = useState(false);
   const [countdown, setCountdown] = useState(AUTO_DISMISS_SECONDS);
@@ -74,16 +77,25 @@ export function DesktopAdBanner({ suppressed = false, onSupport, previewContent 
     };
   }, [eligible, isPreview, visible]);
 
-  const dismiss = useCallback(() => {
+  const dismiss = useCallback((manual = false) => {
+    if (dismissingRef.current) return;
+    dismissingRef.current = true;
     const dismissedAt = Date.now();
     sessionDismissedAtRef.current = dismissedAt;
     saveDismissedAt(dismissedAt);
     setExiting(true);
     setCountdown(0);
-    window.setTimeout(() => {
+    dismissTimerRef.current = window.setTimeout(() => {
       setVisible(false);
       setExiting(false);
+      dismissingRef.current = false;
+      dismissTimerRef.current = null;
+      if (manual) onManualDismiss?.();
     }, 200);
+  }, [onManualDismiss]);
+
+  useEffect(() => () => {
+    if (dismissTimerRef.current !== null) window.clearTimeout(dismissTimerRef.current);
   }, []);
 
   useEffect(() => {
@@ -116,7 +128,7 @@ export function DesktopAdBanner({ suppressed = false, onSupport, previewContent 
   useEffect(() => {
     if (!eligible || !visible || exiting || isPreview || loadStatus === 'loading') return;
     if (countdown <= 0) {
-      dismiss();
+      dismiss(false);
       return;
     }
     const timer = window.setTimeout(() => setCountdown(current => current - 1), 1000);
@@ -140,11 +152,9 @@ export function DesktopAdBanner({ suppressed = false, onSupport, previewContent 
         <span className="min-w-0 flex-1 truncate text-metadata text-app-text-secondary">
           {loadStatus === 'loading' ? 'Loading…' : `Closes in ${countdown}s`}
         </span>
-        {onSupport && (
-          <button type="button" onClick={onSupport} className="quiet-control p-1.5 text-app-accent" aria-label="Support development and hide ads">
-            <Heart className="h-3.5 w-3.5" />
-          </button>
-        )}
+        <button type="button" onClick={() => dismiss(true)} className="quiet-control p-1.5 text-app-text-secondary hover:text-app-text" aria-label="Close ad">
+          <X className="h-3.5 w-3.5" />
+        </button>
       </header>
 
       <button
@@ -182,6 +192,13 @@ export function DesktopAdBanner({ suppressed = false, onSupport, previewContent 
           </>
         )}
       </button>
+
+      {onSupport && (
+        <button type="button" onClick={onSupport} className="flex w-full items-center justify-center gap-2 border-t border-app-border-subtle bg-app-selected/40 px-3 py-2.5 text-xs font-semibold text-app-accent hover:bg-app-selected" aria-label="Remove ads forever for $5 once">
+          <Heart className="h-3.5 w-3.5" aria-hidden="true" />
+          Remove ads forever · $5 once
+        </button>
+      )}
 
       <div aria-live="polite" className="sr-only">
         {loadStatus === 'loading' ? 'Advertisement loading' : `Advertisement closes in ${countdown} seconds`}

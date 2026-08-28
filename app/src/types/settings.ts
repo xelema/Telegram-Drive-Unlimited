@@ -1,5 +1,7 @@
 import type { LanguagePreference } from '../i18n/languages';
 
+export type VideoUploadMode = 'file' | 'media';
+
 export interface Settings {
   viewMode: 'grid' | 'list';
   fileSortField: 'name' | 'size' | 'date';
@@ -8,6 +10,7 @@ export interface Settings {
   maxConcurrentUploads: number;
   maxConcurrentDownloads: number;
   zipFolders: boolean;
+  videoUploadMode: VideoUploadMode;
   language: LanguagePreference;
   crashReportingEnabled: boolean;
   crashReportingConsentSeen: boolean;

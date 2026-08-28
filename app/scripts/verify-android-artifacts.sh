@@ -44,6 +44,11 @@ trap 'rm -rf "$temp_dir"' EXIT
 unzip -Z1 "$apk_path" > "$temp_dir/apk-entries.txt"
 unzip -Z1 "$aab_path" > "$temp_dir/aab-entries.txt"
 
+grep -Eq '(^|/)baseline\.prof$' "$temp_dir/apk-entries.txt" || {
+  echo "APK is missing the compiled Baseline Profile." >&2
+  exit 1
+}
+
 for abi in "${abis[@]}"; do
   grep -q "lib/$abi/.*\.so" "$temp_dir/apk-entries.txt" || {
     echo "APK is missing native libraries for $abi" >&2

@@ -13,7 +13,7 @@ use crate::models::{FileMetadata, FolderMetadata};
 use crate::vpn_optimizer::{backoff_ms, NetworkConfig};
 use crate::TelegramState;
 use base64::Engine;
-use grammers_client::types::{Media, Peer};
+use grammers_client::types::{Attribute, Media, Peer};
 use grammers_client::InputMessage;
 use grammers_tl_types as tl;
 use serde::{Deserialize, Serialize};
@@ -92,6 +92,103 @@ enum UploadProtectionMode {
     Vault,
     Passphrase,
     VaultAndPassphrase,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VideoUploadMode {
+    File,
+    Media,
+}
+
+impl VideoUploadMode {
+    fn parse(value: Option<&str>) -> Result<Self, String> {
+        match value.unwrap_or("file") {
+            "file" => Ok(Self::File),
+            "media" => Ok(Self::Media),
+            _ => Err("[POLICY_REJECTED] Unknown video upload mode".to_string()),
+        }
+    }
+}
+
+struct VideoUploadMetadata {
+    duration: std::time::Duration,
+    width: i32,
+    height: i32,
+    mime_type: &'static str,
+}
+
+fn is_mp4_family_video(path: &str) -> bool {
+    matches!(
+        std::path::Path::new(path)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "mp4" | "m4v" | "mov"
+    )
+}
+
+async fn prepare_video_upload_metadata(
+    source_path: &str,
+    upload_name: &str,
+    mode: VideoUploadMode,
+) -> Result<Option<VideoUploadMetadata>, String> {
+    if mode == VideoUploadMode::File || !is_mp4_family_video(upload_name) {
+        return Ok(None);
+    }
+
+    let source_path = source_path.to_string();
+    let parsed = tokio::task::spawn_blocking(move || {
+        let mut source = std::fs::File::open(&source_path).map_err(|error| {
+            format!("Could not open the video for metadata inspection: {error}")
+        })?;
+        let context = mp4parse::read_mp4(&mut source)
+            .map_err(|error| format!("Could not read MP4 video metadata: {error}"))?;
+        let track = context
+            .tracks
+            .iter()
+            .find(|track| track.track_type == mp4parse::TrackType::Video)
+            .ok_or_else(|| "The selected file does not contain a video track".to_string())?;
+
+        let duration_secs = match (track.duration.as_ref(), track.timescale.as_ref()) {
+            (Some(duration), Some(timescale)) if timescale.0 > 0 => {
+                duration.0 as f64 / timescale.0 as f64
+            }
+            _ => 0.0,
+        };
+        let track_header = track
+            .tkhd
+            .as_ref()
+            .ok_or_else(|| "The video does not contain display dimensions".to_string())?;
+        let mut width = track_header.width >> 16;
+        let mut height = track_header.height >> 16;
+        if track_header.matrix.b != 0 || track_header.matrix.c != 0 {
+            std::mem::swap(&mut width, &mut height);
+        }
+        if width == 0 || height == 0 {
+            return Err("The video has invalid display dimensions".to_string());
+        }
+        Ok::<_, String>((duration_secs, width, height))
+    })
+    .await
+    .map_err(|error| format!("Video metadata inspection failed: {error}"))?
+    .map_err(|error| {
+        format!(
+            "[VIDEO_METADATA_UNAVAILABLE] {error}. Choose File mode to upload this video without an inline preview"
+        )
+    })?;
+
+    Ok(Some(VideoUploadMetadata {
+        duration: if parsed.0.is_finite() && parsed.0 >= 0.0 {
+            std::time::Duration::from_secs_f64(parsed.0)
+        } else {
+            std::time::Duration::ZERO
+        },
+        width: i32::try_from(parsed.1).unwrap_or(i32::MAX),
+        height: i32::try_from(parsed.2).unwrap_or(i32::MAX),
+        mime_type: inferred_mime_type(upload_name),
+    }))
 }
 
 impl UploadProtectionMode {
@@ -225,7 +322,7 @@ fn inferred_mime_type(path: &str) -> &'static str {
         "gif" => "image/gif",
         "webp" => "image/webp",
         "pdf" => "application/pdf",
-        "mp4" => "video/mp4",
+        "mp4" | "m4v" => "video/mp4",
         "mov" => "video/quicktime",
         "mp3" => "audio/mpeg",
         "wav" => "audio/wav",
@@ -752,7 +849,27 @@ pub async fn cmd_stage_android_upload(
                 format!("Unable to create Android upload staging directory: {error}")
             })?;
         let destination = destination_directory.join(file_name);
-        if let Err(error) = tokio::fs::copy(&copied_path, &destination).await {
+        // Content URIs are first materialized in the app cache. Cache and app
+        // data normally share a filesystem, so an atomic rename avoids reading
+        // and writing the entire upload twice. Preserve the copy fallback for
+        // OEMs that place these directories on different filesystems.
+        let preserve_result = if remove_intermediate {
+            match tokio::fs::rename(&copied_path, &destination).await {
+                Ok(()) => Ok(()),
+                Err(_) => match tokio::fs::copy(&copied_path, &destination).await {
+                    Ok(_) => {
+                        let _ = tokio::fs::remove_file(&copied_path).await;
+                        Ok(())
+                    }
+                    Err(error) => Err(error),
+                },
+            }
+        } else {
+            tokio::fs::copy(&copied_path, &destination)
+                .await
+                .map(|_| ())
+        };
+        if let Err(error) = preserve_result {
             if remove_intermediate {
                 let _ = tokio::fs::remove_file(&copied_path).await;
             }
@@ -760,9 +877,6 @@ pub async fn cmd_stage_android_upload(
             return Err(format!(
                 "Unable to preserve the Android upload for recovery: {error}"
             ));
-        }
-        if remove_intermediate {
-            let _ = tokio::fs::remove_file(&copied_path).await;
         }
         let staged_size = tokio::fs::metadata(&destination)
             .await
@@ -1279,7 +1393,7 @@ fn publish_verified_android_download(
     }
 }
 
-fn initialize_tdenc2_decryptor(
+pub(crate) fn initialize_tdenc2_decryptor(
     header_bytes: &[u8],
     vault_key: Option<&SecretKey>,
     prompt_passphrase: Option<&SecretBytes>,
@@ -1507,6 +1621,7 @@ pub async fn cmd_upload_file(
     protection_mode: Option<String>,
     prompt_token: Option<u64>,
     protect_metadata: Option<bool>,
+    video_upload_mode: Option<String>,
     app_handle: tauri::AppHandle,
     state: State<'_, TelegramState>,
     bw_state: State<'_, Arc<BandwidthManager>>,
@@ -1547,6 +1662,7 @@ pub async fn cmd_upload_file(
         protection_mode,
         prompt_token,
         protect_metadata,
+        video_upload_mode,
         app_handle,
         state,
         bw_state,
@@ -1572,6 +1688,7 @@ async fn cmd_upload_file_inner(
     protection_mode: Option<String>,
     prompt_token: Option<u64>,
     protect_metadata: Option<bool>,
+    video_upload_mode: Option<String>,
     app_handle: tauri::AppHandle,
     state: State<'_, TelegramState>,
     bw_state: State<'_, Arc<BandwidthManager>>,
@@ -1584,6 +1701,7 @@ async fn cmd_upload_file_inner(
         .map_err(|e| e.to_string())?
         .len();
     let protection_mode = UploadProtectionMode::parse(protection_mode.as_deref())?;
+    let video_upload_mode = VideoUploadMode::parse(video_upload_mode.as_deref())?;
     let is_encrypted = protection_mode != UploadProtectionMode::Standard;
 
     // --- Encrypted upload path ---
@@ -1614,6 +1732,14 @@ async fn cmd_upload_file_inner(
 
     // --- Standard upload path (unchanged) ---
     let size = plaintext_size;
+    let file_name = std::path::Path::new(&path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".to_string());
+    // Inspect metadata before reserving transfer quota so a malformed video
+    // cannot strand a bandwidth reservation.
+    let video_metadata =
+        prepare_video_upload_metadata(&path, &file_name, video_upload_mode).await?;
     bw_state.try_reserve_up(size)?;
 
     let tid = transfer_id.unwrap_or_default();
@@ -1649,11 +1775,6 @@ async fn cmd_upload_file_inner(
         ProgressReader::new(&path).await.inspect_err(|_| {
             bw_state.release_up(size);
         })?;
-    let file_name = std::path::Path::new(&path)
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "file".to_string());
-
     // Spawn a progress reporter task that emits events every 250ms
     let cancelled = state.cancelled_transfers.clone();
     let progress_tid = tid.clone();
@@ -1756,7 +1877,20 @@ async fn cmd_upload_file_inner(
     }
 
     let uploaded_file = upload_result.map_err(map_error)?;
-    let message = InputMessage::new().text("").file(uploaded_file);
+    let message = match video_metadata {
+        Some(video) => InputMessage::new()
+            .text("")
+            .mime_type(video.mime_type)
+            .document(uploaded_file)
+            .attribute(Attribute::Video {
+                round_message: false,
+                supports_streaming: true,
+                duration: video.duration,
+                w: video.width,
+                h: video.height,
+            }),
+        None => InputMessage::new().text("").file(uploaded_file),
+    };
 
     let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
 
@@ -2229,6 +2363,7 @@ pub async fn initiate_upload(
     protection_mode: Option<String>,
     prompt_token: Option<u64>,
     protect_metadata: Option<bool>,
+    video_upload_mode: Option<String>,
     app_handle: tauri::AppHandle,
     state: State<'_, TelegramState>,
     bw_state: State<'_, Arc<BandwidthManager>>,
@@ -2244,6 +2379,7 @@ pub async fn initiate_upload(
         protection_mode,
         prompt_token,
         protect_metadata,
+        video_upload_mode,
         app_handle,
         state,
         bw_state,
@@ -4790,6 +4926,7 @@ pub async fn cmd_upload_from_url(
     protection_mode: Option<String>,
     prompt_token: Option<u64>,
     protect_metadata: Option<bool>,
+    video_upload_mode: Option<String>,
     app_handle: tauri::AppHandle,
     state: State<'_, TelegramState>,
     bw_state: State<'_, Arc<BandwidthManager>>,
@@ -5167,6 +5304,13 @@ pub async fn cmd_upload_from_url(
             return Err(error);
         }
     };
+    let parsed_video_upload = match VideoUploadMode::parse(video_upload_mode.as_deref()) {
+        Ok(mode) => mode,
+        Err(error) => {
+            let _ = tokio::fs::remove_file(&temp_file_path).await;
+            return Err(error);
+        }
+    };
     if parsed_protection != UploadProtectionMode::Standard {
         let logical_name = server_filename.clone().unwrap_or_else(|| {
             reqwest::Url::parse(&url)
@@ -5211,6 +5355,7 @@ pub async fn cmd_upload_from_url(
             protection_mode,
             prompt_token,
             protect_metadata,
+            video_upload_mode,
             app_handle,
             state,
             bw_state,
@@ -5223,6 +5368,31 @@ pub async fn cmd_upload_from_url(
         let _ = tokio::fs::remove_dir(&staged_dir).await;
         return result;
     }
+
+    let file_name = server_filename.unwrap_or_else(|| {
+        reqwest::Url::parse(&url)
+            .ok()
+            .and_then(|u| {
+                u.path_segments()
+                    .and_then(|mut segs| segs.next_back())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_else(|| "remote_file".to_string())
+    });
+    let video_metadata = match prepare_video_upload_metadata(
+        &temp_file_str,
+        &file_name,
+        parsed_video_upload,
+    )
+    .await
+    {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            let _ = tokio::fs::remove_file(&temp_file_path).await;
+            return Err(error);
+        }
+    };
 
     // Reserve upload bandwidth based on the real file size (handles both known and unknown upfront)
     if let Err(e) = bw_state.try_reserve_up(actual_size) {
@@ -5328,18 +5498,6 @@ pub async fn cmd_upload_from_url(
         .insert(transfer_id.clone(), cancel_tx);
 
     let client_clone = client.clone();
-    let file_name = server_filename.unwrap_or_else(|| {
-        reqwest::Url::parse(&url)
-            .ok()
-            .and_then(|u| {
-                u.path_segments()
-                    .and_then(|mut segs| segs.next_back())
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.to_string())
-            })
-            .unwrap_or_else(|| "remote_file".to_string())
-    });
-
     let mut upload_task = tokio::spawn(async move {
         client_clone
             .upload_stream(&mut reader, file_size as usize, file_name)
@@ -5380,7 +5538,20 @@ pub async fn cmd_upload_from_url(
 
     progress_task.abort();
 
-    let message = InputMessage::new().text("").file(uploaded_file);
+    let message = match video_metadata {
+        Some(video) => InputMessage::new()
+            .text("")
+            .mime_type(video.mime_type)
+            .document(uploaded_file)
+            .attribute(Attribute::Video {
+                round_message: false,
+                supports_streaming: true,
+                duration: video.duration,
+                w: video.width,
+                h: video.height,
+            }),
+        None => InputMessage::new().text("").file(uploaded_file),
+    };
 
     let peer = match resolve_peer(&client, folder_id, &state.peer_cache).await {
         Ok(p) => p,
@@ -5459,6 +5630,19 @@ pub async fn cmd_upload_from_url(
 #[cfg(test)]
 mod hardening_tests {
     use super::*;
+
+    #[test]
+    fn video_upload_mode_is_explicit_and_file_is_the_compatible_default() {
+        assert_eq!(VideoUploadMode::parse(None).unwrap(), VideoUploadMode::File);
+        assert_eq!(
+            VideoUploadMode::parse(Some("media")).unwrap(),
+            VideoUploadMode::Media
+        );
+        assert!(VideoUploadMode::parse(Some("automatic")).is_err());
+        assert!(is_mp4_family_video("clip.MP4"));
+        assert!(is_mp4_family_video("clip.mov"));
+        assert!(!is_mp4_family_video("clip.mkv"));
+    }
 
     #[test]
     fn remote_upload_blocks_local_and_reserved_addresses() {

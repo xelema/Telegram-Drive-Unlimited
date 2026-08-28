@@ -133,6 +133,10 @@
     "max_uploads_desc": "同時アップロードの最大数",
     "max_downloads_desc": "同時ダウンロードの最大数",
     "zip_folders_desc": "アップロード前にフォルダを .zip に圧縮します",
+    "video_upload_default": "動画アップロードの既定値",
+    "video_upload_desc": "メディアでは MP4、M4V、MOV の Telegram プレビューが有効になります。保護された動画は常にファイルとして送信されます。",
+    "video_upload_file": "ファイル",
+    "video_upload_media": "メディア",
     "performance_compatibility": "パフォーマンスと互換性",
     "performance_mode_desc": "ぼかし、強い影、アニメーションを無効にします",
     "linux_rendering_desc": "DMA-BUF レンダラーを無効にします（GPU クラッシュ対策、再起動が必要）",
@@ -604,5 +608,23 @@
     "continue_to_files": "ファイルへ進む",
     "browser_note": "スポンサーコンテンツはブラウザーで開きます。この案内が表示されるのは一度だけです。",
     "close_ad": "広告を閉じる"
+  },
+  "supporter_offer": {
+    "eyebrow": "Telegram Drive をサポート",
+    "ad_dismissed_title": "広告にうんざりですか？$5 を一度支払うだけですべての広告を非表示に！",
+    "upload_completed_title": "快適なアップロードを楽しんでいますか？Telegram Drive を広告なしに",
+    "download_completed_title": "ダウンロード完了—今後の転送を広告なしに",
+    "close_label": "サポーター案内を閉じる",
+    "price": "5米ドル",
+    "price_suffix": "一度のみ",
+    "description": "確認済みの一度の支払いで、Telegram Drive のスポンサー広告が永久に削除されます。サブスクリプションや継続課金はありません。",
+    "free_features": "サポートの有無にかかわらず、すべての機能は無料です。",
+    "benefit_lifetime": "スポンサー広告を永久に非表示",
+    "benefit_devices": "対応デバイスを最大3台まで有効化",
+    "benefit_updates": "通常の更新後も有効化を維持",
+    "project_support": "一度限りの支援が、継続的な保守と開発に役立ちます。",
+    "privacy_note": "支払いは PayPal が処理します。Telegram Drive はカード情報や PayPal メールを受信・保存しません。",
+    "secondary_action": "今はしない",
+    "primary_action": "サポーターの詳細を見る"
   }
 }

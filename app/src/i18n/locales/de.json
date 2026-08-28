@@ -133,6 +133,10 @@
     "max_uploads_desc": "Max parallel uploads",
     "max_downloads_desc": "Max parallel downloads",
     "zip_folders_desc": "Compress folders into .zip before uploading",
+    "video_upload_default": "Standardmäßiger Video-Upload",
+    "video_upload_desc": "Medien aktiviert Telegram-Vorschauen für MP4, M4V und MOV. Geschützte Videos verwenden immer Datei.",
+    "video_upload_file": "Datei",
+    "video_upload_media": "Medien",
     "performance_compatibility": "Performance & Compatibility",
     "performance_mode_desc": "Disable blur, heavy shadows & animations",
     "linux_rendering_desc": "Disable DMA-BUF renderer (fixes GPU crashes, requires restart)",
@@ -604,5 +608,23 @@
     "continue_to_files": "Continue to files",
     "browser_note": "Sponsored content opens in your browser. You only see this gateway once.",
     "close_ad": "Close ad"
+  },
+  "supporter_offer": {
+    "eyebrow": "Telegram Drive unterstützen",
+    "ad_dismissed_title": "Genug von Werbung? Zahlen Sie einmalig $5 und sehen Sie nie wieder Werbung!",
+    "upload_completed_title": "Gefallen Ihnen reibungslose Uploads? Nutzen Sie Telegram Drive werbefrei",
+    "download_completed_title": "Ihr Download ist fertig – halten Sie künftige Übertragungen werbefrei",
+    "close_label": "Unterstützerangebot schließen",
+    "price": "$5",
+    "price_suffix": "USD einmalig",
+    "description": "Eine bestätigte Zahlung entfernt sämtliche Sponsorenwerbung dauerhaft aus Telegram Drive – ohne Abo und ohne wiederkehrende Kosten.",
+    "free_features": "Alle Funktionen bleiben kostenlos, unabhängig von Ihrer Unterstützung.",
+    "benefit_lifetime": "Lebenslang keine Sponsorenwerbung",
+    "benefit_devices": "Auf bis zu 3 unterstützten Geräten aktivieren",
+    "benefit_updates": "Normale Updates behalten die Aktivierung",
+    "project_support": "Ihre einmalige Unterstützung hilft, die laufende Wartung und Entwicklung zu finanzieren.",
+    "privacy_note": "PayPal verarbeitet die Zahlung. Telegram Drive erhält oder speichert weder Kartendaten noch Ihre PayPal-E-Mail-Adresse.",
+    "secondary_action": "Nicht jetzt",
+    "primary_action": "Unterstützerdetails ansehen"
   }
 }

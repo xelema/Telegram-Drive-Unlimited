@@ -1,0 +1,3 @@
+# Startup Profile rules guide R8 class layout for the application entry path.
+Lcom/cameronamer/telegramdrive/TelegramDriveApplication;
+Lcom/cameronamer/telegramdrive/MainActivity;

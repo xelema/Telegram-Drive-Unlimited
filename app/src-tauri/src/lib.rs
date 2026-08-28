@@ -1161,6 +1161,7 @@ pub fn run() {
             let handle_for_runtime = server_handle_for_setup.clone();
             let db_pool_for_server = db_pool.clone();
             let transcode_for_server = transcode_arc.clone();
+            let crypto_for_server = app.state::<crypto::state::CryptoState>().inner().clone();
             tauri::async_runtime::spawn(async move {
                 match server::start_server(
                     state,
@@ -1168,6 +1169,7 @@ pub fn run() {
                     token_for_server,
                     db_pool_for_server,
                     transcode_for_server,
+                    crypto_for_server,
                 )
                 .await
                 {

@@ -172,6 +172,10 @@
     "max_downloads_desc": "Maksymalna liczba pobrań równoległych",
     "zip_before_upload": "Spakuj foldery przed przesłaniem",
     "zip_folders_desc": "Przed przesłaniem skompresuj foldery do pliku .zip",
+    "video_upload_default": "Domyślny sposób wysyłania wideo",
+    "video_upload_desc": "Media włącza podgląd Telegrama dla MP4, M4V i MOV. Chronione filmy zawsze używają trybu Plik.",
+    "video_upload_file": "Plik",
+    "video_upload_media": "Media",
     "performance_compatibility": "Wydajność i kompatybilność",
     "performance_mode": "Tryb wydajności",
     "performance_mode_desc": "Wyłącz rozmycie, ciężkie cienie i animacje",
@@ -622,5 +626,23 @@
     "continue_to_files": "Przejdź do plików",
     "browser_note": "Treści sponsorowane otwierają się w Twojej przeglądarce. Tę bramę widzisz tylko raz.",
     "close_ad": "Zamknij reklamę"
+  },
+  "supporter_offer": {
+    "eyebrow": "Wesprzyj Telegram Drive",
+    "ad_dismissed_title": "Masz dość reklam? Zapłać $5 raz i nie oglądaj ich więcej!",
+    "upload_completed_title": "Podobają Ci się płynne wysyłania? Korzystaj z Telegram Drive bez reklam",
+    "download_completed_title": "Pobieranie gotowe — uwolnij przyszłe transfery od reklam",
+    "close_label": "Zamknij ofertę wsparcia",
+    "price": "$5",
+    "price_suffix": "USD jednorazowo",
+    "description": "Jedna zweryfikowana płatność usuwa wszystkie reklamy sponsorów z Telegram Drive na zawsze — bez subskrypcji i opłat cyklicznych.",
+    "free_features": "Wszystkie funkcje pozostają bezpłatne niezależnie od wsparcia.",
+    "benefit_lifetime": "Brak reklam sponsorów na zawsze",
+    "benefit_devices": "Aktywacja na maksymalnie 3 obsługiwanych urządzeniach",
+    "benefit_updates": "Zwykłe aktualizacje zachowują aktywację",
+    "project_support": "Twoje jednorazowe wsparcie pomaga finansować dalsze utrzymanie i rozwój.",
+    "privacy_note": "Płatność obsługuje PayPal. Telegram Drive nie otrzymuje ani nie przechowuje danych karty lub adresu PayPal.",
+    "secondary_action": "Nie teraz",
+    "primary_action": "Zobacz szczegóły wsparcia"
   }
 }

@@ -1,3 +1,36 @@
+## [3.7.0] - 2026-08-27
+
+### Protected Media Streaming
+
+- Added authenticated byte-range streaming for TDENC2-protected video, audio, and PDF content, allowing supported files to play or preview while the vault is unlocked without publishing a persistent plaintext copy.
+- Added session-scoped media credentials that are revoked when the vault locks, plus independently authenticated chunk decryption that fails closed on truncated or modified ciphertext.
+- Carried the protected-stream credential through the desktop media player, PDF viewer, and Android native player while preserving local-only stream URLs and bounded range responses.
+
+### Video Uploads and Transfer Efficiency
+
+- Added a saved File/Media upload preference for MP4-family videos. File mode remains the compatibility-first default, while Media mode records duration, orientation-aware dimensions, MIME type, and Telegram streaming metadata for inline playback.
+- Preserved the video upload choice through durable desktop queues, remote uploads, Android shared-file intake, restart recovery, and encrypted settings synchronization.
+- Reduced Android shared-file staging work by using an atomic move when cache and app storage share a filesystem, with a safe copy fallback for devices that separate those locations.
+
+### Android Playback and Large-Library Performance
+
+- Extended native Android streaming to audio as well as video, improved MIME-based media detection, added download fallback for both media types, and refreshed playback history immediately after the native player closes.
+- Virtualized long mobile file lists while retaining selection, long-press actions, keyboard operation, dynamic row measurement, and a non-virtualized Android TV path.
+- Replaced frequent Android polling with native environment and playback events plus slower recovery watchdogs, and throttled foreground-transfer notification updates.
+- Added Baseline and Startup Profiles, localized native-player messages, release verification for profile packaging, and signed ABI-specific APK packaging alongside the universal artifacts.
+
+### Release Engineering and Compatibility
+
+- Expanded Android CI with protected behavior tests, Android 7.0 minimum-version instrumentation, current Android phone coverage, Google TV coverage, R8/JNI checks, 16 KB page-size verification, and ABI validation.
+- Existing Telegram sessions, supporter entitlements, recovery codes, settings, encrypted-file records, transfer queues, folder mappings, and synchronized preferences remain compatible with this update.
+- The v3.7.0 tag publishes signed Windows, Linux, macOS Intel, and macOS Apple Silicon desktop artifacts through the existing verified release pipeline.
+
+### Verification
+
+- All 125 frontend tests passed across 35 test files, along with the production frontend build and localization no-regression checks for all 24 language bundles.
+- All 142 Rust library tests passed; Rust formatting and Clippy with warnings denied also passed.
+- All 36 supporter-service tests, TypeScript validation, and the production Worker bundle dry-run passed.
+
 ## [3.6.0] - 2026-08-25
 
 ### Desktop File Listing Reliability

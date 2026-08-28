@@ -1,7 +1,6 @@
 import React, { useState, useEffect, Suspense } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { load } from "@tauri-apps/plugin-store";
-import { AuthWizard } from "./components/shared/AuthWizard";
 import { AppProviders } from "./components/shared/AppProviders";
 import { ErrorBoundary } from "./components/shared/ErrorBoundary";
 import { UpdateBanner } from "./components/shared/UpdateBanner";
@@ -10,6 +9,7 @@ import { usePlatform } from "./hooks/usePlatform";
 import "./App.css";
 
 const DesktopDashboard = React.lazy(() => import("./components/desktop/DesktopDashboard").then(m => ({ default: m.Dashboard })));
+const AuthWizard = React.lazy(() => import("./components/shared/AuthWizard").then(m => ({ default: m.AuthWizard })));
 // Vite requires a fully static import path for dynamic imports so it can
 // perform static analysis and code-splitting. Template literals with
 // variables prevent Vite from resolving the module at build time.
@@ -239,7 +239,9 @@ function AppContent() {
         </Suspense>
       )}
       {authStatus === "unauthenticated" && (
-        <AuthWizard onLogin={() => setAuthStatus("authenticated")} />
+        <Suspense fallback={<div className="h-screen bg-telegram-bg" />}>
+          <AuthWizard onLogin={() => setAuthStatus("authenticated")} />
+        </Suspense>
       )}
     </main>
   );

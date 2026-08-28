@@ -133,6 +133,10 @@
     "max_uploads_desc": "Max parallel uploads",
     "max_downloads_desc": "Max parallel downloads",
     "zip_folders_desc": "Compress folders into .zip before uploading",
+    "video_upload_default": "رفع الفيديو الافتراضي",
+    "video_upload_desc": "يتيح وضع الوسائط معاينات Telegram لملفات MP4 وM4V وMOV. تستخدم الفيديوهات المحمية وضع الملف دائمًا.",
+    "video_upload_file": "ملف",
+    "video_upload_media": "وسائط",
     "performance_compatibility": "Performance & Compatibility",
     "performance_mode_desc": "Disable blur, heavy shadows & animations",
     "linux_rendering_desc": "Disable DMA-BUF renderer (fixes GPU crashes, requires restart)",
@@ -637,5 +641,23 @@
     "continue_to_files": "Continue to files",
     "browser_note": "Sponsored content opens in your browser. You only see this gateway once.",
     "close_ad": "Close ad"
+  },
+  "supporter_offer": {
+    "eyebrow": "ادعم Telegram Drive",
+    "ad_dismissed_title": "هل سئمت الإعلانات؟ ادفع $5 مرة واحدة وتخلّص من جميع الإعلانات نهائيًا!",
+    "upload_completed_title": "هل تستمتع برفع سلس؟ أبقِ Telegram Drive بلا إعلانات",
+    "download_completed_title": "اكتمل التنزيل—اجعل عمليات النقل القادمة بلا إعلانات",
+    "close_label": "إغلاق عرض الداعم",
+    "price": "$5",
+    "price_suffix": "دولار أمريكي مرة واحدة",
+    "description": "دفعة واحدة مؤكدة تزيل جميع إعلانات الرعاة من Telegram Drive مدى الحياة—بلا اشتراك أو رسوم متكررة.",
+    "free_features": "تظل جميع الميزات مجانية سواء دعمت المشروع أم لا.",
+    "benefit_lifetime": "بلا إعلانات رعاة مدى الحياة",
+    "benefit_devices": "التفعيل على ما يصل إلى 3 أجهزة مدعومة",
+    "benefit_updates": "يبقى التفعيل مع التحديثات العادية",
+    "project_support": "يساعد دعمك لمرة واحدة في تمويل الصيانة والتطوير المستمرين.",
+    "privacy_note": "يتولى PayPal الدفع. لا يتلقى Telegram Drive بيانات بطاقتك أو بريد PayPal ولا يخزنها.",
+    "secondary_action": "ليس الآن",
+    "primary_action": "عرض تفاصيل الدعم"
   }
 }

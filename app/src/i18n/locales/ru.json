@@ -133,6 +133,10 @@
     "max_uploads_desc": "Max parallel uploads",
     "max_downloads_desc": "Max parallel downloads",
     "zip_folders_desc": "Compress folders into .zip before uploading",
+    "video_upload_default": "Загрузка видео по умолчанию",
+    "video_upload_desc": "Режим «Медиа» включает предпросмотр Telegram для MP4, M4V и MOV. Защищённые видео всегда отправляются как файл.",
+    "video_upload_file": "Файл",
+    "video_upload_media": "Медиа",
     "performance_compatibility": "Performance & Compatibility",
     "performance_mode_desc": "Disable blur, heavy shadows & animations",
     "linux_rendering_desc": "Disable DMA-BUF renderer (fixes GPU crashes, requires restart)",
@@ -620,5 +624,23 @@
     "continue_to_files": "Перейти к файлам",
     "browser_note": "Спонсорский контент откроется в браузере.",
     "close_ad": "Закрыть рекламу"
+  },
+  "supporter_offer": {
+    "eyebrow": "Поддержать Telegram Drive",
+    "ad_dismissed_title": "Надоела реклама? Заплатите $5 один раз и больше её не увидите!",
+    "upload_completed_title": "Нравятся удобные загрузки? Оставьте Telegram Drive без рекламы",
+    "download_completed_title": "Файл загружен — сделайте будущие передачи свободными от рекламы",
+    "close_label": "Закрыть предложение",
+    "price": "$5",
+    "price_suffix": "USD один раз",
+    "description": "Один подтверждённый платёж навсегда убирает всю спонсорскую рекламу из Telegram Drive — без подписки и повторных списаний.",
+    "free_features": "Все функции остаются бесплатными независимо от поддержки.",
+    "benefit_lifetime": "Без спонсорской рекламы навсегда",
+    "benefit_devices": "Активация до 3 поддерживаемых устройств",
+    "benefit_updates": "Активация сохраняется после обычных обновлений",
+    "project_support": "Ваша разовая поддержка помогает оплачивать дальнейшее обслуживание и разработку.",
+    "privacy_note": "Платёж обрабатывает PayPal. Telegram Drive не получает и не хранит данные карты или адрес PayPal.",
+    "secondary_action": "Не сейчас",
+    "primary_action": "Подробнее о поддержке"
   }
 }

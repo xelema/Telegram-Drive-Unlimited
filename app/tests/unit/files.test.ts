@@ -26,6 +26,8 @@ describe('file utilities', () => {
     expect(isVideoFile('clip.MP4')).toBe(true);
     expect(isAudioFile('voice.opus')).toBe(true);
     expect(isMediaFile('clipmp4')).toBe(true);
+    expect(isVideoFile('recording.bin', 'video/mp4')).toBe(true);
+    expect(isAudioFile('recording.bin', 'audio/aac')).toBe(true);
     expect(isPdfFile('report.PDF')).toBe(true);
     expect(isArchiveFile('backup.7Z')).toBe(true);
   });

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Telegram Drive</string>
+    <string name="main_activity_title">Telegram Drive</string>
+    <string name="media_player_title">Telegram Drive player</string>
+    <string name="media_player_content_description">Media player</string>
+    <string name="media_private_title">Private media</string>
+    <string name="media_default_title">Telegram Drive media</string>
+    <string name="media_playback_format_error">Android could not play this format from the secure stream. Tap to close and use Download instead.</string>
+    <string name="media_session_start_error">The Android media session could not start. Tap to close and retry.</string>
+    <string name="media_stream_unavailable_error">The secure local media stream is unavailable. Tap to close and retry.</string>
+</resources>

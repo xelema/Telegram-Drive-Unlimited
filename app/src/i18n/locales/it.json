@@ -172,6 +172,10 @@
     "max_downloads_desc": "Numero massimo di download paralleli",
     "zip_before_upload": "Comprimi le cartelle prima del caricamento",
     "zip_folders_desc": "Comprimi le cartelle in .zip prima di caricarle",
+    "video_upload_default": "Caricamento video predefinito",
+    "video_upload_desc": "Media abilita le anteprime Telegram per MP4, M4V e MOV. I video protetti usano sempre File.",
+    "video_upload_file": "Documento",
+    "video_upload_media": "Contenuto multimediale",
     "performance_compatibility": "Prestazioni e compatibilità",
     "performance_mode": "Modalità prestazioni",
     "performance_mode_desc": "Disabilita sfocatura, ombre pesanti e animazioni",
@@ -604,5 +608,23 @@
     "continue_to_files": "Continua ai file",
     "browser_note": "Il contenuto sponsorizzato si apre nel browser. Vedrai questo passaggio una sola volta.",
     "close_ad": "Chiudi annuncio"
+  },
+  "supporter_offer": {
+    "eyebrow": "Sostieni Telegram Drive",
+    "ad_dismissed_title": "Stanco degli annunci? Paga $5 una sola volta e non vederli mai più!",
+    "upload_completed_title": "Ti piacciono i caricamenti fluidi? Mantieni Telegram Drive senza annunci",
+    "download_completed_title": "Il download è pronto: mantieni i prossimi trasferimenti senza annunci",
+    "close_label": "Chiudi l’offerta sostenitore",
+    "price": "5 $",
+    "price_suffix": "USD una sola volta",
+    "description": "Un pagamento verificato rimuove per sempre tutti gli annunci degli sponsor da Telegram Drive, senza abbonamento né addebiti ricorrenti.",
+    "free_features": "Tutte le funzioni restano gratuite, che tu scelga di sostenerci o meno.",
+    "benefit_lifetime": "Nessun annuncio sponsorizzato per sempre",
+    "benefit_devices": "Attiva fino a 3 dispositivi supportati",
+    "benefit_updates": "Gli aggiornamenti normali mantengono l’attivazione",
+    "project_support": "Il tuo sostegno una tantum aiuta a finanziare manutenzione e sviluppo continui.",
+    "privacy_note": "PayPal gestisce il pagamento. Telegram Drive non riceve né conserva i dati della carta o l’e-mail PayPal.",
+    "secondary_action": "Non ora",
+    "primary_action": "Vedi i dettagli del sostegno"
   }
 }

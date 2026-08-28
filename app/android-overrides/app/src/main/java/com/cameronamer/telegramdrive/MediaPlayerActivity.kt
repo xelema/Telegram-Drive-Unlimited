@@ -49,7 +49,7 @@ class MediaPlayerActivity : AppCompatActivity() {
       id = View.generateViewId()
       useController = true
       keepScreenOn = true
-      contentDescription = intent.getStringExtra(EXTRA_TITLE) ?: "Media player"
+      contentDescription = intent.getStringExtra(EXTRA_TITLE) ?: getString(R.string.media_player_content_description)
       setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
       setShowSubtitleButton(true)
       subtitleView?.setFractionalTextSize(
@@ -89,6 +89,7 @@ class MediaPlayerActivity : AppCompatActivity() {
     controller = null
     controllerFuture?.let(MediaController::releaseFuture)
     controllerFuture = null
+    MainActivity.emitPlaybackHistoryChanged()
     super.onStop()
   }
 
@@ -110,12 +111,12 @@ class MediaPlayerActivity : AppCompatActivity() {
           override fun onIsPlayingChanged(isPlaying: Boolean) = updatePictureInPictureParams()
           override fun onVideoSizeChanged(videoSize: VideoSize) = updatePictureInPictureParams()
           override fun onPlayerError(error: PlaybackException) {
-            showError("Android could not play this format from the secure stream. Tap to close and use Download instead.")
+            showError(getString(R.string.media_playback_format_error))
           }
         })
         prepareMedia(mediaController)
       } catch (_: Exception) {
-        showError("The Android media session could not start. Tap to close and retry.")
+        showError(getString(R.string.media_session_start_error))
       }
     }, ContextCompat.getMainExecutor(this))
   }
@@ -123,13 +124,13 @@ class MediaPlayerActivity : AppCompatActivity() {
   private fun prepareMedia(player: MediaController) {
     val streamUrl = intent.getStringExtra(EXTRA_STREAM_URL)
     if (streamUrl.isNullOrBlank() || !streamUrl.startsWith("http://localhost:")) {
-      showError("The secure local media stream is unavailable. Tap to close and retry.")
+      showError(getString(R.string.media_stream_unavailable_error))
       return
     }
     val mediaId = intent.getStringExtra(EXTRA_MEDIA_ID)?.takeIf { it.isNotBlank() } ?: "telegram-drive-media"
     if (player.currentMediaItem?.mediaId == mediaId) return
     val privateMetadata = preferences().optBoolean("privateMetadata", true)
-    val visibleTitle = if (privateMetadata) "Private media" else intent.getStringExtra(EXTRA_TITLE) ?: "Telegram Drive media"
+    val visibleTitle = if (privateMetadata) getString(R.string.media_private_title) else intent.getStringExtra(EXTRA_TITLE) ?: getString(R.string.media_default_title)
     val mediaItem = MediaItem.Builder()
       .setUri(streamUrl)
       .setMediaId(mediaId)

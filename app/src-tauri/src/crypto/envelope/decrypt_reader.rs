@@ -53,6 +53,44 @@ impl DecryptReader {
         &self.metadata_plaintext
     }
 
+    /// Authenticate and decrypt one independently addressed data record. This
+    /// powers seekable media without persisting plaintext or replaying every
+    /// preceding record. The authenticated header fixes the chunk layout.
+    pub fn decrypt_chunk_at(&self, chunk_index: u32, ciphertext: &[u8]) -> CryptoResult<Vec<u8>> {
+        if chunk_index >= self.header.core.chunk_count() {
+            return Err(CryptoError::header_invalid("Chunk index out of range"));
+        }
+        let plaintext_offset = u64::from(chunk_index) * u64::from(self.header.core.chunk_size);
+        let plaintext_length = self
+            .header
+            .core
+            .total_plaintext_length
+            .saturating_sub(plaintext_offset)
+            .min(u64::from(self.header.core.chunk_size)) as usize;
+        if ciphertext.len() != plaintext_length + policy::AEAD_TAG_LENGTH {
+            return Err(CryptoError::truncated());
+        }
+        let cipher = XChaCha20Poly1305::new_from_slice(self.content_key.expose())
+            .map_err(|_| CryptoError::internal("Invalid content key"))?;
+        let plaintext = cipher
+            .decrypt(
+                XNonce::from_slice(&self.nonce(u64::from(chunk_index))),
+                Payload {
+                    msg: ciphertext,
+                    aad: &self.chunk_aad(
+                        u64::from(chunk_index),
+                        plaintext_offset,
+                        plaintext_length as u32,
+                    ),
+                },
+            )
+            .map_err(|_| CryptoError::auth_failed())?;
+        if plaintext.len() != plaintext_length {
+            return Err(CryptoError::auth_failed());
+        }
+        Ok(plaintext)
+    }
+
     pub fn is_complete(&self) -> bool {
         self.final_record_verified
     }

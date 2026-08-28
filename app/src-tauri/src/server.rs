@@ -416,6 +416,54 @@ pub struct StreamTokenData {
 #[derive(serde::Deserialize)]
 struct StreamQuery {
     token: Option<String>,
+    credential: Option<u64>,
+}
+
+struct EncryptedStreamRecord {
+    header: Vec<u8>,
+    plaintext_size: u64,
+}
+
+const ENCRYPTED_STREAM_RESPONSE_LIMIT: u64 = 4 * 1024 * 1024;
+
+async fn encrypted_stream_record(
+    db_pool: crate::db::DbConnection,
+    folder_key: String,
+    message_id: i32,
+) -> Result<Option<EncryptedStreamRecord>, String> {
+    crate::db::with_connection(db_pool, move |connection| {
+        let mut statement = connection
+            .prepare(
+                "SELECT header_blob, plaintext_size FROM encrypted_files \
+                 WHERE folder_key = ? AND message_id = ? AND record_state = 'active'",
+            )
+            .map_err(|error| error.to_string())?;
+        statement
+            .bind((1, folder_key.as_str()))
+            .map_err(|error| error.to_string())?;
+        statement
+            .bind((2, i64::from(message_id)))
+            .map_err(|error| error.to_string())?;
+        if !matches!(statement.next(), Ok(sqlite::State::Row)) {
+            return Ok(None);
+        }
+        let header = statement
+            .read::<Option<Vec<u8>>, _>(0)
+            .ok()
+            .flatten()
+            .ok_or_else(|| "Encrypted media header is not cached locally".to_string())?;
+        let plaintext_size = statement
+            .read::<Option<i64>, _>(1)
+            .ok()
+            .flatten()
+            .and_then(|value| u64::try_from(value).ok())
+            .ok_or_else(|| "Encrypted media plaintext length is unavailable".to_string())?;
+        Ok(Some(EncryptedStreamRecord {
+            header,
+            plaintext_size,
+        }))
+    })
+    .await
 }
 
 pub fn parse_range_header(header_val: &str, total_size: u64) -> Option<(u64, u64)> {
@@ -618,6 +666,183 @@ pub fn build_media_response(
     resp.streaming(stream)
 }
 
+async fn fetch_media_range(
+    client: &grammers_client::Client,
+    media: &Media,
+    start: u64,
+    end: u64,
+) -> Result<Vec<u8>, String> {
+    const CHUNK_SIZE: i32 = 65_536;
+    const CDN_ALIGNMENT: u64 = 524_288;
+    let aligned_start = (start / CDN_ALIGNMENT) * CDN_ALIGNMENT;
+    let mut iterator = client
+        .iter_download(media)
+        .chunk_size(CHUNK_SIZE)
+        .skip_chunks((aligned_start / CHUNK_SIZE as u64) as i32);
+    let leading = (start - aligned_start) as usize;
+    let required = end
+        .checked_sub(start)
+        .and_then(|length| length.checked_add(1))
+        .ok_or_else(|| "Encrypted media range overflow".to_string())? as usize;
+    let mut skipped = 0usize;
+    let mut output = Vec::with_capacity(required);
+    while output.len() < required {
+        let Some(chunk) = iterator.next().await.transpose() else {
+            break;
+        };
+        let chunk = chunk.map_err(|error| format!("Encrypted stream download failed: {error}"))?;
+        let mut slice = chunk.as_slice();
+        if skipped < leading {
+            let skip = (leading - skipped).min(slice.len());
+            skipped += skip;
+            slice = &slice[skip..];
+        }
+        let take = (required - output.len()).min(slice.len());
+        output.extend_from_slice(&slice[..take]);
+    }
+    if output.len() != required {
+        return Err("Encrypted media range was truncated by Telegram".to_string());
+    }
+    Ok(output)
+}
+
+#[derive(serde::Deserialize)]
+struct EncryptedStreamMetadata {
+    mime_type: String,
+}
+
+async fn build_encrypted_media_response(
+    client: &grammers_client::Client,
+    media: &Media,
+    req: &actix_web::HttpRequest,
+    record: EncryptedStreamRecord,
+    wrapping_key: &crate::crypto::secret::SecretKey,
+) -> HttpResponse {
+    use crate::crypto::envelope::header::EnvelopeHeader;
+    use crate::crypto::envelope::range::{
+        chunk_ciphertext_offset, plaintext_range_to_ciphertext_records,
+    };
+    use crate::crypto::policy;
+
+    if record.plaintext_size == 0 {
+        return HttpResponse::UnprocessableEntity().body("Encrypted media is empty");
+    }
+    let requested = req
+        .headers()
+        .get(actix_web::http::header::RANGE)
+        .and_then(|header| header.to_str().ok())
+        .and_then(|header| parse_range_header(header, record.plaintext_size));
+    let start = requested.map(|range| range.0).unwrap_or(0);
+    let requested_end = requested
+        .map(|range| range.1)
+        .unwrap_or(record.plaintext_size - 1);
+    let end = requested_end
+        .min(start.saturating_add(ENCRYPTED_STREAM_RESPONSE_LIMIT - 1))
+        .min(record.plaintext_size - 1);
+
+    let header = match EnvelopeHeader::parse(&record.header) {
+        Ok(header) => header,
+        Err(error) => {
+            return HttpResponse::UnprocessableEntity()
+                .body(format!("Encrypted media header is invalid: {error}"));
+        }
+    };
+    if header.core.total_plaintext_length != record.plaintext_size {
+        return HttpResponse::UnprocessableEntity()
+            .body("Encrypted media registry length does not match its authenticated header");
+    }
+    let decryptor = match crate::commands::fs::initialize_tdenc2_decryptor(
+        &record.header,
+        Some(wrapping_key),
+        None,
+    ) {
+        Ok(decryptor) => decryptor,
+        Err(error) => return HttpResponse::Locked().body(error),
+    };
+    let (first_chunk, last_chunk) = match plaintext_range_to_ciphertext_records(
+        start,
+        end,
+        header.core.chunk_size,
+        record.plaintext_size,
+    ) {
+        Ok(range) => range,
+        Err(error) => return HttpResponse::RangeNotSatisfiable().body(error.to_string()),
+    };
+    let body_start =
+        match chunk_ciphertext_offset(first_chunk, header.core.chunk_size, record.plaintext_size) {
+            Ok(offset) => u64::from(header.core.header_length) + offset,
+            Err(error) => return HttpResponse::UnprocessableEntity().body(error.to_string()),
+        };
+    let last_plaintext_offset = u64::from(last_chunk) * u64::from(header.core.chunk_size);
+    let last_plaintext_length = record
+        .plaintext_size
+        .saturating_sub(last_plaintext_offset)
+        .min(u64::from(header.core.chunk_size));
+    let body_end =
+        match chunk_ciphertext_offset(last_chunk, header.core.chunk_size, record.plaintext_size) {
+            Ok(offset) => {
+                u64::from(header.core.header_length)
+                    + offset
+                    + last_plaintext_length
+                    + policy::AEAD_TAG_LENGTH as u64
+                    - 1
+            }
+            Err(error) => return HttpResponse::UnprocessableEntity().body(error.to_string()),
+        };
+    let ciphertext = match fetch_media_range(client, media, body_start, body_end).await {
+        Ok(ciphertext) => ciphertext,
+        Err(error) => return HttpResponse::BadGateway().body(error),
+    };
+
+    let mut cursor = 0usize;
+    let mut plaintext = Vec::new();
+    for chunk_index in first_chunk..=last_chunk {
+        let plaintext_offset = u64::from(chunk_index) * u64::from(header.core.chunk_size);
+        let plaintext_length = record
+            .plaintext_size
+            .saturating_sub(plaintext_offset)
+            .min(u64::from(header.core.chunk_size)) as usize;
+        let ciphertext_length = plaintext_length + policy::AEAD_TAG_LENGTH;
+        let next = cursor.saturating_add(ciphertext_length);
+        if next > ciphertext.len() {
+            return HttpResponse::BadGateway().body("Encrypted media record was truncated");
+        }
+        match decryptor.decrypt_chunk_at(chunk_index, &ciphertext[cursor..next]) {
+            Ok(chunk) => plaintext.extend_from_slice(&chunk),
+            Err(error) => {
+                return HttpResponse::UnprocessableEntity().body(format!(
+                    "Encrypted media record authentication failed: {error}"
+                ));
+            }
+        }
+        cursor = next;
+    }
+
+    let combined_start = u64::from(first_chunk) * u64::from(header.core.chunk_size);
+    let slice_start = (start - combined_start) as usize;
+    let slice_length = (end - start + 1) as usize;
+    if slice_start.saturating_add(slice_length) > plaintext.len() {
+        return HttpResponse::BadGateway().body("Decrypted media range was incomplete");
+    }
+    let body = plaintext[slice_start..slice_start + slice_length].to_vec();
+    let mime = serde_json::from_slice::<EncryptedStreamMetadata>(decryptor.metadata_plaintext())
+        .ok()
+        .map(|metadata| metadata.mime_type)
+        .filter(|mime| !mime.is_empty())
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+
+    HttpResponse::PartialContent()
+        .insert_header(("Content-Type", mime))
+        .insert_header(("Accept-Ranges", "bytes"))
+        .insert_header((
+            "Content-Range",
+            format!("bytes {start}-{end}/{}", record.plaintext_size),
+        ))
+        .insert_header(("Content-Length", body.len().to_string()))
+        .insert_header(("Cache-Control", "no-store"))
+        .body(body)
+}
+
 #[get("/stream/{folder_id}/{message_id}")]
 async fn stream_media(
     req: actix_web::HttpRequest,
@@ -626,6 +851,7 @@ async fn stream_media(
     data: web::Data<Arc<TelegramState>>,
     token_data: web::Data<StreamTokenData>,
     db_pool: web::Data<crate::db::DbConnection>,
+    crypto_state: web::Data<crate::crypto::state::CryptoState>,
 ) -> impl Responder {
     let (folder_id_str, message_id) = path.into_inner();
 
@@ -674,21 +900,29 @@ async fn stream_media(
     let folder_key = folder_id
         .map(|id| id.to_string())
         .unwrap_or_else(|| "home".to_string());
-    let encrypted = crate::db::with_connection(db_pool.get_ref().clone(), move |connection| {
-        let mut statement = connection
-                .prepare("SELECT 1 FROM encrypted_files WHERE folder_key = ? AND message_id = ? AND record_state = 'active'")
-                .map_err(|error| error.to_string())?;
-        statement.bind((1, folder_key.as_str())).map_err(|error| error.to_string())?;
-        statement.bind((2, i64::from(message_id))).map_err(|error| error.to_string())?;
-        Ok(matches!(statement.next(), Ok(sqlite::State::Row)))
-    })
-        .await
-        .unwrap_or(true);
-    if encrypted {
-        return HttpResponse::Conflict().body(
-            "Encrypted media streaming is unavailable until a credential-scoped decrypted range source is active",
-        );
-    }
+    let encrypted_record =
+        match encrypted_stream_record(db_pool.get_ref().clone(), folder_key, message_id).await {
+            Ok(record) => record,
+            Err(error) => return HttpResponse::Conflict().body(error),
+        };
+    let wrapping_key = if encrypted_record.is_some() {
+        let Some(credential) = query.credential else {
+            return HttpResponse::Locked()
+                .body("Unlock the vault before streaming protected media");
+        };
+        match crypto_state.operation_wrapping_key(
+            credential,
+            crate::crypto::state::OperationClass::MediaStream,
+        ) {
+            Ok(key) => Some(key),
+            Err(_) => {
+                return HttpResponse::Locked()
+                    .body("The protected-media credential expired; unlock and retry")
+            }
+        }
+    } else {
+        None
+    };
 
     let client_opt = { data.client.lock().await.clone() };
 
@@ -707,15 +941,16 @@ async fn stream_media(
                 match client.get_messages_by_id(peer, &[message_id]).await {
                     Ok(messages) => {
                         if let Some(Some(msg)) = messages.first() {
-                            if msg.text() == "TDENC2"
-                                || matches!(
-                                    msg.media(),
-                                    Some(Media::Document(document))
-                                        if document.name().to_ascii_lowercase().ends_with(".tdenc")
-                                )
+                            if encrypted_record.is_none()
+                                && (msg.text() == "TDENC2"
+                                    || matches!(
+                                        msg.media(),
+                                        Some(Media::Document(document))
+                                            if document.name().to_ascii_lowercase().ends_with(".tdenc")
+                                    ))
                             {
                                 return HttpResponse::Conflict().body(
-                                    "Encrypted media streaming is unavailable until a credential-scoped decrypted range source is active",
+                                    "Protected media must be indexed locally before it can be streamed",
                                 );
                             }
                             if let Some(media) = msg.media() {
@@ -723,6 +958,14 @@ async fn stream_media(
                                     "Stream request: Message and media found for msg {}",
                                     message_id
                                 );
+                                if let (Some(record), Some(key)) =
+                                    (encrypted_record, wrapping_key.as_ref())
+                                {
+                                    return build_encrypted_media_response(
+                                        &client, &media, &req, record, key,
+                                    )
+                                    .await;
+                                }
                                 let mime = mime_type_from_media(&media);
                                 return build_media_response(
                                     &client,
@@ -794,9 +1037,17 @@ pub async fn start_server(
     token: String,
     db_pool: crate::db::DbConnection,
     transcode_manager: Arc<TranscodeManager>,
+    crypto_state: crate::crypto::state::CryptoState,
 ) -> std::io::Result<actix_web::dev::Server> {
     let listener = bind_stream_listener(port)?;
-    start_server_with_listener(state, token, db_pool, transcode_manager, listener)
+    start_server_with_listener(
+        state,
+        token,
+        db_pool,
+        transcode_manager,
+        crypto_state,
+        listener,
+    )
 }
 
 fn bind_stream_listener(port: u16) -> std::io::Result<TcpListener> {
@@ -830,12 +1081,14 @@ fn start_server_with_listener(
     token: String,
     db_pool: crate::db::DbConnection,
     transcode_manager: Arc<TranscodeManager>,
+    crypto_state: crate::crypto::state::CryptoState,
     listener: TcpListener,
 ) -> std::io::Result<actix_web::dev::Server> {
     let state_data = web::Data::new(state);
     let token_data = web::Data::new(StreamTokenData { token });
     let db_data = web::Data::new(db_pool);
     let transcode_data = web::Data::new(transcode_manager);
+    let crypto_data = web::Data::new(crypto_state);
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let ad_script_cache = web::Data::new(desktop_ads::AdScriptCache::default());
 
@@ -863,7 +1116,8 @@ fn start_server_with_listener(
             .app_data(state_data.clone())
             .app_data(token_data.clone())
             .app_data(db_data.clone())
-            .app_data(transcode_data.clone());
+            .app_data(transcode_data.clone())
+            .app_data(crypto_data.clone());
 
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         let app = app
@@ -918,6 +1172,9 @@ mod streaming_runtime_tests {
             address.port()
         ));
         let transcode_manager = Arc::new(TranscodeManager::new(cache_root.clone()));
+        let crypto_state = crate::crypto::state::CryptoState::new(Box::new(
+            crate::crypto::vault::memory::MemoryVault::new(),
+        ));
 
         // This deliberately uses Tokio directly, without actix_rt::System. It
         // exercises the same runtime arrangement used by Tauri on Android.
@@ -926,6 +1183,7 @@ mod streaming_runtime_tests {
             "runtime-test-token".to_string(),
             database,
             transcode_manager,
+            crypto_state,
             listener,
         )
         .unwrap();

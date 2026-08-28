@@ -133,6 +133,10 @@
     "max_uploads_desc": "Max parallel uploads",
     "max_downloads_desc": "Max parallel downloads",
     "zip_folders_desc": "Compress folders into .zip before uploading",
+    "video_upload_default": "기본 동영상 업로드",
+    "video_upload_desc": "미디어는 MP4, M4V 및 MOV의 Telegram 미리보기를 활성화합니다. 보호된 동영상은 항상 파일로 전송됩니다.",
+    "video_upload_file": "파일",
+    "video_upload_media": "미디어",
     "performance_compatibility": "Performance & Compatibility",
     "performance_mode_desc": "Disable blur, heavy shadows & animations",
     "linux_rendering_desc": "Disable DMA-BUF renderer (fixes GPU crashes, requires restart)",
@@ -604,5 +608,23 @@
     "continue_to_files": "Continue to files",
     "browser_note": "Sponsored content opens in your browser. You only see this gateway once.",
     "close_ad": "Close ad"
+  },
+  "supporter_offer": {
+    "eyebrow": "Telegram Drive 후원하기",
+    "ad_dismissed_title": "광고가 지겨우신가요? $5를 한 번만 결제하고 모든 광고를 없애세요!",
+    "upload_completed_title": "원활한 업로드가 마음에 드시나요? Telegram Drive를 광고 없이 사용하세요",
+    "download_completed_title": "다운로드 완료—앞으로의 전송을 광고 없이 이용하세요",
+    "close_label": "후원자 제안 닫기",
+    "price": "$5",
+    "price_suffix": "미국 달러, 한 번만",
+    "description": "확인된 1회 결제로 Telegram Drive의 모든 스폰서 광고를 평생 제거합니다. 구독이나 반복 결제는 없습니다.",
+    "free_features": "후원 여부와 관계없이 모든 기능은 무료로 유지됩니다.",
+    "benefit_lifetime": "평생 스폰서 광고 없음",
+    "benefit_devices": "지원되는 기기 최대 3대 활성화",
+    "benefit_updates": "일반 업데이트 후에도 활성화 유지",
+    "project_support": "일회성 후원은 지속적인 유지 관리와 개발에 도움이 됩니다.",
+    "privacy_note": "결제는 PayPal이 처리합니다. Telegram Drive는 카드 정보나 PayPal 이메일을 받거나 저장하지 않습니다.",
+    "secondary_action": "나중에",
+    "primary_action": "후원자 세부 정보 보기"
   }
 }

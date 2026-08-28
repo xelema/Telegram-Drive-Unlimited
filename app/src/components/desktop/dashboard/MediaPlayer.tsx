@@ -9,6 +9,7 @@ import { AdaptiveMediaPlayer } from './AdaptiveMediaPlayer';
 interface StreamInfo {
     token: string;
     base_url: string;
+    operation_token?: string | null;
 }
 
 interface MediaPlayerProps {
@@ -70,8 +71,11 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
     }, []);
 
     const folderIdParam = activeFolderId !== null ? activeFolderId.toString() : 'home';
+    const streamCredential = streamInfo?.operation_token
+        ? `&credential=${encodeURIComponent(streamInfo.operation_token)}`
+        : '';
     const streamUrl = streamInfo
-        ? `${streamInfo.base_url}/stream/${folderIdParam}/${file.id}?token=${streamInfo.token}`
+        ? `${streamInfo.base_url}/stream/${folderIdParam}/${file.id}?token=${encodeURIComponent(streamInfo.token)}${streamCredential}`
         : null;
 
     const isVideo = isVideoFile(file.name);

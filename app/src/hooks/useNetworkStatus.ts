@@ -31,13 +31,24 @@ export function useNetworkStatus() {
         const handleVisibility = () => {
             if (document.visibilityState === 'visible') void checkNetwork();
         };
+        const handleAndroidEnvironment = (event: Event) => {
+            const environment = (event as CustomEvent<{ connected?: boolean }>).detail;
+            if (!cancelled && typeof environment?.connected === 'boolean') {
+                setIsOnline(environment.connected);
+            } else {
+                void checkNetwork();
+            }
+        };
 
         void checkNetwork();
-        const interval = window.setInterval(checkNetwork, isAndroidPlatform ? 2_000 : 10_000);
+        // Android's native callback is authoritative. This slow watchdog only
+        // recovers from an OEM/WebView event-delivery defect.
+        const interval = window.setInterval(checkNetwork, isAndroidPlatform ? 60_000 : 10_000);
         if (isAndroidPlatform) {
             window.addEventListener('offline', handleOffline);
             window.addEventListener('online', handleOnline);
             document.addEventListener('visibilitychange', handleVisibility);
+            window.addEventListener('android-environment-change', handleAndroidEnvironment);
         }
 
         return () => {
@@ -47,6 +58,7 @@ export function useNetworkStatus() {
                 window.removeEventListener('offline', handleOffline);
                 window.removeEventListener('online', handleOnline);
                 document.removeEventListener('visibilitychange', handleVisibility);
+                window.removeEventListener('android-environment-change', handleAndroidEnvironment);
             }
         };
     }, []);

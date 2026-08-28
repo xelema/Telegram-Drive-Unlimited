@@ -1,0 +1,9 @@
+# Android startup and critical-user-journey profile. Keep this list focused on
+# app-owned entry points; release CI verifies that the profile is packaged.
+Lcom/cameronamer/telegramdrive/TelegramDriveApplication;
+Lcom/cameronamer/telegramdrive/MainActivity;
+Lcom/cameronamer/telegramdrive/MediaPlayerActivity;
+Lcom/cameronamer/telegramdrive/PlaybackService;
+Lcom/cameronamer/telegramdrive/UploadForegroundService;
+Lcom/cameronamer/telegramdrive/TransferJobService;
+Lcom/cameronamer/telegramdrive/TransferRecoveryWorker;

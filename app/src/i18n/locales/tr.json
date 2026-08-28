@@ -133,6 +133,10 @@
     "max_uploads_desc": "Max parallel uploads",
     "max_downloads_desc": "Max parallel downloads",
     "zip_folders_desc": "Compress folders into .zip before uploading",
+    "video_upload_default": "Varsayılan video yükleme",
+    "video_upload_desc": "Medya, MP4, M4V ve MOV için Telegram önizlemelerini etkinleştirir. Korumalı videolar her zaman Dosya kullanır.",
+    "video_upload_file": "Dosya",
+    "video_upload_media": "Medya",
     "performance_compatibility": "Performance & Compatibility",
     "performance_mode_desc": "Disable blur, heavy shadows & animations",
     "linux_rendering_desc": "Disable DMA-BUF renderer (fixes GPU crashes, requires restart)",
@@ -604,5 +608,23 @@
     "continue_to_files": "Continue to files",
     "browser_note": "Sponsored content opens in your browser. You only see this gateway once.",
     "close_ad": "Close ad"
+  },
+  "supporter_offer": {
+    "eyebrow": "Telegram Drive'ı destekleyin",
+    "ad_dismissed_title": "Reklamlardan bıktınız mı? Bir kez $5 ödeyin ve tüm reklamlara veda edin!",
+    "upload_completed_title": "Sorunsuz yüklemeleri sevdiniz mi? Telegram Drive'ı reklamsız tutun",
+    "download_completed_title": "İndirmeniz hazır—gelecekteki aktarımları reklamsız tutun",
+    "close_label": "Destekçi teklifini kapat",
+    "price": "$5",
+    "price_suffix": "USD tek sefer",
+    "description": "Doğrulanmış tek ödeme, Telegram Drive'daki tüm sponsor reklamlarını ömür boyu kaldırır—abonelik ve yinelenen ücret yoktur.",
+    "free_features": "Destek olsanız da olmasanız da tüm özellikler ücretsiz kalır.",
+    "benefit_lifetime": "Ömür boyu sponsor reklamı yok",
+    "benefit_devices": "En fazla 3 desteklenen cihazı etkinleştirin",
+    "benefit_updates": "Normal güncellemelerde etkinleştirme korunur",
+    "project_support": "Tek seferlik desteğiniz sürekli bakım ve geliştirmeye katkı sağlar.",
+    "privacy_note": "Ödemeyi PayPal işler. Telegram Drive kart bilgilerinizi veya PayPal e-postanızı almaz ya da saklamaz.",
+    "secondary_action": "Şimdi değil",
+    "primary_action": "Destekçi ayrıntılarını gör"
   }
 }

@@ -7,6 +7,16 @@ apk="src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal
 aab="src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.aab"
 release_dir="android-release"
 
+abi_apk_path() {
+  case "$1" in
+    arm64-v8a) printf '%s\n' "src-tauri/gen/android/app/build/outputs/apk/arm64/release/app-arm64-release.apk" ;;
+    armeabi-v7a) printf '%s\n' "src-tauri/gen/android/app/build/outputs/apk/arm/release/app-arm-release.apk" ;;
+    x86) printf '%s\n' "src-tauri/gen/android/app/build/outputs/apk/x86/release/app-x86-release.apk" ;;
+    x86_64) printf '%s\n' "src-tauri/gen/android/app/build/outputs/apk/x86_64/release/app-x86_64-release.apk" ;;
+    *) return 1 ;;
+  esac
+}
+
 test -x "$apksigner"
 test -f "$apk"
 test -f "$aab"
@@ -22,6 +32,22 @@ if [ "$actual_fingerprint" != "$expected_fingerprint" ]; then
   exit 1
 fi
 
+for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+  abi_apk="$(abi_apk_path "$abi")"
+  test -f "$abi_apk"
+  abi_signer_output="$($apksigner verify --verbose --print-certs "$abi_apk")"
+  abi_fingerprint="$(printf '%s\n' "$abi_signer_output" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n 1 | tr -d ':[:space:]' | tr '[:lower:]' '[:upper:]')"
+  if [ "$abi_fingerprint" != "$expected_fingerprint" ]; then
+    echo "Android $abi release certificate does not match the pinned production certificate." >&2
+    exit 1
+  fi
+  unexpected_lib="$(unzip -Z1 "$abi_apk" | sed -n 's#^lib/\([^/]*\)/.*\.so$#\1#p' | sort -u | grep -vx "$abi" || true)"
+  if [ -n "$unexpected_lib" ] || ! unzip -Z1 "$abi_apk" | grep -q "^lib/$abi/.*\.so$"; then
+    echo "Android $abi APK contains an invalid native-library set." >&2
+    exit 1
+  fi
+done
+
 jarsigner -verify -strict "$aab" >/dev/null
 
 version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
@@ -34,6 +60,9 @@ node scripts/verify-android-release-version.cjs \
 mkdir -p "$release_dir"
 cp "$apk" "$release_dir/Telegram-Drive-v${version}-android-universal.apk"
 cp "$aab" "$release_dir/Telegram-Drive-v${version}-android-universal.aab"
+for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+  cp "$(abi_apk_path "$abi")" "$release_dir/Telegram-Drive-v${version}-android-${abi}.apk"
+done
 
 (
   cd "$release_dir"

@@ -133,6 +133,10 @@
     "max_uploads_desc": "Max parallel uploads",
     "max_downloads_desc": "Max parallel downloads",
     "zip_folders_desc": "Compress folders into .zip before uploading",
+    "video_upload_default": "Envio de vídeo padrão",
+    "video_upload_desc": "Mídia ativa prévias do Telegram para MP4, M4V e MOV. Vídeos protegidos sempre usam Arquivo.",
+    "video_upload_file": "Arquivo",
+    "video_upload_media": "Mídia",
     "performance_compatibility": "Performance & Compatibility",
     "performance_mode_desc": "Disable blur, heavy shadows & animations",
     "linux_rendering_desc": "Disable DMA-BUF renderer (fixes GPU crashes, requires restart)",
@@ -604,5 +608,23 @@
     "continue_to_files": "Continue to files",
     "browser_note": "Sponsored content opens in your browser. You only see this gateway once.",
     "close_ad": "Close ad"
+  },
+  "supporter_offer": {
+    "eyebrow": "Apoie o Telegram Drive",
+    "ad_dismissed_title": "Cansou dos anúncios? Pague $5 uma única vez e nunca mais veja anúncios!",
+    "upload_completed_title": "Gostando dos envios rápidos? Mantenha o Telegram Drive sem anúncios",
+    "download_completed_title": "Seu download está pronto—mantenha as próximas transferências sem anúncios",
+    "close_label": "Fechar oferta de apoiador",
+    "price": "$5",
+    "price_suffix": "USD uma única vez",
+    "description": "Um pagamento verificado remove para sempre todos os anúncios de patrocinadores do Telegram Drive—sem assinatura e sem cobrança recorrente.",
+    "free_features": "Todos os recursos continuam gratuitos, você apoiando ou não.",
+    "benefit_lifetime": "Sem anúncios de patrocinadores para sempre",
+    "benefit_devices": "Ative até 3 dispositivos compatíveis",
+    "benefit_updates": "Atualizações normais mantêm a ativação",
+    "project_support": "Seu apoio único ajuda a financiar a manutenção e o desenvolvimento contínuos.",
+    "privacy_note": "O PayPal processa o pagamento. O Telegram Drive nunca recebe nem armazena os dados do seu cartão ou e-mail do PayPal.",
+    "secondary_action": "Agora não",
+    "primary_action": "Ver detalhes do apoio"
   }
 }

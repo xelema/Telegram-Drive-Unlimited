@@ -1,4 +1,5 @@
 import type { UploadProtectionIntent } from './encryption';
+import type { VideoUploadMode } from './settings';
 
 export interface QueueItem {
   id: string;
@@ -15,6 +16,8 @@ export interface QueueItem {
   /** Android-private staged copy that survives activity/process recreation. */
   androidStaged?: boolean;
   protection?: UploadProtectionIntent;
+  /** Snapshot of the video preference used when this upload was queued. */
+  videoUploadMode?: VideoUploadMode;
 }
 
 export type DroppedPathRejectionReason = 'directory' | 'missing' | 'unreadable' | 'unsupported';

@@ -56,6 +56,7 @@ struct PromptSecret {
 }
 
 const PROMPT_SECRET_TTL: Duration = Duration::from_secs(5 * 60);
+const MEDIA_OPERATION_TTL: Duration = Duration::from_secs(4 * 60 * 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationClass {
@@ -206,6 +207,11 @@ impl CryptoState {
             return Err(CryptoError::vault_locked());
         }
 
+        inner.operation_handles.retain(|_, operation| {
+            operation.operation_class != OperationClass::MediaStream
+                || operation.created_at.elapsed() <= MEDIA_OPERATION_TTL
+        });
+
         let handle = Self::new_unique_handle(&inner.operation_handles);
 
         inner.operation_handles.insert(
@@ -218,6 +224,50 @@ impl CryptoState {
         );
 
         Ok(handle)
+    }
+
+    /// Resolve a capability-scoped wrapping key only while the originating
+    /// vault session is current and unlocked.
+    pub fn operation_wrapping_key(
+        &self,
+        handle: OperationHandle,
+        class: OperationClass,
+    ) -> CryptoResult<SecretKey> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| CryptoError::internal("Lock poisoned"))?;
+        if inner.locked {
+            return Err(CryptoError::vault_locked());
+        }
+        inner.operation_handles.retain(|_, operation| {
+            operation.operation_class != OperationClass::MediaStream
+                || operation.created_at.elapsed() <= MEDIA_OPERATION_TTL
+        });
+        let operation = inner
+            .operation_handles
+            .get(&handle)
+            .ok_or_else(CryptoError::vault_locked)?;
+        if operation.operation_class != class || inner.current_session != Some(operation.session_id)
+        {
+            return Err(CryptoError::vault_locked());
+        }
+        let session_id = operation.session_id;
+        let key = inner
+            .sessions
+            .get(&session_id)
+            .map(|session| session.wrapping_key.clone())
+            .ok_or_else(CryptoError::vault_locked)?;
+        inner.last_activity = Instant::now();
+        drop(inner);
+        self.signal_auto_lock_change();
+        Ok(key)
+    }
+
+    pub fn revoke_operation_handle(&self, handle: OperationHandle) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.operation_handles.remove(&handle);
+        }
     }
 
     /// Get the wrapping key for a session.
@@ -528,6 +578,27 @@ mod tests {
             .unwrap();
         state.lock();
         assert!(state.consume_prompt_secret(token).is_err());
+    }
+
+    #[test]
+    fn media_operation_handles_are_session_scoped_and_revoked_on_lock() {
+        let state = CryptoState::new(Box::new(MemoryVault::new()));
+        let session = state.create_vault(b"test passphrase").unwrap();
+        let media = state
+            .create_operation_handle(session, OperationClass::MediaStream)
+            .unwrap();
+
+        assert!(state
+            .operation_wrapping_key(media, OperationClass::MediaStream)
+            .is_ok());
+        assert!(state
+            .operation_wrapping_key(media, OperationClass::Download)
+            .is_err());
+
+        state.lock();
+        assert!(state
+            .operation_wrapping_key(media, OperationClass::MediaStream)
+            .is_err());
     }
 
     #[test]

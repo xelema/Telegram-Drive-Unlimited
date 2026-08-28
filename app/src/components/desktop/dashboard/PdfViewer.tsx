@@ -17,6 +17,7 @@ const PAGE_PREFETCH_ROOT_MARGIN = '1000px 0px';
 interface StreamInfo {
     token: string;
     base_url: string;
+    operation_token?: string | null;
 }
 
 interface PdfViewerProps {
@@ -95,7 +96,10 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
                 return;
             }
             const folderIdParam = activeFolderId !== null ? activeFolderId.toString() : 'home';
-            const streamUrl = `${streamInfo.base_url}/stream/${folderIdParam}/${file.id}?token=${streamInfo.token}`;
+            const credential = streamInfo.operation_token
+                ? `&credential=${encodeURIComponent(streamInfo.operation_token)}`
+                : '';
+            const streamUrl = `${streamInfo.base_url}/stream/${folderIdParam}/${file.id}?token=${encodeURIComponent(streamInfo.token)}${credential}`;
             activeLoadingTask = pdfjsLib.getDocument(streamUrl);
             activeLoadingTask.promise.then(finishPdfLoad, (err) => {
                 if (cancelled) return;

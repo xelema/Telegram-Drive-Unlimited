@@ -61,6 +61,7 @@ const STRING_VALUES: &[(&str, &[&str])] = &[
     ("viewMode", &["grid", "list"]),
     ("fileSortField", &["name", "size", "date"]),
     ("fileSortDirection", &["asc", "desc"]),
+    ("videoUploadMode", &["file", "media"]),
     (
         "language",
         &[
@@ -444,6 +445,7 @@ mod tests {
             "viewMode": "list",
             "fileSortField": "date",
             "fileSortDirection": "desc",
+            "videoUploadMode": "media",
             "language": "ja",
             "maxConcurrentUploads": 8,
             "encryptionProtectMetadata": true
@@ -471,6 +473,7 @@ mod tests {
         assert!(sanitize_settings(json!({ "viewMode": "tiles" })).is_err());
         assert!(sanitize_settings(json!({ "fileSortField": "owner" })).is_err());
         assert!(sanitize_settings(json!({ "fileSortDirection": "sideways" })).is_err());
+        assert!(sanitize_settings(json!({ "videoUploadMode": "automatic" })).is_err());
         assert!(sanitize_settings(json!({ "maxConcurrentUploads": 10_000 })).is_err());
         assert!(encrypt_settings(
             json!({ "viewMode": "grid" }),

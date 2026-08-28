@@ -39,8 +39,9 @@ import { RenameFileModal } from './dashboard/RenameFileModal';
 import { DesktopAdBanner } from './dashboard/DesktopAdBanner';
 import { RemoteUploadModal } from './dashboard/RemoteUploadModal';
 import { KeyboardShortcutsDialog } from './dashboard/KeyboardShortcutsDialog';
-import { DriveConceptTour, SupporterReminderDialog } from './dashboard/DriveConceptTour';
+import { DriveConceptTour } from './dashboard/DriveConceptTour';
 import { HelpCenterDialog } from './dashboard/HelpCenterDialog';
+import { SupporterOfferDialog } from '../shared/SupporterOfferDialog';
 import { SyncDashboard } from './sync/SyncDashboard';
 import { Files, Link, Copy, Check, X, Loader2, Share2 } from 'lucide-react';
 
@@ -54,7 +55,7 @@ import { useSettings } from '../../context/SettingsContext';
 import { useConfirm } from '../../context/ConfirmContext';
 import { useSupporter } from '../../context/SupporterContext';
 import { DEFAULT_SEARCH_FILTERS, filterAndRankFiles, type FileSearchFilters } from '../../services/fileSearch';
-import { isSupporterPromptDue, shouldOfferNewSupporterPurchase, SUPPORTER_VALUE_MOMENT_EVENT } from '../../services/supporterVisibility';
+import { shouldShowSupporterPrompt, SUPPORTER_VALUE_MOMENT_EVENT, type SupporterPromptTrigger } from '../../services/supporterVisibility';
 import { markDesktopFrontendReady, markDesktopFrontendUnready, type DesktopNavigationRequest } from '../../services/desktopLifecycle';
 import { isCurrentFolderLoadChunk, mergeFileChunk, normalizeListedFile, updateFileQueryData, type FolderLoadChunk } from '../../services/fileListRefresh';
 
@@ -99,8 +100,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     const [transferCenterOpenRequest, setTransferCenterOpenRequest] = useState(0);
     const [showShortcuts, setShowShortcuts] = useState(false);
     const [showHelp, setShowHelp] = useState(false);
-    const [showSupporterReminder, setShowSupporterReminder] = useState(false);
-    const supporterPromptDueRef = useRef(false);
+    const [supporterOfferTrigger, setSupporterOfferTrigger] = useState<SupporterPromptTrigger | null>(null);
     const [createFolderRequest, setCreateFolderRequest] = useState(0);
     const [activeSmartView, setActiveSmartView] = useState<SmartView | null>('recents');
     const [searchTerm, setSearchTerm] = useState("");
@@ -180,32 +180,28 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
         };
     }, [t]);
 
-    const recordSupporterPromptShown = useCallback(() => {
-        updateSetting('supporterPromptLastShownAt', Date.now());
-    }, [updateSetting]);
-
     useEffect(() => {
         if (supporterStatus.ad_free) {
-            supporterPromptDueRef.current = false;
-            setShowSupporterReminder(false);
-            return;
+            setSupporterOfferTrigger(null);
         }
-        supporterPromptDueRef.current = settingsLoaded
-            && settings.driveTourSeen
-            && isSupporterPromptDue(supporterStatus, settings.supporterPromptLastShownAt);
-    }, [settings.driveTourSeen, settings.supporterPromptLastShownAt, settingsLoaded, supporterStatus]);
+    }, [supporterStatus.ad_free]);
+
+    const showSupporterOffer = useCallback((trigger: SupporterPromptTrigger) => {
+        if (!settingsLoaded || !settings.driveTourSeen) return;
+        if (!shouldShowSupporterPrompt(supporterStatus, settings.supporterPromptLastShownAt)) return;
+        if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+        updateSetting('supporterPromptLastShownAt', Date.now());
+        setSupporterOfferTrigger(trigger);
+    }, [settings.driveTourSeen, settings.supporterPromptLastShownAt, settingsLoaded, supporterStatus, updateSetting]);
 
     useEffect(() => {
-        const showSupporterAfterValueMoment = () => {
-            if (!supporterPromptDueRef.current) return;
-            if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
-            supporterPromptDueRef.current = false;
-            recordSupporterPromptShown();
-            setShowSupporterReminder(true);
+        const showSupporterAfterValueMoment = (event: Event) => {
+            const moment = (event as CustomEvent<{ moment?: SupporterPromptTrigger }>).detail?.moment;
+            if (moment === 'upload_completed' || moment === 'download_completed') showSupporterOffer(moment);
         };
         window.addEventListener(SUPPORTER_VALUE_MOMENT_EVENT, showSupporterAfterValueMoment);
         return () => window.removeEventListener(SUPPORTER_VALUE_MOMENT_EVENT, showSupporterAfterValueMoment);
-    }, [recordSupporterPromptShown]);
+    }, [showSupporterOffer]);
 
     useEffect(() => {
         const openSettings = (event: Event) => {
@@ -567,7 +563,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
         onRename: handleKeyboardRename,
         onShowShortcuts: () => setShowShortcuts(true),
         enabled: !previewFile && !playingFile && !pdfFile && !archiveViewFile
-            && !showMoveModal && !showSettings && !showShortcuts && !showHelp && !showSupporterReminder
+            && !showMoveModal && !showSettings && !showShortcuts && !showHelp && !supporterOfferTrigger
             && !showRemoteUpload && !shareFile && !bulkShareLinks
             && settings.driveTourSeen
     });
@@ -1102,18 +1098,16 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                 <DriveConceptTour
                     onFinish={() => updateSetting('driveTourSeen', true)}
                     onOpenHelp={() => { updateSetting('driveTourSeen', true); setShowHelp(true); }}
-                    onOpenSupporter={() => { updateSetting('driveTourSeen', true); setSettingsInitialTab('privacy'); setShowSettings(true); }}
-                    includeSupporterStep={shouldOfferNewSupporterPurchase(supporterStatus)}
-                    onSupporterShown={recordSupporterPromptShown}
                 />
             )}
 
             {showHelp && <HelpCenterDialog onClose={() => setShowHelp(false)} />}
 
-            {showSupporterReminder && (
-                <SupporterReminderDialog
-                    onClose={() => setShowSupporterReminder(false)}
-                    onOpenSupporter={() => { setShowSupporterReminder(false); setSettingsInitialTab('privacy'); setShowSettings(true); }}
+            {supporterOfferTrigger && (
+                <SupporterOfferDialog
+                    trigger={supporterOfferTrigger}
+                    onClose={() => setSupporterOfferTrigger(null)}
+                    onOpenSupporter={() => { setSupporterOfferTrigger(null); setSettingsInitialTab('privacy'); setShowSettings(true); }}
                 />
             )}
 
@@ -1121,9 +1115,10 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                 suppressed={
                     uploadQueue.some(item => ['pending', 'uploading', 'downloading', 'encrypting', 'verifying'].includes(item.status))
                     || downloadQueue.some(item => ['pending', 'cooldown', 'downloading', 'decrypting', 'verifying'].includes(item.status))
-                    || Boolean(previewFile || playingFile || pdfFile || archiveViewFile || showSettings || showMoveModal || shareFile || showRemoteUpload || showHelp || showSupporterReminder || !settings.driveTourSeen)
+                    || Boolean(previewFile || playingFile || pdfFile || archiveViewFile || showSettings || showMoveModal || shareFile || showRemoteUpload || showHelp || supporterOfferTrigger || !settings.driveTourSeen)
                 }
                 onSupport={() => { setSettingsInitialTab('privacy'); setShowSettings(true); }}
+                onManualDismiss={() => showSupporterOffer('ad_dismissed')}
             />
 
             {shareFile && (

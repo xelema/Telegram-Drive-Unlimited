@@ -72,7 +72,8 @@ describe('Android sponsor visibility', () => {
   });
 
   it('returns 15 minutes after the user closes it', async () => {
-    render(<AdsterraBanner visible />);
+    const onManualDismiss = vi.fn();
+    render(<AdsterraBanner visible onManualDismiss={onManualDismiss} />);
     await screen.findByRole('complementary', { name: /sponsored content/i });
 
     vi.useFakeTimers();
@@ -80,12 +81,23 @@ describe('Android sponsor visibility', () => {
     fireEvent.click(screen.getByRole('button', { name: /close ad/i }));
     await act(async () => { await vi.advanceTimersByTimeAsync(300); });
     expect(screen.queryByRole('complementary', { name: /sponsored content/i })).toBeNull();
+    expect(onManualDismiss).toHaveBeenCalledOnce();
 
     await act(async () => { await vi.advanceTimersByTimeAsync(15 * 60 * 1_000 - 301); });
     expect(screen.queryByRole('complementary', { name: /sponsored content/i })).toBeNull();
     await act(async () => { await vi.advanceTimersByTimeAsync(1); });
     expect(screen.getByRole('complementary', { name: /sponsored content/i })).toBeTruthy();
     expect(store.set).toHaveBeenCalledWith('adBannerDismissedAt', expect.any(Number));
+  });
+
+  it('provides a separate lifetime ad-free action', async () => {
+    const onSupport = vi.fn();
+    render(<AdsterraBanner visible onSupport={onSupport} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove ads forever for $5 once' }));
+
+    expect(onSupport).toHaveBeenCalledOnce();
+    expect(openSponsorLink).not.toHaveBeenCalled();
   });
 
   it('migrates a legacy permanent dismissal into a 15-minute cooldown', async () => {

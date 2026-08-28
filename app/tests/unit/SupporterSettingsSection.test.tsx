@@ -12,7 +12,9 @@ const supporter = vi.hoisted(() => ({
     expires_at: null,
     offline_until: null,
     recovery_code_saved: false,
+    checkout_pending: false,
   },
+  latestRecoveryCode: null as string | null,
   beginCheckout: vi.fn(),
   pollCheckout: vi.fn(),
   activate: vi.fn(),
@@ -36,7 +38,9 @@ afterEach(() => {
     expires_at: null,
     offline_until: null,
     recovery_code_saved: false,
+    checkout_pending: false,
   };
+  supporter.latestRecoveryCode = null;
 });
 
 describe('SupporterSettingsSection', () => {
@@ -79,6 +83,16 @@ describe('SupporterSettingsSection', () => {
     expect(screen.getByText(/do not pay again/i)).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Refresh verification' })).toBeTruthy();
     expect(screen.getByText('Already supported? Restore with a recovery code')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Get lifetime ad-free · $5' })).toBeNull();
+  });
+
+  it('resumes a pending checkout without offering another payment', () => {
+    supporter.status = { ...supporter.status, checkout_pending: true };
+
+    render(<SupporterSettingsSection />);
+
+    expect(screen.getByText('Waiting for PayPal confirmation')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Check payment' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Get lifetime ad-free · $5' })).toBeNull();
   });
 });

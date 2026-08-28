@@ -2,10 +2,13 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SupporterProvider, useSupporter, type SupporterStatus } from '../../src/context/SupporterContext';
 
-const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
+const { invokeMock, platformType } = vi.hoisted(() => ({
+  invokeMock: vi.fn(),
+  platformType: { current: 'android' },
+}));
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
-vi.mock('@tauri-apps/plugin-os', () => ({ type: () => 'android' }));
+vi.mock('@tauri-apps/plugin-os', () => ({ type: () => platformType.current }));
 
 const pendingStatus: SupporterStatus = {
   state: 'inactive',
@@ -27,6 +30,7 @@ function StatusProbe() {
 describe('SupporterProvider Android checkout recovery', () => {
   beforeEach(() => {
     invokeMock.mockReset();
+    platformType.current = 'android';
   });
 
   it('polls a pending checkout restored during application startup', async () => {
@@ -66,5 +70,21 @@ describe('SupporterProvider Android checkout recovery', () => {
     render(<SupporterProvider><StatusProbe /></SupporterProvider>);
 
     expect(await screen.findByText('active:settled:RECOVERY-CODE')).toBeTruthy();
+  });
+
+  it('also resumes a pending checkout on desktop', async () => {
+    platformType.current = 'macos';
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'cmd_get_supporter_status') return Promise.resolve(pendingStatus);
+      if (command === 'cmd_poll_supporter_checkout') {
+        return Promise.resolve({ status: 'pending', recovery_code: null, message: 'Waiting' });
+      }
+      return Promise.reject(new Error(`Unexpected command: ${command}`));
+    });
+
+    render(<SupporterProvider><StatusProbe /></SupporterProvider>);
+
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('cmd_poll_supporter_checkout'));
+    expect(screen.getByText('inactive:pending:none')).toBeTruthy();
   });
 });

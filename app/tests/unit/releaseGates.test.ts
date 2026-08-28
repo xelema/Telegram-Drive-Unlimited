@@ -35,6 +35,10 @@ describe('release safety gates', () => {
     expect(android).toContain('Require protected signing for production');
     expect(android).toContain('ANDROID_SIGNING_CERT_SHA256');
     expect(android).toContain('bash scripts/package-android-release.sh');
+    expect(android).toContain("'system-images;android-24;google_apis;x86_64'");
+    expect(android).toContain("ANDROID_EMULATOR_API: '24'");
+    expect(android).toContain(':app:assembleArm64Release');
+    expect(android).toContain('-x :app:rustBuildArm64Release');
     expect(android).toContain("if: env.HAS_ANDROID_SIGNING_KEY == 'true'");
     expect(release).not.toContain('uses: ./.github/workflows/android.yml');
     expect(release).not.toContain('telegram-drive-android-signed');

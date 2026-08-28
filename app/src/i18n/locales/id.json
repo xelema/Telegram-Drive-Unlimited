@@ -133,6 +133,10 @@
     "max_uploads_desc": "Max parallel uploads",
     "max_downloads_desc": "Max parallel downloads",
     "zip_folders_desc": "Compress folders into .zip before uploading",
+    "video_upload_default": "Unggahan video default",
+    "video_upload_desc": "Media mengaktifkan pratinjau Telegram untuk MP4, M4V, dan MOV. Video terlindungi selalu menggunakan File.",
+    "video_upload_file": "File",
+    "video_upload_media": "Media",
     "performance_compatibility": "Performance & Compatibility",
     "performance_mode_desc": "Disable blur, heavy shadows & animations",
     "linux_rendering_desc": "Disable DMA-BUF renderer (fixes GPU crashes, requires restart)",
@@ -604,5 +608,23 @@
     "continue_to_files": "Continue to files",
     "browser_note": "Sponsored content opens in your browser. You only see this gateway once.",
     "close_ad": "Close ad"
+  },
+  "supporter_offer": {
+    "eyebrow": "Dukung Telegram Drive",
+    "ad_dismissed_title": "Bosan dengan iklan? Bayar $5 sekali dan hentikan semua iklan selamanya!",
+    "upload_completed_title": "Menikmati unggahan lancar? Gunakan Telegram Drive tanpa iklan",
+    "download_completed_title": "Unduhan Anda siap—jadikan transfer berikutnya bebas iklan",
+    "close_label": "Tutup penawaran pendukung",
+    "price": "$5",
+    "price_suffix": "USD sekali saja",
+    "description": "Satu pembayaran terverifikasi menghapus semua iklan sponsor dari Telegram Drive selamanya—tanpa langganan dan biaya berulang.",
+    "free_features": "Semua fitur tetap gratis, baik Anda mendukung maupun tidak.",
+    "benefit_lifetime": "Tanpa iklan sponsor selamanya",
+    "benefit_devices": "Aktifkan hingga 3 perangkat yang didukung",
+    "benefit_updates": "Pembaruan biasa tetap mempertahankan aktivasi",
+    "project_support": "Dukungan satu kali Anda membantu membiayai pemeliharaan dan pengembangan berkelanjutan.",
+    "privacy_note": "PayPal memproses pembayaran. Telegram Drive tidak pernah menerima atau menyimpan detail kartu maupun email PayPal Anda.",
+    "secondary_action": "Nanti saja",
+    "primary_action": "Lihat detail pendukung"
   }
 }

@@ -213,6 +213,7 @@ mod tests {
             save_path: None,
             protection_mode: None,
             protect_metadata: None,
+            video_upload_mode: None,
             temp_zip_path: None,
             progress: 0,
             transferred_bytes: 0,

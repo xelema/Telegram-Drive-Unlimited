@@ -133,6 +133,10 @@
     "max_uploads_desc": "Max parallel uploads",
     "max_downloads_desc": "Max parallel downloads",
     "zip_folders_desc": "Compress folders into .zip before uploading",
+    "video_upload_default": "Envoi vidéo par défaut",
+    "video_upload_desc": "Média active les aperçus Telegram pour MP4, M4V et MOV. Les vidéos protégées utilisent toujours Fichier.",
+    "video_upload_file": "Fichier",
+    "video_upload_media": "Média",
     "performance_compatibility": "Performance & Compatibility",
     "performance_mode_desc": "Disable blur, heavy shadows & animations",
     "linux_rendering_desc": "Disable DMA-BUF renderer (fixes GPU crashes, requires restart)",
@@ -604,5 +608,23 @@
     "continue_to_files": "Continue to files",
     "browser_note": "Sponsored content opens in your browser. You only see this gateway once.",
     "close_ad": "Close ad"
+  },
+  "supporter_offer": {
+    "eyebrow": "Soutenez Telegram Drive",
+    "ad_dismissed_title": "Marre des publicités ? Payez $5 une seule fois pour ne plus jamais en voir !",
+    "upload_completed_title": "Vous appréciez les envois fluides ? Gardez Telegram Drive sans publicité",
+    "download_completed_title": "Votre téléchargement est prêt — gardez les prochains transferts sans publicité",
+    "close_label": "Fermer l’offre de soutien",
+    "price": "$5",
+    "price_suffix": "USD une seule fois",
+    "description": "Un paiement vérifié supprime à vie toutes les publicités de sponsors dans Telegram Drive, sans abonnement ni frais récurrents.",
+    "free_features": "Toutes les fonctionnalités restent gratuites, avec ou sans soutien.",
+    "benefit_lifetime": "Aucune publicité de sponsor à vie",
+    "benefit_devices": "Activez jusqu’à 3 appareils compatibles",
+    "benefit_updates": "Les mises à jour normales conservent l’activation",
+    "project_support": "Votre soutien unique contribue au financement de la maintenance et du développement continus.",
+    "privacy_note": "PayPal traite le paiement. Telegram Drive ne reçoit ni ne conserve les données de votre carte ou votre adresse PayPal.",
+    "secondary_action": "Pas maintenant",
+    "primary_action": "Voir les détails du soutien"
   }
 }

@@ -133,6 +133,10 @@
     "max_uploads_desc": "Max parallel uploads",
     "max_downloads_desc": "Max parallel downloads",
     "zip_folders_desc": "Compress folders into .zip before uploading",
+    "video_upload_default": "默认视频上传方式",
+    "video_upload_desc": "媒体模式可为 MP4、M4V 和 MOV 启用 Telegram 预览。受保护的视频始终使用文件模式。",
+    "video_upload_file": "文件",
+    "video_upload_media": "媒体",
     "performance_compatibility": "Performance & Compatibility",
     "performance_mode_desc": "Disable blur, heavy shadows & animations",
     "linux_rendering_desc": "Disable DMA-BUF renderer (fixes GPU crashes, requires restart)",
@@ -604,5 +608,23 @@
     "continue_to_files": "Continue to files",
     "browser_note": "Sponsored content opens in your browser. You only see this gateway once.",
     "close_ad": "Close ad"
+  },
+  "supporter_offer": {
+    "eyebrow": "支持 Telegram Drive",
+    "ad_dismissed_title": "厌倦广告了吗？一次支付 $5，永久告别所有广告！",
+    "upload_completed_title": "喜欢流畅上传？让 Telegram Drive 保持无广告",
+    "download_completed_title": "下载已完成——让今后的传输远离广告",
+    "close_label": "关闭支持者优惠",
+    "price": "$5",
+    "price_suffix": "美元，仅需一次",
+    "description": "一次经验证的付款即可永久移除 Telegram Drive 中的所有赞助广告——无订阅、无重复收费。",
+    "free_features": "无论是否支持，所有功能始终免费。",
+    "benefit_lifetime": "终身无赞助广告",
+    "benefit_devices": "最多激活 3 台受支持设备",
+    "benefit_updates": "正常更新后仍保持激活",
+    "project_support": "您的一次性支持将帮助持续维护和开发。",
+    "privacy_note": "付款由 PayPal 处理。Telegram Drive 不会接收或存储您的银行卡信息或 PayPal 邮箱。",
+    "secondary_action": "暂时不要",
+    "primary_action": "查看支持者详情"
   }
 }
