@@ -29,6 +29,7 @@ interface PreviewProgress {
 interface StreamInfo {
   token: string;
   base_url: string;
+  operation_token?: string | null;
 }
 
 function errorMessage(error: unknown): string {
@@ -45,6 +46,8 @@ export function MobileMediaPlayer({ file, activeFolderId, onClose, preferences }
   const [usingDownloadFallback, setUsingDownloadFallback] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
+  const isVideo = isVideoFile(file.name, file.mime_type);
+  const isAudio = isAudioFile(file.name, file.mime_type);
 
   useEffect(() => {
     let cancelled = false;
@@ -86,16 +89,19 @@ export function MobileMediaPlayer({ file, activeFolderId, onClose, preferences }
     };
 
     const prepare = async () => {
-      if (isVideoFile(file.name) && !usingDownloadFallback) {
+      if ((isVideo || isAudio) && !usingDownloadFallback) {
         try {
           const streamInfo = await invoke<StreamInfo>('cmd_get_stream_info');
           if (cancelled) return;
           const folder = activeFolderId === null ? 'home' : String(activeFolderId);
-          const streamUrl = `${streamInfo.base_url}/stream/${folder}/${file.id}?token=${encodeURIComponent(streamInfo.token)}`;
+          const credential = streamInfo.operation_token ? `&credential=${encodeURIComponent(streamInfo.operation_token)}` : '';
+          const streamUrl = `${streamInfo.base_url}/stream/${folder}/${file.id}?token=${encodeURIComponent(streamInfo.token)}${credential}`;
           await invoke('cmd_open_android_stream_player', {
             streamUrl,
             title: file.name,
-            mimeType: file.mime_type || 'video/*',
+            mimeType: file.mime_type && file.mime_type !== 'application/octet-stream'
+              ? file.mime_type
+              : isVideo ? 'video/*' : 'audio/*',
             mediaId: `${activeFolderId ?? 'home'}:${file.id}`,
             preferencesJson: JSON.stringify(preferences ?? {
               privateMetadata: true,
@@ -124,7 +130,7 @@ export function MobileMediaPlayer({ file, activeFolderId, onClose, preferences }
       videoRef.current?.pause();
       audioRef.current?.pause();
     };
-  }, [activeFolderId, attempt, file.id, file.mime_type, file.name, onClose, preferences, usingDownloadFallback]);
+  }, [activeFolderId, attempt, file.id, file.mime_type, file.name, isAudio, isVideo, onClose, preferences, usingDownloadFallback]);
 
   const retry = useCallback(() => setAttempt(value => value + 1), []);
   const downloadAndPlay = useCallback(() => {
@@ -145,9 +151,6 @@ export function MobileMediaPlayer({ file, activeFolderId, onClose, preferences }
     setError('This file was downloaded, but the Android WebView cannot decode its media format. You can open it with another installed media app.');
   }, []);
 
-  const isVideo = isVideoFile(file.name);
-  const isAudio = isAudioFile(file.name);
-
   return (
     <div className="fixed inset-0 z-[220] flex flex-col bg-black" role="dialog" aria-modal="true" aria-label={`Playing ${file.name}`}>
       <header className="flex items-center justify-between gap-3 border-b border-white/10 bg-black/80 px-4 py-3 text-white">
@@ -164,8 +167,8 @@ export function MobileMediaPlayer({ file, activeFolderId, onClose, preferences }
         {loading ? (
           <div className="w-full max-w-sm text-center text-white" role="status">
             <Loader2 className="mx-auto h-9 w-9 animate-spin text-telegram-primary" aria-hidden="true" />
-            <p className="mt-4 text-sm font-medium">{isVideo ? 'Opening the Android player…' : 'Preparing media for reliable playback…'}</p>
-            <p className="mt-1 text-xs text-white/55">{isVideo ? 'Streaming securely without leaving Telegram Drive.' : 'Audio is saved to the bounded offline cache for playback.'}</p>
+            <p className="mt-4 text-sm font-medium">Opening the Android player…</p>
+            <p className="mt-1 text-xs text-white/55">Streaming securely without leaving Telegram Drive.</p>
             <div className="mt-4 h-1.5 overflow-hidden rounded-full bg-white/10">
               <div className="h-full rounded-full bg-telegram-primary transition-[width]" style={{ width: `${Math.max(progress, 2)}%` }} />
             </div>
@@ -202,7 +205,7 @@ export function MobileMediaPlayer({ file, activeFolderId, onClose, preferences }
               <button type="button" onClick={retry} className="flex items-center gap-2 rounded-xl bg-telegram-primary px-4 py-2.5 text-xs font-semibold text-white">
                 <RefreshCw className="h-4 w-4" aria-hidden="true" /> Retry
               </button>
-              {isVideo && !localPath && (
+              {(isVideo || isAudio) && !localPath && (
                 <button type="button" onClick={downloadAndPlay} className="flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-xs font-semibold text-white">
                   <Loader2 className="h-4 w-4" aria-hidden="true" /> Download fallback
                 </button>

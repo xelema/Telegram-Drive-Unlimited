@@ -1,4 +1,5 @@
-import { useRef, useState, useCallback } from 'react';
+import { useRef, useState, useCallback, useEffect, useMemo, type RefObject } from 'react';
+import { useVirtualizer, type VirtualItem } from '@tanstack/react-virtual';
 import { DownloadCloud, Trash2, Pencil, CheckSquare, X, Check, FolderInput, MoreVertical, Eye, Link, Copy, Pin, PinOff } from 'lucide-react';
 import { FileTypeIcon } from '../shared/FileTypeIcon';
 import { ActionPopover, ActionItem } from './ActionPopover';
@@ -25,9 +26,11 @@ interface TouchFileListProps {
   onRemoveOffline?: (file: TelegramFile) => void;
   folders: TelegramFolder[];
   activeFolderId: number | null;
+  scrollElementRef: RefObject<HTMLElement | null>;
+  disableVirtualization?: boolean;
 }
 
-export function TouchFileList({ files, isLoading, onDownload, onDelete, onPreview, onRename, selectedIds, onToggleSelection, onSelectAll, onClearSelection, onBulkDelete, onBulkDownload, onBulkMove, onBulkShare, onShare, onCopyTelegramLink, onKeepOffline, onRemoveOffline, folders, activeFolderId }: TouchFileListProps) {
+export function TouchFileList({ files, isLoading, onDownload, onDelete, onPreview, onRename, selectedIds, onToggleSelection, onSelectAll, onClearSelection, onBulkDelete, onBulkDownload, onBulkMove, onBulkShare, onShare, onCopyTelegramLink, onKeepOffline, onRemoveOffline, folders, activeFolderId, scrollElementRef, disableVirtualization = false }: TouchFileListProps) {
   const [selectionMode, setSelectionMode] = useState(false);
   const [showMovePicker, setShowMovePicker] = useState(false);
   const [actionMenuFile, setActionMenuFile] = useState<TelegramFile | null>(null);
@@ -37,7 +40,45 @@ export function TouchFileList({ files, isLoading, onDownload, onDelete, onPrevie
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressPosRef = useRef<{ x: number; y: number } | null>(null);
   const longPressFiredRef = useRef(false);
+  const listRef = useRef<HTMLDivElement>(null);
+  const [scrollMargin, setScrollMargin] = useState(0);
   const LONG_PRESS_DURATION = 500;
+  const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+
+  useEffect(() => {
+    const updateScrollMargin = () => {
+      const list = listRef.current;
+      const scrollElement = scrollElementRef.current;
+      if (!list || !scrollElement) return;
+      const listRect = list.getBoundingClientRect();
+      const scrollRect = scrollElement.getBoundingClientRect();
+      setScrollMargin(listRect.top - scrollRect.top + scrollElement.scrollTop);
+    };
+    updateScrollMargin();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateScrollMargin);
+    if (listRef.current) {
+      observer?.observe(listRef.current);
+      if (listRef.current.parentElement) observer?.observe(listRef.current.parentElement);
+    }
+    if (scrollElementRef.current) observer?.observe(scrollElementRef.current);
+    window.addEventListener('resize', updateScrollMargin);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', updateScrollMargin);
+    };
+  }, [files.length, isSelectionActive, scrollElementRef]);
+
+  const rowVirtualizer = useVirtualizer({
+    enabled: !disableVirtualization,
+    count: files.length,
+    getScrollElement: () => scrollElementRef.current,
+    estimateSize: () => 82,
+    overscan: 10,
+    gap: 10,
+    paddingEnd: 80,
+    getItemKey: index => files[index]?.id ?? index,
+    scrollMargin,
+  });
 
   // Long-press handlers — defined BEFORE any early returns to satisfy Rules of Hooks.
   // On Android, long-press opens the action popover (file options menu).
@@ -132,6 +173,85 @@ export function TouchFileList({ files, isLoading, onDownload, onDelete, onPrevie
     });
     return actions;
   }, [onPreview, onDownload, onRename, onDelete, onShare, onCopyTelegramLink, onKeepOffline, onRemoveOffline, folders, activeFolderId]);
+
+  const renderFileRow = (file: TelegramFile, index: number, virtualRow?: VirtualItem) => {
+    const isSelected = selectedIdSet.has(file.id);
+    return (
+      <div
+        key={file.id}
+        data-index={virtualRow ? index : undefined}
+        ref={virtualRow ? rowVirtualizer.measureElement : undefined}
+        role="button"
+        tabIndex={0}
+        onPointerDown={(e) => handlePointerDown(e, file)}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+        onClick={() => {
+          if (longPressFiredRef.current) {
+            longPressFiredRef.current = false;
+            return;
+          }
+          if (isSelectionActive) onToggleSelection(file.id);
+          else onPreview(file);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            if (isSelectionActive) onToggleSelection(file.id);
+            else onPreview(file);
+          }
+        }}
+        style={virtualRow ? {
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100%',
+          transform: `translateY(${virtualRow.start - scrollMargin}px)`,
+        } : undefined}
+        className={`flex items-center justify-between p-3.5 rounded-2xl bg-telegram-hover/15 border transition-all duration-200 cursor-pointer active:bg-telegram-hover/35 ${
+          isSelected ? 'border-telegram-primary/50 bg-telegram-primary/10' : 'border-telegram-border/20'
+        }`}
+      >
+        <div className="flex items-center gap-3.5 min-w-0">
+          {isSelectionActive && (
+            <div className={`flex-shrink-0 w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all duration-200 ${
+              isSelected
+                ? 'bg-telegram-primary border-telegram-primary text-black'
+                : 'border-telegram-border/50 bg-transparent'
+            }`}>
+              {isSelected && <Check className="w-3.5 h-3.5" />}
+            </div>
+          )}
+          <div className="flex-shrink-0">
+            <FileTypeIcon filename={file.name} />
+          </div>
+          <div className="min-w-0">
+            <p className="text-xs font-semibold text-telegram-text truncate max-w-[150px] leading-snug">{file.name}</p>
+            <div className="flex items-center gap-2 mt-1">
+              <span className="text-[10px] text-telegram-subtext/80 font-medium font-mono">{file.sizeStr}</span>
+              <span className="w-1 h-1 bg-telegram-border rounded-full" />
+              <span className="text-[10px] text-telegram-subtext/80 font-medium">{file.created_at || 'Sync'}</span>
+            </div>
+          </div>
+        </div>
+
+        {!isSelectionActive && (
+          <button
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              setActionMenuFile(file);
+            }}
+            className="flex-shrink-0 p-2 rounded-xl hover:bg-telegram-hover/40 active:bg-telegram-hover/60 text-telegram-subtext/60 hover:text-telegram-subtext transition-all duration-200"
+            aria-label={`Actions for ${file.name}`}
+          >
+            <MoreVertical className="w-4 h-4" aria-hidden="true" />
+          </button>
+        )}
+      </div>
+    );
+  };
 
   return (
     <>
@@ -281,83 +401,15 @@ export function TouchFileList({ files, isLoading, onDownload, onDelete, onPrevie
           )}
 
           {/* File list — no more swipeable list, just tap-friendly rows with ⋮ menu */}
-          <div className="space-y-2.5 pb-20">
-            {files.map((file) => {
-              const isSelected = selectedIds.includes(file.id);
-
-              return (
-                <div
-                  key={file.id}
-                  role="button"
-                  tabIndex={0}
-                  onPointerDown={(e) => handlePointerDown(e, file)}
-                  onPointerMove={handlePointerMove}
-                  onPointerUp={handlePointerUp}
-                  onPointerCancel={handlePointerUp}
-                  onClick={() => {
-                    // If long-press just fired, skip the click — the ActionPopover is already open
-                    if (longPressFiredRef.current) {
-                      longPressFiredRef.current = false;
-                      return;
-                    }
-                    if (isSelectionActive) {
-                      onToggleSelection(file.id);
-                    } else {
-                      onPreview(file);
-                    }
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.preventDefault();
-                      if (isSelectionActive) onToggleSelection(file.id);
-                      else onPreview(file);
-                    }
-                  }}
-                  className={`flex items-center justify-between p-3.5 rounded-2xl bg-telegram-hover/15 border transition-all duration-200 cursor-pointer active:bg-telegram-hover/35 ${
-                    isSelected ? 'border-telegram-primary/50 bg-telegram-primary/10' : 'border-telegram-border/20'
-                  }`}
-                >
-                  <div className="flex items-center gap-3.5 min-w-0">
-                    {/* Selection checkbox in selection mode */}
-                    {isSelectionActive && (
-                      <div className={`flex-shrink-0 w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all duration-200 ${
-                        isSelected
-                          ? 'bg-telegram-primary border-telegram-primary text-black'
-                          : 'border-telegram-border/50 bg-transparent'
-                      }`}>
-                        {isSelected && <Check className="w-3.5 h-3.5" />}
-                      </div>
-                    )}
-                    <div className="flex-shrink-0">
-                      <FileTypeIcon filename={file.name} />
-                    </div>
-                    <div className="min-w-0">
-                      <p className="text-xs font-semibold text-telegram-text truncate max-w-[150px] leading-snug">{file.name}</p>
-                      <div className="flex items-center gap-2 mt-1">
-                        <span className="text-[10px] text-telegram-subtext/80 font-medium font-mono">{file.sizeStr}</span>
-                        <span className="w-1 h-1 bg-telegram-border rounded-full" />
-                        <span className="text-[10px] text-telegram-subtext/80 font-medium">{file.created_at || 'Sync'}</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* ⋮ menu button — replaces swipe gesture */}
-                  {!isSelectionActive && (
-                    <button
-                      onPointerDown={(e) => e.stopPropagation()}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setActionMenuFile(file);
-                      }}
-                      className="flex-shrink-0 p-2 rounded-xl hover:bg-telegram-hover/40 active:bg-telegram-hover/60 text-telegram-subtext/60 hover:text-telegram-subtext transition-all duration-200"
-                      aria-label="File actions"
-                    >
-                      <MoreVertical className="w-4 h-4" />
-                    </button>
-                  )}
-                </div>
-              );
-            })}
+          <div
+            ref={listRef}
+            className={disableVirtualization ? 'space-y-2.5' : 'relative'}
+            style={disableVirtualization ? undefined : { height: `${rowVirtualizer.getTotalSize()}px` }}
+          >
+            {disableVirtualization
+              ? files.map((file, index) => renderFileRow(file, index))
+              : rowVirtualizer.getVirtualItems().map((virtualRow) =>
+                renderFileRow(files[virtualRow.index], virtualRow.index, virtualRow))}
           </div>
         </>
       )}

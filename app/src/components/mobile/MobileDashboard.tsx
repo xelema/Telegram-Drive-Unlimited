@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
-import { Folder, Download, Menu, LogOut, RefreshCw, UploadCloud, MoreVertical, Trash2, Pencil, Globe, Shield, Lock, ChevronDown, Share2, Link, Copy, Check, X, Loader2, Wifi, Activity, Zap, Eye, EyeOff, HelpCircle, ExternalLink, Pause, Play, RotateCcw, CheckCircle2, Database } from 'lucide-react';
+import { Folder, Download, Menu, LogOut, RefreshCw, UploadCloud, MoreVertical, Trash2, Pencil, Globe, Shield, Lock, ChevronDown, Share2, Link, Copy, Check, X, Loader2, Wifi, Activity, Zap, Eye, EyeOff, HelpCircle, ExternalLink, Pause, Play, RotateCcw, CheckCircle2, Database, Heart } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
@@ -17,6 +17,7 @@ import { ShareDialog } from '../desktop/dashboard/ShareDialog';
 import { RenameFolderSheet } from './RenameFolderSheet';
 import { MobileMediaPlayer } from './MobileMediaPlayer';
 import { MobileSupporterCard } from './MobileSupporterCard';
+import { SupporterOfferDialog } from '../shared/SupporterOfferDialog';
 import { usePlatform } from '../../hooks/usePlatform';
 import { useTelegramConnection } from '../../hooks/useTelegramConnection';
 import { useFileUpload } from '../../hooks/useFileUpload';
@@ -28,6 +29,7 @@ import { PreviewModal } from '../desktop/dashboard/PreviewModal';
 import { useTheme } from '../../context/ThemeContext';
 import { TelegramFile, TelegramFolder, ShareInfo, BandwidthStats } from '../../types';
 import { useSettings } from '../../context/SettingsContext';
+import { useSupporter } from '../../context/SupporterContext';
 import { version as appVersion } from '../../../package.json';
 import { LANGUAGES } from '../../i18n/languages';
 import { useTranslation } from 'react-i18next';
@@ -35,6 +37,13 @@ import { useConfirm } from '../../context/ConfirmContext';
 import { BandwidthWidget } from '../desktop/dashboard/BandwidthWidget';
 import type { OfflineCacheStatus } from '../../types';
 import { evaluateAndroidTransferPolicy, type AndroidTransferEnvironment } from '../../services/androidTransferPolicy';
+import { effectiveVideoUploadMode } from '../../services/videoUploadMode';
+import {
+  shouldOfferNewSupporterPurchase,
+  shouldShowSupporterPrompt,
+  SUPPORTER_VALUE_MOMENT_EVENT,
+  type SupporterPromptTrigger,
+} from '../../services/supporterVisibility';
 
 interface AndroidPlaybackHistoryEntry {
   mediaId: string;
@@ -65,6 +74,7 @@ function MobileSettingToggle({ checked, label, description, onChange }: {
 }
 
 export default function MobileDashboard({ onLogout }: { onLogout?: () => void }) {
+  const scrollRootRef = useRef<HTMLElement>(null);
   const { t } = useTranslation();
   const { confirm } = useConfirm();
   const queryClient = useQueryClient();
@@ -73,7 +83,9 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
   const { isAndroid, isTelevision } = usePlatform();
   const { theme } = useTheme();
   const { settings, updateSetting, isLoaded: settingsLoaded } = useSettings();
+  const { status: supporterStatus } = useSupporter();
   const [showHelp, setShowHelp] = useState(false);
+  const [supporterOfferTrigger, setSupporterOfferTrigger] = useState<SupporterPromptTrigger | null>(null);
 
   // ── Android deep-link listener (https://t.me/ links) ──────────────────
   useEffect(() => {
@@ -103,6 +115,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
         unlisten = await listen<{ count: number }>('share-received', (event) => {
           const count = event.payload?.count ?? 0;
           if (count > 0) {
+            void queryClient.invalidateQueries({ queryKey: ['cached-files'] });
             const label = count === 1 ? '1 file' : `${count} files`;
             toast.success(`${label} received! Ready to upload.`, { duration: 4000 });
           }
@@ -112,7 +125,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
       }
     })();
     return () => { unlisten?.(); };
-  }, [isAndroid]);
+  }, [isAndroid, queryClient]);
 
   // ── Android cold-start share check ────────────────────────────────────
   useEffect(() => {
@@ -121,6 +134,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
       try {
         const count = await invoke<number>('cmd_get_pending_share_count');
         if (count > 0) {
+          void queryClient.invalidateQueries({ queryKey: ['cached-files'] });
           const label = count === 1 ? '1 file' : `${count} files`;
           toast.success(`${label} received! Ready to upload.`, { duration: 4000 });
         }
@@ -129,7 +143,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
         console.warn('[Share] Cold-start check failed (may be expected):', e);
       }
     })();
-  }, [isAndroid]);
+  }, [isAndroid, queryClient]);
 
   // Sync proxy settings to backend whenever they change
   useEffect(() => {
@@ -165,9 +179,22 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
     queryKey: ['android-transfer-environment'],
     queryFn: () => invoke<AndroidTransferEnvironment>('cmd_get_android_transfer_environment'),
     enabled: isAndroid,
-    refetchInterval: isAndroid ? 10_000 : false,
+    refetchInterval: isAndroid ? 60_000 : false,
     refetchOnWindowFocus: true,
   });
+  useEffect(() => {
+    if (!isAndroid) return;
+    const handleEnvironmentChange = (event: Event) => {
+      const environment = (event as CustomEvent<AndroidTransferEnvironment>).detail;
+      if (environment && typeof environment.connected === 'boolean') {
+        queryClient.setQueryData(['android-transfer-environment'], environment);
+      } else {
+        void queryClient.invalidateQueries({ queryKey: ['android-transfer-environment'] });
+      }
+    };
+    window.addEventListener('android-environment-change', handleEnvironmentChange);
+    return () => window.removeEventListener('android-environment-change', handleEnvironmentChange);
+  }, [isAndroid, queryClient]);
   const androidTransferGate = useMemo(
     () => evaluateAndroidTransferPolicy(androidTransferEnvironment, settings),
     [androidTransferEnvironment, settings],
@@ -215,6 +242,8 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
   const [uploadingCacheFiles, setUploadingCacheFiles] = useState<Set<string>>(new Set());
   const transferIdCounter = useRef(0);
   const transferServiceRunningRef = useRef(false);
+  const transferNotificationTimerRef = useRef<number | null>(null);
+  const transferNotificationStateRef = useRef({ active: 0, progress: 0, speed: 0, paused: false });
 
   // ── Connection diagnostics state ──────────────────────────────────────
   const [checkingLatency, setCheckingLatency] = useState(false);
@@ -335,7 +364,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
   // Keep it suppressed during media, previews, dialogs, and active transfers so it
   // never covers playback controls or interrupts a bandwidth-sensitive operation.
   const adVisible = !playingFile && !pdfFile && !previewFile && !shareFile && !bulkShareLinks
-    && !showHelp && settings.driveTourSeen
+    && !showHelp && !supporterOfferTrigger && settings.driveTourSeen
     && !uploadQueue.some(item => ['pending', 'uploading', 'downloading', 'encrypting', 'verifying'].includes(item.status))
     && !downloadQueue.some(item => ['pending', 'cooldown', 'downloading', 'decrypting', 'verifying'].includes(item.status));
 
@@ -369,13 +398,25 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
 
   useEffect(() => {
     if (!isAndroid || !transferServiceRunningRef.current) return;
-    void invoke('cmd_update_foreground_service', {
+    transferNotificationStateRef.current = {
       active: foregroundItems.length,
       progress: aggregateTransferProgress,
       speed: Math.round(aggregateTransferSpeed),
       paused: foregroundItems.length === 0 && pausedUploadCount + pausedDownloadCount > 0,
-    }).catch(() => undefined);
+    };
+    if (transferNotificationTimerRef.current !== null) return;
+    transferNotificationTimerRef.current = window.setTimeout(() => {
+      transferNotificationTimerRef.current = null;
+      void invoke('cmd_update_foreground_service', transferNotificationStateRef.current).catch(() => undefined);
+    }, 750);
   }, [aggregateTransferProgress, aggregateTransferSpeed, foregroundItems.length, isAndroid, pausedDownloadCount, pausedUploadCount]);
+
+  useEffect(() => () => {
+    if (transferNotificationTimerRef.current !== null) {
+      window.clearTimeout(transferNotificationTimerRef.current);
+      transferNotificationTimerRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     if (!isAndroid) return;
@@ -419,7 +460,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
     queryKey: ['cached-files'],
     queryFn: () => invoke<CachedFileEntry[]>('cmd_list_cached_files'),
     enabled: isAndroid,
-    refetchInterval: isAndroid ? 5000 : false, // poll while app is open (lightweight)
+    refetchOnWindowFocus: true,
   });
 
   const handleUploadCachedFile = useCallback(async (entry: CachedFileEntry) => {
@@ -434,6 +475,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
         status: 'pending',
         androidStaged: true,
         protection: { mode: 'standard' },
+        videoUploadMode: effectiveVideoUploadMode(entry.file_name, { mode: 'standard' }, settings.videoUploadMode),
       }]);
       await invoke('cmd_remove_cached_path', { uri: entry.uri }).catch(() => undefined);
       await refetchCachedFiles();
@@ -447,7 +489,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
         return next;
       });
     }
-  }, [activeFolderId, refetchCachedFiles, setUploadQueue]);
+  }, [activeFolderId, refetchCachedFiles, setUploadQueue, settings.videoUploadMode]);
 
   const handleClearCachedFiles = useCallback(async () => {
     try {
@@ -495,8 +537,14 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
     queryKey: ['android-playback-history'],
     queryFn: () => invoke<AndroidPlaybackHistoryEntry[]>('cmd_get_android_playback_history'),
     enabled: isAndroid && activeTab === 'files',
-    refetchInterval: isAndroid && activeTab === 'files' ? 15_000 : false,
+    refetchOnWindowFocus: true,
   });
+  useEffect(() => {
+    if (!isAndroid) return;
+    const refreshHistory = () => void queryClient.invalidateQueries({ queryKey: ['android-playback-history'] });
+    window.addEventListener('android-playback-history-change', refreshHistory);
+    return () => window.removeEventListener('android-playback-history-change', refreshHistory);
+  }, [isAndroid, queryClient]);
   const continueWatching = useMemo(() => {
     const folderKey = String(activeFolderId ?? 'home');
     return playbackHistory.flatMap(entry => {
@@ -520,6 +568,57 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
   // Folder action menu state (replaces swipe-to-reveal)
   const [folderActionMenu, setFolderActionMenu] = useState<TelegramFolder | null>(null);
   const [renameFolder, setRenameFolder] = useState<{ id: number; name: string } | null>(null);
+
+  const openMobileSupporter = useCallback(() => {
+    setSupporterOfferTrigger(null);
+    setActiveTab('settings');
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        document.getElementById('mobile-supporter-card')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    });
+  }, []);
+
+  const showSupporterOffer = useCallback((trigger: SupporterPromptTrigger) => {
+    if (!settingsLoaded || !settings.driveTourSeen) return;
+    if (!shouldShowSupporterPrompt(supporterStatus, settings.supporterPromptLastShownAt)) return;
+    if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+    if (playingFile || pdfFile || previewFile || shareFile || bulkShareLinks || showHelp
+      || folderActionMenu || renameFolder || isSidebarOpen) return;
+
+    updateSetting('supporterPromptLastShownAt', Date.now());
+    setSupporterOfferTrigger(trigger);
+  }, [
+    bulkShareLinks,
+    folderActionMenu,
+    isSidebarOpen,
+    pdfFile,
+    playingFile,
+    previewFile,
+    renameFolder,
+    settings.driveTourSeen,
+    settings.supporterPromptLastShownAt,
+    settingsLoaded,
+    shareFile,
+    showHelp,
+    supporterStatus,
+    updateSetting,
+  ]);
+
+  useEffect(() => {
+    if (supporterStatus.ad_free) setSupporterOfferTrigger(null);
+  }, [supporterStatus.ad_free]);
+
+  useEffect(() => {
+    const handleValueMoment = (event: Event) => {
+      const moment = (event as CustomEvent<{ moment?: SupporterPromptTrigger }>).detail?.moment;
+      if (moment === 'upload_completed' || moment === 'download_completed') {
+        showSupporterOffer(moment);
+      }
+    };
+    window.addEventListener(SUPPORTER_VALUE_MOMENT_EVENT, handleValueMoment);
+    return () => window.removeEventListener(SUPPORTER_VALUE_MOMENT_EVENT, handleValueMoment);
+  }, [showSupporterOffer]);
 
   const handleFolderVisibilityToggle = useCallback(async (folder: TelegramFolder) => {
     const isPublic = folder.is_public || !!folder.username;
@@ -604,7 +703,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
   }, [handleDeleteOp]);
 
   const handlePreview = useCallback((file: TelegramFile) => {
-    if (isMediaFile(file.name)) {
+    if (isMediaFile(file.name, file.mime_type)) {
       setPlayingFile(file);
     } else if (isPdfFile(file.name)) {
       setPdfFile(file);
@@ -738,6 +837,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
     if (!isAndroid) return;
     const androidWindow = window as typeof window & { __telegramDriveHandleAndroidBack?: () => boolean };
     androidWindow.__telegramDriveHandleAndroidBack = () => {
+      if (supporterOfferTrigger) { setSupporterOfferTrigger(null); return true; }
       if (playingFile) { setPlayingFile(null); return true; }
       if (pdfFile) { setPdfFile(null); return true; }
       if (previewFile) { setPreviewFile(null); return true; }
@@ -753,7 +853,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
       return false;
     };
     return () => { delete androidWindow.__telegramDriveHandleAndroidBack; };
-  }, [activeFolderId, activeTab, bulkShareLinks, folderActionMenu, isAndroid, isSidebarOpen, pdfFile, playingFile, previewFile, renameFolder, selectedIds.length, setActiveFolderId, shareFile, showHelp]);
+  }, [activeFolderId, activeTab, bulkShareLinks, folderActionMenu, isAndroid, isSidebarOpen, pdfFile, playingFile, previewFile, renameFolder, selectedIds.length, setActiveFolderId, shareFile, showHelp, supporterOfferTrigger]);
 
   return (
     <div className={`absolute inset-0 flex flex-col bg-telegram-bg text-telegram-text overflow-hidden select-none font-sans ${isTelevision ? 'tv-shell' : ''}`}>
@@ -778,7 +878,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
       </header>
 
       {/* Main Viewport Container */}
-      <main className="flex-1 overflow-y-auto px-4 py-3 space-y-4 pb-40 scroll-smooth md:ml-[280px] md:px-8 lg:px-12">
+      <main ref={scrollRootRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-4 pb-40 scroll-smooth md:ml-[280px] md:px-8 lg:px-12">
         {activeTab === 'files' && (
           <div className="space-y-4">
             {/* Folder Header Breadcrumb */}
@@ -843,6 +943,8 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
               onBulkMove={handleBulkMove}
               folders={folders}
               activeFolderId={activeFolderId}
+              scrollElementRef={scrollRootRef}
+              disableVirtualization={isTelevision}
             />
           </div>
         )}
@@ -918,6 +1020,22 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
 
         {activeTab === 'settings' && (
           <div className="space-y-4">
+            {shouldOfferNewSupporterPurchase(supporterStatus) && !supporterStatus.checkout_pending && (
+              <button
+                type="button"
+                onClick={openMobileSupporter}
+                className="flex w-full items-center gap-3 rounded-2xl border border-telegram-primary/30 bg-gradient-to-r from-telegram-primary/15 to-telegram-hover/20 p-4 text-left shadow-sm transition-transform active:scale-[0.99]"
+              >
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-telegram-primary/20 text-telegram-primary">
+                  <Heart className="h-5 w-5" aria-hidden="true" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-xs font-bold text-telegram-text">$5 lifetime ad-free</span>
+                  <span className="mt-0.5 block text-[10px] leading-4 text-telegram-subtext">Remove sponsor ads forever. One payment, no subscription.</span>
+                </span>
+                <span className="text-lg text-telegram-primary" aria-hidden="true">›</span>
+              </button>
+            )}
             <div className="p-4 rounded-2xl bg-telegram-hover/20 border border-telegram-border/30 space-y-4">
               <h3 className="text-sm font-bold text-telegram-primary tracking-wide uppercase text-[10px]">{t('common.preferences')}</h3>
               <div className="flex items-center justify-between py-2 border-b border-telegram-border/20">
@@ -935,6 +1053,22 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
                 >
                   <span className={`absolute top-0.5 start-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.zipFolders ? 'translate-x-5 rtl:-translate-x-5' : 'translate-x-0'}`} />
                 </button>
+              </div>
+
+              <div className="flex items-center justify-between gap-3 border-b border-telegram-border/20 py-2">
+                <div>
+                  <p className="text-xs font-medium">{t('settings.video_upload_default')}</p>
+                  <p className="text-[10px] leading-4 text-telegram-subtext">{t('settings.video_upload_desc')}</p>
+                </div>
+                <select
+                  value={settings.videoUploadMode}
+                  onChange={event => updateSetting('videoUploadMode', event.target.value as 'file' | 'media')}
+                  aria-label={t('settings.video_upload_default')}
+                  className="min-h-11 shrink-0 rounded-lg border border-telegram-border bg-telegram-bg px-2 text-xs text-telegram-text"
+                >
+                  <option value="file">{t('settings.video_upload_file')}</option>
+                  <option value="media">{t('settings.video_upload_media')}</option>
+                </select>
               </div>
 
               <div className="flex items-center justify-between py-2">
@@ -1295,7 +1429,9 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
                 <Shield className="h-3 w-3" aria-hidden="true" />
                 Privacy &amp; support
               </h3>
-              <MobileSupporterCard />
+              <div id="mobile-supporter-card" className="scroll-mt-24">
+                <MobileSupporterCard />
+              </div>
               <div className="grid grid-cols-2 gap-2">
                 <button
                   type="button"
@@ -1491,7 +1627,11 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
       {/* Adsterra Banner (Android only) — z-[60] keeps it above the BottomNavBar (z-50).
            Positioned at bottom-[144px] to sit cleanly above the nav bar (~60px tall, at bottom-20=80px). */}
       <div className={`fixed bottom-[144px] left-0 right-0 z-[60] ${isTelevision ? 'tv-sponsor-placement' : ''}`}>
-        <AdsterraBanner visible={adVisible} />
+        <AdsterraBanner
+          visible={adVisible}
+          onSupport={openMobileSupporter}
+          onManualDismiss={() => showSupporterOffer('ad_dismissed')}
+        />
       </div>
 
       {/* Previews Overlays (Media, PDF & Images) */}
@@ -1540,11 +1680,19 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
         <DriveConceptTour
           onFinish={() => updateSetting('driveTourSeen', true)}
           onOpenHelp={() => { updateSetting('driveTourSeen', true); setShowHelp(true); }}
-          includeSupporterStep={false}
         />
       )}
 
       {showHelp && <HelpCenterDialog onClose={() => setShowHelp(false)} />}
+
+      {supporterOfferTrigger && (
+        <SupporterOfferDialog
+          trigger={supporterOfferTrigger}
+          presentation={isTelevision ? 'tv-dialog' : 'bottom-sheet'}
+          onClose={() => setSupporterOfferTrigger(null)}
+          onOpenSupporter={openMobileSupporter}
+        />
+      )}
 
       {/* Bulk Share Results Modal */}
       {bulkShareLinks && (
