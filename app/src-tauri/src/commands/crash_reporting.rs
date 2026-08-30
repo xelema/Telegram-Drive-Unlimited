@@ -53,16 +53,17 @@ fn validate_report(report: &CrashReportInput) -> Result<(), String> {
 /// Sends the narrow, consent-gated crash envelope with the native HTTP client so
 /// the WebView CSP never needs a broad external `connect-src` exception.
 #[tauri::command]
-pub async fn cmd_submit_crash_report(
-    endpoint: String,
-    report: CrashReportInput,
-) -> Result<(), String> {
+pub async fn cmd_submit_crash_report(report: CrashReportInput) -> Result<(), String> {
     validate_report(&report)?;
+    let endpoint = option_env!("TELEGRAM_DRIVE_CRASH_REPORT_ENDPOINT")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Crash reporting is not configured in this build".to_string())?;
     if endpoint.len() > 2_048 {
         return Err("Crash report endpoint is too long".to_string());
     }
     let url =
-        reqwest::Url::parse(&endpoint).map_err(|_| "Invalid crash report endpoint".to_string())?;
+        reqwest::Url::parse(endpoint).map_err(|_| "Invalid crash report endpoint".to_string())?;
     if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
         return Err(
             "Crash reports require an HTTPS endpoint without embedded credentials".to_string(),

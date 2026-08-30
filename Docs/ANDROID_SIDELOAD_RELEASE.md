@@ -14,7 +14,7 @@ Telegram Drive is distributed as a signed sideloaded Android application, not th
 The keystore-file SHA-256 is only a backup-integrity checksum. It is **not** the Android signing-certificate fingerprint. Obtain the certificate fingerprint from a signed APK with:
 
 ```bash
-$ANDROID_HOME/build-tools/36.0.0/apksigner verify --print-certs Telegram-Drive-v3.5.0-android-universal.apk
+$ANDROID_HOME/build-tools/36.0.0/apksigner verify --print-certs Telegram-Drive-vX.Y.Z-android-universal.apk
 ```
 
 Never change the package name or signing key for an update. Android accepts an in-place upgrade only when both remain stable and the new `versionCode` is greater.
@@ -40,9 +40,11 @@ The production workflow fails closed if Android signing, updater signing, or the
 3. Run the frontend and Rust tests.
 4. Reproduce the generated Android project and build the universal APK/AAB.
 5. Run the JNI/R8, four-ABI, 16 KB alignment, certificate, checksum, and generated-update-manifest gates.
-6. Push `vX.Y.Z`. The release workflow publishes only after the signed Android and desktop jobs pass.
+6. Run the separate **Android CI** workflow against the release commit and retain its signed `telegram-drive-android-signed` artifact after every Android gate passes.
+7. Push `vX.Y.Z` to start the desktop release workflow. That workflow does not invoke Android CI, so do not treat a passing desktop release as Android verification.
+8. Distribute the Android artifacts only after both independent workflows have passed for the same source revision.
 
-The release includes:
+The signed Android workflow artifact includes:
 
 - `Telegram-Drive-vX.Y.Z-android-universal.apk`
 - `Telegram-Drive-vX.Y.Z-android-universal.aab` (archival/device-management use)

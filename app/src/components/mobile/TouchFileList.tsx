@@ -4,6 +4,7 @@ import { DownloadCloud, Trash2, Pencil, CheckSquare, X, Check, FolderInput, More
 import { FileTypeIcon } from '../shared/FileTypeIcon';
 import { ActionPopover, ActionItem } from './ActionPopover';
 import { TelegramFile, TelegramFolder } from '../../types';
+import i18n from '../../i18n';
 
 interface TouchFileListProps {
   files: TelegramFile[];
@@ -301,7 +302,7 @@ export function TouchFileList({ files, isLoading, onDownload, onDelete, onPrevie
                   className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-[10px] font-semibold bg-telegram-hover/20 text-telegram-subtext border border-telegram-border/30 active:scale-95 transition-all duration-200"
                 >
                   <Check className="w-3 h-3" />
-                  All
+                  {i18n.t("common.all")}
                 </button>
                 <button
                   onClick={onClearSelection}
@@ -361,7 +362,7 @@ export function TouchFileList({ files, isLoading, onDownload, onDelete, onPrevie
                 onClick={e => e.stopPropagation()}
               >
                 <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-sm font-bold text-white">Move {selectedIds.length} file{selectedIds.length !== 1 ? 's' : ''} to...</h3>
+                  <h3 className="text-sm font-bold text-white">{i18n.t("files.move")} {selectedIds.length} file{selectedIds.length !== 1 ? 's' : ''} to...</h3>
                   <button
                     onClick={() => setShowMovePicker(false)}
                     className="p-1.5 rounded-lg hover:bg-white/10 text-telegram-subtext"

@@ -7,6 +7,8 @@ import { toast } from 'sonner';
 import { useConfirm } from '../context/ConfirmContext';
 import { TelegramFile } from '../types';
 import { updateFileQueryData } from '../services/fileListRefresh';
+import { userFacingError } from '../services/userFacingError';
+import { useTranslation } from 'react-i18next';
 
 export function useFileOperations(
     activeFolderId: number | null,
@@ -17,6 +19,7 @@ export function useFileOperations(
 ) {
     const queryClient = useQueryClient();
     const { confirm } = useConfirm();
+    const { t } = useTranslation();
 
     // Callbacks read current selection data without being recreated for every click.
     const selectedIdsRef = useRef(selectedIds);
@@ -41,7 +44,7 @@ export function useFileOperations(
             queryClient.invalidateQueries({ queryKey: ['files'] });
             toast.success("File deleted");
         } catch (e) {
-            toast.error(`Delete failed: ${e}`);
+            toast.error(userFacingError(e, t));
         }
     }, [activeFolderId, confirm, queryClient]);
 
@@ -183,9 +186,9 @@ export function useFileOperations(
         };
         try {
             const dirPath = await pickWithFallback(
-                () => import('@tauri-apps/plugin-dialog').then(d => d.open({
+                () => open({
                     directory: true, multiple: false, title: "Download Folder To..."
-                })),
+                }),
                 () => handleDownloadFolder(),
                 {
                     errorTitle: 'Folder picker failed',
@@ -200,7 +203,7 @@ export function useFileOperations(
             if (!dirPath) return;
             await downloadToDir(dirPath);
         } catch (e) {
-            toast.error("Error: " + e);
+            toast.error(userFacingError(e, t));
         }
     }, [activeFolderId, queueBulkDownload]);
 

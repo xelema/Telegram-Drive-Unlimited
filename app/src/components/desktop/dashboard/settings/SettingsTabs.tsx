@@ -16,6 +16,7 @@ import {
   type SettingsSyncStatus,
 } from '../../../../services/settingsSync';
 import { shouldOfferNewSupporterPurchase } from '../../../../services/supporterVisibility';
+import i18n from '../../../../i18n';
 
 const tabMotion = {
   initial: { opacity: 0 },
@@ -263,7 +264,7 @@ export function SupporterSettingsSection() {
         <Heart className="mt-0.5 h-5 w-5 shrink-0 text-app-accent" aria-hidden="true" />
         <div className="min-w-0 flex-1">
           <h3 id="supporter-settings-title" className="text-sm font-semibold text-app-text">Lifetime Ad-Free Supporter License</h3>
-          <p className="mt-1 text-xs leading-5 text-app-text-secondary">Every feature stays available in the free version. This optional license only removes desktop sponsor placements.</p>
+          <p className="mt-1 text-xs leading-5 text-app-text-secondary">Every feature stays available in the free version. This optional license only removes sponsor placements on activated supported devices.</p>
           <div className={`mt-3 rounded-lg border p-3 text-xs leading-5 ${status.ad_free ? 'border-app-success/25 bg-app-success/5 text-app-text-secondary' : status.state === 'revoked' ? 'border-app-danger/25 bg-app-danger/5 text-app-text-secondary' : 'border-app-border-subtle bg-app-surface-sunken/25 text-app-text-secondary'}`}>
             <strong className={status.ad_free ? 'text-app-success' : status.state === 'revoked' ? 'text-app-danger' : 'text-app-text'}>{statusTitle}</strong>
             <span className="mt-1 block">{status.message}</span>
@@ -277,9 +278,9 @@ export function SupporterSettingsSection() {
         <div className="mt-5 space-y-4">
           <div className="rounded-xl border border-app-accent/30 bg-app-surface p-5 text-center shadow-sm">
             <span className="text-xs font-semibold uppercase tracking-[0.16em] text-app-accent">Ad-free for life</span>
-            <div className="mt-2 text-3xl font-semibold tracking-tight text-app-text">$5 <span className="text-sm font-medium text-app-text-secondary">USD once</span></div>
+            <div className="mt-2 text-3xl font-semibold tracking-tight text-app-text">$5 <span className="text-sm font-medium text-app-text-secondary">{i18n.t("supporter_offer.price_suffix")}</span></div>
             <p className="mt-2 text-sm font-medium text-app-text">One payment. No subscription. No sponsor ads.</p>
-            <p className="mt-1 text-xs leading-5 text-app-text-secondary">Verified for up to three supported desktop devices. Normal app updates are included.</p>
+            <p className="mt-1 text-xs leading-5 text-app-text-secondary">Verified for up to three supported devices total across desktop and Android. Normal app updates are included.</p>
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2" aria-label="Free and supporter license comparison">
@@ -452,7 +453,7 @@ export function AboutSettingsTab({ appVersion, diagnosticsLoading, t, onCopyDiag
     <motion.section key="about" {...tabMotion} className="w-full space-y-4">
       <div className="flex flex-col items-center space-y-5 py-6">
         <img src="/logo.svg" className="h-16 w-16 drop-shadow-lg" alt="Telegram Drive Logo" />
-        <div className="text-center"><h3 className="text-base font-bold text-telegram-text">Telegram Drive</h3><p className="mt-0.5 text-xs text-telegram-subtext">v{appVersion}</p></div>
+        <div className="text-center"><h3 className="text-base font-bold text-telegram-text">{i18n.t("common.app_title")}</h3><p className="mt-0.5 text-xs text-telegram-subtext">v{appVersion}</p></div>
         <div className="h-px w-12 bg-telegram-border" />
         <button onClick={onCopyDiagnostics} disabled={diagnosticsLoading} className="flex items-center gap-1.5 rounded-lg border border-telegram-border bg-telegram-hover px-3 py-1.5 text-xs font-medium text-telegram-subtext transition hover:bg-telegram-border/30 hover:text-telegram-text disabled:opacity-50">
           {diagnosticsLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Clipboard className="h-3 w-3" />}

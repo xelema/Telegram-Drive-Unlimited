@@ -1,5 +1,6 @@
 import { QueueItem } from "../../../types";
 import { X, RotateCcw, AlertCircle } from "lucide-react";
+import i18n from '../../../i18n';
 
 function formatBytes(bytes: number): string {
     if (bytes === 0) return '0 B';
@@ -47,7 +48,7 @@ export function UploadQueue({ items, onClearFinished, onCancelAll, onCancelItem,
                                 {(item.url || item.path).split('/').pop()}
                             </div>
                             {(item.status === 'uploading' || item.status === 'downloading') && (
-                                <button onClick={() => onCancelItem(item.id)} className="text-gray-400 hover:text-red-400 transition-colors flex-shrink-0" title="Cancel">
+                                <button onClick={() => onCancelItem(item.id)} className="text-gray-400 hover:text-red-400 transition-colors flex-shrink-0" title={i18n.t("common.cancel")}>
                                     <X className="w-3.5 h-3.5" />
                                 </button>
                             )}
@@ -57,7 +58,7 @@ export function UploadQueue({ items, onClearFinished, onCancelAll, onCancelItem,
                                 </button>
                             )}
                             {(item.status === 'error' || item.status === 'cancelled' || item.status === 'waiting_for_unlock') && (
-                                <button onClick={() => onRetryItem(item.id)} className="text-gray-400 hover:text-blue-400 transition-colors flex-shrink-0" title="Retry">
+                                <button onClick={() => onRetryItem(item.id)} className="text-gray-400 hover:text-blue-400 transition-colors flex-shrink-0" title={i18n.t("common.retry")}>
                                     <RotateCcw className="w-3.5 h-3.5" />
                                 </button>
                             )}

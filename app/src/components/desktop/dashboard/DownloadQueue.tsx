@@ -1,5 +1,6 @@
 import { DownloadItem } from "../../../types";
 import { Download, Check, X, AlertCircle, RotateCcw } from "lucide-react";
+import i18n from '../../../i18n';
 
 function formatBytes(bytes: number): string {
     if (bytes === 0) return '0 B';
@@ -62,7 +63,7 @@ export function DownloadQueue({ items, onClearFinished, onCancelAll, onCancelIte
                                 {item.filename}
                             </div>
                             {item.status === 'downloading' && (
-                                <button onClick={() => onCancelItem(item.id)} className="text-gray-400 hover:text-red-400 transition-colors flex-shrink-0" title="Cancel">
+                                <button onClick={() => onCancelItem(item.id)} className="text-gray-400 hover:text-red-400 transition-colors flex-shrink-0" title={i18n.t("common.cancel")}>
                                     <X className="w-3.5 h-3.5" />
                                 </button>
                             )}
@@ -73,7 +74,7 @@ export function DownloadQueue({ items, onClearFinished, onCancelAll, onCancelIte
                             )}
                             {item.status === 'cooldown' && <div className="text-xs text-amber-400 mt-0.5">Telegram cooling down — resumes automatically</div>}
                             {(item.status === 'error' || item.status === 'cancelled') && (
-                                <button onClick={() => onRetryItem(item.id)} className="text-gray-400 hover:text-blue-400 transition-colors flex-shrink-0" title="Retry">
+                                <button onClick={() => onRetryItem(item.id)} className="text-gray-400 hover:text-blue-400 transition-colors flex-shrink-0" title={i18n.t("common.retry")}>
                                     <RotateCcw className="w-3.5 h-3.5" />
                                 </button>
                             )}

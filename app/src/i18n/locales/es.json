@@ -78,7 +78,9 @@
     "storage_insights": "Análisis de almacenamiento",
     "large_files": "Archivos grandes",
     "old_files": "Archivos antiguos",
-    "duplicates": "Duplicados"
+    "duplicates": "Duplicados",
+    "operation_failed": "No se pudo completar la operación. Inténtalo de nuevo o revisa la configuración relacionada.",
+    "retry": "Reintentar"
   },
   "settings": {
     "tab_sync": "Folder Sync",
@@ -139,7 +141,7 @@
     "video_upload_media": "Multimedia",
     "performance_compatibility": "Performance & Compatibility",
     "performance_mode_desc": "Disable blur, heavy shadows & animations",
-    "linux_rendering_desc": "Disable DMA-BUF renderer (fixes GPU crashes, requires restart)",
+    "linux_rendering_desc": "Usar el modo de renderizado alternativo de AppImage mediante memoria compartida (requiere reiniciar)",
     "language_region": "Language & Region",
     "app_language": "Application Language",
     "choose_language": "Choose your preferred language",
@@ -213,7 +215,7 @@
     "copy_share_link": "Copy share link",
     "revoke_link": "Revoke link",
     "copy_diagnostics": "Copy Diagnostics",
-    "tagline": "Turn your Telegram account into unlimited, secure cloud storage. Open-source and free forever.",
+    "tagline": "Un espacio de trabajo de archivos local, impulsado por tu cuenta de Telegram. De código abierto y de uso gratuito.",
     "reset_defaults": "Reset to Defaults",
     "done": "Done",
     "auto": "Auto",
@@ -535,7 +537,7 @@
     "desktop_required": "Aplicación de escritorio requerida",
     "desktop_required_desc": "Está viendo el servidor de desarrollo interno en un navegador. Esta aplicación requiere acceso al backend del sistema (Rust).",
     "open_window_prompt": "Abra la ventana de Telegram Drive en la barra de tareas de su sistema operativo para continuar.",
-    "tagline": "Almacenamiento seguro en la nube",
+    "tagline": "Espacio de trabajo local para archivos",
     "too_many_requests": "Demasiadas solicitudes",
     "flood_wait_msg": "Telegram ha limitado temporalmente sus acciones.",
     "please_wait": "Espere antes de volver a intentarlo.",

@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen }));
 vi.mock('react-i18next', () => ({
+  initReactI18next: { type: '3rdParty', init: vi.fn() },
   useTranslation: () => ({
     t: (key: string, values?: { percent?: number }) => ({
       'common.zoom_out': 'Zoom out',

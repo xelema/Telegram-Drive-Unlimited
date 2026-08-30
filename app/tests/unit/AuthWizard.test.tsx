@@ -10,6 +10,7 @@ vi.mock('@tauri-apps/plugin-store', () => ({
   load: vi.fn(async () => ({
     get: vi.fn(async () => null),
     set: vi.fn(async () => undefined),
+    delete: vi.fn(async () => undefined),
     save: vi.fn(async () => undefined),
   })),
 }));
@@ -17,6 +18,7 @@ vi.mock('../../src/context/ThemeContext', () => ({
   useTheme: () => ({ theme: 'dark', toggleTheme: vi.fn() }),
 }));
 vi.mock('react-i18next', () => ({
+  initReactI18next: { type: '3rdParty', init: vi.fn() },
   useTranslation: () => ({
     t: (key: string, values?: { seconds?: number }) => ({
       'auth.telegram_code': 'Telegram code',
@@ -71,7 +73,10 @@ describe('AuthWizard phone authentication', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
 
     await waitFor(() => expect(onLogin).toHaveBeenCalledOnce());
-    expect(invokeMock.mock.calls.map(([command]) => command)).toEqual([
+    const commands = invokeMock.mock.calls.map(([command]) => command);
+    expect(commands).toContain('cmd_load_api_hash');
+    expect(commands).toContain('cmd_store_api_hash');
+    expect(commands.filter(command => String(command).startsWith('cmd_auth_'))).toEqual([
       'cmd_auth_qr_login',
       'cmd_auth_request_code',
       'cmd_auth_sign_in',

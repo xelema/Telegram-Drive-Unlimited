@@ -40,7 +40,7 @@ interface SupporterContextValue {
 const unavailableStatus: SupporterStatus = {
   state: 'unavailable',
   ad_free: false,
-  message: 'Verified supporter activation is available in the desktop app.',
+  message: 'Verified supporter activation is available in supported desktop and Android builds.',
   terms_version: '2026-08-11',
   terms_url: null,
   expires_at: null,

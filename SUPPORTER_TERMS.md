@@ -2,11 +2,11 @@
 
 Terms version: 2026-08-11
 
-The supporter purchase is optional and is not required to use any Telegram Drive feature. Telegram Drive has no paid feature tier: a completed one-time payment activates ad-free use on up to three supported desktop devices, subject to successful entitlement verification.
+The supporter purchase is optional and is not required to use any Telegram Drive feature. Telegram Drive has no paid feature tier: a completed one-time payment activates ad-free use on up to three supported Windows, macOS, Linux, or Android devices in total, subject to successful entitlement verification.
 
 ## Activation and recovery
 
-Payment does not create a Telegram Drive account. Activation requires the desktop app to contact the Telegram Drive supporter service and receive a valid entitlement. The purchaser must keep the recovery code shown after payment. Losing every activated device and the recovery code may make restoration impossible.
+Payment does not create a Telegram Drive account. Activation requires a supported Telegram Drive app to contact the Telegram Drive supporter service and receive a valid entitlement. The purchaser must keep the recovery code shown after payment. Losing every activated device and the recovery code may make restoration impossible.
 
 ## Refunds, reversals, and disputes
 

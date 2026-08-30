@@ -149,8 +149,22 @@ Upload a file to Telegram Drive.
 * **Content-Type:** `multipart/form-data`
 
 #### Form Fields
-* `file`: Binary file content
-* `folder_id` (Optional): ID of target folder/channel
+* `file`: Exactly one binary file field, up to Telegram's 2,000,000,000-byte upload limit
+* `folder_id` (Optional): One integer target folder/channel ID; omit it for Saved Messages
+
+Unknown fields, duplicate fields, malformed multipart bodies, and path-like filenames are rejected or normalized before upload. Bandwidth is reserved atomically and released automatically if staging, Telegram upload, or message creation fails.
+
+#### Example
+
+```bash
+curl -X POST \
+  -H "X-API-Key: YOUR_API_KEY" \
+  -F "file=@./report.pdf" \
+  -F "folder_id=456" \
+  http://127.0.0.1:8550/api/v1/files
+```
+
+The endpoint returns `400` for invalid multipart fields, `413` for an oversized file, and `500` if local staging or Telegram delivery fails.
 
 #### Response (200 OK)
 ```json

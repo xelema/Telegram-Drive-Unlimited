@@ -6,9 +6,12 @@ import { useConfirm } from '../context/ConfirmContext';
 import { TelegramFolder, FolderInviteInfo, FolderGroup } from '../types';
 import { useNetworkStatus } from './useNetworkStatus';
 import { clearImageMemoryCaches } from '../services/imagePreviewCache';
+import { userFacingError } from '../services/userFacingError';
+import { useTranslation } from 'react-i18next';
 
 export function useTelegramConnection(onLogoutParent: () => void) {
     const { confirm } = useConfirm();
+    const { t } = useTranslation();
 
     const [folders, setFolders] = useState<TelegramFolder[]>([]);
     const [groups, setGroups] = useState<FolderGroup[]>([]);
@@ -145,6 +148,9 @@ export function useTelegramConnection(onLogoutParent: () => void) {
         try {
             await invoke('cmd_logout');
             await invoke('cmd_clean_cache');
+            await invoke('cmd_clear_api_hash').catch((error) => {
+                toast.error(userFacingError(error, t));
+            });
             clearImageMemoryCaches();
             if (store) {
                 await store.delete('api_id');
@@ -175,7 +181,7 @@ export function useTelegramConnection(onLogoutParent: () => void) {
             }
         } catch (e) {
             if (!silent) {
-                toast.error("Sync failed: " + e);
+                toast.error(userFacingError(e, t));
             }
         } finally {
             setIsSyncing(false);
@@ -195,7 +201,7 @@ export function useTelegramConnection(onLogoutParent: () => void) {
             await store.save();
             toast.success(`Folder "${name}" created.`);
         } catch (e) {
-            toast.error("Failed to create folder: " + e);
+            toast.error(userFacingError(e, t));
             throw e;
         }
     };
@@ -255,7 +261,7 @@ export function useTelegramConnection(onLogoutParent: () => void) {
             }
             toast.success(`Folder renamed to "${newName}".`);
         } catch (e) {
-            toast.error("Failed to rename folder: " + e);
+            toast.error(userFacingError(e, t));
         }
     };
 
@@ -319,7 +325,7 @@ export function useTelegramConnection(onLogoutParent: () => void) {
             setGroups(prev => [...prev, newGroup]);
             toast.success(`Group "${name}" created.`);
         } catch (e) {
-            toast.error("Failed to create group: " + e);
+            toast.error(userFacingError(e, t));
         }
     };
 
@@ -330,7 +336,7 @@ export function useTelegramConnection(onLogoutParent: () => void) {
             setFolders(prev => prev.map(f => f.group_id === groupId ? { ...f, group_id: null } : f));
             toast.success("Group deleted.");
         } catch (e) {
-            toast.error("Failed to delete group: " + e);
+            toast.error(userFacingError(e, t));
         }
     };
 
@@ -340,7 +346,7 @@ export function useTelegramConnection(onLogoutParent: () => void) {
             setGroups(prev => prev.map(g => g.id === groupId ? { ...g, name, color_hex: colorHex } : g));
             toast.success("Group updated.");
         } catch (e) {
-            toast.error("Failed to update group: " + e);
+            toast.error(userFacingError(e, t));
         }
     };
 
@@ -349,7 +355,7 @@ export function useTelegramConnection(onLogoutParent: () => void) {
             await invoke('cmd_assign_folder_to_group', { channelId: folderId, groupId });
             setFolders(prev => prev.map(f => f.id === folderId ? { ...f, group_id: groupId } : f));
         } catch (e) {
-            toast.error("Failed to assign folder to group: " + e);
+            toast.error(userFacingError(e, t));
         }
     };
 

@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import { useSync } from '../../../context/SyncContext';
 import type { TelegramFolder } from '../../../types';
+import { userFacingError } from '../../../services/userFacingError';
 
 export function SyncSettingsPanel() {
   const { t } = useTranslation();
@@ -36,7 +37,7 @@ export function SyncSettingsPanel() {
       setChannelId('');
       toast.success(t('settings.sync.folder_added'));
     } catch (error) {
-      toast.error(String(error));
+      toast.error(userFacingError(error, t));
     } finally {
       setBusy(false);
     }
@@ -60,7 +61,7 @@ export function SyncSettingsPanel() {
           onClick={async () => {
             setBusy(true);
             try { await setEnabled(!enabled); }
-            catch (error) { toast.error(String(error)); }
+            catch (error) { toast.error(userFacingError(error, t)); }
             finally { setBusy(false); }
           }}
           className={`relative h-6 w-11 shrink-0 rounded-full transition ${enabled ? 'bg-app-accent' : 'bg-app-border-strong'} disabled:opacity-50`}
@@ -95,7 +96,7 @@ export function SyncSettingsPanel() {
               <p className="truncate text-sm font-medium text-app-text">{pair.label ?? pair.channelId}</p>
               <p className="truncate text-xs text-app-text-tertiary" title={pair.localPath}>{pair.localPath}</p>
             </div>
-            <button type="button" onClick={() => void removePair(pair.id).catch((error) => toast.error(String(error)))} className="quiet-control p-2 text-app-danger" title={t('settings.sync.remove')}>
+            <button type="button" onClick={() => void removePair(pair.id).catch((error) => toast.error(userFacingError(error, t)))} className="quiet-control p-2 text-app-danger" title={t('settings.sync.remove')}>
               <Trash2 className="h-4 w-4" />
             </button>
           </div>

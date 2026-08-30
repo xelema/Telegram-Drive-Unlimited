@@ -1,12 +1,15 @@
 {
   "name": "app",
   "private": true,
-  "version": "3.7.0",
+  "version": "3.8.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "bundle:check": "node scripts/check-bundle-budget.cjs",
+    "build:verify": "npm run build && npm run bundle:check",
     "preview": "vite preview",
     "tauri": "node scripts/tauri-cli.cjs",
     "i18n:validate": "node scripts/i18n/validate-locales.cjs",
@@ -16,6 +19,7 @@
     "i18n:check": "npm run i18n:types && npm run i18n:validate && npm run i18n:scan",
     "android:jni:check": "node scripts/check-android-jni-contract.cjs",
     "android:version:check": "node scripts/verify-android-release-version.cjs",
+    "release:version:check": "node scripts/verify-android-release-version.cjs",
     "visual:test": "playwright test",
     "visual:update": "playwright test --update-snapshots"
   },
@@ -55,6 +59,7 @@
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
+    "@vitest/coverage-v8": "^4.1.10",
     "autoprefixer": "^10.4.23",
     "axe-core": "^4.13.0",
     "jsdom": "^29.1.1",

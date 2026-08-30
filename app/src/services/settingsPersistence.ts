@@ -46,13 +46,15 @@ export function mergeStoredSettings(defaults: Settings, stored?: Partial<Setting
 export async function readPersistedSettings(
   defaults: Settings,
   loadStore: StoreLoader = loadSettingsStore,
+  onError?: (error: unknown) => void,
 ): Promise<Settings> {
   try {
     const store = await loadStore();
     const stored = await store.get<Partial<Settings>>(SETTINGS_KEY);
     unmigratedLegacyProxyPassword = stored?.proxyPassword || null;
     return mergeStoredSettings(defaults, stored);
-  } catch {
+  } catch (error) {
+    onError?.(error);
     return defaults;
   }
 }
@@ -61,11 +63,7 @@ export async function writePersistedSettings(
   settings: Settings,
   loadStore: StoreLoader = loadSettingsStore,
 ): Promise<void> {
-  try {
-    const store = await loadStore();
-    await store.set(SETTINGS_KEY, settingsForPersistence(settings));
-    await store.save();
-  } catch {
-    // Settings remain active in memory when persistent storage is unavailable.
-  }
+  const store = await loadStore();
+  await store.set(SETTINGS_KEY, settingsForPersistence(settings));
+  await store.save();
 }

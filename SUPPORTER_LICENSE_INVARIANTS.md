@@ -1,6 +1,6 @@
 # $5 Lifetime Supporter License Compatibility Contract
 
-This document records the user-facing and technical contract that future maintenance must preserve. It applies to the desktop application, supporter Worker, release workflows, advertisement visibility, secure local state, and database migrations.
+This document records the user-facing and technical contract that future maintenance must preserve. It applies to supported desktop and Android applications, the supporter Worker, release workflows, advertisement visibility, secure local state, and database migrations.
 
 ## User promise
 
@@ -33,13 +33,13 @@ npm test
 npx wrangler deploy --dry-run
 
 cd ../app
-npm test -- --run tests/unit/SupporterContext.test.tsx tests/unit/SupporterSettingsSection.test.tsx tests/unit/supporterVisibility.test.ts tests/unit/sponsorLinks.test.ts
+npm test -- --run tests/unit/SupporterContext.test.tsx tests/unit/SupporterSettingsSection.test.tsx tests/unit/MobileSupporterCard.test.tsx tests/unit/supporterVisibility.test.ts tests/unit/sponsorLinks.test.ts
 
 cd src-tauri
 cargo test supporter --lib
 ```
 
-Before a desktop release, also verify:
+Before a supported desktop or Android release, also verify:
 
 - the configured production `/health` endpoint reports `status: ok`, price `5.00`, currency `USD`, and the expected device allowance;
 - its entitlement public key exactly matches `SUPPORTER_PUBLIC_KEY` used by the release build;

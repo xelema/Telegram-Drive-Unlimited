@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ChevronLeft, Database, Download, ExternalLink, Folder, Key, MoreHorizontal, RefreshCw, UploadCloud, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../../context/ThemeContext';
 import { getLanguageInfo, type SupportedLanguage } from '../../i18n/languages';
+import { ensureLanguageResource } from '../../i18n';
 import { DesktopAdBanner } from '../desktop/dashboard/DesktopAdBanner';
 import { SupporterOfferDialog } from '../shared/SupporterOfferDialog';
 import {
@@ -28,12 +29,22 @@ export default function DesignGallery() {
   const [density, setDensity] = useState<'comfortable' | 'compact'>('comfortable');
   const [direction, setDirection] = useState<'ltr' | 'rtl'>('ltr');
   const [auditLanguage, setAuditLanguage] = useState<SupportedLanguage>('de');
+  const [loadedAuditLanguage, setLoadedAuditLanguage] = useState<SupportedLanguage | null>(null);
   const query = new URLSearchParams(window.location.search);
   const localeStress = query.has('locale-stress');
   const sponsorPreview = query.has('sponsor-preview');
   const supporterPreview = query.has('supporter-preview');
   const supporterPreviewPresentation = query.has('mobile-preview') ? 'bottom-sheet' : 'dialog';
   const activeDirection = localeStress ? getLanguageInfo(auditLanguage).dir : direction;
+
+  useEffect(() => {
+    if (!localeStress) return;
+    let cancelled = false;
+    ensureLanguageResource(auditLanguage).then(() => {
+      if (!cancelled) setLoadedAuditLanguage(auditLanguage);
+    });
+    return () => { cancelled = true; };
+  }, [auditLanguage, localeStress]);
 
   const changeAuditLanguage = (language: SupportedLanguage) => {
     setAuditLanguage(language);
@@ -126,7 +137,11 @@ export default function DesignGallery() {
                 </select>
               </label>
             </div>
-            <div className="mt-4 w-full max-w-[22rem] rounded-lg bg-app-surface-sunken/50 p-3" data-testid="localized-offline-card">
+            <div
+              className="mt-4 w-full max-w-[22rem] rounded-lg bg-app-surface-sunken/50 p-3"
+              data-testid="localized-offline-card"
+              data-language-ready={loadedAuditLanguage === auditLanguage ? auditLanguage : 'loading'}
+            >
               <div className="flex min-w-0 items-start gap-2">
                 <Database className="mt-0.5 h-4 w-4 shrink-0 text-app-text-secondary" />
                 <div className="min-w-0 flex-1">
@@ -167,7 +182,7 @@ export default function DesignGallery() {
             <h2 className="text-sm font-semibold">Fields and state</h2>
             <SearchField placeholder="Search files…" />
             <Input placeholder="Folder name" />
-            <Select defaultValue="comfortable"><option value="comfortable">Comfortable</option><option value="compact">Compact</option></Select>
+            <Select aria-label="Example density" defaultValue="comfortable"><option value="comfortable">Comfortable</option><option value="compact">Compact</option></Select>
             <div className="flex items-center justify-between text-sm"><span>Live connection monitoring</span><Switch checked={enabled} onCheckedChange={setEnabled} label="Live connection monitoring" /></div>
             <SegmentedControl label="Density" value={density} onValueChange={setDensity} options={[{ value: 'comfortable', label: 'Comfortable' }, { value: 'compact', label: 'Compact' }]} />
             <Progress value={68} label="Upload progress" />

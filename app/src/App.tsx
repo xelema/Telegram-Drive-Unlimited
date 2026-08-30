@@ -20,6 +20,9 @@ const DesignGallery = import.meta.env.DEV
 const AccessibilityAudit = import.meta.env.DEV
   ? React.lazy(() => import("./components/dev/AccessibilityAudit"))
   : null;
+const AccessibilityFixtures = import.meta.env.DEV
+  ? React.lazy(() => import("./components/dev/AccessibilityFixtures"))
+  : null;
 
 import { Toaster, toast } from "sonner";
 import { useTheme } from "./context/ThemeContext";
@@ -35,6 +38,7 @@ import { resolveLanguagePreference } from "./i18n/resolveLanguage";
 import { version as appVersion } from "../package.json";
 import { consumeWhatsNew, type WhatsNewDetails } from "./services/updateReliability";
 import { useTvSpatialNavigation } from "./hooks/useTvSpatialNavigation";
+import { ensureLanguageResource } from "./i18n";
 
 type AuthStatus = "loading" | "authenticated" | "unauthenticated";
 
@@ -53,11 +57,11 @@ function AppContent() {
   });
   const [whatsNew, setWhatsNew] = useState<WhatsNewDetails | null>(() => consumeWhatsNew(appVersion));
   const { theme } = useTheme();
-  const { available, version, downloading, progress, phase, downloadAndInstall, dismissUpdate } = useUpdateCheck();
+  const { available, version, downloading, progress, phase, managedByPackageManager, downloadAndInstall, dismissUpdate } = useUpdateCheck();
   const { isMobile, isTelevision } = usePlatform();
   useTvSpatialNavigation(isTelevision);
-  const { settings, updateSetting, isLoaded } = useSettings();
-  const { i18n } = useTranslation();
+  const { settings, updateSetting, isLoaded, persistenceStatus, retryPersistence } = useSettings();
+  const { i18n, t } = useTranslation();
 
   useEffect(() => {
     if (!isLoaded) return;
@@ -69,9 +73,17 @@ function AppContent() {
     if (!isLoaded) return;
     const activeLang = resolveLanguagePreference(settings.language);
     const info = getLanguageInfo(activeLang);
-    i18n.changeLanguage(activeLang);
     document.documentElement.lang = activeLang;
     document.documentElement.dir = info.dir;
+    let cancelled = false;
+    void ensureLanguageResource(activeLang)
+      .then(() => {
+        if (!cancelled) void i18n.changeLanguage(activeLang);
+      })
+      .catch(() => {
+        if (import.meta.env.DEV) console.error(`[i18n] Unable to load ${activeLang}`);
+      });
+    return () => { cancelled = true; };
   }, [settings.language, isLoaded, i18n]);
 
   // Performance mode: auto-enable when user has prefers-reduced-motion
@@ -115,6 +127,17 @@ function AppContent() {
         setStartupProgress({ label: "Restoring your session", detail: "Reading the saved Telegram account…", percent: 38 });
         const store = await load("config.json");
         const savedId = await store.get<string>("api_id");
+        const legacyApiHash = await store.get<string>("api_hash");
+        if (legacyApiHash) {
+          try {
+            await invoke('cmd_store_api_hash', { apiHash: legacyApiHash });
+            await store.delete('api_hash');
+            await store.save();
+          } catch {
+            // Preserve the only working copy and retry migration next launch.
+            // Session restoration needs only the public API ID.
+          }
+        }
 
         if (!savedId) {
           setStartupProgress({ label: "Ready to sign in", detail: "No saved session was found.", percent: 100 });
@@ -193,7 +216,7 @@ function AppContent() {
     return (
       <main className="h-screen w-screen flex items-center justify-center bg-telegram-bg">
         <div className="flex w-full max-w-sm flex-col items-center gap-5 px-8" role="status" aria-live="polite">
-          <img src="/logo.svg" className="w-16 h-16 drop-shadow-lg animate-pulse" alt="Telegram Drive" />
+          <img src="/logo.svg" className="w-16 h-16 drop-shadow-lg animate-pulse" alt={i18n.t("common.app_title")} />
           <div className="w-full text-center">
             <p className="text-sm font-semibold text-telegram-text">{startupProgress.label}</p>
             <p className="mt-1 text-xs text-telegram-subtext">{startupProgress.detail}</p>
@@ -214,11 +237,20 @@ function AppContent() {
         downloading={downloading}
         progress={progress}
         phase={phase}
+        managedByPackageManager={managedByPackageManager}
         onUpdate={downloadAndInstall}
         onDismiss={dismissUpdate}
       />
       <Toaster theme={theme} position="bottom-center" />
       <TelegramCooldownBanner />
+      {persistenceStatus === 'error' && (
+        <div className="fixed inset-x-4 top-4 z-[400] mx-auto flex max-w-xl items-center justify-between gap-3 rounded-lg border border-app-danger/30 bg-app-surface-raised px-4 py-3 text-sm text-app-text shadow-xl" role="alert">
+          <span>{t('common.operation_failed')}</span>
+          <button type="button" onClick={() => void retryPersistence().catch(() => undefined)} className="quiet-control shrink-0 bg-app-accent px-3 py-1.5 font-medium text-app-accent-contrast">
+            {t('common.retry')}
+          </button>
+        </div>
+      )}
       {whatsNew && <WhatsNewDialog details={whatsNew} onClose={() => setWhatsNew(null)} />}
       {isLoaded && <CrashReportingConsent />}
       {authStatus === "authenticated" && (
@@ -252,13 +284,20 @@ function App() {
   const showDesignGallery = Boolean(
     DesignGallery && typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('design-gallery')
   );
+  const showAccessibilityFixture = Boolean(
+    AccessibilityFixtures && typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('a11y-fixture')
+  );
 
   return (
     <AppProviders>
       {AccessibilityAudit && (
         <Suspense fallback={null}><AccessibilityAudit /></Suspense>
       )}
-      {showDesignGallery && DesignGallery ? (
+      {showAccessibilityFixture && AccessibilityFixtures ? (
+        <Suspense fallback={<div className="h-screen bg-app-canvas" />}>
+          <AccessibilityFixtures />
+        </Suspense>
+      ) : showDesignGallery && DesignGallery ? (
         <Suspense fallback={<div className="h-screen bg-app-canvas" />}>
           <DesignGallery />
         </Suspense>

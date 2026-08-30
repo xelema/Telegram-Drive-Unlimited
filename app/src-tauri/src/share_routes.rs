@@ -1,11 +1,136 @@
 use crate::commands::utils::resolve_peer;
 use crate::commands::TelegramState;
 use crate::db::DbConnection;
-use actix_web::{cookie::Cookie, get, post, web, HttpRequest, HttpResponse, Responder};
+use actix_web::{
+    cookie::Cookie, get, middleware::DefaultHeaders, post, web, HttpRequest, HttpResponse,
+    Responder,
+};
 use grammers_client::types::Media;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::sync::Arc;
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, LazyLock, Mutex};
+
+const SHARE_PASSWORD_ATTEMPT_LIMIT: usize = 5;
+const SHARE_PASSWORD_WINDOW_SECONDS: i64 = 5 * 60;
+const SHARE_PASSWORD_COOLDOWN_SECONDS: i64 = 30;
+const MAX_TRACKED_SHARE_TOKENS: usize = 1_024;
+const MAX_SHARE_PASSWORD_CHARS: usize = 128;
+const MAX_SHARE_PASSWORD_BYTES: usize = 512;
+const SHARE_VERIFY_FORM_LIMIT_BYTES: usize = 1_024;
+const SHARE_SECURITY_HEADERS: &[(&str, &str)] = &[
+    ("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"),
+    ("X-Content-Type-Options", "nosniff"),
+    ("X-Frame-Options", "DENY"),
+    ("Referrer-Policy", "no-referrer"),
+    ("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()"),
+    ("Cache-Control", "no-store"),
+    ("Cross-Origin-Opener-Policy", "same-origin"),
+];
+
+#[derive(Default)]
+struct PasswordAttemptState {
+    attempts: VecDeque<i64>,
+    blocked_until: i64,
+    last_seen: i64,
+}
+
+#[derive(Default)]
+struct PasswordAttemptLimiter {
+    attempts_by_token: HashMap<[u8; 32], PasswordAttemptState>,
+}
+
+impl PasswordAttemptLimiter {
+    fn begin_attempt(&mut self, token_key: [u8; 32], now: i64) -> Result<(), i64> {
+        self.prune(now);
+
+        if !self.attempts_by_token.contains_key(&token_key)
+            && self.attempts_by_token.len() >= MAX_TRACKED_SHARE_TOKENS
+        {
+            if let Some(oldest_key) = self
+                .attempts_by_token
+                .iter()
+                .min_by_key(|(_, state)| state.last_seen)
+                .map(|(key, _)| *key)
+            {
+                self.attempts_by_token.remove(&oldest_key);
+            }
+        }
+
+        let state = self.attempts_by_token.entry(token_key).or_default();
+        state.last_seen = now;
+
+        if state.blocked_until > now {
+            return Err((state.blocked_until - now).max(1));
+        }
+        if state.blocked_until != 0 {
+            state.blocked_until = 0;
+            state.attempts.clear();
+        }
+
+        let cutoff = now.saturating_sub(SHARE_PASSWORD_WINDOW_SECONDS);
+        while state
+            .attempts
+            .front()
+            .is_some_and(|attempt| *attempt <= cutoff)
+        {
+            state.attempts.pop_front();
+        }
+
+        if state.attempts.len() >= SHARE_PASSWORD_ATTEMPT_LIMIT {
+            state.attempts.clear();
+            state.blocked_until = now.saturating_add(SHARE_PASSWORD_COOLDOWN_SECONDS);
+            return Err(SHARE_PASSWORD_COOLDOWN_SECONDS);
+        }
+
+        // Reserve the attempt before running bcrypt so concurrent requests cannot
+        // all bypass the limit while password verification is in progress.
+        state.attempts.push_back(now);
+        Ok(())
+    }
+
+    fn record_failure(&mut self, token_key: &[u8; 32], now: i64) {
+        if let Some(state) = self.attempts_by_token.get_mut(token_key) {
+            state.last_seen = now;
+            if state.attempts.len() >= SHARE_PASSWORD_ATTEMPT_LIMIT {
+                state.attempts.clear();
+                state.blocked_until = now.saturating_add(SHARE_PASSWORD_COOLDOWN_SECONDS);
+            }
+        }
+    }
+
+    fn clear(&mut self, token_key: &[u8; 32]) {
+        self.attempts_by_token.remove(token_key);
+    }
+
+    fn prune(&mut self, now: i64) {
+        let cutoff = now.saturating_sub(SHARE_PASSWORD_WINDOW_SECONDS);
+        self.attempts_by_token.retain(|_, state| {
+            while state
+                .attempts
+                .front()
+                .is_some_and(|attempt| *attempt <= cutoff)
+            {
+                state.attempts.pop_front();
+            }
+            state.blocked_until > now || !state.attempts.is_empty()
+        });
+    }
+}
+
+static PASSWORD_ATTEMPT_LIMITER: LazyLock<Mutex<PasswordAttemptLimiter>> =
+    LazyLock::new(|| Mutex::new(PasswordAttemptLimiter::default()));
+
+fn token_attempt_key(token: &str) -> [u8; 32] {
+    Sha256::digest(token.as_bytes()).into()
+}
+
+fn with_password_attempt_limiter<T>(operation: impl FnOnce(&mut PasswordAttemptLimiter) -> T) -> T {
+    let mut limiter = PASSWORD_ATTEMPT_LIMITER
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    operation(&mut limiter)
+}
 
 #[derive(Clone)]
 struct SharedLinkRow {
@@ -83,9 +208,9 @@ async fn get_share_by_token(
 ///
 /// NOTE: This HTML contains an inline `<style>` block which requires
 /// `style-src 'unsafe-inline'` in the Tauri CSP (tauri.conf.json).
-/// This is acceptable because the page is served only over the local
-/// Actix streaming server (127.0.0.1/0.0.0.0:14201), not the public internet,
-/// so the XSS attack surface is minimal.
+/// This page is served only by the loopback-bound Actix streaming server,
+/// not by a hosted internet service. Dynamic values are escaped before they
+/// are interpolated into the document.
 fn escape_html(input: &str) -> String {
     input
         .replace('&', "&amp;")
@@ -396,7 +521,7 @@ async fn get_shared_file(
         Ok(Some(r)) => r,
         Ok(None) => return HttpResponse::NotFound().body("Shared link not found"),
         Err(e) => {
-            log::error!("DB error resolving token {}: {}", token, e);
+            log::error!("Database error resolving share link: {}", e);
             return HttpResponse::InternalServerError().body("Internal server error");
         }
     };
@@ -472,8 +597,8 @@ async fn get_shared_file(
             HttpResponse::NotFound().body("Message or media not found in Telegram")
         }
         Err(e) => {
-            log::error!("Failed to fetch shared message {}: {}", row.message_id, e);
-            HttpResponse::InternalServerError().body(format!("Failed to retrieve file: {}", e))
+            log::error!("Failed to fetch shared media: {}", e);
+            HttpResponse::InternalServerError().body("Unable to retrieve shared media")
         }
     }
 }
@@ -491,7 +616,7 @@ async fn verify_shared_file_password(
         Ok(Some(r)) => r,
         Ok(None) => return HttpResponse::NotFound().body("Shared link not found"),
         Err(e) => {
-            log::error!("DB error resolving token {}: {}", token, e);
+            log::error!("Database error resolving share link: {}", e);
             return HttpResponse::InternalServerError().body("Internal server error");
         }
     };
@@ -500,17 +625,49 @@ async fn verify_shared_file_password(
         return HttpResponse::NotFound().body("This shared link has been revoked");
     }
 
+    if row
+        .expires_at
+        .is_some_and(|expiry| expiry < chrono::Utc::now().timestamp())
+    {
+        return HttpResponse::Gone().body("This shared link has expired");
+    }
+
     let hash = match &row.password_hash {
         Some(h) => h,
         None => return HttpResponse::BadRequest().body("No password required for this link"),
     };
 
-    if verify_password(&form.password, hash) {
+    let token_key = token_attempt_key(&token);
+    let now = chrono::Utc::now().timestamp();
+    if let Err(retry_after) =
+        with_password_attempt_limiter(|limiter| limiter.begin_attempt(token_key, now))
+    {
+        return HttpResponse::TooManyRequests()
+            .insert_header(("Retry-After", retry_after.to_string()))
+            .body("Too many password attempts. Try again shortly.");
+    }
+
+    if form.password.chars().count() > MAX_SHARE_PASSWORD_CHARS
+        || form.password.len() > MAX_SHARE_PASSWORD_BYTES
+    {
+        with_password_attempt_limiter(|limiter| limiter.record_failure(&token_key, now));
+        return render_password_form(&req, &row.file_name, &token, Some("invalid"));
+    }
+
+    let password = form.password.clone();
+    let hash_for_verify = hash.clone();
+    let verified =
+        tokio::task::spawn_blocking(move || verify_password(&password, &hash_for_verify))
+            .await
+            .unwrap_or(false);
+
+    if verified {
+        with_password_attempt_limiter(|limiter| limiter.clear(&token_key));
         // Set session cookie (30 min).
-        // NOTE: The streaming share server binds to 0.0.0.0 over plain HTTP (not HTTPS),
-        // so the cookie cannot use `.secure(true)` without becoming unusable.
+        // NOTE: The streaming share server is loopback-only and uses plain HTTP,
+        // so the cookie cannot use `.secure(true)` without becoming unusable locally.
         // The cookie is protected by `.http_only(true)` and `.same_site(Strict)`
-        // to mitigate XSS and CSRF within the constraints of a local-network HTTP service.
+        // to mitigate XSS and CSRF within the constraints of this local service.
         let val = generate_cookie_val(&token, hash);
         let cookie = Cookie::build(format!("share_auth_{}", token), val)
             .path(format!("/d/{}", token))
@@ -524,6 +681,7 @@ async fn verify_shared_file_password(
             .cookie(cookie)
             .finish()
     } else {
+        with_password_attempt_limiter(|limiter| limiter.record_failure(&token_key, now));
         render_password_form(
             &req,
             &row.file_name,
@@ -534,13 +692,25 @@ async fn verify_shared_file_password(
 }
 
 pub fn configure_share_routes(cfg: &mut web::ServiceConfig) {
-    cfg.service(get_shared_file)
-        .service(verify_shared_file_password);
+    let mut headers = DefaultHeaders::new();
+    for (name, value) in SHARE_SECURITY_HEADERS {
+        headers = headers.add((*name, *value));
+    }
+    cfg.service(
+        web::scope("")
+            .wrap(headers)
+            .app_data(web::FormConfig::default().limit(SHARE_VERIFY_FORM_LIMIT_BYTES))
+            .service(get_shared_file)
+            .service(verify_shared_file_password),
+    );
 }
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_req_lang;
+    use super::{
+        resolve_req_lang, token_attempt_key, PasswordAttemptLimiter, MAX_TRACKED_SHARE_TOKENS,
+        SHARE_PASSWORD_COOLDOWN_SECONDS, SHARE_SECURITY_HEADERS,
+    };
     use actix_web::test::TestRequest;
 
     #[test]
@@ -573,5 +743,79 @@ mod tests {
             .insert_header(("Accept-Language", "zh-HK,zh-Hant;q=0.9,en;q=0.8"))
             .to_http_request();
         assert_eq!(resolve_req_lang(&traditional_chinese), ("zh-TW", "ltr"));
+    }
+
+    #[test]
+    fn password_attempts_are_throttled_and_recover_after_cooldown() {
+        let mut limiter = PasswordAttemptLimiter::default();
+        let token_key = token_attempt_key("private-share-token");
+
+        for now in 100..105 {
+            assert_eq!(limiter.begin_attempt(token_key, now), Ok(()));
+            limiter.record_failure(&token_key, now);
+        }
+
+        assert_eq!(limiter.begin_attempt(token_key, 105), Err(29));
+        assert_eq!(
+            limiter.begin_attempt(token_key, 104 + SHARE_PASSWORD_COOLDOWN_SECONDS),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn successful_password_clears_attempt_history() {
+        let mut limiter = PasswordAttemptLimiter::default();
+        let token_key = token_attempt_key("successful-share-token");
+
+        for now in 200..204 {
+            limiter.begin_attempt(token_key, now).unwrap();
+            limiter.record_failure(&token_key, now);
+        }
+        limiter.begin_attempt(token_key, 204).unwrap();
+        limiter.clear(&token_key);
+
+        for now in 205..210 {
+            assert_eq!(limiter.begin_attempt(token_key, now), Ok(()));
+        }
+    }
+
+    #[test]
+    fn password_attempt_tracking_is_bounded() {
+        let mut limiter = PasswordAttemptLimiter::default();
+
+        for index in 0..MAX_TRACKED_SHARE_TOKENS {
+            let token_key = token_attempt_key(&format!("share-{index}"));
+            assert_eq!(limiter.begin_attempt(token_key, 0), Ok(()));
+            limiter
+                .attempts_by_token
+                .get_mut(&token_key)
+                .unwrap()
+                .last_seen = index as i64;
+        }
+
+        assert_eq!(
+            limiter.begin_attempt(token_attempt_key("overflow-share"), 0),
+            Ok(())
+        );
+
+        assert_eq!(limiter.attempts_by_token.len(), MAX_TRACKED_SHARE_TOKENS);
+        assert!(!limiter
+            .attempts_by_token
+            .contains_key(&token_attempt_key("share-0")));
+    }
+
+    #[test]
+    fn share_pages_define_defense_in_depth_headers_and_a_bounded_form() {
+        for required in [
+            "Content-Security-Policy",
+            "X-Content-Type-Options",
+            "Referrer-Policy",
+            "Permissions-Policy",
+            "Cache-Control",
+        ] {
+            assert!(SHARE_SECURITY_HEADERS
+                .iter()
+                .any(|(name, _)| *name == required));
+        }
     }
 }

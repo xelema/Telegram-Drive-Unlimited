@@ -1098,15 +1098,7 @@ fn start_server_with_listener(
     let server = HttpServer::new(move || {
         let cors = Cors::default()
             .allowed_origin_fn(|origin, _req_head| {
-                let origin_bytes = origin.as_bytes();
-                origin_bytes.starts_with(b"tauri://")
-                    || origin_bytes.starts_with(b"http://tauri.localhost")
-                    || origin_bytes.starts_with(b"https://tauri.localhost")
-                    || origin_bytes.starts_with(b"http://localhost")
-                    || origin_bytes.starts_with(b"http://127.0.0.1")
-                    || origin_bytes.starts_with(b"https://asset.localhost")
-                    || origin_bytes.starts_with(b"http://asset.localhost")
-                    || origin_bytes == b"null"
+                crate::local_cors::is_allowed_origin_header(origin)
             })
             .allow_any_method()
             .allow_any_header();

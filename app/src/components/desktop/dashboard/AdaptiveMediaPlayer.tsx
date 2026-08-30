@@ -3,12 +3,13 @@ import { X, ChevronLeft, ChevronRight, AlertTriangle, Loader2, RefreshCw, StopCi
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { toast } from 'sonner';
-import Hls from 'hls.js';
+import type Hls from 'hls.js';
 import { TelegramFile, StreamingQuality, TranscodePrepareResult, TranscodeJobPhase, TranscodeCapabilities, QUALITY_LABELS, HLS_QUALITIES } from '../../../types';
 import { useAdaptiveStreaming } from '../../../hooks/useAdaptiveStreaming';
 import { QualitySelector } from '../../shared/QualitySelector';
 import { FfmpegInstallNotice } from '../../shared/FfmpegInstallNotice';
 import { buildAuthenticatedHlsUrl } from '../../../services/hlsPlayback';
+import i18n from '../../../i18n';
 
 interface AdaptiveMediaPlayerProps {
     file: TelegramFile;
@@ -701,87 +702,98 @@ export function AdaptiveMediaPlayer({
             }
         };
 
-        if (Hls.isSupported()) {
-            const token = streamTokenRef.current;
-            const hls = new Hls({
-                enableWorker: true,
-                lowLatencyMode: false,
-                backBufferLength: 90,
-                // ── Token propagation: append ?token=... to every /hls/ request ──
-                // Guard against URLs that already have a token param
-                xhrSetup: (xhr, url) => {
-                    if (token && url.includes('/hls/') && !/[?&]token=/.test(url)) {
-                        const sep = url.includes('?') ? '&' : '?';
-                        xhr.open('GET', `${url}${sep}token=${encodeURIComponent(token)}`, true);
+        let disposed = false;
+        let removeNativeListeners: (() => void) | null = null;
+
+        void import('hls.js').then(({ default: HlsRuntime }) => {
+            if (disposed) return;
+            if (HlsRuntime.isSupported()) {
+                const token = streamTokenRef.current;
+                const hls = new HlsRuntime({
+                    enableWorker: true,
+                    lowLatencyMode: false,
+                    backBufferLength: 90,
+                    // ── Token propagation: append ?token=... to every /hls/ request ──
+                    // Guard against URLs that already have a token param
+                    xhrSetup: (xhr, url) => {
+                        if (token && url.includes('/hls/') && !/[?&]token=/.test(url)) {
+                            const sep = url.includes('?') ? '&' : '?';
+                            xhr.open('GET', `${url}${sep}token=${encodeURIComponent(token)}`, true);
+                        }
+                    },
+                });
+                hlsRef.current = hls;
+                let networkRecoveryAttempted = false;
+                let mediaRecoveryAttempted = false;
+
+                // WebView2 is more reliable when the MediaSource is attached before
+                // the manifest request starts.
+                hls.on(HlsRuntime.Events.MEDIA_ATTACHED, () => {
+                    hls.loadSource(hlsPlaylistUrl);
+                });
+
+                hls.on(HlsRuntime.Events.MANIFEST_PARSED, () => {
+                    log('HLS MANIFEST_PARSED, seeking to', savedTime);
+                    onHlsMetadata();
+                    if (savedTime > 0) video.currentTime = savedTime;
+                    video.play().catch(() => {});
+                });
+
+                hls.on(HlsRuntime.Events.ERROR, (_event, data) => {
+                    if (data.fatal) {
+                        log('HLS fatal error', data.type, data.details);
+                        console.error('[HLS] Fatal error:', data.type, data.details);
+
+                        if (data.type === HlsRuntime.ErrorTypes.NETWORK_ERROR && !networkRecoveryAttempted) {
+                            networkRecoveryAttempted = true;
+                            hls.startLoad();
+                            return;
+                        }
+                        if (data.type === HlsRuntime.ErrorTypes.MEDIA_ERROR && !mediaRecoveryAttempted) {
+                            mediaRecoveryAttempted = true;
+                            hls.recoverMediaError();
+                            return;
+                        }
+
+                        setHlsError(`HLS playback error: ${data.details}`);
+                        setHlsPhase('failed');
+                    } else {
+                        log('HLS non-fatal error', data.type, data.details);
                     }
-                },
-            });
-            hlsRef.current = hls;
-            let networkRecoveryAttempted = false;
-            let mediaRecoveryAttempted = false;
-
-            // WebView2 is more reliable when the MediaSource is attached before
-            // the manifest request starts.
-            hls.on(Hls.Events.MEDIA_ATTACHED, () => {
-                hls.loadSource(hlsPlaylistUrl);
-            });
-
-            hls.on(Hls.Events.MANIFEST_PARSED, () => {
-                log('HLS MANIFEST_PARSED, seeking to', savedTime);
-                onHlsMetadata();
-                if (savedTime > 0) video.currentTime = savedTime;
-                video.play().catch(() => {});
-            });
-
-            hls.on(Hls.Events.ERROR, (_event, data) => {
-                if (data.fatal) {
-                    log('HLS fatal error', data.type, data.details);
-                    console.error('[HLS] Fatal error:', data.type, data.details);
-
-                    if (data.type === Hls.ErrorTypes.NETWORK_ERROR && !networkRecoveryAttempted) {
-                        networkRecoveryAttempted = true;
-                        hls.startLoad();
-                        return;
-                    }
-                    if (data.type === Hls.ErrorTypes.MEDIA_ERROR && !mediaRecoveryAttempted) {
-                        mediaRecoveryAttempted = true;
-                        hls.recoverMediaError();
-                        return;
-                    }
-
-                    setHlsError(`HLS playback error: ${data.details}`);
+                });
+                hls.attachMedia(video);
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                // Native HLS fallback for engines without MediaSource support.
+                const handleLoadedMetadata = () => {
+                    onHlsMetadata();
+                    if (savedTime > 0) video.currentTime = savedTime;
+                    video.play().catch(() => {});
+                };
+                const handleNativeError = () => {
+                    setHlsError(`Native HLS playback error${video.error?.message ? `: ${video.error.message}` : ''}`);
                     setHlsPhase('failed');
-                } else {
-                    log('HLS non-fatal error', data.type, data.details);
-                }
-            });
-            hls.attachMedia(video);
-        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-            // Native HLS fallback for engines without MediaSource support.
-            const handleLoadedMetadata = () => {
-                onHlsMetadata();
-                if (savedTime > 0) video.currentTime = savedTime;
-                video.play().catch(() => {});
-            };
-            const handleNativeError = () => {
-                setHlsError(`Native HLS playback error${video.error?.message ? `: ${video.error.message}` : ''}`);
+                };
+                video.addEventListener('loadedmetadata', handleLoadedMetadata, { once: true });
+                video.addEventListener('error', handleNativeError, { once: true });
+                video.src = hlsPlaylistUrl;
+                removeNativeListeners = () => {
+                    video.removeEventListener('loadedmetadata', handleLoadedMetadata);
+                    video.removeEventListener('error', handleNativeError);
+                };
+            } else {
+                log('HLS not supported in this browser');
+                setHlsError('HLS playback not supported in this browser');
                 setHlsPhase('failed');
-            };
-            video.addEventListener('loadedmetadata', handleLoadedMetadata, { once: true });
-            video.addEventListener('error', handleNativeError, { once: true });
-            video.src = hlsPlaylistUrl;
-
-            return () => {
-                video.removeEventListener('loadedmetadata', handleLoadedMetadata);
-                video.removeEventListener('error', handleNativeError);
-            };
-        } else {
-            log('HLS not supported in this browser');
-            setHlsError('HLS playback not supported in this browser');
+            }
+        }).catch(() => {
+            if (disposed) return;
+            setHlsError('HLS playback module could not be loaded');
             setHlsPhase('failed');
-        }
+        });
 
         return () => {
+            disposed = true;
+            removeNativeListeners?.();
             const activeHls = hlsRef.current;
             if (activeHls) {
                 hlsRef.current = null;
@@ -946,7 +958,7 @@ export function AdaptiveMediaPlayer({
                             {isHlsMode && (
                                 <button onClick={retryTranscode} className="mt-2 flex items-center gap-2 px-3 py-1.5 bg-white/10 hover:bg-white/20 rounded-lg text-xs font-medium transition-colors">
                                     <RefreshCw className="w-3.5 h-3.5" />
-                                    Retry
+                                    {i18n.t("common.retry")}
                                 </button>
                             )}
                         </div>
@@ -978,7 +990,7 @@ export function AdaptiveMediaPlayer({
                                 title="Cancel transcode"
                             >
                                 <StopCircle className="w-3.5 h-3.5" />
-                                Cancel
+                                {i18n.t("common.cancel")}
                             </button>
                         </div>
                     )}
@@ -1096,7 +1108,7 @@ export function AdaptiveMediaPlayer({
                             </div>
                             {(sourceResolution || playingResolution) && (
                                 <div className="flex justify-between gap-4">
-                                    <span className="text-white/40">Size</span>
+                                    <span className="text-white/40">{i18n.t("common.size")}</span>
                                     <span>
                                         {playingResolution ? `${playingResolution.w}×${playingResolution.h}` : ''}
                                         {playingResolution && sourceResolution && (playingResolution.w !== sourceResolution.w || playingResolution.h !== sourceResolution.h)
@@ -1263,7 +1275,7 @@ export function AdaptiveMediaPlayer({
                         <kbd className="px-1 py-0.5 rounded bg-white/10 text-white/40 text-[9px] font-mono">F</kbd> Fullscreen
                     </span>
                     <span className="flex items-center gap-1">
-                        <kbd className="px-1 py-0.5 rounded bg-white/10 text-white/40 text-[9px] font-mono">Esc</kbd> Close
+                        <kbd className="px-1 py-0.5 rounded bg-white/10 text-white/40 text-[9px] font-mono">Esc</kbd> {i18n.t("common.close")}
                     </span>
                     <span className="flex items-center gap-1">
                         <kbd className="px-1 py-0.5 rounded bg-white/10 text-white/40 text-[9px] font-mono">M</kbd> Mute

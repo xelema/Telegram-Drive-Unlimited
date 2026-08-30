@@ -19,12 +19,12 @@ export function MoveToFolderModal({ folders, onClose, onSelect, activeFolderId, 
 
     return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-app-overlay p-4 backdrop-blur-sm" onClick={onClose}>
-            <div ref={panelRef} role="dialog" aria-modal="true" tabIndex={-1} className="quiet-raised flex max-h-[80vh] w-80 flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div ref={panelRef} role="dialog" aria-modal="true" aria-labelledby="move-to-folder-title" tabIndex={-1} className="quiet-raised flex max-h-[80vh] w-80 flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
                 <div className="p-4 border-b border-telegram-border flex justify-between items-center">
-                    <h3 className="text-telegram-text font-medium truncate max-w-[220px]">
+                    <h3 id="move-to-folder-title" className="text-telegram-text font-medium truncate max-w-[220px]">
                         {fileName ? t('files.move_file_to_folder', { name: fileName }) : t('files.move_to_folder')}
                     </h3>
-                    <button onClick={onClose} className="text-telegram-subtext hover:text-telegram-text"><Plus className="w-5 h-5 rotate-45" /></button>
+                    <button type="button" onClick={onClose} aria-label={t('common.close')} className="text-telegram-subtext hover:text-telegram-text"><Plus className="w-5 h-5 rotate-45" /></button>
                 </div>
                 <div className="flex-1 overflow-y-auto p-2 space-y-1">
                     {activeFolderId !== null && (

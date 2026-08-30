@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import { ArrowRight, ExternalLink, HelpCircle, Key, Lock, Phone, QrCode } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useTranslation } from 'react-i18next';
+import i18n from '../../../i18n';
 
 export type AuthStep = 'setup' | 'phone' | 'code' | 'password';
 export type CodeDelivery =
@@ -61,14 +62,14 @@ export function AuthSetupStep({
       <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-app-text-tertiary"><span className="h-px flex-1 bg-app-border-subtle" />Advanced client credentials<span className="h-px flex-1 bg-app-border-subtle" /></div>
       <div className="space-y-3">
         <div>
-          <label htmlFor="telegram-api-id" className="auth-label">API ID</label>
+          <label htmlFor="telegram-api-id" className="auth-label">{i18n.t("auth.api_id")}</label>
           <div className="relative">
             <Key className="auth-input-icon" />
             <input type="text" id="telegram-api-id" value={apiId} onChange={event => onApiIdChange(event.target.value)} placeholder="12345678" className="auth-input font-mono" />
           </div>
         </div>
         <div>
-          <label htmlFor="telegram-api-hash" className="auth-label">API Hash</label>
+          <label htmlFor="telegram-api-hash" className="auth-label">{i18n.t("auth.api_hash")}</label>
           <div className="relative">
             <Key className="auth-input-icon" />
             <input type="text" id="telegram-api-hash" value={apiHash} onChange={event => onApiHashChange(event.target.value)} placeholder="abcdef123456..." className="auth-input font-mono" />
@@ -79,10 +80,10 @@ export function AuthSetupStep({
         {isMobile ? 'Continue to phone sign in' : 'Continue to QR sign in'} <ArrowRight className="h-4 w-4 rtl:rotate-180" />
       </button>
       <button type="button" onClick={onShowHelp} className="quiet-control auth-secondary-action w-full">
-        <HelpCircle className="w-3 h-3" /> How do I get my API credentials?
+        <HelpCircle className="w-3 h-3" /> {i18n.t("auth.how_to_get_credentials")}
       </button>
       {import.meta.env.DEV && (
-        <button type="button" onClick={onDevLogin} className="quiet-control auth-secondary-action w-full text-app-danger">Dev Mode</button>
+        <button type="button" onClick={onDevLogin} className="quiet-control auth-secondary-action w-full text-app-danger">{i18n.t("auth.dev_mode")}</button>
       )}
     </motion.form>
   );
@@ -122,10 +123,10 @@ export function AuthMethodStep({
       {!isMobile && (
         <div className="quiet-control flex overflow-hidden border border-app-border bg-app-surface-sunken/40 p-0.5">
           <button type="button" onClick={onSelectPhone} className={`quiet-control order-2 flex h-8 flex-1 items-center justify-center gap-2 text-metadata font-medium ${loginMethod === 'phone' ? 'bg-app-surface-raised text-app-text shadow-sm' : 'text-app-text-secondary hover:text-app-text'}`}>
-            <Phone className="w-4 h-4" /> Phone Number
+            <Phone className="w-4 h-4" /> {i18n.t("auth.phone_number")}
           </button>
           <button type="button" onClick={onSelectQr} className={`quiet-control order-1 flex h-8 flex-1 items-center justify-center gap-2 text-metadata font-medium ${loginMethod === 'qr' ? 'bg-app-surface-raised text-app-text shadow-sm' : 'text-app-text-secondary hover:text-app-text'}`}>
-            <QrCode className="w-4 h-4" /> QR Code
+            <QrCode className="w-4 h-4" /> {i18n.t("auth.qr_code")}
           </button>
         </div>
       )}
@@ -133,7 +134,7 @@ export function AuthMethodStep({
       {loginMethod === 'phone' ? (
         <form onSubmit={onPhoneSubmit} className="space-y-5">
           <div className="space-y-2">
-            <label htmlFor="telegram-phone-number" className="auth-label">Phone Number</label>
+            <label htmlFor="telegram-phone-number" className="auth-label">{i18n.t("auth.phone_number")}</label>
             <div className="relative">
               <Phone className="auth-input-icon" />
               <input id="telegram-phone-number" type="tel" value={phone} onChange={event => onPhoneChange(event.target.value)} placeholder="+1 234 567 8900" className="auth-input tracking-wide" />
@@ -141,9 +142,9 @@ export function AuthMethodStep({
           </div>
           <div className="flex flex-col gap-3">
             <button type="submit" disabled={loading} className="quiet-control auth-primary-action disabled:opacity-45">
-              {loading ? 'Connecting...' : <>Continue <ArrowRight className="h-4 w-4 rtl:rotate-180" /></>}
+              {loading ? 'Connecting...' : <>{i18n.t("auth.continue")} <ArrowRight className="h-4 w-4 rtl:rotate-180" /></>}
             </button>
-            <button type="button" onClick={onBack} className="quiet-control auth-secondary-action w-full">Back to Configuration</button>
+            <button type="button" onClick={onBack} className="quiet-control auth-secondary-action w-full">{i18n.t("auth.back_to_config")}</button>
           </div>
         </form>
       ) : (
@@ -159,18 +160,18 @@ export function AuthMethodStep({
                 <QRCodeSVG value={qrUrl} size={200} level="M" bgColor="#ffffff" fgColor="#000000" />
               </div>
               <div className="text-center space-y-1">
-                <p className="text-ui text-app-text">Scan with your Telegram app</p>
+                <p className="text-ui text-app-text">{i18n.t("auth.scan_qr")}</p>
                 <p className="text-metadata text-app-text-tertiary">Settings &gt; Devices &gt; Link Desktop Device</p>
               </div>
               {qrPolling && (
                 <div className="flex items-center gap-2 text-metadata text-app-accent">
-                  <div className="h-3 w-3 animate-spin rounded-full border-2 border-app-border border-t-app-accent" /> Waiting for scan...
+                  <div className="h-3 w-3 animate-spin rounded-full border-2 border-app-border border-t-app-accent" /> {i18n.t("auth.waiting_for_scan")}
                 </div>
               )}
-              <button type="button" onClick={onQrLogin} className="quiet-control auth-secondary-action px-2">Refresh QR Code</button>
+              <button type="button" onClick={onQrLogin} className="quiet-control auth-secondary-action px-2">{i18n.t("auth.refresh_qr")}</button>
             </>
           )}
-          <button type="button" onClick={onBack} className="quiet-control auth-secondary-action w-full">Back to Configuration</button>
+          <button type="button" onClick={onBack} className="quiet-control auth-secondary-action w-full">{i18n.t("auth.back_to_config")}</button>
         </div>
       )}
     </motion.div>
@@ -273,17 +274,17 @@ export function AuthPasswordStep({ password, loading, onPasswordChange, onSubmit
     <motion.form key="password" initial={{ x: 20, opacity: 0 }} animate={{ x: 0, opacity: 1 }} exit={{ x: -20, opacity: 0 }} onSubmit={onSubmit} className="space-y-5">
       <div className="space-y-2">
         <div className="mb-4 rounded-control border border-app-accent/20 bg-app-selected p-3">
-          <p className="text-center text-metadata text-app-accent">Your account has Two-Factor Authentication enabled. Please enter your cloud password to continue.</p>
+          <p className="text-center text-metadata text-app-accent">{i18n.t("auth.two_factor_enabled")}</p>
         </div>
-        <label htmlFor="telegram-cloud-password" className="auth-label">Cloud Password</label>
+        <label htmlFor="telegram-cloud-password" className="auth-label">{i18n.t("auth.cloud_password")}</label>
         <div className="relative">
           <Lock className="auth-input-icon" />
-          <input id="telegram-cloud-password" type="password" value={password} onChange={event => onPasswordChange(event.target.value)} placeholder="Enter your password" className="auth-input" autoFocus />
+          <input id="telegram-cloud-password" type="password" value={password} onChange={event => onPasswordChange(event.target.value)} placeholder={i18n.t("auth.password_placeholder")} className="auth-input" autoFocus />
         </div>
       </div>
       <div className="flex flex-col gap-3">
         <button type="submit" disabled={loading || !password} className="quiet-control auth-primary-action disabled:opacity-45">{loading ? 'Verifying...' : 'Unlock'}</button>
-        <button type="button" onClick={onBack} className="quiet-control auth-secondary-action w-full">Back to Code Entry</button>
+        <button type="button" onClick={onBack} className="quiet-control auth-secondary-action w-full">{i18n.t("auth.back_to_code")}</button>
       </div>
     </motion.form>
   );

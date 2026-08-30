@@ -7,6 +7,9 @@ import { useTranslation } from 'react-i18next';
 import { ArchiveEntry, TelegramFile, TelegramFolder } from '../../../types';
 import { formatBytes } from '../../../utils';
 import { toast } from 'sonner';
+import { useModalFocus } from '../../../hooks/useModalFocus';
+import { userFacingError } from '../../../services/userFacingError';
+import i18n from '../../../i18n';
 
 interface ArchiveViewerModalProps {
     file: TelegramFile;
@@ -44,6 +47,8 @@ export function ArchiveViewerModal({
     const [error, setError] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
     const { t } = useTranslation();
+    const panelRef = useRef<HTMLDivElement>(null);
+    useModalFocus(panelRef, onClose);
 
     // Debounce cache invalidations so rapid successive extracts don't
     // flood React Query with individual refetch requests.
@@ -255,7 +260,7 @@ export function ArchiveViewerModal({
                 }
             } catch (e) {
                 if (!cancelled) {
-                    setError(String(e));
+                    setError(userFacingError(e, t));
                 }
             } finally {
                 if (!cancelled) {
@@ -271,9 +276,7 @@ export function ArchiveViewerModal({
     // Keyboard: Escape to close, arrow keys to navigate
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
-            if (e.key === 'Escape') {
-                onClose();
-            } else if (e.key === 'ArrowRight' && onNext) {
+            if (e.key === 'ArrowRight' && onNext) {
                 onNext();
             } else if (e.key === 'ArrowLeft' && onPrev) {
                 onPrev();
@@ -313,9 +316,11 @@ export function ArchiveViewerModal({
             )}
 
             <div
+                ref={panelRef}
                 role="dialog"
                 aria-modal="true"
                 aria-label={`Archive contents: ${file.name}`}
+                tabIndex={-1}
                 className="quiet-raised flex max-h-[82vh] w-[min(640px,calc(100vw-2rem))] flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150"
                 onClick={e => e.stopPropagation()}
             >
@@ -528,7 +533,7 @@ export function ArchiveViewerModal({
                                         ) : extractAllEntryStatuses.current.get(i) === 'failed' ? (
                                             <div className="flex items-center gap-1 mt-1">
                                                 <XCircle className="w-3 h-3 text-red-500" />
-                                                <span className="text-[10px] text-red-500">Failed</span>
+                                                <span className="text-[10px] text-red-500">{i18n.t("settings.desktop_notify_failed")}</span>
                                             </div>
                                         ) : null}
                                     </div>

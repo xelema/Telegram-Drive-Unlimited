@@ -4,6 +4,10 @@ import { listen } from '@tauri-apps/api/event';
 import { AlertTriangle, ExternalLink, Loader2, RefreshCw, X } from 'lucide-react';
 import type { TelegramFile } from '../../types';
 import { isAudioFile, isVideoFile } from '../../utils';
+import { useModalFocus } from '../../hooks/useModalFocus';
+import { useTranslation } from 'react-i18next';
+import { userFacingError } from '../../services/userFacingError';
+import i18n from '../../i18n';
 
 interface MobileMediaPlayerProps {
   file: TelegramFile;
@@ -32,11 +36,8 @@ interface StreamInfo {
   operation_token?: string | null;
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 export function MobileMediaPlayer({ file, activeFolderId, onClose, preferences }: MobileMediaPlayerProps) {
+  const { t } = useTranslation();
   const [localPath, setLocalPath] = useState<string | null>(null);
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -46,6 +47,8 @@ export function MobileMediaPlayer({ file, activeFolderId, onClose, preferences }
   const [usingDownloadFallback, setUsingDownloadFallback] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  useModalFocus(panelRef, onClose);
   const isVideo = isVideoFile(file.name, file.mime_type);
   const isAudio = isAudioFile(file.name, file.mime_type);
 
@@ -83,7 +86,7 @@ export function MobileMediaPlayer({ file, activeFolderId, onClose, preferences }
         setLoading(false);
       } catch (prepareError) {
         if (cancelled) return;
-        setError(`Unable to prepare this media file: ${errorMessage(prepareError)}`);
+        setError(userFacingError(prepareError, t));
         setLoading(false);
       }
     };
@@ -115,7 +118,7 @@ export function MobileMediaPlayer({ file, activeFolderId, onClose, preferences }
           return;
         } catch (streamError) {
           if (cancelled) return;
-          setError(`Unable to start secure streaming: ${errorMessage(streamError)}`);
+          setError(userFacingError(streamError, t));
           setLoading(false);
           return;
         }
@@ -143,7 +146,7 @@ export function MobileMediaPlayer({ file, activeFolderId, onClose, preferences }
     try {
       await invoke('cmd_open_file_externally', { path: localPath });
     } catch (openError) {
-      setError(`The Android media app could not be opened: ${errorMessage(openError)}`);
+      setError(userFacingError(openError, t));
     }
   }, [localPath]);
 
@@ -152,7 +155,7 @@ export function MobileMediaPlayer({ file, activeFolderId, onClose, preferences }
   }, []);
 
   return (
-    <div className="fixed inset-0 z-[220] flex flex-col bg-black" role="dialog" aria-modal="true" aria-label={`Playing ${file.name}`}>
+    <div ref={panelRef} tabIndex={-1} className="fixed inset-0 z-[220] flex flex-col bg-black" role="dialog" aria-modal="true" aria-label={`Playing ${file.name}`}>
       <header className="flex items-center justify-between gap-3 border-b border-white/10 bg-black/80 px-4 py-3 text-white">
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold">{file.name}</p>
@@ -203,7 +206,7 @@ export function MobileMediaPlayer({ file, activeFolderId, onClose, preferences }
             <p className="mt-2 text-xs leading-5 text-white/65">{error ?? 'This media type is not supported by the Android player.'}</p>
             <div className="mt-4 flex flex-wrap justify-center gap-2">
               <button type="button" onClick={retry} className="flex items-center gap-2 rounded-xl bg-telegram-primary px-4 py-2.5 text-xs font-semibold text-white">
-                <RefreshCw className="h-4 w-4" aria-hidden="true" /> Retry
+                <RefreshCw className="h-4 w-4" aria-hidden="true" /> {i18n.t("common.retry")}
               </button>
               {(isVideo || isAudio) && !localPath && (
                 <button type="button" onClick={downloadAndPlay} className="flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-xs font-semibold text-white">

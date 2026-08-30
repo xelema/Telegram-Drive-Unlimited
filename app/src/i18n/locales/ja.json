@@ -78,7 +78,9 @@
     "storage_insights": "ストレージ分析",
     "large_files": "大きなファイル",
     "old_files": "古いファイル",
-    "duplicates": "重複ファイル"
+    "duplicates": "重複ファイル",
+    "operation_failed": "操作を完了できませんでした。もう一度試すか、関連する設定を確認してください。",
+    "retry": "再試行"
   },
   "settings": {
     "tab_sync": "Folder Sync",
@@ -139,7 +141,7 @@
     "video_upload_media": "メディア",
     "performance_compatibility": "パフォーマンスと互換性",
     "performance_mode_desc": "ぼかし、強い影、アニメーションを無効にします",
-    "linux_rendering_desc": "DMA-BUF レンダラーを無効にします（GPU クラッシュ対策、再起動が必要）",
+    "linux_rendering_desc": "AppImage の共有メモリによる代替レンダリングを使用します（再起動が必要）",
     "language_region": "言語と地域",
     "app_language": "アプリの言語",
     "choose_language": "使用する言語を選択してください",
@@ -213,7 +215,7 @@
     "copy_share_link": "共有リンクをコピー",
     "revoke_link": "リンクを失効",
     "copy_diagnostics": "診断情報をコピー",
-    "tagline": "Telegram アカウントを容量無制限の安全なクラウドストレージに。オープンソースで、ずっと無料です。",
+    "tagline": "Telegram アカウントを活用する、ローカルファーストのファイルワークスペース。オープンソースで無料で利用できます。",
     "reset_defaults": "既定値に戻す",
     "done": "完了",
     "auto": "自動",
@@ -535,7 +537,7 @@
     "desktop_required": "デスクトップアプリが必要です",
     "desktop_required_desc": "ブラウザーで内部開発サーバーを表示しています。このアプリはシステムバックエンド（Rust）へのアクセスが必要なため、ここでは動作しません。",
     "open_window_prompt": "続行するには、OS のタスクバーまたは Dock から Telegram Drive のウィンドウを開いてください。",
-    "tagline": "セルフホスト型の安全なストレージ",
+    "tagline": "ローカルファーストのファイルワークスペース",
     "too_many_requests": "リクエストが多すぎます",
     "flood_wait_msg": "Telegram により操作が一時的に制限されています。",
     "please_wait": "しばらく待ってからもう一度お試しください。",

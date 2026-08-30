@@ -78,7 +78,9 @@
     "storage_insights": "Phân tích bộ nhớ",
     "large_files": "Tệp lớn",
     "old_files": "Tệp cũ",
-    "duplicates": "Tệp trùng lặp"
+    "duplicates": "Tệp trùng lặp",
+    "operation_failed": "Không thể hoàn tất thao tác. Hãy thử lại hoặc kiểm tra cài đặt liên quan.",
+    "retry": "Thử lại"
   },
   "settings": {
     "tab_sync": "Folder Sync",
@@ -180,7 +182,7 @@
     "performance_mode": "Chế độ hiệu năng",
     "performance_mode_desc": "Tắt hiệu ứng mờ, bóng đổ nặng và hoạt ảnh",
     "linux_rendering_fix": "Khắc phục hiển thị trên Linux",
-    "linux_rendering_desc": "Tắt trình kết xuất DMA-BUF (khắc phục lỗi GPU, cần khởi động lại)",
+    "linux_rendering_desc": "Sử dụng chế độ kết xuất dự phòng qua bộ nhớ dùng chung của AppImage (cần khởi động lại)",
     "language_region": "Ngôn ngữ & Khu vực",
     "app_language": "Ngôn ngữ ứng dụng",
     "choose_language": "Chọn ngôn ngữ bạn muốn sử dụng",
@@ -269,7 +271,7 @@
     "copy_share_link": "Sao chép liên kết chia sẻ",
     "revoke_link": "Thu hồi liên kết",
     "copy_diagnostics": "Sao chép chẩn đoán",
-    "tagline": "Biến tài khoản Telegram của bạn thành bộ nhớ đám mây an toàn, không giới hạn. Mã nguồn mở và miễn phí mãi mãi.",
+    "tagline": "Không gian làm việc tệp ưu tiên cục bộ, vận hành bằng tài khoản Telegram của bạn. Mã nguồn mở và miễn phí sử dụng.",
     "reset_defaults": "Đặt lại mặc định",
     "done": "Xong",
     "clear_local_cache": "Xóa bộ nhớ đệm cục bộ",
@@ -535,7 +537,7 @@
     "desktop_required": "Yêu cầu ứng dụng máy tính",
     "desktop_required_desc": "Bạn đang xem máy chủ phát triển nội bộ trong trình duyệt. Ứng dụng này không thể hoạt động tại đây vì cần truy cập phần phụ trợ hệ thống (Rust).",
     "open_window_prompt": "Vui lòng mở cửa sổ Telegram Drive trên thanh tác vụ/dock của hệ điều hành để tiếp tục.",
-    "tagline": "Lưu trữ bảo mật tự quản lý",
+    "tagline": "Không gian làm việc tệp ưu tiên cục bộ",
     "too_many_requests": "Quá nhiều yêu cầu",
     "flood_wait_msg": "Telegram đã tạm thời giới hạn thao tác của bạn.",
     "please_wait": "Vui lòng chờ trước khi thử lại.",

@@ -78,7 +78,9 @@
     "storage_insights": "Analisis penyimpanan",
     "large_files": "File besar",
     "old_files": "File lama",
-    "duplicates": "Duplikat"
+    "duplicates": "Duplikat",
+    "operation_failed": "Operasi tidak dapat diselesaikan. Coba lagi atau periksa pengaturan terkait.",
+    "retry": "Coba lagi"
   },
   "settings": {
     "tab_sync": "Folder Sync",
@@ -139,7 +141,7 @@
     "video_upload_media": "Media",
     "performance_compatibility": "Performance & Compatibility",
     "performance_mode_desc": "Disable blur, heavy shadows & animations",
-    "linux_rendering_desc": "Disable DMA-BUF renderer (fixes GPU crashes, requires restart)",
+    "linux_rendering_desc": "Gunakan fallback rendering memori bersama AppImage (perlu dimulai ulang)",
     "language_region": "Language & Region",
     "app_language": "Application Language",
     "choose_language": "Choose your preferred language",
@@ -213,7 +215,7 @@
     "copy_share_link": "Copy share link",
     "revoke_link": "Revoke link",
     "copy_diagnostics": "Copy Diagnostics",
-    "tagline": "Turn your Telegram account into unlimited, secure cloud storage. Open-source and free forever.",
+    "tagline": "Ruang kerja file yang mengutamakan perangkat lokal dan didukung akun Telegram Anda. Sumber terbuka dan gratis digunakan.",
     "reset_defaults": "Reset to Defaults",
     "done": "Done",
     "auto": "Auto",
@@ -535,7 +537,7 @@
     "desktop_required": "Desktop App Required",
     "desktop_required_desc": "You are viewing the internal development server in a browser. This application cannot function here because it requires access to the system backend (Rust).",
     "open_window_prompt": "Please open the Telegram Drive window in your OS taskbar/dock to continue.",
-    "tagline": "Self-hosted secure storage",
+    "tagline": "Ruang kerja file yang mengutamakan perangkat lokal",
     "too_many_requests": "Too Many Requests",
     "flood_wait_msg": "Telegram has temporarily limited your actions.",
     "please_wait": "Please wait before trying again.",

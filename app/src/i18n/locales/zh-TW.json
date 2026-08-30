@@ -78,7 +78,9 @@
     "storage_insights": "儲存見解",
     "large_files": "大文件",
     "old_files": "舊文件",
-    "duplicates": "重複"
+    "duplicates": "重複",
+    "operation_failed": "無法完成操作。請重試或檢查相關設定。",
+    "retry": "重試"
   },
   "settings": {
     "tab_sync": "Folder Sync",
@@ -180,7 +182,7 @@
     "performance_mode": "表演模式",
     "performance_mode_desc": "禁用模糊、重陰影和動畫",
     "linux_rendering_fix": "Linux 渲染修復",
-    "linux_rendering_desc": "停用 DMA-BUF 渲染器（修復 GPU 崩潰，需重新啟動）",
+    "linux_rendering_desc": "使用 AppImage 共享記憶體渲染備援方案（需要重新啟動）",
     "language_region": "語言和地區",
     "app_language": "應用程式語言",
     "choose_language": "選擇您的首選語言",
@@ -276,7 +278,7 @@
     "copy_share_link": "複製分享鏈接",
     "revoke_link": "撤銷鏈接",
     "copy_diagnostics": "複製診斷",
-    "tagline": "將您的 Telegram 帳戶轉變為無限的安全雲端儲存。開源且永久免費。",
+    "tagline": "由您的 Telegram 帳戶支援、以本機為優先的檔案工作區。開源且可免費使用。",
     "reset_defaults": "重設為預設值",
     "done": "完成",
     "clear_local_cache": "清除本機快取",
@@ -535,7 +537,7 @@
     "desktop_required": "需要桌面應用程式",
     "desktop_required_desc": "您正在瀏覽器中檢視內部開發伺服器。該應用程式無法在這裡運行，因為它需要存取系統後端（Rust）。",
     "open_window_prompt": "請開啟作業系統工作列/dock 中的 Telegram Drive 視窗以繼續。",
-    "tagline": "自架安全存儲",
+    "tagline": "以本機為優先的檔案工作區",
     "too_many_requests": "請求過多",
     "flood_wait_msg": "Telegram 暫時限制了您的行動。",
     "please_wait": "請稍等後再重試。",

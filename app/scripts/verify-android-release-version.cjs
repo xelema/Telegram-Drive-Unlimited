@@ -21,7 +21,13 @@ function readCargoVersion(contents) {
   return match[1];
 }
 
-function verifyReleaseVersions({ appRoot, tag, previousManifest, generatedProperties }) {
+function readChangelogVersion(contents) {
+  const match = /^## \[([^\]]+)\](?:\s+-|\s*$)/m.exec(contents);
+  if (!match) throw new Error('Unable to read the first version from CHANGELOG.md.');
+  return match[1];
+}
+
+function verifyReleaseVersions({ appRoot, tag, changelog, previousManifest, generatedProperties }) {
   const packageVersion = JSON.parse(fs.readFileSync(path.join(appRoot, 'package.json'), 'utf8')).version;
   const tauriVersion = JSON.parse(fs.readFileSync(path.join(appRoot, 'src-tauri/tauri.conf.json'), 'utf8')).version;
   const cargoVersion = readCargoVersion(fs.readFileSync(path.join(appRoot, 'src-tauri/Cargo.toml'), 'utf8'));
@@ -31,6 +37,12 @@ function verifyReleaseVersions({ appRoot, tag, previousManifest, generatedProper
   if (tag && tag !== expectedTag) mismatches.push(`release tag ${tag} must equal ${expectedTag}`);
   if (tauriVersion !== packageVersion) mismatches.push(`tauri.conf.json version ${tauriVersion} must equal ${packageVersion}`);
   if (cargoVersion !== packageVersion) mismatches.push(`Cargo.toml version ${cargoVersion} must equal ${packageVersion}`);
+  if (changelog) {
+    const changelogVersion = readChangelogVersion(fs.readFileSync(changelog, 'utf8'));
+    if (changelogVersion !== packageVersion) {
+      mismatches.push(`CHANGELOG.md version ${changelogVersion} must equal ${packageVersion}`);
+    }
+  }
 
   if (generatedProperties) {
     const properties = fs.readFileSync(generatedProperties, 'utf8');
@@ -61,10 +73,11 @@ if (require.main === module) {
   const result = verifyReleaseVersions({
     appRoot,
     tag: args.get('--tag'),
+    changelog: args.get('--changelog'),
     previousManifest: args.get('--previous-manifest'),
     generatedProperties: args.get('--generated-properties'),
   });
-  console.log(`Android release version passed: ${result.version} (versionCode ${result.versionCode}).`);
+  console.log(`Release version contract passed: ${result.version} (Android versionCode ${result.versionCode}).`);
 }
 
-module.exports = { parseVersion, readCargoVersion, verifyReleaseVersions };
+module.exports = { parseVersion, readCargoVersion, readChangelogVersion, verifyReleaseVersions };

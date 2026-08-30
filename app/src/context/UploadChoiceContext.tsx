@@ -1,6 +1,7 @@
 import { createContext, ReactNode, useCallback, useContext, useRef, useState } from 'react';
 import { LockKeyhole, UploadCloud } from 'lucide-react';
 import { useModalFocus } from '../hooks/useModalFocus';
+import i18n from '../i18n';
 
 export type UploadChoice = 'store' | 'protect';
 
@@ -44,7 +45,7 @@ export function UploadChoiceProvider({ children }: { children: ReactNode }) {
                             </button>
                         </div>
                         <div className="mt-4 flex justify-end">
-                            <button onClick={() => finish(null)} className="quiet-control px-4 py-2.5 text-sm font-medium text-app-text-secondary hover:text-app-text">Cancel</button>
+                            <button onClick={() => finish(null)} className="quiet-control px-4 py-2.5 text-sm font-medium text-app-text-secondary hover:text-app-text">{i18n.t("common.cancel")}</button>
                         </div>
                     </div>
                 </div>

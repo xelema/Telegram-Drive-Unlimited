@@ -3,6 +3,8 @@ node_modules/
 dist/
 /app/test-results/
 /app/playwright-report/
+/app/coverage/
+/supporter-service/coverage/
 /supporter-service/.dev.vars
 /supporter-service/.wrangler/
 .DS_Store
@@ -10,6 +12,7 @@ dist/
 
 # Rust
 /app/src-tauri/target/
+/app/src-tauri/coverage/
 /app/src-tauri/gen/
 **/*.rs.bk
 
@@ -52,5 +55,6 @@ local.properties
 *_Full-Analysis.md
 *_Prioritized-Action-List.md
 *_IMPLEMENTATION_PLAN.md
+!Docs/LINUX_ARCH_IMPLEMENTATION_PLAN.md
 *_EXECUTION_REPORT.md
 *_DEV_NOTES.md

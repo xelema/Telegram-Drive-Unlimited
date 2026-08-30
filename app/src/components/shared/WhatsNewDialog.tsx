@@ -2,6 +2,7 @@ import { useRef } from 'react';
 import { CheckCircle2, Sparkles, X } from 'lucide-react';
 import { useModalFocus } from '../../hooks/useModalFocus';
 import type { WhatsNewDetails } from '../../services/updateReliability';
+import i18n from '../../i18n';
 
 export function WhatsNewDialog({ details, onClose }: { details: WhatsNewDetails; onClose: () => void }) {
     const panelRef = useRef<HTMLDivElement>(null);
@@ -24,7 +25,7 @@ export function WhatsNewDialog({ details, onClose }: { details: WhatsNewDetails;
                     {details.body?.trim() || 'Telegram Drive was updated successfully. This release includes reliability, security, and interface improvements.'}
                 </div>
                 <div className="mt-4 flex items-center gap-2 text-xs text-app-text-secondary"><CheckCircle2 className="h-4 w-4 text-app-success" />The signed update was verified before installation.</div>
-                <button type="button" onClick={onClose} className="quiet-control mt-6 w-full rounded-control bg-app-accent px-4 py-2.5 text-sm font-semibold text-white hover:opacity-90">Continue</button>
+                <button type="button" onClick={onClose} className="quiet-control mt-6 w-full rounded-control bg-app-accent px-4 py-2.5 text-sm font-semibold text-white hover:opacity-90">{i18n.t("auth.continue")}</button>
             </div>
         </div>
     );

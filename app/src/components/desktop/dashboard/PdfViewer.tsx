@@ -9,6 +9,7 @@ import { isAndroidPlatform } from '../../../utils';
 
 // Use Vite's ?url suffix to get a properly bundled asset URL for the worker
 import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.mjs?url';
+import i18n from '../../../i18n';
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 
 const PDF_CACHE_LIMIT_BYTES = 25 * 1024 * 1024;
@@ -263,11 +264,11 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
 
                 <div className="pointer-events-auto flex items-center gap-2">
                     <div className="viewer-toolbar">
-                        <button onClick={handleZoomOut} className="viewer-control" title="Zoom Out (-)" aria-label="Zoom out">
+                        <button onClick={handleZoomOut} className="viewer-control" title="Zoom Out (-)" aria-label={i18n.t("common.zoom_out")}>
                             <ZoomOut className="w-4 h-4" />
                         </button>
                         <span className="min-w-[3rem] text-center text-badge font-medium tabular-nums text-white/85">{Math.round(scale * 100)}%</span>
-                        <button onClick={handleZoomIn} className="viewer-control" title="Zoom In (+)" aria-label="Zoom in">
+                        <button onClick={handleZoomIn} className="viewer-control" title="Zoom In (+)" aria-label={i18n.t("common.zoom_in")}>
                             <ZoomIn className="w-4 h-4" />
                         </button>
                         <div className="mx-0.5 h-4 w-px bg-white/15"></div>
@@ -351,7 +352,7 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
             {/* Footer Navigation Info */}
             <div className="viewer-toolbar pointer-events-none absolute bottom-4 start-1/2 -translate-x-1/2 px-3 py-1.5 text-metadata text-white/50 rtl:translate-x-1/2">
                 {typeof currentIndex === 'number' && typeof totalItems === 'number' && totalItems > 0 && (
-                    <span className="me-3 border-e border-white/20 pe-3">File {currentIndex + 1} of {totalItems}</span>
+                    <span className="me-3 border-e border-white/20 pe-3">{i18n.t("settings.video_upload_file")} {currentIndex + 1} of {totalItems}</span>
                 )}
                 <span>{numPages} {numPages === 1 ? 'page' : 'pages'}</span>
             </div>

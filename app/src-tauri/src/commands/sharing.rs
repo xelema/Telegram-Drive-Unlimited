@@ -23,7 +23,29 @@ fn generate_share_token() -> String {
 /// Hash a password using bcrypt (cost factor 12).
 /// bcrypt embeds the salt in the output hash string, so no separate salt storage is needed.
 fn hash_password(password: &str) -> Result<String, String> {
-    bcrypt::hash(password, 12).map_err(|e| format!("Password hashing failed: {}", e))
+    bcrypt::non_truncating_hash(password, 12).map_err(|e| format!("Password hashing failed: {}", e))
+}
+
+const MIN_SHARE_PASSWORD_CHARS: usize = 4;
+const MAX_SHARE_PASSWORD_CHARS: usize = 128;
+const MAX_SHARE_PASSWORD_BYTES: usize = 72;
+
+fn validate_share_password(password: Option<String>) -> Result<Option<String>, String> {
+    let Some(password) = password else {
+        return Ok(None);
+    };
+    if password.is_empty() {
+        return Ok(None);
+    }
+    let chars = password.chars().count();
+    if !(MIN_SHARE_PASSWORD_CHARS..=MAX_SHARE_PASSWORD_CHARS).contains(&chars)
+        || password.len() > MAX_SHARE_PASSWORD_BYTES
+    {
+        return Err(format!(
+            "Share passwords must contain between {MIN_SHARE_PASSWORD_CHARS} and {MAX_SHARE_PASSWORD_CHARS} characters"
+        ));
+    }
+    Ok(Some(password))
 }
 
 #[tauri::command]
@@ -39,6 +61,17 @@ pub async fn cmd_create_share(
     let token = generate_share_token();
     let created_at = chrono::Utc::now().timestamp();
     let expires_at = expiry_hours.map(|hours| created_at + hours * 3600);
+    let password = validate_share_password(password)?;
+    // Bcrypt is deliberately completed on a blocking worker before the SQLite
+    // connection is acquired, so expensive password work cannot hold the DB lock.
+    let password_hash = match password {
+        Some(password) => Some(
+            tokio::task::spawn_blocking(move || hash_password(&password))
+                .await
+                .map_err(|error| format!("Password hashing worker failed: {error}"))??,
+        ),
+        None => None,
+    };
     let database = db_pool.inner().clone();
     let token_for_db = token.clone();
     let file_name_for_db = file_name.clone();
@@ -55,15 +88,6 @@ pub async fn cmd_create_share(
             return Err("[ENCRYPTED_SHARE_UNAVAILABLE] Encrypted sharing is disabled until a credential-safe sharing flow is available".to_string());
         }
 
-        let password_hash = if let Some(ref pwd) = password {
-            if pwd.is_empty() {
-                None
-            } else {
-                Some(hash_password(pwd)?)
-            }
-        } else {
-            None
-        };
         let mut stmt = conn.prepare(
             "INSERT INTO shared_links (id, folder_id, message_id, file_name, file_size, password_hash, password_salt, expires_at, revoked, created_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)"
@@ -92,6 +116,24 @@ pub async fn cmd_create_share(
         has_password,
         link,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_share_password;
+
+    #[test]
+    fn share_password_policy_is_bounded_without_changing_unprotected_links() {
+        assert_eq!(validate_share_password(None).unwrap(), None);
+        assert_eq!(validate_share_password(Some(String::new())).unwrap(), None);
+        assert!(validate_share_password(Some("abc".to_string())).is_err());
+        assert!(validate_share_password(Some("a".repeat(129))).is_err());
+        assert!(validate_share_password(Some("a".repeat(73))).is_err());
+        assert_eq!(
+            validate_share_password(Some("safe-password".to_string())).unwrap(),
+            Some("safe-password".to_string())
+        );
+    }
 }
 
 #[tauri::command]

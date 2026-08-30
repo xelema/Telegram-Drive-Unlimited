@@ -4,6 +4,7 @@ import { AlertTriangle, CheckCircle2, ExternalLink, Heart, KeyRound, Loader2, Re
 import { toast } from 'sonner';
 import { useSupporter } from '../../context/SupporterContext';
 import { shouldOfferNewSupporterPurchase } from '../../services/supporterVisibility';
+import i18n from '../../i18n';
 
 const SUPPORT_URL = 'https://github.com/caamer20/Telegram-Drive/issues/new/choose';
 
@@ -30,7 +31,7 @@ export function MobileSupporterCard() {
       if (result.status === 'completed') {
         setCheckoutPending(false);
         if (result.recovery_code) setNewRecoveryCode(result.recovery_code);
-        toast.success('Payment verified. Android sponsor ads are now disabled.');
+        toast.success('Payment verified. Sponsor ads are now disabled on this device.');
       } else if (result.status === 'failed' || result.status === 'expired') {
         setCheckoutPending(false);
         await refreshStatus();
@@ -79,8 +80,8 @@ export function MobileSupporterCard() {
       <div className="flex items-start gap-3">
         <Heart className="mt-0.5 h-5 w-5 flex-none text-telegram-primary" aria-hidden="true" />
         <div className="min-w-0 flex-1">
-          <h3 id="android-supporter-title" className="text-sm font-semibold text-telegram-text">$5 lifetime ad-free license</h3>
-          <p className="mt-1 text-[11px] leading-5 text-telegram-subtext">Every feature stays free. One verified PayPal payment removes Android sponsor ads—no subscription.</p>
+          <h2 id="android-supporter-title" className="text-sm font-semibold text-telegram-text">$5 lifetime ad-free license</h2>
+          <p className="mt-1 text-[11px] leading-5 text-telegram-subtext">Every feature stays free. One verified PayPal payment removes sponsor ads on up to three supported devices total—no subscription.</p>
         </div>
       </div>
 
@@ -95,9 +96,9 @@ export function MobileSupporterCard() {
 
       {canPurchase && (
         <div className="mt-4 rounded-xl border border-telegram-primary/25 bg-telegram-bg/55 p-4 text-center">
-          <p className="text-3xl font-bold text-telegram-text">$5 <span className="text-xs font-medium text-telegram-subtext">USD once</span></p>
+          <p className="text-3xl font-bold text-telegram-text">$5 <span className="text-xs font-medium text-telegram-subtext">{i18n.t("supporter_offer.price_suffix")}</span></p>
           <div className="mt-3 grid gap-2 text-left text-[11px] text-telegram-subtext">
-            {['Android sponsor ads removed for life', 'Up to three supported devices total', 'Recovery code for reinstalls and another device'].map(item => (
+            {['Sponsor ads removed on activated devices for life', 'Up to three supported devices total', 'Recovery code for reinstalls and another device'].map(item => (
               <span key={item} className="flex items-start gap-2"><CheckCircle2 className="mt-0.5 h-3.5 w-3.5 flex-none text-emerald-400" />{item}</span>
             ))}
           </div>

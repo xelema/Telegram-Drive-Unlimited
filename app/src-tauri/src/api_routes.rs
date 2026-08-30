@@ -1,8 +1,9 @@
-use crate::bandwidth::BandwidthManager;
+use crate::bandwidth::{BandwidthManager, BandwidthReservation};
 use crate::commands::preview::THUMBNAIL_EXTS;
 use crate::commands::utils::{map_error, media_size, resolve_peer};
 use crate::commands::TelegramState;
 use crate::commands::{create_folder_inner, delete_folder_inner, rename_folder_inner};
+use crate::crypto::policy::TELEGRAM_MAX_FILE_SIZE;
 use crate::models::FolderMetadata;
 use crate::vpn_optimizer::NetworkConfig;
 use actix_multipart::Multipart;
@@ -18,6 +19,23 @@ use std::io::Write;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWriteExt};
+
+const MAX_MULTIPART_METADATA_BYTES: usize = 128;
+const MAX_UPLOAD_FILENAME_CHARS: usize = 255;
+
+fn sanitise_upload_filename(value: &str) -> String {
+    let basename = value.rsplit(['/', '\\']).next().unwrap_or(value).trim();
+    let cleaned: String = basename
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(MAX_UPLOAD_FILENAME_CHARS)
+        .collect();
+    if cleaned.is_empty() || cleaned == "." || cleaned == ".." {
+        "file".to_string()
+    } else {
+        cleaned
+    }
+}
 
 /// Shared state for the API server — holds the key hash for auth checks
 pub struct ApiState {
@@ -1381,16 +1399,32 @@ async fn api_upload_file(
     let mut folder_id: Option<i64> = None;
     let mut filename = "file".to_string();
     let mut field_mime: Option<String> = None;
+    let mut file_seen = false;
+    let mut folder_seen = false;
+    let mut file_size = 0_u64;
 
-    while let Ok(Some(mut field)) = payload.try_next().await {
+    loop {
+        let mut field = match payload.try_next().await {
+            Ok(Some(field)) => field,
+            Ok(None) => break,
+            Err(error) => {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                return json_error("INVALID_MULTIPART", &error.to_string(), 400);
+            }
+        };
         let content_disposition = field.content_disposition();
         let name = content_disposition
             .and_then(|cd| cd.get_name())
             .unwrap_or("");
 
         if name == "file" {
+            if file_seen {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                return json_error("MULTIPLE_FILES", "Upload exactly one file per request", 400);
+            }
+            file_seen = true;
             if let Some(fname) = content_disposition.and_then(|cd| cd.get_filename()) {
-                filename = fname.to_string();
+                filename = sanitise_upload_filename(fname);
             }
             field_mime = field.content_type().map(|m| m.to_string());
             while let Some(chunk) = field.next().await {
@@ -1401,12 +1435,28 @@ async fn api_upload_file(
                         return json_error("READ_ERROR", &e.to_string(), 400);
                     }
                 };
+                file_size = match file_size.checked_add(data.len() as u64) {
+                    Some(total) if total <= TELEGRAM_MAX_FILE_SIZE => total,
+                    _ => {
+                        let _ = tokio::fs::remove_file(&temp_path).await;
+                        return json_error(
+                            "FILE_TOO_LARGE",
+                            "File exceeds Telegram's upload size limit",
+                            413,
+                        );
+                    }
+                };
                 if let Err(e) = file.write_all(&data).await {
                     let _ = tokio::fs::remove_file(&temp_path).await;
                     return json_error("WRITE_ERROR", &e.to_string(), 500);
                 }
             }
         } else if name == "folder_id" {
+            if folder_seen {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                return json_error("DUPLICATE_FOLDER_ID", "folder_id may be provided once", 400);
+            }
+            folder_seen = true;
             let mut bytes = Vec::new();
             while let Some(chunk) = field.next().await {
                 let data = match chunk {
@@ -1416,15 +1466,39 @@ async fn api_upload_file(
                         return json_error("READ_ERROR", &e.to_string(), 400);
                     }
                 };
+                if bytes.len().saturating_add(data.len()) > MAX_MULTIPART_METADATA_BYTES {
+                    let _ = tokio::fs::remove_file(&temp_path).await;
+                    return json_error("INVALID_FOLDER_ID", "folder_id is too long", 400);
+                }
                 bytes.extend_from_slice(&data);
             }
             let val_str = String::from_utf8_lossy(&bytes).trim().to_string();
             if !val_str.is_empty() && val_str != "null" && val_str != "none" {
-                if let Ok(id) = val_str.parse::<i64>() {
-                    folder_id = Some(id);
-                }
+                folder_id = match val_str.parse::<i64>() {
+                    Ok(id) => Some(id),
+                    Err(_) => {
+                        let _ = tokio::fs::remove_file(&temp_path).await;
+                        return json_error(
+                            "INVALID_FOLDER_ID",
+                            "folder_id must be an integer",
+                            400,
+                        );
+                    }
+                };
             }
+        } else {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            return json_error(
+                "UNKNOWN_MULTIPART_FIELD",
+                "Only file and folder_id fields are accepted",
+                400,
+            );
         }
+    }
+
+    if !file_seen {
+        let _ = tokio::fs::remove_file(&temp_path).await;
+        return json_error("FILE_REQUIRED", "A multipart file field is required", 400);
     }
 
     if let Err(e) = file.flush().await {
@@ -1433,23 +1507,30 @@ async fn api_upload_file(
     }
     drop(file);
 
-    let file_size = match tokio::fs::metadata(&temp_path).await {
+    let persisted_size = match tokio::fs::metadata(&temp_path).await {
         Ok(m) => m.len(),
         Err(e) => {
             let _ = tokio::fs::remove_file(&temp_path).await;
             return json_error("METADATA_ERROR", &e.to_string(), 500);
         }
     };
-
-    if let Err(e) = bw_manager.try_reserve_up(file_size) {
+    if persisted_size != file_size {
         let _ = tokio::fs::remove_file(&temp_path).await;
-        return json_error("BANDWIDTH_LIMIT", &e, 400);
+        return json_error("SIZE_MISMATCH", "Upload staging size did not match", 500);
     }
+
+    let mut reservation =
+        match BandwidthReservation::upload(bw_manager.get_ref().clone(), file_size) {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                return json_error("BANDWIDTH_LIMIT", &error, 400);
+            }
+        };
 
     let peer = match resolve_peer(&client, folder_id, &tg_state.peer_cache).await {
         Ok(p) => p,
         Err(e) => {
-            bw_manager.release_up(file_size);
             let _ = tokio::fs::remove_file(&temp_path).await;
             return json_error("PEER_ERROR", &e, 400);
         }
@@ -1458,7 +1539,6 @@ async fn api_upload_file(
     let mut open_file = match tokio::fs::File::open(&temp_path).await {
         Ok(f) => f,
         Err(e) => {
-            bw_manager.release_up(file_size);
             let _ = tokio::fs::remove_file(&temp_path).await;
             return json_error("OPEN_ERROR", &e.to_string(), 500);
         }
@@ -1470,7 +1550,6 @@ async fn api_upload_file(
     let uploaded_file = match upload_res {
         Ok(uf) => uf,
         Err(e) => {
-            bw_manager.release_up(file_size);
             let _ = tokio::fs::remove_file(&temp_path).await;
             return json_error("UPLOAD_FAILED", &map_error(e), 500);
         }
@@ -1524,7 +1603,6 @@ async fn api_upload_file(
     let msg = match sent_msg {
         Some(m) => m,
         None => {
-            bw_manager.release_up(file_size);
             return json_error("SEND_MESSAGE_FAILED", &last_err, 500);
         }
     };
@@ -1537,6 +1615,7 @@ async fn api_upload_file(
         mime_type: field_mime,
         created_at: msg.date().to_string(),
     };
+    reservation.commit();
 
     HttpResponse::Ok().json(response_file)
 }
@@ -2176,4 +2255,25 @@ pub fn configure_api(cfg: &mut web::ServiceConfig) {
         .service(api_empty_folders)
         .service(api_get_file_thumbnail)
         .service(api_media_info);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{sanitise_upload_filename, MAX_UPLOAD_FILENAME_CHARS};
+
+    #[test]
+    fn multipart_upload_filenames_are_reduced_to_safe_basenames() {
+        assert_eq!(
+            sanitise_upload_filename("../../private/report.txt"),
+            "report.txt"
+        );
+        assert_eq!(sanitise_upload_filename("..\\..\\secret.bin"), "secret.bin");
+        assert_eq!(sanitise_upload_filename(".."), "file");
+        assert_eq!(
+            sanitise_upload_filename(&"x".repeat(MAX_UPLOAD_FILENAME_CHARS + 10))
+                .chars()
+                .count(),
+            MAX_UPLOAD_FILENAME_CHARS
+        );
+    }
 }

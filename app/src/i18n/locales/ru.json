@@ -78,7 +78,9 @@
     "storage_insights": "Анализ хранилища",
     "large_files": "Большие файлы",
     "old_files": "Старые файлы",
-    "duplicates": "Дубликаты"
+    "duplicates": "Дубликаты",
+    "operation_failed": "Не удалось завершить операцию. Повторите попытку или проверьте связанные настройки.",
+    "retry": "Повторить"
   },
   "settings": {
     "tab_sync": "Folder Sync",
@@ -139,7 +141,7 @@
     "video_upload_media": "Медиа",
     "performance_compatibility": "Performance & Compatibility",
     "performance_mode_desc": "Disable blur, heavy shadows & animations",
-    "linux_rendering_desc": "Disable DMA-BUF renderer (fixes GPU crashes, requires restart)",
+    "linux_rendering_desc": "Использовать резервный режим рендеринга AppImage через общую память (требуется перезапуск)",
     "language_region": "Language & Region",
     "app_language": "Application Language",
     "choose_language": "Choose your preferred language",
@@ -213,7 +215,7 @@
     "copy_share_link": "Copy share link",
     "revoke_link": "Revoke link",
     "copy_diagnostics": "Copy Diagnostics",
-    "tagline": "Turn your Telegram account into unlimited, secure cloud storage. Open-source and free forever.",
+    "tagline": "Локальное рабочее пространство для файлов на базе вашего аккаунта Telegram. Открытый исходный код и бесплатное использование.",
     "reset_defaults": "Reset to Defaults",
     "done": "Done",
     "auto": "Auto",
@@ -551,7 +553,7 @@
     "desktop_required": "Требуется приложение для ПК",
     "desktop_required_desc": "Вы просматриваете внутренний сервер разработки в браузере. Этому приложению необходим доступ к системному бэкенду (Rust).",
     "open_window_prompt": "Откройте окно Telegram Drive в панели задач для продолжения.",
-    "tagline": "Защищенное облачное хранилище",
+    "tagline": "Локальное рабочее пространство для файлов",
     "too_many_requests": "Слишком много запросов",
     "flood_wait_msg": "Telegram временно ограничил ваши действия.",
     "please_wait": "Пожалуйста, подождите перед повторной попыткой.",

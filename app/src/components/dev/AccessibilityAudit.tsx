@@ -17,7 +17,8 @@ export default function AccessibilityAudit() {
     if (!requested) return;
     window.__TELEGRAM_DRIVE_AXE_RESULTS__ = { status: 'scheduled' };
     document.documentElement.dataset.axeAuditStatus = 'scheduled';
-    const timer = window.setTimeout(async () => {
+    let timer: number | undefined;
+    const runAudit = async () => {
       try {
         const axeModule = await import('axe-core');
         const axe = axeModule.default ?? axeModule;
@@ -41,9 +42,19 @@ export default function AccessibilityAudit() {
         document.documentElement.dataset.axeAuditError = String(error);
         console.error('[Accessibility] axe scan failed to run', error);
       }
-    }, 750);
+    };
+    const scheduleAudit = () => {
+      timer = window.setTimeout(() => void runAudit(), 250);
+    };
+    const fixtureRequested = new URLSearchParams(window.location.search).has('a11y-fixture');
+    if (fixtureRequested && !document.documentElement.dataset.a11yFixtureReady) {
+      window.addEventListener('telegram-drive-a11y-fixture-ready', scheduleAudit, { once: true });
+    } else {
+      timer = window.setTimeout(() => void runAudit(), 750);
+    }
     return () => {
-      window.clearTimeout(timer);
+      if (timer !== undefined) window.clearTimeout(timer);
+      window.removeEventListener('telegram-drive-a11y-fixture-ready', scheduleAudit);
       delete document.documentElement.dataset.axeAuditStatus;
       delete document.documentElement.dataset.axeAuditViolations;
       delete document.documentElement.dataset.axeAuditError;

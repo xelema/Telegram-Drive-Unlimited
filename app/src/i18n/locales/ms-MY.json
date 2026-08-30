@@ -78,7 +78,9 @@
     "storage_insights": "Cerapan storan",
     "large_files": "Fail besar",
     "old_files": "Fail lama",
-    "duplicates": "Pendua"
+    "duplicates": "Pendua",
+    "operation_failed": "Operasi tidak dapat diselesaikan. Cuba lagi atau semak tetapan berkaitan.",
+    "retry": "Cuba lagi"
   },
   "settings": {
     "tab_sync": "Folder Sync",
@@ -180,7 +182,7 @@
     "performance_mode": "Mod Prestasi",
     "performance_mode_desc": "Lumpuhkan kabur, bayang-bayang tebal & animasi",
     "linux_rendering_fix": "Pembetulan Rendering Linux",
-    "linux_rendering_desc": "Lumpuhkan pemapar DMA-BUF (membetulkan ranap GPU, memerlukan dimulakan semula)",
+    "linux_rendering_desc": "Gunakan kaedah sandaran pemaparan memori dikongsi AppImage (perlu dimulakan semula)",
     "language_region": "Bahasa & Wilayah",
     "app_language": "Bahasa Aplikasi",
     "choose_language": "Pilih bahasa pilihan anda",
@@ -276,7 +278,7 @@
     "copy_share_link": "Salin pautan kongsi",
     "revoke_link": "Batalkan pautan",
     "copy_diagnostics": "Salin Diagnostik",
-    "tagline": "Tukar akaun Telegram anda menjadi storan awan tanpa had dan selamat. Sumber terbuka dan percuma selama-lamanya.",
+    "tagline": "Ruang kerja fail berasaskan setempat yang dikuasakan oleh akaun Telegram anda. Sumber terbuka dan percuma untuk digunakan.",
     "reset_defaults": "Tetapkan semula kepada Lalai",
     "done": "Selesai",
     "clear_local_cache": "Kosongkan Cache Tempatan",
@@ -535,7 +537,7 @@
     "desktop_required": "Apl Desktop Diperlukan",
     "desktop_required_desc": "Anda sedang melihat pelayan pembangunan dalaman dalam penyemak imbas. Aplikasi ini tidak boleh berfungsi di sini kerana ia memerlukan akses kepada bahagian belakang sistem (Rust).",
     "open_window_prompt": "Sila buka tetingkap Telegram Drive dalam bar tugas/dok OS anda untuk meneruskan.",
-    "tagline": "Storan selamat yang dihoskan sendiri",
+    "tagline": "Ruang kerja fail berasaskan setempat",
     "too_many_requests": "Terlalu Banyak Permintaan",
     "flood_wait_msg": "Telegram telah mengehadkan tindakan anda buat sementara waktu.",
     "please_wait": "Sila tunggu sebelum mencuba lagi.",

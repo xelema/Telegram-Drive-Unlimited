@@ -13,6 +13,7 @@ import { useUploadChoice, type UploadChoice } from '../context/UploadChoiceConte
 import { triggerHaptic } from '../services/feedback';
 import { isTransientNetworkError, restoreUploadQueue, serializeUploadQueue } from '../services/transferQueuePolicy';
 import { announceSupporterValueMoment } from '../services/supporterVisibility';
+import { userFacingError } from '../services/userFacingError';
 import { invalidateFolderFileQueries } from '../services/fileListRefresh';
 import { effectiveVideoUploadMode } from '../services/videoUploadMode';
 import {
@@ -626,7 +627,7 @@ export function useFileUpload(
 
     const cancelAll = () => {
         if (!isAndroidPlatform) {
-            void transferBulkAction('cancel', 'upload').catch(error => toast.error(String(error)));
+            void transferBulkAction('cancel', 'upload').catch(error => toast.error(userFacingError(error, t)));
             toast.info('All uploads cancelled');
             return;
         }
@@ -647,7 +648,7 @@ export function useFileUpload(
 
     const pauseAll = () => {
         if (!isAndroidPlatform) {
-            void transferBulkAction('pause', 'upload').catch(error => toast.error(String(error)));
+            void transferBulkAction('pause', 'upload').catch(error => toast.error(userFacingError(error, t)));
             toast.info('Uploads paused. Active items will restart safely when resumed.');
             return;
         }
@@ -664,7 +665,7 @@ export function useFileUpload(
 
     const resumeAll = () => {
         if (!isAndroidPlatform) {
-            void transferBulkAction('resume', 'upload').catch(error => toast.error(String(error)));
+            void transferBulkAction('resume', 'upload').catch(error => toast.error(userFacingError(error, t)));
             toast.info('Uploads resumed');
             return;
         }
@@ -676,7 +677,7 @@ export function useFileUpload(
 
     const clearFinished = () => {
         if (!isAndroidPlatform) {
-            void clearTerminalTransfers('upload', true).catch(error => toast.error(String(error)));
+            void clearTerminalTransfers('upload', true).catch(error => toast.error(userFacingError(error, t)));
             return;
         }
         setUploadQueue(queue => {
@@ -689,7 +690,7 @@ export function useFileUpload(
 
     const cancelItem = (id: string) => {
         if (!isAndroidPlatform) {
-            void transferItemAction('cancel', id).catch(error => toast.error(String(error)));
+            void transferItemAction('cancel', id).catch(error => toast.error(userFacingError(error, t)));
             return;
         }
         setUploadQueue(q => {

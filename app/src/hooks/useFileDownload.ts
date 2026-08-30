@@ -14,6 +14,7 @@ import { formatBytes } from '../utils';
 import { triggerHaptic } from '../services/feedback';
 import { isTransientNetworkError, restoreDownloadQueue, serializeDownloadQueue } from '../services/transferQueuePolicy';
 import { announceSupporterValueMoment } from '../services/supporterVisibility';
+import { userFacingError } from '../services/userFacingError';
 import { evaluateAndroidTransferPolicy, type AndroidTransferEnvironment } from '../services/androidTransferPolicy';
 import {
     clearTerminalTransfers,
@@ -662,7 +663,7 @@ export function useFileDownload(
 
     const clearFinished = () => {
         if (!isAndroidPlatform) {
-            void clearTerminalTransfers('download', false).catch(error => toast.error(String(error)));
+            void clearTerminalTransfers('download', false).catch(error => toast.error(userFacingError(error, t)));
             return;
         }
         setDownloadQueue(q => q.filter(i => i.status !== 'success'));
@@ -670,7 +671,7 @@ export function useFileDownload(
 
     const cancelAll = () => {
         if (!isAndroidPlatform) {
-            void transferBulkAction('cancel', 'download').catch(error => toast.error(String(error)));
+            void transferBulkAction('cancel', 'download').catch(error => toast.error(userFacingError(error, t)));
             toast.info('All downloads cancelled');
             return;
         }
@@ -690,7 +691,7 @@ export function useFileDownload(
 
     const pauseAll = () => {
         if (!isAndroidPlatform) {
-            void transferBulkAction('pause', 'download').catch(error => toast.error(String(error)));
+            void transferBulkAction('pause', 'download').catch(error => toast.error(userFacingError(error, t)));
             toast.info('Downloads paused. Active items will restart safely when resumed.');
             return;
         }
@@ -709,7 +710,7 @@ export function useFileDownload(
 
     const resumeAll = () => {
         if (!isAndroidPlatform) {
-            void transferBulkAction('resume', 'download').catch(error => toast.error(String(error)));
+            void transferBulkAction('resume', 'download').catch(error => toast.error(userFacingError(error, t)));
             toast.info('Downloads resumed');
             return;
         }
@@ -721,7 +722,7 @@ export function useFileDownload(
 
     const cancelItem = (id: string) => {
         if (!isAndroidPlatform) {
-            void transferItemAction('cancel', id).catch(error => toast.error(String(error)));
+            void transferItemAction('cancel', id).catch(error => toast.error(userFacingError(error, t)));
             return;
         }
         setDownloadQueue(q => {

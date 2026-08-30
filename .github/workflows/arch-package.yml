@@ -1,0 +1,98 @@
+name: Arch package
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/arch-package.yml'
+      - '.github/workflows/release.yml'
+      - 'packaging/arch/**'
+      - 'scripts/render-arch-pkgbuild.sh'
+      - 'scripts/verify-arch-package.sh'
+      - 'scripts/generate-arch-runtime-sbom.sh'
+      - 'app/src-tauri/src/installation.rs'
+      - 'app/src-tauri/src/linux_startup.rs'
+      - 'app/src/hooks/useUpdateCheck.ts'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/arch-package.yml'
+      - '.github/workflows/release.yml'
+      - 'packaging/arch/**'
+      - 'scripts/render-arch-pkgbuild.sh'
+      - 'scripts/verify-arch-package.sh'
+      - 'scripts/generate-arch-runtime-sbom.sh'
+      - 'app/src-tauri/src/installation.rs'
+      - 'app/src-tauri/src/linux_startup.rs'
+      - 'app/src/hooks/useUpdateCheck.ts'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package-contract:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    container:
+      image: archlinux:base-devel-20260823.0.578598@sha256:68bfc3b0d277b08a99101dc9b94aaa03e5ae70cf1b4fb965c03b2b87b915760d
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install package validation tools
+        run: |
+          pacman -Syu --noconfirm \
+            curl \
+            dbus \
+            desktop-file-utils \
+            jq \
+            libarchive \
+            namcap \
+            pacman-contrib \
+            xorg-server-xvfb \
+            xorg-xauth
+
+      - name: Download and verify the immutable packaging fixture
+        run: |
+          set -euo pipefail
+          mkdir -p fixture
+          curl --fail --location --retry 3 \
+            'https://github.com/caamer20/Telegram-Drive/releases/download/v3.7.0/Telegram.Drive_3.7.0_amd64.deb' \
+            --output fixture/Telegram.Drive_3.7.0_amd64.deb
+          echo 'd229a414025650d44211521ca350298d67c7d8136001f8300636bb3ea2ecc35f  fixture/Telegram.Drive_3.7.0_amd64.deb' | sha256sum -c -
+
+      - name: Build and inspect the fixture package as an unprivileged user
+        run: |
+          set -euo pipefail
+          bash scripts/render-arch-pkgbuild.sh fixture/Telegram.Drive_3.7.0_amd64.deb 3.7.0 arch-package
+          useradd --create-home --shell /bin/bash arch-builder
+          chown -R arch-builder:arch-builder arch-package
+          runuser -u arch-builder -- bash -c 'cd "$1" && makepkg --printsrcinfo > .SRCINFO && makepkg --cleanbuild --clean --noconfirm' _ "$PWD/arch-package"
+          package_path="$(find arch-package -maxdepth 1 -type f -name 'telegram-drive-bin-*.pkg.tar.zst' -print -quit)"
+          test -n "${package_path}"
+          namcap arch-package/PKGBUILD "${package_path}" 2>&1 | tee arch-package/namcap.log
+          if grep -Eq '(^|[[:space:]])E:' arch-package/namcap.log; then
+            echo '::error::namcap reported a package error'
+            exit 1
+          fi
+          pacman -U --noconfirm "${package_path}"
+          bash scripts/verify-arch-package.sh "${package_path}" 3.7.0
+
+      - name: Verify the native package starts and produces a runtime SBOM
+        run: |
+          set -euo pipefail
+          set +e
+          runuser -u arch-builder -- dbus-run-session -- xvfb-run -a timeout --kill-after=5s 15s telegram-drive > arch-package/startup-smoke.log 2>&1
+          smoke_status=$?
+          set -e
+          if [[ ${smoke_status} -ne 124 && ${smoke_status} -ne 137 ]]; then
+            cat arch-package/startup-smoke.log
+            exit 1
+          fi
+          if grep -Eiq 'EGL_BAD_ALLOC|Could not create.*EGL display|segmentation fault|thread .* panicked' arch-package/startup-smoke.log; then
+            cat arch-package/startup-smoke.log
+            exit 1
+          fi
+          bash scripts/generate-arch-runtime-sbom.sh 3.7.0 arch-package/telegram-drive-arch-runtime-sbom.cdx.json

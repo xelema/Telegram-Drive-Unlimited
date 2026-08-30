@@ -16,7 +16,7 @@ Organize, transfer, preview, stream, sync, and share the files you keep in Saved
 [![oosmetrics](https://api.oosmetrics.com/api/v1/badge/achievement/029fb97b-a54a-4566-a1eb-aa1a5039065d.svg)](https://oosmetrics.com/repo/caamer20/Telegram-Drive)
 [![oosmetrics](https://api.oosmetrics.com/api/v1/badge/achievement/2aa6f3f9-fd8a-4523-bd73-6625ee6a948a.svg)](https://oosmetrics.com/repo/caamer20/Telegram-Drive)
 
-[Download for desktop](https://github.com/caamer20/Telegram-Drive/releases/latest) · [Download the Android preview](https://github.com/caamer20/Telegram-Drive/releases/tag/Androidv4.0.0beta) · [Product website](https://caamer20.github.io/Telegram-Drive/) · [Changelog](CHANGELOG.md)
+[Download for desktop](https://github.com/caamer20/Telegram-Drive/releases/latest) · [Find the latest Android preview](https://github.com/caamer20/Telegram-Drive/releases) · [Product website](https://caamer20.github.io/Telegram-Drive/) · [Changelog](CHANGELOG.md)
 
 </div>
 
@@ -51,7 +51,7 @@ Telegram Drive turns Telegram's familiar file storage into a focused, desktop-st
 | **Desktop integrations** | Folder Sync, local REST API, WebDAV, local share links, tray controls, and native notifications |
 | **Privacy** | Local configuration and caches, opt-in crash reporting, loopback-only local servers, and no separate file relay |
 | **Languages** | 24 selectable locales plus automatic system-language selection |
-| **Price** | Every feature is free; an optional one-time $5 supporter license removes desktop sponsor placements for life |
+| **Price** | Every feature is free; an optional one-time $5 supporter license removes sponsor placements for life on up to three supported devices total |
 
 ## Download and install
 
@@ -62,10 +62,10 @@ Download prebuilt packages from the [latest desktop release](https://github.com/
 | **Windows x64** | `Telegram.Drive_*_x64-setup.exe` | NSIS installer; the required Microsoft Visual C++ runtime is prepared by the installer |
 | **macOS — Apple Silicon** | `Telegram.Drive_*_aarch64.dmg` | For M-series Macs |
 | **macOS — Intel** | `Telegram.Drive_*_x64.dmg` | For Intel-based Macs |
-| **Linux x64** | `.AppImage`, `.deb`, or `.rpm` | Choose the package suited to your distribution |
-| **Android / Google TV** | Signed APK from the [Android preview release](https://github.com/caamer20/Telegram-Drive/releases/tag/Androidv4.0.0beta) | Android 7.0 or newer; sideloaded outside Google Play |
+| **Linux x64** | `.AppImage`, `.deb`, `.rpm`, or `.pkg.tar.zst` | Choose the package suited to your distribution; Arch packages remain managed by pacman |
+| **Android / Google TV** | Signed APK from the [latest applicable Android preview](https://github.com/caamer20/Telegram-Drive/releases) | Android 7.0 or newer; sideloaded outside Google Play |
 
-Desktop release assets also include updater/signature sidecars where applicable. Download installers only from this repository's GitHub Releases page.
+Desktop release assets also include updater/signature sidecars where applicable. Download installers only from this repository's GitHub Releases page. See the [Linux packaging and rendering guide](Docs/LINUX_PACKAGING.md) for Arch installation, updater ownership, diagnostics, and AppImage safe mode.
 
 ## First-time setup
 
@@ -126,7 +126,7 @@ The application caps a Telegram object at exactly **2,000,000,000 bytes**. Encry
 - ZIP, RAR, and 7z archive browsing and extraction, including extraction back into Telegram Drive where the platform supports it.
 - Offline preview-cache controls for recently viewed standard files.
 
-Some media depends on operating-system codec support or FFmpeg. Preview, streaming, and archive features intentionally do not expose encrypted plaintext; see [encrypted-file limitations](#current-encrypted-file-limitations).
+Some media depends on operating-system codec support or FFmpeg. Supported protected audio, video, and PDF content can use authenticated local byte-range streaming while the vault is unlocked, without publishing a persistent plaintext copy. See [encrypted-file limitations](#current-encrypted-file-limitations).
 
 ### Sharing and local integrations
 
@@ -148,7 +148,7 @@ Some media depends on operating-system codec support or FFmpeg. Preview, streami
 - Right-to-left document direction and bidirectional-text protections for Arabic, Persian, and Urdu.
 - SOCKS5 and HTTP/HTTPS proxy routing with proxy credentials stored in the operating system's secure credential manager.
 - Configurable VPN-oriented timeouts, retries, keep-alive behavior, polling, bandwidth, transfer chunk size, and archive limits.
-- Signed desktop updates on Windows, macOS, and Linux.
+- Signed desktop updates on supported self-updating packages; pacman-managed Arch installs open the verified release for package-manager updates.
 - Android share-sheet intake, foreground transfers, and native downloaded-file publication.
 
 ## Screenshots
@@ -207,18 +207,19 @@ The encryption design and implementation have **not received an independent secu
 
 The following operations fail closed for encrypted objects while retaining their normal behavior for standard files:
 
-- In-app image, PDF, archive, audio, and video previews.
-- Encrypted thumbnails, range streaming, HLS/fMP4 playback, and transcoding.
+- In-app encrypted image and archive previews.
+- Encrypted thumbnails, HLS/fMP4 remuxing, and transcoding.
 - Local plaintext share links and REST/local-server plaintext access.
 - WebDAV read, overwrite, rename, move, copy, and delete operations.
 - Remote rename of encrypted Telegram media.
 - Plaintext-to-encrypted migration, decrypt-in-place migration, rekey/slot-management UI, and full format migration.
 
-Download and authenticate an encrypted file before opening it in another application.
+TDENC2-protected audio, video, and PDF content can stream in supported in-app viewers while the vault is unlocked. The session-scoped credential is revoked when the vault locks, and the app does not publish a persistent plaintext copy. Download and authenticate other encrypted files before opening them in another application.
 
 ## Privacy and security
 
-- Telegram API credentials, session data, settings, transfer state, sync metadata, encryption registry data, and vault material are stored locally in the application's data directories.
+- The Telegram API ID and application state are stored locally. The API hash is kept separately in the desktop operating-system credential manager or Android Keystore; legacy plaintext values are removed only after secure migration succeeds.
+- Telegram session data, settings, transfer state, sync metadata, encryption registry data, and vault material are stored locally in the application's data directories.
 - Standard uploads send ordinary file content to Telegram. TDENC2 uploads send ciphertext, although Telegram can still observe transport/account metadata such as ciphertext size, time, account, and destination channel.
 - The project does not operate a separate file-relay service.
 - Crash reporting is disabled by default and requires explicit consent. Reports exclude file names, paths, contents, messages, Telegram identifiers, credentials, phone numbers, and user-entered values.
@@ -247,7 +248,7 @@ Locale selection and formatting are production-supported. Some translated entrie
 
 ## Optional $5 lifetime ad-free supporter license
 
-Every Telegram Drive feature is available to non-paying users. The desktop app offers an optional **$5.00 USD Lifetime Ad-Free Supporter License** that removes sponsor placements on up to three supported desktop devices after one verified PayPal payment.
+Every Telegram Drive feature is available to non-paying users. Supported desktop and Android builds offer an optional **$5.00 USD Lifetime Ad-Free Supporter License** that removes sponsor placements on up to three supported Windows, macOS, Linux, or Android devices in total after one verified PayPal payment.
 
 - It is a one-time purchase, **not a subscription**.
 - Existing purchasers are not required to pay again after normal application updates.
@@ -263,8 +264,8 @@ Every Telegram Drive feature is available to non-paying users. The desktop app o
 
 The Android build is currently distributed separately from the desktop release as a signed sideload preview. It is not available through Google Play.
 
-1. Open the [Android v4.0.0 preview release](https://github.com/caamer20/Telegram-Drive/releases/tag/Androidv4.0.0beta).
-2. Download `Telegram-Drive-v4.0.0-android-signed.apk`.
+1. Open the [Telegram Drive releases page](https://github.com/caamer20/Telegram-Drive/releases) and select the latest signed Android preview.
+2. Download the signed universal Android APK listed in that release.
 3. On Android, allow **Install unknown apps** for the browser or file manager you used.
 4. Open the APK and choose **Install**.
 5. Enter your own Telegram API ID and API hash on first launch.
@@ -276,7 +277,7 @@ Android requirements and notes:
 - Google TV users can transfer the APK to the television or install it with ADB:
 
   ```bash
-  adb install Telegram-Drive-v4.0.0-android-signed.apk
+  adb install Telegram-Drive-vX.Y.Z-android-universal.apk
   ```
 
 - Android validates the package signature during installation. Future compatible updates must use the same signing identity.
@@ -305,6 +306,8 @@ Do not expose these ports to a LAN or the internet. See the [REST API endpoint r
 | [Folder Sync guide](SYNC_GUIDE.md) | Sync safety model, limits, conflict resolution, and integration behavior |
 | [WebDAV guide](WEBDAV_GUIDE.md) | Setup instructions for macOS, Windows, and Linux clients |
 | [REST API reference](REST_API_Documentation.md) | Authentication, endpoints, request examples, and error responses |
+| [Linux packaging guide](Docs/LINUX_PACKAGING.md) | Linux formats, Arch installation, rendering safe mode, diagnostics, and release safeguards |
+| [Linux/Arch implementation plan](Docs/LINUX_ARCH_IMPLEMENTATION_PLAN.md) | Design decisions, compatibility rules, release gates, acceptance matrix, and rollback |
 | [Supporter Terms](SUPPORTER_TERMS.md) | Activation, recovery, device allowance, refunds, availability, and privacy |
 
 ### Maintainer and release documentation

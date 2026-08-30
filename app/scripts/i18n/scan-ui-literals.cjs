@@ -68,9 +68,25 @@ function runScanner() {
   const files = getAllFiles(SRC_DIR);
   const allowlist = loadAllowlist();
   const allowSet = new Set(allowlist.map(item => `${item.file}:${item.literal}`));
+  const budgetConfig = fs.existsSync(BUDGET_PATH)
+    ? JSON.parse(fs.readFileSync(BUDGET_PATH, 'utf8'))
+    : null;
+  const areaBudgets = budgetConfig?.areaBudgets || {};
+
+  function areaFor(relativePath) {
+    for (const [area, config] of Object.entries(areaBudgets)) {
+      if (area === 'other') continue;
+      if (!Array.isArray(config.patterns) || config.patterns.length === 0) {
+        throw new Error(`Literal area ${area} must define at least one path pattern.`);
+      }
+      if (config.patterns.some(pattern => new RegExp(pattern, 'i').test(relativePath))) return area;
+    }
+    return 'other';
+  }
 
   let totalFindings = 0;
   const fileFindingsMap = {};
+  const findingsByArea = {};
 
   for (const file of files) {
     const relativePath = path.relative(path.join(__dirname, '../..'), file);
@@ -80,6 +96,8 @@ function runScanner() {
     if (unallowed.length > 0) {
       fileFindingsMap[relativePath] = unallowed;
       totalFindings += unallowed.length;
+      const area = areaFor(relativePath);
+      findingsByArea[area] = (findingsByArea[area] || 0) + unallowed.length;
     }
   }
 
@@ -96,8 +114,8 @@ function runScanner() {
     console.log('[PASS] UI Literal Scanner found zero unextracted shipping literals.');
   }
 
-  if (fs.existsSync(BUDGET_PATH)) {
-    const budget = JSON.parse(fs.readFileSync(BUDGET_PATH, 'utf8')).maxFindings;
+  if (budgetConfig) {
+    const budget = budgetConfig.maxFindings;
     if (!Number.isInteger(budget) || budget < 0) {
       throw new Error('src/i18n/literal-budget.json must define a non-negative integer maxFindings.');
     }
@@ -106,6 +124,19 @@ function runScanner() {
       process.exitCode = 1;
     } else {
       console.log(`[PASS] UI literal debt is within the ${budget}-item no-regression budget.`);
+    }
+
+    for (const [area, config] of Object.entries(areaBudgets)) {
+      if (!Number.isInteger(config.maxFindings) || config.maxFindings < 0) {
+        throw new Error(`Literal area ${area} must define a non-negative integer maxFindings.`);
+      }
+      const actual = findingsByArea[area] || 0;
+      if (actual > config.maxFindings) {
+        console.error(`[FAIL] ${area} literal debt increased from ${config.maxFindings} to ${actual}.`);
+        process.exitCode = 1;
+      } else {
+        console.log(`[PASS] ${area} literal debt: ${actual} / ${config.maxFindings}.`);
+      }
     }
   }
 }

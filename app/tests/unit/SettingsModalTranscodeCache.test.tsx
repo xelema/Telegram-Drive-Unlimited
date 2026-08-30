@@ -8,6 +8,7 @@ vi.mock('@tauri-apps/plugin-os', () => ({ type: () => 'windows' }));
 vi.mock('@tauri-apps/plugin-updater', () => ({ check: vi.fn() }));
 vi.mock('../../src/components/desktop/dashboard/ThemesTab', () => ({ ThemesTab: () => null }));
 vi.mock('react-i18next', () => ({
+  initReactI18next: { type: '3rdParty', init: vi.fn() },
   useTranslation: () => ({
     t: (key: string, values?: { error?: string }) => {
       if (key === 'settings.failed_prefix') return `Failed: ${values?.error ?? ''}`;

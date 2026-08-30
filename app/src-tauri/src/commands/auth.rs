@@ -5,6 +5,7 @@ use grammers_session::storages::SqliteSession;
 use grammers_session::types::{PeerAuth, PeerInfo, UpdateState, UpdatesState};
 use grammers_session::Session;
 use grammers_tl_types as tl;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
@@ -19,6 +20,53 @@ use crate::models::{AuthCodeDelivery, AuthCodeRequestResult, AuthCodeRequestStat
 use crate::TelegramState;
 use grammers_client::types::PasswordToken;
 use grammers_mtsender::InvocationError;
+
+fn session_sidecar_path(session_path: &Path, suffix: &str) -> PathBuf {
+    let mut value = session_path.as_os_str().to_os_string();
+    value.push(suffix);
+    PathBuf::from(value)
+}
+
+/// Moves an unreadable session and its SQLite sidecars to a recoverable,
+/// permission-restricted quarantine directory before a fresh session is made.
+fn quarantine_session_files(session_path: &Path) -> Result<String, String> {
+    let app_data_dir = session_path
+        .parent()
+        .ok_or_else(|| "Session path has no parent directory".to_string())?;
+    let quarantine_id = format!(
+        "{}-{}",
+        chrono::Utc::now().format("%Y%m%dT%H%M%SZ"),
+        uuid::Uuid::new_v4()
+    );
+    let quarantine_dir = app_data_dir.join("session-quarantine").join(&quarantine_id);
+    std::fs::create_dir_all(&quarantine_dir)
+        .map_err(|error| format!("Unable to create session quarantine: {error}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&quarantine_dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|error| format!("Unable to secure session quarantine: {error}"))?;
+    }
+
+    let candidates = [
+        session_path.to_path_buf(),
+        session_sidecar_path(session_path, "-wal"),
+        session_sidecar_path(session_path, "-shm"),
+    ];
+    let mut moved = 0;
+    for source in candidates.iter().filter(|path| path.exists()) {
+        let file_name = source
+            .file_name()
+            .ok_or_else(|| "Session file has no filename".to_string())?;
+        std::fs::rename(source, quarantine_dir.join(file_name))
+            .map_err(|error| format!("Unable to preserve an unreadable session file: {error}"))?;
+        moved += 1;
+    }
+    if moved == 0 {
+        return Err("No session files were available to quarantine".to_string());
+    }
+    Ok(quarantine_id)
+}
 
 /// Ensures the Telegram client is initialized.
 ///
@@ -91,7 +139,7 @@ pub async fn ensure_client_initialized(
 
     let session_path = app_data_dir.join("telegram.session");
     let session_path_str = session_path.to_string_lossy().to_string();
-    log::info!("Opening session at: {}", session_path_str);
+    log::info!("Opening the local Telegram session database");
 
     let mut session_open_result = SqliteSession::open(&session_path_str);
 
@@ -111,13 +159,13 @@ pub async fn ensure_client_initialized(
     let session = match session_open_result.map_err(|e| e.to_string()) {
         Ok(s) => s,
         Err(e) => {
+            let quarantine_id = quarantine_session_files(&session_path).map_err(|error| {
+                format!("Session could not be opened after retries ({e}) and could not be preserved: {error}")
+            })?;
             log::warn!(
-                "Session file could not be opened after retries ({}). Recreating...",
-                e
+                "Unreadable Telegram session preserved before recreation. Quarantine id: {}",
+                quarantine_id
             );
-            let _ = std::fs::remove_file(&session_path);
-            let _ = std::fs::remove_file(format!("{}-wal", session_path_str));
-            let _ = std::fs::remove_file(format!("{}-shm", session_path_str));
 
             SqliteSession::open(&session_path_str)
                 .map_err(|err| format!("Failed to open session after recreation: {}", err))?
@@ -1188,5 +1236,37 @@ mod tests {
 
         assert_eq!(email_setup.status, AuthCodeRequestStatus::QrRecommended);
         assert_eq!(firebase.status, AuthCodeRequestStatus::QrRecommended);
+    }
+
+    #[test]
+    fn unreadable_session_files_are_quarantined_instead_of_deleted() {
+        let root = std::env::temp_dir().join(format!(
+            "telegram-drive-session-quarantine-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let session = root.join("telegram.session");
+        for path in [
+            session.clone(),
+            session_sidecar_path(&session, "-wal"),
+            session_sidecar_path(&session, "-shm"),
+        ] {
+            std::fs::write(path, b"preserve-me").unwrap();
+        }
+
+        let quarantine_id = quarantine_session_files(&session).unwrap();
+        let quarantine = root.join("session-quarantine").join(quarantine_id);
+        for name in [
+            "telegram.session",
+            "telegram.session-wal",
+            "telegram.session-shm",
+        ] {
+            assert_eq!(
+                std::fs::read(quarantine.join(name)).unwrap(),
+                b"preserve-me"
+            );
+            assert!(!root.join(name).exists());
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

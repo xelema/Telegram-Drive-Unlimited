@@ -2,58 +2,38 @@ import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
 
 import en from './locales/en.json';
-import es from './locales/es.json';
-import ru from './locales/ru.json';
-import ukUA from './locales/uk-UA.json';
-import plPL from './locales/pl-PL.json';
-import faIR from './locales/fa-IR.json';
-import urPK from './locales/ur-PK.json';
-import msMY from './locales/ms-MY.json';
-import zhCN from './locales/zh-CN.json';
-import zhTW from './locales/zh-TW.json';
-import fr from './locales/fr.json';
-import it from './locales/it.json';
-import ar from './locales/ar.json';
-import ptBR from './locales/pt-BR.json';
-import de from './locales/de.json';
-import hi from './locales/hi.json';
-import bnBD from './locales/bn-BD.json';
-import id from './locales/id.json';
-import filPH from './locales/fil-PH.json';
-import tr from './locales/tr.json';
-import thTH from './locales/th-TH.json';
-import ja from './locales/ja.json';
-import ko from './locales/ko.json';
-import vi from './locales/vi.json';
+
+const localeLoaders = {
+  es: () => import('./locales/es.json'),
+  ru: () => import('./locales/ru.json'),
+  'uk-UA': () => import('./locales/uk-UA.json'),
+  'pl-PL': () => import('./locales/pl-PL.json'),
+  'fa-IR': () => import('./locales/fa-IR.json'),
+  'ur-PK': () => import('./locales/ur-PK.json'),
+  'ms-MY': () => import('./locales/ms-MY.json'),
+  'zh-CN': () => import('./locales/zh-CN.json'),
+  'zh-TW': () => import('./locales/zh-TW.json'),
+  fr: () => import('./locales/fr.json'),
+  it: () => import('./locales/it.json'),
+  ar: () => import('./locales/ar.json'),
+  'pt-BR': () => import('./locales/pt-BR.json'),
+  de: () => import('./locales/de.json'),
+  hi: () => import('./locales/hi.json'),
+  'bn-BD': () => import('./locales/bn-BD.json'),
+  id: () => import('./locales/id.json'),
+  'fil-PH': () => import('./locales/fil-PH.json'),
+  tr: () => import('./locales/tr.json'),
+  'th-TH': () => import('./locales/th-TH.json'),
+  ja: () => import('./locales/ja.json'),
+  ko: () => import('./locales/ko.json'),
+  vi: () => import('./locales/vi.json'),
+} as const;
 
 i18n
   .use(initReactI18next)
   .init({
     resources: {
       en: { translation: en },
-      es: { translation: es },
-      ru: { translation: ru },
-      'uk-UA': { translation: ukUA },
-      'pl-PL': { translation: plPL },
-      'fa-IR': { translation: faIR },
-      'ur-PK': { translation: urPK },
-      'ms-MY': { translation: msMY },
-      'zh-CN': { translation: zhCN },
-      'zh-TW': { translation: zhTW },
-      fr: { translation: fr },
-      it: { translation: it },
-      ar: { translation: ar },
-      'pt-BR': { translation: ptBR },
-      de: { translation: de },
-      hi: { translation: hi },
-      'bn-BD': { translation: bnBD },
-      id: { translation: id },
-      'fil-PH': { translation: filPH },
-      tr: { translation: tr },
-      'th-TH': { translation: thTH },
-      ja: { translation: ja },
-      ko: { translation: ko },
-      vi: { translation: vi },
     },
     lng: 'en',
     // Every shipped locale is structurally complete and CI rejects missing keys.
@@ -66,5 +46,15 @@ i18n
       useSuspense: false,
     },
   });
+
+export async function ensureLanguageResource(language: string): Promise<void> {
+  if (language === 'en' || i18n.hasResourceBundle(language, 'translation')) return;
+  const loader = localeLoaders[language as keyof typeof localeLoaders];
+  if (!loader) throw new Error(`Unsupported language resource: ${language}`);
+  const resource = await loader();
+  if (!i18n.hasResourceBundle(language, 'translation')) {
+    i18n.addResourceBundle(language, 'translation', resource.default, true, true);
+  }
+}
 
 export default i18n;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import i18n from '../../src/i18n';
+import i18n, { ensureLanguageResource } from '../../src/i18n';
 import { getLanguageInfo, LANGUAGES } from '../../src/i18n/languages';
 import { resolveSupportedLanguage } from '../../src/i18n/resolveLanguage';
 
@@ -17,7 +17,8 @@ describe('supported languages', () => {
     expect(resolveSupportedLanguage(['ja-JP', 'en-US'])).toBe('ja');
   });
 
-  it('loads Japanese directly without an English fallback', () => {
+  it('loads Japanese directly without an English fallback', async () => {
+    await ensureLanguageResource('ja');
     expect(i18n.options.fallbackLng).toBe(false);
     expect(i18n.t('settings.webdav_description', { lng: 'ja' }))
       .toBe('Finder、エクスプローラー、その他の WebDAV クライアントから Telegram Drive を開きます。');
@@ -64,14 +65,16 @@ describe('supported languages', () => {
     expect(resolveSupportedLanguage('zh')).toBe('zh-CN');
   });
 
-  it('loads all four new locales without fallback text', () => {
+  it('loads all four new locales without fallback text', async () => {
+    await Promise.all(['bn-BD', 'th-TH', 'fil-PH', 'zh-TW'].map(ensureLanguageResource));
     expect(i18n.t('settings.offline_cache', { lng: 'bn-BD' })).toBe('অফলাইন ফাইল');
     expect(i18n.t('settings.offline_cache', { lng: 'th-TH' })).toBe('ไฟล์ออฟไลน์');
     expect(i18n.t('settings.offline_cache', { lng: 'fil-PH' })).toBe('Mga offline na file');
     expect(i18n.t('settings.offline_cache', { lng: 'zh-TW' })).toBe('離線文件');
   });
 
-  it('loads the priority locale bundles without falling back to English', () => {
+  it('loads the priority locale bundles without falling back to English', async () => {
+    await Promise.all(['uk-UA', 'pl-PL', 'fa-IR', 'ur-PK', 'ms-MY'].map(ensureLanguageResource));
     expect(i18n.t('settings.offline_cache', { lng: 'uk-UA' })).toBe('Офлайн файли');
     expect(i18n.t('settings.offline_cache', { lng: 'pl-PL' })).toBe('Pliki offline');
     expect(i18n.t('settings.offline_cache', { lng: 'fa-IR' })).toBe('فایل های آفلاین');

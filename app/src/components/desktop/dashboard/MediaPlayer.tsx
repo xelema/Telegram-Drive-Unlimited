@@ -5,6 +5,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { TelegramFile } from '../../../types';
 import { isVideoFile, isAudioFile } from '../../../utils';
 import { AdaptiveMediaPlayer } from './AdaptiveMediaPlayer';
+import i18n from '../../../i18n';
 
 interface StreamInfo {
     token: string;
@@ -237,7 +238,7 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
                         <kbd className="px-1 py-0.5 rounded bg-white/10 text-white/40 text-[9px] font-mono">F</kbd> Fullscreen
                     </span>
                     <span className="flex items-center gap-1">
-                        <kbd className="px-1 py-0.5 rounded bg-white/10 text-white/40 text-[9px] font-mono">Esc</kbd> Close
+                        <kbd className="px-1 py-0.5 rounded bg-white/10 text-white/40 text-[9px] font-mono">Esc</kbd> {i18n.t("common.close")}
                     </span>
                     <span className="flex items-center gap-1">
                         <kbd className="px-1 py-0.5 rounded bg-white/10 text-white/40 text-[9px] font-mono">M</kbd> Mute

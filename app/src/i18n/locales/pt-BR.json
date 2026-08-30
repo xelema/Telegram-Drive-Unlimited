@@ -78,7 +78,9 @@
     "storage_insights": "Análise de armazenamento",
     "large_files": "Arquivos grandes",
     "old_files": "Arquivos antigos",
-    "duplicates": "Duplicados"
+    "duplicates": "Duplicados",
+    "operation_failed": "Não foi possível concluir a operação. Tente novamente ou revise as configurações relacionadas.",
+    "retry": "Tentar novamente"
   },
   "settings": {
     "tab_sync": "Folder Sync",
@@ -139,7 +141,7 @@
     "video_upload_media": "Mídia",
     "performance_compatibility": "Performance & Compatibility",
     "performance_mode_desc": "Disable blur, heavy shadows & animations",
-    "linux_rendering_desc": "Disable DMA-BUF renderer (fixes GPU crashes, requires restart)",
+    "linux_rendering_desc": "Usar o modo alternativo de renderização do AppImage com memória compartilhada (requer reinicialização)",
     "language_region": "Language & Region",
     "app_language": "Application Language",
     "choose_language": "Choose your preferred language",
@@ -213,7 +215,7 @@
     "copy_share_link": "Copy share link",
     "revoke_link": "Revoke link",
     "copy_diagnostics": "Copy Diagnostics",
-    "tagline": "Turn your Telegram account into unlimited, secure cloud storage. Open-source and free forever.",
+    "tagline": "Um espaço de trabalho de arquivos com prioridade local, usando sua conta do Telegram. Código aberto e gratuito para usar.",
     "reset_defaults": "Reset to Defaults",
     "done": "Done",
     "auto": "Auto",
@@ -535,7 +537,7 @@
     "desktop_required": "Desktop App Required",
     "desktop_required_desc": "You are viewing the internal development server in a browser. This application cannot function here because it requires access to the system backend (Rust).",
     "open_window_prompt": "Please open the Telegram Drive window in your OS taskbar/dock to continue.",
-    "tagline": "Self-hosted secure storage",
+    "tagline": "Espaço de trabalho local para arquivos",
     "too_many_requests": "Too Many Requests",
     "flood_wait_msg": "Telegram has temporarily limited your actions.",
     "please_wait": "Please wait before trying again.",

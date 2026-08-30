@@ -43,17 +43,18 @@ export function RemoteUploadModal({ isOpen, onClose, folders, onUpload }: Remote
                 ref={panelRef}
                 role="dialog"
                 aria-modal="true"
+                aria-labelledby="remote-upload-title"
                 tabIndex={-1}
                 onSubmit={handleSubmit}
                 className="quiet-raised flex w-[min(440px,calc(100vw-2rem))] flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150"
                 onClick={e => e.stopPropagation()}
             >
                 <div className="flex items-center justify-between border-b border-app-border-subtle p-4">
-                    <h3 className="text-telegram-text font-medium flex items-center gap-2">
+                    <h3 id="remote-upload-title" className="text-telegram-text font-medium flex items-center gap-2">
                         <Globe className="w-5 h-5 text-telegram-primary" />
                         {t('files.remote_upload_url')}
                     </h3>
-                    <button type="button" onClick={onClose} className="text-telegram-subtext hover:text-telegram-text transition-colors">
+                    <button type="button" onClick={onClose} aria-label={t('common.close')} className="text-telegram-subtext hover:text-telegram-text transition-colors">
                         <X className="w-5 h-5" />
                     </button>
                 </div>

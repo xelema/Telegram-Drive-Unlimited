@@ -52,7 +52,7 @@ const NUMBER_RANGES: &[(&str, i64, i64)] = &[
     ("bandwidthLimitDownKBs", 0, 10_000_000),
     ("chunkSizeKb", 4, 512),
     ("keepAliveIntervalSec", 0, 3_600),
-    ("archiveMaxBytes", 1, 4_294_967_296),
+    ("archiveMaxBytes", 0, 4_294_967_296),
     ("transcodeCacheMaxGb", 1, 50),
     ("encryptionAutoLockMinutes", 0, 1_440),
 ];
@@ -65,8 +65,9 @@ const STRING_VALUES: &[(&str, &[&str])] = &[
     (
         "language",
         &[
-            "system", "en", "ar", "de", "es", "fr", "hi", "id", "it", "ja", "ko", "pt-BR", "ru",
-            "tr", "vi", "zh-CN",
+            "system", "en", "es", "ru", "uk-UA", "pl-PL", "fa-IR", "ur-PK", "ms-MY", "zh-CN",
+            "zh-TW", "fr", "it", "ar", "pt-BR", "de", "hi", "bn-BD", "id", "fil-PH", "tr", "th-TH",
+            "ja", "ko", "vi",
         ],
     ),
     ("preferredDC", &["auto", "dc1", "dc2", "dc3", "dc4", "dc5"]),
@@ -446,8 +447,9 @@ mod tests {
             "fileSortField": "date",
             "fileSortDirection": "desc",
             "videoUploadMode": "media",
-            "language": "ja",
+            "language": "th-TH",
             "maxConcurrentUploads": 8,
+            "archiveMaxBytes": 0,
             "encryptionProtectMetadata": true
         });
         let message = encrypt_settings(
@@ -481,5 +483,25 @@ mod tests {
             "00112233445566778899aabbccddeeff".to_string(),
         )
         .is_err());
+    }
+
+    #[test]
+    fn every_shipped_language_preference_is_syncable() {
+        for language in [
+            "system", "en", "es", "ru", "uk-UA", "pl-PL", "fa-IR", "ur-PK", "ms-MY", "zh-CN",
+            "zh-TW", "fr", "it", "ar", "pt-BR", "de", "hi", "bn-BD", "id", "fil-PH", "tr", "th-TH",
+            "ja", "ko", "vi",
+        ] {
+            let sanitized = sanitize_settings(json!({ "language": language })).unwrap();
+            assert_eq!(sanitized["language"], language);
+        }
+    }
+
+    #[test]
+    fn archive_size_sentinel_and_boundaries_are_enforced() {
+        assert!(sanitize_settings(json!({ "archiveMaxBytes": 0 })).is_ok());
+        assert!(sanitize_settings(json!({ "archiveMaxBytes": 4_294_967_296_u64 })).is_ok());
+        assert!(sanitize_settings(json!({ "archiveMaxBytes": -1 })).is_err());
+        assert!(sanitize_settings(json!({ "archiveMaxBytes": 4_294_967_297_u64 })).is_err());
     }
 }

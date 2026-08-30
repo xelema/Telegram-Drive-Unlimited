@@ -8,6 +8,7 @@ import {
   shouldShowSponsorContent,
   sponsorAdCooldownRemaining,
 } from '../../services/supporterVisibility';
+import i18n from '../../i18n';
 
 interface AdsterraBannerProps {
   visible: boolean;
@@ -160,7 +161,7 @@ export default function AdsterraBanner({ visible, onSupport, onManualDismiss }: 
       <button
         onClick={handleDismiss}
         className="quiet-control absolute end-1 top-1/2 -translate-y-1/2 p-1.5 text-app-text-secondary hover:text-app-text"
-        aria-label="Close ad"
+        aria-label={i18n.t("ads.close_ad")}
       >
         <X className="w-3.5 h-3.5" />
       </button>

@@ -4,6 +4,7 @@ import { X, RotateCcw, Download, Upload, Trash2, HardDrive, Globe, Key, Copy, Ch
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { check, Update } from '@tauri-apps/plugin-updater';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import { useSettings } from '../../../context/SettingsContext';
 import { useConfirm } from '../../../context/ConfirmContext';
 import { useTranslation } from 'react-i18next';
@@ -21,6 +22,8 @@ import { AboutSettingsTab, AdvancedSettingsTab, EncryptionSettingsTab, GeneralSe
 import { FfmpegInstallNotice } from '../../shared/FfmpegInstallNotice';
 import { SyncSettingsPanel } from '../sync/SyncSettingsPanel';
 import { DesktopBehaviorSettings } from './settings/DesktopBehaviorSettings';
+import { userFacingError } from '../../../services/userFacingError';
+import { getInstallationInfo, RELEASES_URL, type InstallationInfo } from '../../../services/installationInfo';
 
 interface SettingsModalProps {
     isOpen: boolean;
@@ -93,6 +96,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
     const [updateVersion, setUpdateVersion] = useState<string | null>(null);
     const [updateDownloading, setUpdateDownloading] = useState(false);
     const [updateProgress, setUpdateProgress] = useState(0);
+    const [installationInfo, setInstallationInfo] = useState<InstallationInfo | null>(null);
 
     // Reconnect state
     const [reconnecting, setReconnecting] = useState(false);
@@ -103,6 +107,8 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
     const handleCheckForUpdates = useCallback(async () => {
         setUpdateChecking(true);
         try {
+            const installation = await getInstallationInfo();
+            setInstallationInfo(installation);
             const updateInfo = await check();
             if (updateInfo) {
                 setUpdateAvailable(updateInfo);
@@ -127,6 +133,14 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
 
     const handleInstallUpdate = useCallback(async () => {
         if (!updateAvailable) return;
+        if (installationInfo?.managedByPackageManager) {
+            try {
+                await openUrl(RELEASES_URL);
+            } catch (err) {
+                toast.error(t('settings.update_failed_toast', { error: userFacingError(err, t) }));
+            }
+            return;
+        }
         setUpdateDownloading(true);
         setUpdateProgress(0);
         try {
@@ -138,7 +152,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
             toast.error(t('settings.update_failed_toast', { error: msg }));
             setUpdateDownloading(false);
         }
-    }, [updateAvailable, t]);
+    }, [installationInfo?.managedByPackageManager, updateAvailable, t]);
 
     // Sharing settings state
     const [shares, setShares] = useState<ShareInfo[]>([]);
@@ -708,6 +722,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                             </div>
                             <button
                                 onClick={onClose}
+                                aria-label={t('common.close')}
                                 className="quiet-control p-2 text-app-text-secondary hover:text-app-text"
                             >
                                 <X className="w-4 h-4" />
@@ -820,6 +835,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                                         <select
                                             value={settings.language}
                                             onChange={event => updateSetting('language', event.target.value as LanguagePreference)}
+                                            aria-label={t('settings.app_language')}
                                             className="appearance-none bg-telegram-bg border border-telegram-border rounded-md pl-3 pr-8 py-1.5 text-sm text-telegram-text focus:outline-none focus:border-telegram-primary/50 transition cursor-pointer"
                                         >
                                             {LANGUAGES.map(lang => (
@@ -957,6 +973,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                                         <span className="text-sm text-telegram-primary font-mono font-medium">{settings.transcodeCacheMaxGb} GB</span>
                                     </div>
                                     <input type="range" min="1" max="50" step="1" value={settings.transcodeCacheMaxGb}
+                                        aria-label={t('settings.transcode_cache_limit')}
                                         onChange={e => {
                                             const gb = parseInt(e.target.value);
                                             updateSetting('transcodeCacheMaxGb', gb);
@@ -1231,7 +1248,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                                                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-telegram-primary text-white hover:bg-telegram-primary/90 transition"
                                             >
                                                 <Download className="w-3 h-3" />
-                                                {t('settings.update_restart')}
+                                                {installationInfo?.managedByPackageManager ? t('common.open') : t('settings.update_restart')}
                                             </button>
                                         ) : updateDownloading ? (
                                             <div className="flex items-center gap-2">
@@ -1359,6 +1376,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                                         <select
                                             value={settings.proxyType}
                                             onChange={e => updateSetting('proxyType', e.target.value as 'socks5' | 'http' | 'https')}
+                                            aria-label={t('common.proxy_type')}
                                             className="appearance-none bg-telegram-bg border border-telegram-border rounded-md pl-3 pr-8 py-1.5 text-sm text-telegram-text focus:outline-none focus:border-telegram-primary/50 transition cursor-pointer"
                                         >
                                             <option value="socks5">SOCKS5</option>
@@ -1436,7 +1454,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                                                     await invoke('cmd_clear_proxy_secret');
                                                     updateSetting('proxyPassword', '');
                                                 } catch (error) {
-                                                    toast.error(String(error));
+                                                    toast.error(userFacingError(error, t));
                                                 }
                                             }}
                                             className="rounded-md border border-telegram-border px-2 py-1 text-xs text-telegram-subtext transition hover:border-telegram-primary/50 hover:text-telegram-text"
@@ -1566,6 +1584,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                                             <span className="text-sm text-telegram-primary font-mono font-medium">{settings.timeoutMultiplier}×</span>
                                         </div>
                                         <input type="range" min="1" max="5" step="1" value={settings.timeoutMultiplier}
+                                            aria-label={t('settings.timeout_multiplier')}
                                             onChange={e => updateSetting('timeoutMultiplier', parseInt(e.target.value))}
                                             className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
                                     </div>
@@ -1580,6 +1599,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                                             <span className="text-sm text-telegram-primary font-mono font-medium">{settings.retryAttempts}</span>
                                         </div>
                                         <input type="range" min="0" max="5" step="1" value={settings.retryAttempts}
+                                            aria-label={t('settings.retry_attempts')}
                                             onChange={e => updateSetting('retryAttempts', parseInt(e.target.value))}
                                             className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
                                     </div>
@@ -1592,6 +1612,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                                             <span className="text-xs text-telegram-primary font-mono">{settings.retryBaseBackoffSec}s</span>
                                         </div>
                                         <input type="range" min="0.5" max="5" step="0.5" value={settings.retryBaseBackoffSec}
+                                            aria-label={t('settings.base_delay')}
                                             onChange={e => updateSetting('retryBaseBackoffSec', parseFloat(e.target.value))}
                                             className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
                                         <div className="flex items-center justify-between">
@@ -1599,6 +1620,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                                             <span className="text-xs text-telegram-primary font-mono">{settings.retryMaxBackoffSec}s</span>
                                         </div>
                                         <input type="range" min="8" max="60" step="2" value={settings.retryMaxBackoffSec}
+                                            aria-label={t('settings.max_delay')}
                                             onChange={e => updateSetting('retryMaxBackoffSec', parseInt(e.target.value))}
                                             className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
                                     </div>
@@ -1624,6 +1646,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                                                 <span className="text-xs text-telegram-primary font-mono">{settings.pollingMinSec}s</span>
                                             </div>
                                             <input type="range" min="10" max="30" step="5" value={settings.pollingMinSec}
+                                                aria-label={t('settings.min_interval')}
                                                 onChange={e => updateSetting('pollingMinSec', parseInt(e.target.value))}
                                                 className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
                                             <div className="flex items-center justify-between">
@@ -1631,6 +1654,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                                                 <span className="text-xs text-telegram-primary font-mono">{settings.pollingMaxSec}s</span>
                                             </div>
                                             <input type="range" min="45" max="120" step="15" value={settings.pollingMaxSec}
+                                                aria-label={t('settings.max_interval')}
                                                 onChange={e => updateSetting('pollingMaxSec', parseInt(e.target.value))}
                                                 className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
                                         </>)}
@@ -1646,6 +1670,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                                             <select
                                                 value={settings.preferredDC}
                                                 onChange={e => updateSetting('preferredDC', e.target.value as typeof settings.preferredDC)}
+                                                aria-label={t('settings.preferred_dc')}
                                                 className="appearance-none bg-telegram-bg border border-telegram-border rounded-md pl-3 pr-8 py-1.5 text-sm text-telegram-text focus:outline-none focus:border-telegram-primary/50 transition cursor-pointer"
                                             >
                                                 <option value="auto">{t('settings.auto')}</option>
@@ -1669,6 +1694,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                                             <span className="text-sm text-telegram-primary font-mono font-medium">{settings.dcFallbackAttempts}</span>
                                         </div>
                                         <input type="range" min="1" max="4" step="1" value={settings.dcFallbackAttempts}
+                                            aria-label={t('settings.dc_fallback_attempts')}
                                             onChange={e => updateSetting('dcFallbackAttempts', parseInt(e.target.value))}
                                             className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
                                     </div>
@@ -1698,6 +1724,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                                             <span className="text-sm text-telegram-primary font-mono font-medium">{settings.peerCacheSize}</span>
                                         </div>
                                         <input type="range" min="100" max="2000" step="100" value={settings.peerCacheSize}
+                                            aria-label={t('settings.peer_cache_size')}
                                             onChange={e => updateSetting('peerCacheSize', parseInt(e.target.value))}
                                             className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
                                     </div>
@@ -1715,6 +1742,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                                             </span>
                                         </div>
                                         <input type="range" min="0" max="5120" step="128" value={settings.bandwidthLimitUpKBs}
+                                            aria-label={t('settings.upload_limit')}
                                             onChange={e => updateSetting('bandwidthLimitUpKBs', parseInt(e.target.value))}
                                             className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
                                         <div className="flex items-center justify-between">
@@ -1724,6 +1752,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                                             </span>
                                         </div>
                                         <input type="range" min="0" max="5120" step="128" value={settings.bandwidthLimitDownKBs}
+                                            aria-label={t('settings.download_limit')}
                                             onChange={e => updateSetting('bandwidthLimitDownKBs', parseInt(e.target.value))}
                                             className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
                                     </div>
@@ -1738,6 +1767,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                                             <select
                                                 value={settings.chunkSizeKb}
                                                 onChange={e => updateSetting('chunkSizeKb', parseInt(e.target.value))}
+                                                aria-label={t('settings.transfer_chunk_size')}
                                                 className="appearance-none bg-telegram-bg border border-telegram-border rounded-md pl-3 pr-8 py-1.5 text-sm text-telegram-text focus:outline-none focus:border-telegram-primary/50 transition cursor-pointer"
                                             >
                                                 <option value={128}>128 KB</option>
@@ -1760,6 +1790,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                                             </span>
                                         </div>
                                         <input type="range" min="0" max="120" step="15" value={settings.keepAliveIntervalSec}
+                                            aria-label={t('settings.keep_alive')}
                                             onChange={e => updateSetting('keepAliveIntervalSec', parseInt(e.target.value))}
                                             className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
                                     </div>
@@ -1776,6 +1807,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                                             </span>
                                         </div>
                                         <input type="range" min="0" max="2048" step="64" value={settings.archiveMaxBytes}
+                                            aria-label={t('settings.bulk_archive_limit')}
                                             onChange={e => updateSetting('archiveMaxBytes', parseInt(e.target.value))}
                                             className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
                                     </div>
@@ -2095,7 +2127,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
                             </button>
                             <button
                                 onClick={onClose}
-                                className="px-4 py-1.5 rounded-lg text-xs font-medium bg-telegram-primary text-white hover:bg-telegram-primary/90 transition"
+                                className="px-4 py-1.5 rounded-lg text-xs font-medium bg-telegram-primary text-app-accent-contrast hover:bg-telegram-primary/90 transition"
                             >
                                 {t('settings.done')}
                             </button>

@@ -15,6 +15,7 @@ import {
 } from './auth/AuthSteps';
 
 import { useTranslation } from "react-i18next";
+import i18n from '../../i18n';
 
 function AuthThemeToggle() {
     const { theme, toggleTheme } = useTheme();
@@ -108,7 +109,37 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
             try {
                 const store = await load('config.json');
                 const savedId = await store.get<string>('api_id');
-                const savedHash = await store.get<string>('api_hash');
+                const legacyHash = await store.get<string>('api_hash');
+                let savedHash: string | null = null;
+                let secureLoadFailed = false;
+                try {
+                    savedHash = await invoke<string | null>('cmd_load_api_hash');
+                } catch {
+                    // A legacy value can still be used for this launch without
+                    // deleting it. New values are never written back as JSON.
+                    savedHash = legacyHash ?? null;
+                    secureLoadFailed = true;
+                }
+
+                if ((!savedHash || secureLoadFailed) && legacyHash) {
+                    // Delete the legacy plaintext copy only after the platform
+                    // credential manager confirms the migration succeeded.
+                    try {
+                        await invoke('cmd_store_api_hash', { apiHash: legacyHash });
+                        savedHash = legacyHash;
+                        try {
+                            await store.delete('api_hash');
+                            await store.save();
+                        } catch {
+                            // Secure storage already succeeded. Keep using it and
+                            // retry legacy cleanup on the next launch.
+                        }
+                    } catch {
+                        // Keep the legacy value for this launch and retry secure
+                        // migration next time; never delete the only working copy.
+                        savedHash = legacyHash;
+                    }
+                }
 
                 if (savedId && savedHash) {
                     setApiId(savedId);
@@ -122,14 +153,11 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
     }, []);
 
     const saveCredentials = async () => {
-        try {
-            const store = await load('config.json');
-            await store.set('api_id', apiId);
-            await store.set('api_hash', apiHash);
-            await store.save();
-        } catch {
-            // store write failure, non-critical
-        }
+        await invoke('cmd_store_api_hash', { apiHash });
+        const store = await load('config.json');
+        await store.set('api_id', apiId);
+        await store.delete('api_hash');
+        await store.save();
     };
 
     const handleSetupSubmit = async (e: React.FormEvent) => {
@@ -145,7 +173,12 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
             return;
         }
         setError(null);
-        await saveCredentials();
+        try {
+            await saveCredentials();
+        } catch {
+            setError(t('common.operation_failed'));
+            return;
+        }
         setStep("phone");
         setLoginMethod(isMobile ? 'phone' : 'qr');
         setQrUrl(null);
@@ -378,8 +411,8 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
                     <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center">
                         <img src="/logo.svg" alt="Logo" className="w-full h-full" />
                     </div>
-                    <h1 className="text-app-title font-semibold tracking-[-0.01em] text-app-text">Telegram Drive</h1>
-                    <p className="mt-1 text-metadata text-app-text-secondary">Self-hosted secure storage</p>
+                    <h1 className="text-app-title font-semibold tracking-[-0.01em] text-app-text">{i18n.t("common.app_title")}</h1>
+                    <p className="mt-1 text-metadata text-app-text-secondary">{i18n.t("auth.tagline")}</p>
                 </div>
 
                 <AnimatePresence mode="wait">
@@ -394,9 +427,9 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
                                 <span className="text-xl">⏳</span>
                             </div>
                             <div>
-                                <h2 className="text-app-title font-semibold text-app-text">Too Many Requests</h2>
-                                <p className="mt-2 text-ui text-app-text-secondary">Telegram has temporarily limited your actions.</p>
-                                <p className="text-ui text-app-text-secondary">Please wait before trying again.</p>
+                                <h2 className="text-app-title font-semibold text-app-text">{i18n.t("auth.too_many_requests")}</h2>
+                                <p className="mt-2 text-ui text-app-text-secondary">{i18n.t("auth.flood_wait_msg")}</p>
+                                <p className="text-ui text-app-text-secondary">{i18n.t("auth.please_wait")}</p>
                             </div>
 
                             <div className="flex items-center justify-center font-mono text-3xl font-semibold tabular-nums text-app-accent">
@@ -404,7 +437,7 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
                             </div>
 
                             <p className="mt-4 text-metadata text-app-danger">
-                                Do not restart the app. The timer will reset if you do.
+                                {i18n.t("auth.timer_reset_warning")}
                             </p>
                         </motion.div>
                     ) : (
@@ -483,7 +516,7 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
                         className="quiet-control auth-secondary-action mx-auto px-2"
                     >
                         <Heart className="w-3.5 h-3.5 text-red-500/80" />
-                        Donate
+                        {i18n.t("auth.donate")}
                     </button>
                 </div>
             </motion.div>
@@ -506,8 +539,8 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
                             onClick={(e) => e.stopPropagation()}
                         >
                             <div className="mb-5 flex items-center justify-between">
-                                <h2 className="text-app-title font-semibold text-app-text">Getting Started</h2>
-                                <button onClick={() => setShowHelp(false)} className="quiet-control flex h-8 w-8 items-center justify-center text-app-text-secondary hover:text-app-text" aria-label="Close help">
+                                <h2 className="text-app-title font-semibold text-app-text">{i18n.t("auth.getting_started")}</h2>
+                                <button onClick={() => setShowHelp(false)} className="quiet-control flex h-8 w-8 items-center justify-center text-app-text-secondary hover:text-app-text" aria-label={i18n.t("auth.close_help")}>
                                     <X className="h-4 w-4" />
                                 </button>
                             </div>
@@ -515,7 +548,7 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
                             <div className="space-y-5 text-app-text">
                                 <div className="rounded-control border border-app-accent/20 bg-app-selected p-3">
                                     <p className="text-ui leading-relaxed text-app-text-secondary">
-                                        <strong className="text-app-accent">Telegram Drive</strong> uses your Telegram account as secure cloud storage. You'll need a Telegram account and API credentials to get started.
+                                        <strong className="text-app-accent">{i18n.t("common.app_title")}</strong> uses your Telegram account as the storage backend for a local-first file workspace. You'll need a Telegram account and API credentials to get started.
                                     </p>
                                 </div>
 
@@ -545,13 +578,13 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
                                         Copy Your Credentials
                                     </h3>
                                     <p className="ms-7 text-ui leading-relaxed text-app-text-secondary">
-                                        After creating the app, you'll see your <strong>API ID</strong> (a number) and <strong>API Hash</strong> (a string). Copy both and paste them into the fields on the previous screen.
+                                        After creating the app, you'll see your <strong>{i18n.t("auth.api_id")}</strong> (a number) and <strong>{i18n.t("auth.api_hash")}</strong> (a string). Copy both and paste them into the fields on the previous screen.
                                     </p>
                                 </div>
 
                                 <div className="rounded-control border border-app-border bg-app-surface-sunken/35 p-3">
                                     <p className="text-metadata leading-relaxed text-app-text-secondary">
-                                        <strong>🔒 Privacy:</strong> Your credentials are stored locally on your device and are never sent to any third-party servers. All data goes directly between you and Telegram.
+                                        <strong>🔒 Privacy:</strong> {i18n.t("auth.privacy_note")}
                                     </p>
                                 </div>
 
@@ -596,7 +629,7 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
 
                             <div className="space-y-4 text-center">
                                 <p className="mb-5 text-ui leading-relaxed text-app-text-secondary">
-                                    If you find Telegram Drive useful, the optional $5 USD Lifetime Ad-Free Supporter License is available after sign-in in Settings → Privacy. It removes desktop sponsor placements without locking any features behind payment. Only that verified in-app PayPal checkout activates ad-free access.
+                                    If you find Telegram Drive useful, the optional $5 USD Lifetime Ad-Free Supporter License is available after sign-in in Settings → Privacy. It removes sponsor placements on up to three supported devices total without locking any features behind payment. Only that verified in-app PayPal checkout activates ad-free access.
                                 </p>
 
                                 <div className="space-y-4">

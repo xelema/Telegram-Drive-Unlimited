@@ -1,0 +1,63 @@
+[graph]
+targets = [
+  { triple = "x86_64-unknown-linux-gnu" },
+  { triple = "x86_64-pc-windows-msvc" },
+  { triple = "x86_64-apple-darwin" },
+  { triple = "aarch64-apple-darwin" },
+  { triple = "aarch64-linux-android" },
+]
+
+[advisories]
+# Unmaintained transitive crates are reported but do not block until their
+# upstream owner (currently Tauri) provides a compatible replacement. Direct
+# workspace dependencies still fail this check.
+unmaintained = "workspace"
+ignore = [
+  { crate = "chacha20@0.10.0", reason = "Yanked transitive Actix dependency locked by the current compatible graph; Dependabot monitors its replacement." },
+  { crate = "glass_pumpkin@1.10.0", reason = "Yanked transitive grammers dependency; changing the Telegram protocol stack requires a separate compatibility migration." },
+  { id = "RUSTSEC-2024-0429", reason = "Transitive Linux GTK stack; the affected VariantStrIter API is not used by Telegram Drive and a compatible Tauri replacement is not available." },
+  { id = "RUSTSEC-2026-0258", reason = "Actix 4 selects the older h2 line; Telegram Drive's local servers do not expose an upstream HTTP/2 service and dependency upgrades are monitored." },
+  { id = "RUSTSEC-2026-0118", reason = "Transitive grammers resolver without Telegram Drive DNSSEC validation; the vulnerable DNSSEC closest-encloser path is not enabled." },
+  { id = "RUSTSEC-2026-0119", reason = "Transitive grammers resolver; migration to Hickory 0.26 requires an upstream grammers compatibility update." },
+  { id = "RUSTSEC-2026-0253", reason = "Transitive dav-server cache uses non-panicking key types and does not wrap key destruction in catch_unwind; major upgrade is tracked separately." },
+  { id = "RUSTSEC-2026-0194", reason = "Transitive Tauri plist build/config parser receives repository-controlled application metadata, not uploaded or remote XML." },
+  { id = "RUSTSEC-2026-0195", reason = "Transitive Tauri plist build/config parser receives repository-controlled application metadata, not uploaded or remote XML." },
+]
+
+[licenses]
+confidence-threshold = 0.8
+allow = [
+  "0BSD",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "CC0-1.0",
+  "ISC",
+  "MIT",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Unlicense",
+  "Zlib",
+]
+exceptions = [
+  { allow = ["CDLA-Permissive-2.0"], crate = "webpki-roots" },
+]
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+# The four git dependencies are locked by `rev`; cargo-deny categorizes git
+# dependencies without a semver requirement as wildcards, so keep them visible
+# as warnings while the release gate separately requires the pinned revision.
+wildcards = "warn"
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = ["https://github.com/Lonami/grammers"]

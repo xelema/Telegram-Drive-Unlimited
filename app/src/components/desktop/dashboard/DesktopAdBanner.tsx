@@ -6,6 +6,7 @@ import {
   shouldShowSponsorContent,
   sponsorAdCooldownRemaining,
 } from '../../../services/supporterVisibility';
+import i18n from '../../../i18n';
 
 const AUTO_DISMISS_SECONDS = 10;
 const AD_LOAD_TIMEOUT_MS = 12_000;
@@ -148,11 +149,11 @@ export function DesktopAdBanner({ suppressed = false, onSupport, onManualDismiss
       className={`fixed bottom-4 end-4 z-40 w-[300px] overflow-hidden rounded-container border border-app-border bg-app-surface-raised shadow-[var(--shadow-floating)] transition-all duration-200 motion-reduce:transition-none ${exiting ? 'translate-y-2 opacity-0' : 'opacity-100'}`}
     >
       <header className="flex min-h-10 items-center gap-2 border-b border-app-border-subtle px-3 py-2">
-        <span className="sponsored-label border-0 px-0">Sponsored</span>
+        <span className="sponsored-label border-0 px-0">{i18n.t("ads.sponsored")}</span>
         <span className="min-w-0 flex-1 truncate text-metadata text-app-text-secondary">
           {loadStatus === 'loading' ? 'Loading…' : `Closes in ${countdown}s`}
         </span>
-        <button type="button" onClick={() => dismiss(true)} className="quiet-control p-1.5 text-app-text-secondary hover:text-app-text" aria-label="Close ad">
+        <button type="button" onClick={() => dismiss(true)} className="quiet-control p-1.5 text-app-text-secondary hover:text-app-text" aria-label={i18n.t("ads.close_ad")}>
           <X className="h-3.5 w-3.5" />
         </button>
       </header>
@@ -171,7 +172,7 @@ export function DesktopAdBanner({ suppressed = false, onSupport, onManualDismiss
           <>
             {loadStatus !== 'loaded' && (
               <span className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 px-5 text-center">
-                <span className="sponsored-label">Sponsored</span>
+                <span className="sponsored-label">{i18n.t("ads.sponsored")}</span>
                 <span className="text-ui text-app-text-secondary">
                   {loadStatus === 'loading' ? 'Loading advertisement…' : 'Sponsored content unavailable'}
                 </span>

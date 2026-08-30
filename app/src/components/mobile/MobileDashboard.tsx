@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
+import { lazy, useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { Folder, Download, Menu, LogOut, RefreshCw, UploadCloud, MoreVertical, Trash2, Pencil, Globe, Shield, Lock, ChevronDown, Share2, Link, Copy, Check, X, Loader2, Wifi, Activity, Zap, Eye, EyeOff, HelpCircle, ExternalLink, Pause, Play, RotateCcw, CheckCircle2, Database, Heart } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
@@ -11,11 +11,9 @@ import { TouchFileList } from './TouchFileList';
 import { ThemeToggle } from '../shared/ThemeToggle';
 import AdsterraBanner from '../shared/AdsterraBanner';
 import { DriveConceptTour } from '../desktop/dashboard/DriveConceptTour';
-import { HelpCenterDialog } from '../desktop/dashboard/HelpCenterDialog';
 import { ActionPopover, ActionItem } from './ActionPopover';
 import { ShareDialog } from '../desktop/dashboard/ShareDialog';
 import { RenameFolderSheet } from './RenameFolderSheet';
-import { MobileMediaPlayer } from './MobileMediaPlayer';
 import { MobileSupporterCard } from './MobileSupporterCard';
 import { SupporterOfferDialog } from '../shared/SupporterOfferDialog';
 import { usePlatform } from '../../hooks/usePlatform';
@@ -24,8 +22,7 @@ import { useFileUpload } from '../../hooks/useFileUpload';
 import { useFileDownload } from '../../hooks/useFileDownload';
 import { useFileOperations } from '../../hooks/useFileOperations';
 import { formatBytes, isMediaFile, isPdfFile, isImageFile, nativeShareOrCopy, copyToClipboard } from '../../utils';
-import { PdfViewer } from '../desktop/dashboard/PdfViewer';
-import { PreviewModal } from '../desktop/dashboard/PreviewModal';
+import { LazyFeatureBoundary } from '../shared/LazyFeatureBoundary';
 import { useTheme } from '../../context/ThemeContext';
 import { TelegramFile, TelegramFolder, ShareInfo, BandwidthStats } from '../../types';
 import { useSettings } from '../../context/SettingsContext';
@@ -44,6 +41,12 @@ import {
   SUPPORTER_VALUE_MOMENT_EVENT,
   type SupporterPromptTrigger,
 } from '../../services/supporterVisibility';
+import i18n from '../../i18n';
+
+const LazyHelpCenterDialog = lazy(() => import('../desktop/dashboard/HelpCenterDialog').then((module) => ({ default: module.HelpCenterDialog })));
+const LazyMobileMediaPlayer = lazy(() => import('./MobileMediaPlayer').then((module) => ({ default: module.MobileMediaPlayer })));
+const LazyPdfViewer = lazy(() => import('../desktop/dashboard/PdfViewer').then((module) => ({ default: module.PdfViewer })));
+const LazyPreviewModal = lazy(() => import('../desktop/dashboard/PreviewModal').then((module) => ({ default: module.PreviewModal })));
 
 interface AndroidPlaybackHistoryEntry {
   mediaId: string;
@@ -862,7 +865,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
         <div className="flex items-center gap-3">
           <img src="/logo.svg" className="w-8 h-8 drop-shadow-lg" alt="Logo" />
           <div>
-            <h1 className={`text-base font-bold tracking-tight ${theme === 'light' ? 'text-[#1c1c1e]' : 'bg-gradient-to-r from-white to-telegram-subtext bg-clip-text text-transparent'}`}>Telegram Drive</h1>
+            <h1 className={`text-base font-bold tracking-tight ${theme === 'light' ? 'text-[#1c1c1e]' : 'bg-gradient-to-r from-white to-telegram-subtext bg-clip-text text-transparent'}`}>{i18n.t("common.app_title")}</h1>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -893,7 +896,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-telegram-primary text-black hover:bg-telegram-primary/95 border border-telegram-primary/10 active:scale-95 transition-all duration-200"
                 >
                   <UploadCloud className="w-3.5 h-3.5" />
-                  Upload
+                  {i18n.t("common.upload")}
                 </button>
                 <button
                   onClick={handleSyncFolders}
@@ -901,7 +904,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-telegram-primary/15 text-telegram-primary border border-telegram-primary/10 active:scale-95 transition-all duration-200 disabled:opacity-50"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
-                  Sync
+                  {i18n.t("common.sync")}
                 </button>
               </div>
             </div>
@@ -992,7 +995,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
                   <div className="flex items-center gap-2 text-[10px] font-semibold">
                     {section.active > 0 && <button type="button" onClick={section.pause} className="flex items-center gap-1 text-telegram-subtext"><Pause className="h-3 w-3" aria-hidden="true" />Pause</button>}
                     {section.paused > 0 && <button type="button" onClick={section.resume} className="flex items-center gap-1 text-telegram-primary"><Play className="h-3 w-3" aria-hidden="true" />Resume</button>}
-                    {section.active > 0 && <button type="button" onClick={section.cancelAll} className="text-red-400">Cancel</button>}
+                    {section.active > 0 && <button type="button" onClick={section.cancelAll} className="text-red-400">{i18n.t("common.cancel")}</button>}
                     <button type="button" onClick={section.clear} className="text-telegram-primary">Clear</button>
                   </div>
                 </header>
@@ -1241,7 +1244,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
                 <MobileSettingToggle checked={settings.androidPrivateMediaMetadata} label="Private system metadata" description="Show “Private media” instead of filenames on the lock screen, Bluetooth devices, and system controls." onChange={() => updateSetting('androidPrivateMediaMetadata', !settings.androidPrivateMediaMetadata)} />
                 <div className="grid grid-cols-2 gap-3 py-3">
                   <label className="text-[10px] text-telegram-subtext">Playback speed<select value={settings.androidPlaybackSpeed} onChange={event => updateSetting('androidPlaybackSpeed', Number(event.target.value))} className="mt-1 min-h-11 w-full rounded-lg border border-telegram-border bg-telegram-bg px-2 text-xs text-telegram-text">{[0.5, 0.75, 1, 1.25, 1.5, 2].map(value => <option key={value} value={value}>{value}×</option>)}</select></label>
-                  <label className="text-[10px] text-telegram-subtext">Movie orientation<select value={settings.androidMediaOrientation} onChange={event => updateSetting('androidMediaOrientation', event.target.value as 'auto' | 'landscape' | 'portrait')} className="mt-1 min-h-11 w-full rounded-lg border border-telegram-border bg-telegram-bg px-2 text-xs text-telegram-text"><option value="auto">Auto</option><option value="landscape">Landscape</option><option value="portrait">Portrait</option></select></label>
+                  <label className="text-[10px] text-telegram-subtext">Movie orientation<select value={settings.androidMediaOrientation} onChange={event => updateSetting('androidMediaOrientation', event.target.value as 'auto' | 'landscape' | 'portrait')} className="mt-1 min-h-11 w-full rounded-lg border border-telegram-border bg-telegram-bg px-2 text-xs text-telegram-text"><option value="auto">{i18n.t("settings.auto")}</option><option value="landscape">Landscape</option><option value="portrait">Portrait</option></select></label>
                   <label className="text-[10px] text-telegram-subtext">Subtitle size<select value={settings.androidSubtitleScale} onChange={event => updateSetting('androidSubtitleScale', Number(event.target.value))} className="mt-1 min-h-11 w-full rounded-lg border border-telegram-border bg-telegram-bg px-2 text-xs text-telegram-text"><option value={0.8}>Small</option><option value={1}>Default</option><option value={1.25}>Large</option><option value={1.5}>Extra large</option></select></label>
                   <label className="text-[10px] text-telegram-subtext">Offline cache<select value={settings.androidMediaCacheMaxGb} onChange={event => updateSetting('androidMediaCacheMaxGb', Number(event.target.value))} className="mt-1 min-h-11 w-full rounded-lg border border-telegram-border bg-telegram-bg px-2 text-xs text-telegram-text">{[0.5, 1, 2, 5, 10, 25].map(value => <option key={value} value={value}>{value} GB</option>)}</select></label>
                 </div>
@@ -1457,7 +1460,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
               <div className="flex flex-col items-center py-3 space-y-4">
                 <img src="/logo.svg" className="w-14 h-14 drop-shadow-lg" alt="Telegram Drive Logo" />
                 <div className="text-center">
-                  <p className="text-sm font-bold text-telegram-text">Telegram Drive</p>
+                  <p className="text-sm font-bold text-telegram-text">{i18n.t("common.app_title")}</p>
                   <p className="text-[11px] text-telegram-subtext mt-0.5">v{appVersion}</p>
                 </div>
 
@@ -1516,7 +1519,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
         <div className="p-4 flex items-center justify-between border-b border-telegram-border/30">
           <div className="flex items-center gap-2">
             <img src="/logo.svg" className="w-8 h-8 drop-shadow-lg" alt="Logo" />
-            <span className="font-bold text-base text-telegram-text tracking-tight">Telegram Drive</span>
+            <span className="font-bold text-base text-telegram-text tracking-tight">{i18n.t("common.app_title")}</span>
           </div>
           <button
             onClick={() => setIsSidebarOpen(false)}
@@ -1539,7 +1542,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
                 : 'text-telegram-subtext hover:bg-telegram-hover/40 hover:text-telegram-text border border-transparent'
               }`}
           >
-            <span>Saved Messages</span>
+            <span>{i18n.t("common.saved_messages")}</span>
           </button>
 
           {folders.map(folder => {
@@ -1636,35 +1639,41 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
 
       {/* Previews Overlays (Media, PDF & Images) */}
       {playingFile && (
-        <MobileMediaPlayer
-          key={playingFile.id}
-          file={playingFile}
-          onClose={() => setPlayingFile(null)}
-          activeFolderId={activeFolderId}
-          preferences={{
-            privateMetadata: settings.androidPrivateMediaMetadata,
-            privacyScreen: settings.androidPrivacyScreen,
-            orientation: settings.androidMediaOrientation,
-            subtitleScale: settings.androidSubtitleScale,
-            playbackSpeed: settings.androidPlaybackSpeed,
-          }}
-        />
+        <LazyFeatureBoundary>
+          <LazyMobileMediaPlayer
+            key={playingFile.id}
+            file={playingFile}
+            onClose={() => setPlayingFile(null)}
+            activeFolderId={activeFolderId}
+            preferences={{
+              privateMetadata: settings.androidPrivateMediaMetadata,
+              privacyScreen: settings.androidPrivacyScreen,
+              orientation: settings.androidMediaOrientation,
+              subtitleScale: settings.androidSubtitleScale,
+              playbackSpeed: settings.androidPlaybackSpeed,
+            }}
+          />
+        </LazyFeatureBoundary>
       )}
       {pdfFile && (
         <div className="fixed inset-0 z-[100] bg-telegram-bg">
-          <PdfViewer
-            file={pdfFile}
-            onClose={() => setPdfFile(null)}
-            activeFolderId={activeFolderId}
-          />
+          <LazyFeatureBoundary>
+            <LazyPdfViewer
+              file={pdfFile}
+              onClose={() => setPdfFile(null)}
+              activeFolderId={activeFolderId}
+            />
+          </LazyFeatureBoundary>
         </div>
       )}
       {previewFile && (
-        <PreviewModal
-          file={previewFile}
-          activeFolderId={activeFolderId}
-          onClose={() => setPreviewFile(null)}
-        />
+        <LazyFeatureBoundary>
+          <LazyPreviewModal
+            file={previewFile}
+            activeFolderId={activeFolderId}
+            onClose={() => setPreviewFile(null)}
+          />
+        </LazyFeatureBoundary>
       )}
 
       {shareFile && (
@@ -1683,7 +1692,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
         />
       )}
 
-      {showHelp && <HelpCenterDialog onClose={() => setShowHelp(false)} />}
+      {showHelp && <LazyFeatureBoundary><LazyHelpCenterDialog onClose={() => setShowHelp(false)} /></LazyFeatureBoundary>}
 
       {supporterOfferTrigger && (
         <SupporterOfferDialog
@@ -1712,7 +1721,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-sm font-bold text-white flex items-center gap-2">
                 <Link className="w-4 h-4 text-telegram-primary" />
-                {bulkShareLinks.length} Share Link{bulkShareLinks.length !== 1 ? 's' : ''}
+                {bulkShareLinks.length} {i18n.t("files.share_link")}{bulkShareLinks.length !== 1 ? 's' : ''}
               </h3>
               <button
                 onClick={() => setBulkShareLinks(null)}

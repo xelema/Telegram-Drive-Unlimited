@@ -1,5 +1,6 @@
 import { StreamingQuality, QUALITY_LABELS, HLS_QUALITIES, QUALITY_THROTTLE_MAP, TranscodeCapabilities, TranscodeJobPhase } from '../../types';
 import { Zap, Wifi, Loader2, AlertTriangle, Check, Gauge } from 'lucide-react';
+import i18n from '../../i18n';
 
 interface QualitySelectorProps {
     currentQuality: StreamingQuality;
@@ -57,7 +58,7 @@ export function QualitySelector({
                 disabled={!isTranscodeAvailable}
             >
                 <Wifi className="w-3 h-3" />
-                Auto
+                {i18n.t("settings.auto")}
             </button>
 
             {/* Divider */}

@@ -8,6 +8,11 @@ use std::sync::Arc;
 use tauri::State;
 use tokio::io::AsyncWriteExt;
 
+const MAX_ARCHIVE_ENTRIES: usize = 10_000;
+const MAX_ARCHIVE_ENTRY_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const MAX_ARCHIVE_TOTAL_UNCOMPRESSED_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const MAX_ARCHIVE_COMPRESSION_RATIO: u64 = 1_000;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ArchiveEntry {
     pub filename: String,
@@ -187,6 +192,11 @@ async fn list_zip_contents(
     let cursor = Cursor::new(data);
     let mut archive =
         zip::ZipArchive::new(cursor).map_err(|e| format!("Failed to parse ZIP file: {}", e))?;
+    if archive.len() > MAX_ARCHIVE_ENTRIES {
+        return Err(format!(
+            "Archive contains more than {MAX_ARCHIVE_ENTRIES} entries"
+        ));
+    }
 
     let mut entries = Vec::new();
     for i in 0..archive.len() {
@@ -200,6 +210,7 @@ async fn list_zip_contents(
             is_dir: file.is_dir(),
         });
     }
+    validate_archive_entries(&entries)?;
     check_non_empty(&entries, filename, "ZIP")?;
     Ok(entries)
 }
@@ -216,12 +227,18 @@ async fn extract_zip_entry(
         let cursor = Cursor::new(data);
         let mut archive =
             zip::ZipArchive::new(cursor).map_err(|e| format!("Failed to parse ZIP file: {}", e))?;
-        let mut file = archive
+        let file = archive
             .by_index(entry_index)
             .map_err(|e| format!("Failed to read ZIP entry at index {}: {}", entry_index, e))?;
         if file.is_dir() {
             return Err("Cannot extract a directory entry".to_string());
         }
+        validate_archive_entries(&[ArchiveEntry {
+            filename: file.name().to_string(),
+            size: file.size(),
+            compressed_size: file.compressed_size(),
+            is_dir: false,
+        }])?;
         let entry_name = file.name().to_string();
         let entry_size = file.size();
         let safe_name = sanitise_entry_name(&entry_name, entry_index);
@@ -230,9 +247,13 @@ async fn extract_zip_entry(
             generate_unique_temp_prefix("extract"),
             safe_name
         ));
-        let mut buf = Vec::with_capacity(entry_size as usize);
-        file.read_to_end(&mut buf)
+        let mut buf = Vec::with_capacity(entry_size.min(64 * 1024 * 1024) as usize);
+        file.take(MAX_ARCHIVE_ENTRY_BYTES + 1)
+            .read_to_end(&mut buf)
             .map_err(|e| format!("Failed to read ZIP entry bytes: {}", e))?;
+        if buf.len() as u64 > MAX_ARCHIVE_ENTRY_BYTES {
+            return Err("Archive entry exceeds the extraction size limit".to_string());
+        }
         Ok::<_, String>((buf, safe_name, entry_size, temp_path))
     }?;
 
@@ -314,6 +335,11 @@ async fn list_rar_contents(
 
             let mut entries = Vec::new();
             for result in archive {
+                if entries.len() >= MAX_ARCHIVE_ENTRIES {
+                    return Err(format!(
+                        "Archive contains more than {MAX_ARCHIVE_ENTRIES} entries"
+                    ));
+                }
                 let header: unrar::FileHeader =
                     result.map_err(|e| format!("Failed to read RAR header: {}", e))?;
                 let name = header.filename.to_string_lossy().to_string();
@@ -333,6 +359,7 @@ async fn list_rar_contents(
     let _ = tokio::fs::remove_dir_all(&extract_dir).await;
 
     let entries = entries_result?;
+    validate_archive_entries(&entries)?;
     check_non_empty(&entries, filename, "RAR")?;
     Ok(entries)
 }
@@ -361,6 +388,11 @@ async fn extract_rar_entry(
             .read_header()
             .map_err(|e| format!("Failed to read RAR header: {}", e))?
         {
+            if current_index >= MAX_ARCHIVE_ENTRIES {
+                return Err(format!(
+                    "Archive contains more than {MAX_ARCHIVE_ENTRIES} entries"
+                ));
+            }
             let is_target = current_index == entry_index;
             current_index += 1;
 
@@ -373,6 +405,10 @@ async fn extract_rar_entry(
 
             if header.entry().is_directory() {
                 return Err("Cannot extract a directory entry".to_string());
+            }
+
+            if header.entry().unpacked_size > MAX_ARCHIVE_ENTRY_BYTES {
+                return Err("Archive entry exceeds the extraction size limit".to_string());
             }
 
             let entry_name = header.entry().filename.to_string_lossy().to_string();
@@ -393,6 +429,9 @@ async fn extract_rar_entry(
             let (data, _next_archive) = header
                 .read()
                 .map_err(|e| format!("Failed to read RAR entry bytes: {}", e))?;
+            if data.len() as u64 > MAX_ARCHIVE_ENTRY_BYTES {
+                return Err("Archive entry exceeds the extraction size limit".to_string());
+            }
 
             let safe_name = sanitise_entry_name(&entry_name, entry_index);
             let temp_path = std::env::temp_dir().join(format!(
@@ -441,6 +480,11 @@ async fn list_sevenz_contents(
         tokio::task::spawn_blocking(move || {
             let archive = sevenz_rust2::Archive::open(&path)
                 .map_err(|e| format!("Failed to open 7z file: {}", e))?;
+            if archive.files.len() > MAX_ARCHIVE_ENTRIES {
+                return Err(format!(
+                    "Archive contains more than {MAX_ARCHIVE_ENTRIES} entries"
+                ));
+            }
             let entries = archive
                 .files
                 .iter()
@@ -462,6 +506,7 @@ async fn list_sevenz_contents(
     let _ = tokio::fs::remove_dir_all(&extract_dir).await;
 
     let entries = entries_result?;
+    validate_archive_entries(&entries)?;
     check_non_empty(&entries, filename, "7z")?;
     Ok(entries)
 }
@@ -491,6 +536,11 @@ async fn extract_sevenz_entry(
 
         reader
             .for_each_entries(|entry, entry_reader| {
+                if idx >= MAX_ARCHIVE_ENTRIES {
+                    return Err(sevenz_rust2::Error::other(format!(
+                        "Archive contains more than {MAX_ARCHIVE_ENTRIES} entries"
+                    )));
+                }
                 let current = idx;
                 idx += 1;
                 if current != entry_index {
@@ -501,11 +551,31 @@ async fn extract_sevenz_entry(
                         "Cannot extract a directory entry",
                     ));
                 }
+                if entry.size > MAX_ARCHIVE_ENTRY_BYTES {
+                    return Err(sevenz_rust2::Error::other(
+                        "Archive entry exceeds the extraction size limit",
+                    ));
+                }
+                if entry.compressed_size > 0
+                    && entry.size / entry.compressed_size > MAX_ARCHIVE_COMPRESSION_RATIO
+                {
+                    return Err(sevenz_rust2::Error::other(
+                        "Archive entry exceeds the compression ratio limit",
+                    ));
+                }
                 let safe_name = sanitise_entry_name(entry.name(), entry_index);
                 let mut buf = Vec::new();
-                entry_reader.read_to_end(&mut buf).map_err(|e| {
-                    sevenz_rust2::Error::other(format!("Failed to read 7z entry bytes: {}", e))
-                })?;
+                entry_reader
+                    .take(MAX_ARCHIVE_ENTRY_BYTES + 1)
+                    .read_to_end(&mut buf)
+                    .map_err(|e| {
+                        sevenz_rust2::Error::other(format!("Failed to read 7z entry bytes: {}", e))
+                    })?;
+                if buf.len() as u64 > MAX_ARCHIVE_ENTRY_BYTES {
+                    return Err(sevenz_rust2::Error::other(
+                        "Archive entry exceeds the extraction size limit",
+                    ));
+                }
                 found = Some((safe_name, entry.size, buf));
                 Ok(false) // stop iteration
             })
@@ -554,4 +624,54 @@ fn check_non_empty(entries: &[ArchiveEntry], filename: &str, label: &str) -> Res
         ));
     }
     Ok(())
+}
+
+fn validate_archive_entries(entries: &[ArchiveEntry]) -> Result<(), String> {
+    if entries.len() > MAX_ARCHIVE_ENTRIES {
+        return Err(format!(
+            "Archive contains more than {MAX_ARCHIVE_ENTRIES} entries"
+        ));
+    }
+    let mut total = 0_u64;
+    for entry in entries.iter().filter(|entry| !entry.is_dir) {
+        if entry.size > MAX_ARCHIVE_ENTRY_BYTES {
+            return Err("Archive entry exceeds the extraction size limit".to_string());
+        }
+        total = total
+            .checked_add(entry.size)
+            .ok_or_else(|| "Archive uncompressed size overflowed".to_string())?;
+        if total > MAX_ARCHIVE_TOTAL_UNCOMPRESSED_BYTES {
+            return Err("Archive exceeds the total uncompressed size limit".to_string());
+        }
+        if entry.compressed_size > 0
+            && entry.size / entry.compressed_size > MAX_ARCHIVE_COMPRESSION_RATIO
+        {
+            return Err("Archive entry exceeds the compression ratio limit".to_string());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        validate_archive_entries, ArchiveEntry, MAX_ARCHIVE_ENTRIES, MAX_ARCHIVE_ENTRY_BYTES,
+    };
+
+    fn entry(size: u64, compressed_size: u64) -> ArchiveEntry {
+        ArchiveEntry {
+            filename: "file.bin".to_string(),
+            size,
+            compressed_size,
+            is_dir: false,
+        }
+    }
+
+    #[test]
+    fn archive_policy_blocks_entry_count_size_and_ratio_bombs() {
+        assert!(validate_archive_entries(&vec![entry(1, 1); MAX_ARCHIVE_ENTRIES + 1]).is_err());
+        assert!(validate_archive_entries(&[entry(MAX_ARCHIVE_ENTRY_BYTES + 1, 1)]).is_err());
+        assert!(validate_archive_entries(&[entry(2_000, 1)]).is_err());
+        assert!(validate_archive_entries(&[entry(1_000, 1)]).is_ok());
+    }
 }

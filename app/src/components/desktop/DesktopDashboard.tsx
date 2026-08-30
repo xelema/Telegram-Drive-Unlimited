@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { lazy, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { AnimatePresence } from 'framer-motion';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { invoke } from '@tauri-apps/api/core';
@@ -27,12 +27,8 @@ import { TopBar } from './dashboard/TopBar';
 import { FileExplorer, type SortDirection, type SortField } from './dashboard/FileExplorer';
 import { TransferCenter } from './dashboard/TransferCenter';
 import { MoveToFolderModal } from './dashboard/MoveToFolderModal';
-import { PreviewModal } from './dashboard/PreviewModal';
-import { MediaPlayer } from './dashboard/MediaPlayer';
 import { ExternalDropBlocker } from './dashboard/ExternalDropBlocker';
-import { PdfViewer } from './dashboard/PdfViewer';
-import { ArchiveViewerModal } from './dashboard/ArchiveViewerModal';
-import { SettingsModal, type SettingsTab } from './dashboard/SettingsModal';
+import type { SettingsTab } from './dashboard/SettingsModal';
 import { ShareDialog } from './dashboard/ShareDialog';
 import { RenameFolderModal } from './dashboard/RenameFolderModal';
 import { RenameFileModal } from './dashboard/RenameFileModal';
@@ -40,7 +36,7 @@ import { DesktopAdBanner } from './dashboard/DesktopAdBanner';
 import { RemoteUploadModal } from './dashboard/RemoteUploadModal';
 import { KeyboardShortcutsDialog } from './dashboard/KeyboardShortcutsDialog';
 import { DriveConceptTour } from './dashboard/DriveConceptTour';
-import { HelpCenterDialog } from './dashboard/HelpCenterDialog';
+import { LazyFeatureBoundary } from '../shared/LazyFeatureBoundary';
 import { SupporterOfferDialog } from '../shared/SupporterOfferDialog';
 import { SyncDashboard } from './sync/SyncDashboard';
 import { Files, Link, Copy, Check, X, Loader2, Share2 } from 'lucide-react';
@@ -58,6 +54,14 @@ import { DEFAULT_SEARCH_FILTERS, filterAndRankFiles, type FileSearchFilters } fr
 import { shouldShowSupporterPrompt, SUPPORTER_VALUE_MOMENT_EVENT, type SupporterPromptTrigger } from '../../services/supporterVisibility';
 import { markDesktopFrontendReady, markDesktopFrontendUnready, type DesktopNavigationRequest } from '../../services/desktopLifecycle';
 import { isCurrentFolderLoadChunk, mergeFileChunk, normalizeListedFile, updateFileQueryData, type FolderLoadChunk } from '../../services/fileListRefresh';
+import i18n from '../../i18n';
+
+const LazyPreviewModal = lazy(() => import('./dashboard/PreviewModal').then((module) => ({ default: module.PreviewModal })));
+const LazyMediaPlayer = lazy(() => import('./dashboard/MediaPlayer').then((module) => ({ default: module.MediaPlayer })));
+const LazyPdfViewer = lazy(() => import('./dashboard/PdfViewer').then((module) => ({ default: module.PdfViewer })));
+const LazyArchiveViewerModal = lazy(() => import('./dashboard/ArchiveViewerModal').then((module) => ({ default: module.ArchiveViewerModal })));
+const LazySettingsModal = lazy(() => import('./dashboard/SettingsModal').then((module) => ({ default: module.SettingsModal })));
+const LazyHelpCenterDialog = lazy(() => import('./dashboard/HelpCenterDialog').then((module) => ({ default: module.HelpCenterDialog })));
 
 const sameFile = (left: TelegramFile, right: TelegramFile) => (
     left.id === right.id && (left.folder_id ?? null) === (right.folder_id ?? null)
@@ -96,6 +100,8 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     const [selectedIds, setSelectedIds] = useState<number[]>([]);
     const [showMoveModal, setShowMoveModal] = useState(false);
     const [showSettings, setShowSettings] = useState(false);
+    const settingsModuleRequested = useRef(false);
+    if (showSettings) settingsModuleRequested.current = true;
     const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>('general');
     const [transferCenterOpenRequest, setTransferCenterOpenRequest] = useState(0);
     const [showShortcuts, setShowShortcuts] = useState(false);
@@ -900,28 +906,30 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                     />
                 )}
                 {playingFile && (
-                    <MediaPlayer
-                        file={playingFile}
-                        onClose={() => setPlayingFile(null)}
-                        onNext={handleNextPreview}
-                        onPrev={handlePrevPreview}
-                        currentIndex={previewContextIndex}
-                        totalItems={previewContextFiles.length}
-                        activeFolderId={playingFile.folder_id ?? activeFolderId}
-                        key={playingFile.id}
-                    />
+                    <LazyFeatureBoundary key={playingFile.id}>
+                        <LazyMediaPlayer
+                            file={playingFile}
+                            onClose={() => setPlayingFile(null)}
+                            onNext={handleNextPreview}
+                            onPrev={handlePrevPreview}
+                            currentIndex={previewContextIndex}
+                            totalItems={previewContextFiles.length}
+                            activeFolderId={playingFile.folder_id ?? activeFolderId}
+                        />
+                    </LazyFeatureBoundary>
                 )}
                 {pdfFile && (
-                    <PdfViewer
-                        file={pdfFile}
-                        onClose={() => setPdfFile(null)}
-                        onNext={handleNextPreview}
-                        onPrev={handlePrevPreview}
-                        currentIndex={previewContextIndex}
-                        totalItems={previewContextFiles.length}
-                        activeFolderId={pdfFile.folder_id ?? activeFolderId}
-                        key="pdf-viewer"
-                    />
+                    <LazyFeatureBoundary key="pdf-viewer">
+                        <LazyPdfViewer
+                            file={pdfFile}
+                            onClose={() => setPdfFile(null)}
+                            onNext={handleNextPreview}
+                            onPrev={handlePrevPreview}
+                            currentIndex={previewContextIndex}
+                            totalItems={previewContextFiles.length}
+                            activeFolderId={pdfFile.folder_id ?? activeFolderId}
+                        />
+                    </LazyFeatureBoundary>
                 )}
                 {showRemoteUpload && (
                     <RemoteUploadModal
@@ -1039,32 +1047,36 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
             </main>
 
             {previewFile && (
-                <PreviewModal
-                    file={previewFile}
-                    activeFolderId={previewFile.folder_id ?? activeFolderId}
-                    onClose={() => setPreviewFile(null)}
-                    onNext={handleNextPreview}
-                    onPrev={handlePrevPreview}
-                    currentIndex={previewContextIndex}
-                    totalItems={previewContextFiles.length}
-                    nextFile={previewNeighbors.nextFile}
-                    prevFile={previewNeighbors.prevFile}
-                />
+                <LazyFeatureBoundary>
+                    <LazyPreviewModal
+                        file={previewFile}
+                        activeFolderId={previewFile.folder_id ?? activeFolderId}
+                        onClose={() => setPreviewFile(null)}
+                        onNext={handleNextPreview}
+                        onPrev={handlePrevPreview}
+                        currentIndex={previewContextIndex}
+                        totalItems={previewContextFiles.length}
+                        nextFile={previewNeighbors.nextFile}
+                        prevFile={previewNeighbors.prevFile}
+                    />
+                </LazyFeatureBoundary>
             )}
 
             {archiveViewFile && (
-                <ArchiveViewerModal
-                    file={archiveViewFile}
-                    activeFolderId={archiveViewFile.folder_id ?? activeFolderId}
-                    folders={folders}
-                    onClose={() => setArchiveViewFile(null)}
-                    onNext={handleNextPreview}
-                    onPrev={handlePrevPreview}
-                    currentIndex={previewContextIndex}
-                    totalItems={previewContextFiles.length}
-                    nextFile={previewNeighbors.nextFile}
-                    prevFile={previewNeighbors.prevFile}
-                />
+                <LazyFeatureBoundary>
+                    <LazyArchiveViewerModal
+                        file={archiveViewFile}
+                        activeFolderId={archiveViewFile.folder_id ?? activeFolderId}
+                        folders={folders}
+                        onClose={() => setArchiveViewFile(null)}
+                        onNext={handleNextPreview}
+                        onPrev={handlePrevPreview}
+                        currentIndex={previewContextIndex}
+                        totalItems={previewContextFiles.length}
+                        nextFile={previewNeighbors.nextFile}
+                        prevFile={previewNeighbors.prevFile}
+                    />
+                </LazyFeatureBoundary>
             )}
 
 
@@ -1086,11 +1098,15 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                 onRetryDownload={retryDownloadItem}
             />
 
-            <SettingsModal
-                isOpen={showSettings}
-                onClose={() => setShowSettings(false)}
-                initialTab={settingsInitialTab}
-            />
+            {settingsModuleRequested.current && (
+                <LazyFeatureBoundary>
+                    <LazySettingsModal
+                        isOpen={showSettings}
+                        onClose={() => setShowSettings(false)}
+                        initialTab={settingsInitialTab}
+                    />
+                </LazyFeatureBoundary>
+            )}
 
             {showShortcuts && <KeyboardShortcutsDialog onClose={() => setShowShortcuts(false)} />}
 
@@ -1101,7 +1117,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                 />
             )}
 
-            {showHelp && <HelpCenterDialog onClose={() => setShowHelp(false)} />}
+            {showHelp && <LazyFeatureBoundary><LazyHelpCenterDialog onClose={() => setShowHelp(false)} /></LazyFeatureBoundary>}
 
             {supporterOfferTrigger && (
                 <SupporterOfferDialog
@@ -1161,7 +1177,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                         <div className="p-4 border-b border-telegram-border flex items-center justify-between">
                             <h3 className="text-telegram-text font-medium flex items-center gap-2">
                                 <Link className="w-5 h-5 text-telegram-primary" />
-                                {bulkShareLinks.length} Share Link{bulkShareLinks.length !== 1 ? 's' : ''}
+                                {bulkShareLinks.length} {i18n.t("files.share_link")}{bulkShareLinks.length !== 1 ? 's' : ''}
                             </h3>
                             <button onClick={() => setBulkShareLinks(null)} className="text-telegram-subtext hover:text-telegram-text">
                                 <X className="w-5 h-5" />

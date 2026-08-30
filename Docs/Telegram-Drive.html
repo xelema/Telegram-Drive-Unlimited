@@ -336,6 +336,8 @@
     dialog { width: min(94vw, 1500px); max-width: none; padding: 0; border: 1px solid var(--line); border-radius: var(--radius); background: #07090d; box-shadow: var(--shadow); }
     dialog::backdrop { background: rgba(3,5,8,.88); backdrop-filter: blur(10px); }
     dialog img { width: 100%; max-height: 88vh; object-fit: contain; }
+    [data-lightbox] { cursor: zoom-in; }
+    [data-lightbox]:focus-visible { outline: 3px solid var(--accent); outline-offset: 4px; }
     .dialog-close { position: fixed; top: 1.2rem; right: 1.2rem; width: 44px; height: 44px; border: 1px solid rgba(255,255,255,.18); border-radius: 50%; background: rgba(11,13,18,.86); color: #fff; cursor: pointer; }
 
     @media (max-width: 960px) {
@@ -591,7 +593,7 @@
         <div class="section-head center">
           <p class="eyebrow">Optional supporter license</p>
           <h2>Use every feature free. Remove ads for $5.</h2>
-          <p class="section-lede">There is no Pro tier and no subscription. The supporter license changes one thing: sponsor placements are removed from the supported desktop app.</p>
+          <p class="section-lede">There is no Pro tier and no subscription. One verified $5 PayPal payment removes sponsor placements for life on up to three supported Windows, macOS, Linux, or Android devices in total.</p>
         </div>
         <div class="support-card">
           <div class="support-price">
@@ -603,7 +605,7 @@
             <h3>Same product. Quieter experience.</h3>
             <ul>
               <li>Every application feature remains available to free users</li>
-              <li>Sponsor placements removed on up to three supported desktop devices</li>
+              <li>Sponsor placements removed on up to three supported Windows, macOS, Linux, or Android devices in total</li>
               <li>Normal application updates keep the device activated</li>
               <li>Recovery code supports reinstalls and additional eligible devices</li>
             </ul>
@@ -625,7 +627,7 @@
         <div class="download-grid" id="downloadGrid">
           <article class="download-card" data-platform="windows"><span class="download-label">Desktop</span><h3>Windows</h3><p>Windows 10 or 11 · x64</p><div class="download-links"><a class="button primary" href="https://github.com/caamer20/Telegram-Drive/releases" target="_blank" rel="noopener noreferrer">View Windows download</a></div></article>
           <article class="download-card" data-platform="macos"><span class="download-label">Desktop</span><h3>macOS</h3><p>Apple silicon and Intel</p><div class="download-links"><a class="button primary" href="https://github.com/caamer20/Telegram-Drive/releases" target="_blank" rel="noopener noreferrer">View macOS downloads</a></div></article>
-          <article class="download-card" data-platform="linux"><span class="download-label">Desktop</span><h3>Linux</h3><p>AppImage, Debian, and RPM</p><div class="download-links"><a class="button primary" href="https://github.com/caamer20/Telegram-Drive/releases" target="_blank" rel="noopener noreferrer">View Linux downloads</a></div></article>
+          <article class="download-card" data-platform="linux"><span class="download-label">Desktop</span><h3>Linux</h3><p>AppImage, Debian, RPM, and Arch</p><div class="download-links"><a class="button primary" href="https://github.com/caamer20/Telegram-Drive/releases" target="_blank" rel="noopener noreferrer">View Linux downloads</a></div></article>
           <article class="download-card" data-platform="android"><span class="download-label">Sideload</span><h3>Android + Google TV</h3><p>Android 7.0+ · signed universal APK</p><div class="download-links"><a class="button" href="https://github.com/caamer20/Telegram-Drive/releases" target="_blank" rel="noopener noreferrer">View Android releases</a></div></article>
         </div>
       </div>
@@ -638,8 +640,8 @@
           <details><summary>Where are my files stored?</summary><p>In your own Telegram account. Saved Messages acts as the home location and channels act as folders. Telegram-Drive does not operate a separate file-storage service.</p></details>
           <details><summary>Is the storage unlimited?</summary><p>No. Storage and file handling follow Telegram’s account, service, and per-file limits. Telegram-Drive currently limits a Telegram object to roughly 2 GB, with slightly less available for encrypted files because of envelope overhead.</p></details>
           <details><summary>Does Folder Sync start automatically?</summary><p>No. Folder Sync is off by default and must be enabled explicitly in Settings. On Windows, macOS, and Linux, you can then map a local folder to a Telegram channel and choose how to resolve any conflicts.</p></details>
-          <details><summary>Does the $5 license unlock features?</summary><p>No. Every feature is available in the free version. The lifetime supporter license only removes supported desktop sponsor placements and helps fund development.</p></details>
-          <details><summary>Do normal updates require reactivation?</summary><p>No. A verified device keeps its secure entitlement through normal application updates. Keep the recovery code for reinstalls or another eligible device; the license supports up to three desktop devices.</p></details>
+          <details><summary>Does the $5 license unlock features?</summary><p>No. Every feature is available in the free version. The lifetime supporter license only removes sponsor placements on activated supported Windows, macOS, Linux, or Android devices and helps fund development.</p></details>
+          <details><summary>Do normal updates require reactivation?</summary><p>No. A verified device keeps its secure entitlement through normal application updates. Keep the recovery code for reinstalls or another eligible device; the license supports up to three supported Windows, macOS, Linux, or Android devices in total.</p></details>
           <details><summary>Are WebDAV and the REST API public?</summary><p>They are disabled by default and bind to loopback by default. REST uses an API key, while WebDAV uses a capability URL and starts in read-only mode. Network exposure remains under the user’s control.</p></details>
           <details><summary>Is Telegram-Drive affiliated with Telegram?</summary><p>No. Telegram-Drive is an independent open-source project that uses Telegram’s client API. Review the <a href="https://github.com/caamer20/Telegram-Drive" target="_blank" rel="noopener noreferrer">source and documentation on GitHub</a>.</p></details>
         </div>
@@ -814,7 +816,7 @@
       const name = asset.name.toLowerCase();
       if (/\.(exe|msi)$/.test(name)) return 'windows';
       if (/\.dmg$/.test(name)) return 'macos';
-      if (/\.(appimage|deb|rpm)$/.test(name)) return 'linux';
+      if (/\.(appimage|deb|rpm)$/.test(name) || /\.pkg\.tar\.zst$/.test(name)) return 'linux';
       return null;
     };
 
@@ -869,9 +871,16 @@
             const intel = matches.find(asset => /x64|x86_64/i.test(asset.name));
             if (apple) links.append(makeLink('Apple silicon', apple.browser_download_url, true));
             if (intel) links.append(makeLink('Intel Mac', intel.browser_download_url));
+          } else if (platform === 'linux') {
+            const appImage = matches.find(asset => /\.appimage$/i.test(asset.name));
+            const archPackage = matches.find(asset => /\.pkg\.tar\.zst$/i.test(asset.name));
+            if (appImage) links.append(makeLink('Download AppImage', appImage.browser_download_url, true));
+            if (archPackage) links.append(makeLink('Arch package', archPackage.browser_download_url, !appImage));
+            if (!appImage && !archPackage) links.append(makeLink('Download Linux package', matches[0].browser_download_url, true));
+            if (matches.length > Number(Boolean(appImage)) + Number(Boolean(archPackage))) links.append(makeLink('Other formats', REPO_RELEASES));
           } else {
             const primary = preferredAsset(assets, platform);
-            links.append(makeLink(`Download ${platform === 'windows' ? 'installer' : 'AppImage'}`, primary.browser_download_url, true));
+            links.append(makeLink('Download installer', primary.browser_download_url, true));
             if (matches.length > 1) links.append(makeLink('Other formats', REPO_RELEASES));
           }
         }
@@ -897,15 +906,32 @@
 
     const imageDialog = document.getElementById('imageDialog');
     const dialogImage = document.getElementById('dialogImage');
+    let lightboxTrigger = null;
+    const openLightbox = image => {
+      lightboxTrigger = image;
+      dialogImage.src = image.currentSrc || image.src;
+      dialogImage.alt = image.alt;
+      imageDialog.showModal();
+      imageDialog.querySelector('.dialog-close').focus();
+    };
     document.querySelectorAll('[data-lightbox]').forEach(image => {
-      image.addEventListener('click', () => {
-        dialogImage.src = image.currentSrc || image.src;
-        dialogImage.alt = image.alt;
-        imageDialog.showModal();
+      image.setAttribute('role', 'button');
+      image.tabIndex = 0;
+      image.setAttribute('aria-label', `Open screenshot: ${image.alt}`);
+      image.addEventListener('click', () => openLightbox(image));
+      image.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          openLightbox(image);
+        }
       });
     });
     imageDialog.querySelector('.dialog-close').addEventListener('click', () => imageDialog.close());
     imageDialog.addEventListener('click', event => { if (event.target === imageDialog) imageDialog.close(); });
+    imageDialog.addEventListener('close', () => {
+      lightboxTrigger?.focus();
+      lightboxTrigger = null;
+    });
 
     loadRelease();
   </script>

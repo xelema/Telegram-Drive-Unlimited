@@ -14,7 +14,6 @@ interface CrashEnvelope {
 }
 
 const QUEUE_KEY = 'telegram-drive-crash-reports';
-const endpoint = String(import.meta.env.VITE_CRASH_REPORT_ENDPOINT || '').trim();
 let enabled = false;
 
 function safeFrames(error: unknown): string[] {
@@ -44,12 +43,8 @@ function writeQueue(queue: CrashEnvelope[]) {
 }
 
 async function deliver(envelope: CrashEnvelope) {
-    if (!endpoint) {
-        writeQueue([...readQueue(), envelope]);
-        return;
-    }
     try {
-        await invoke('cmd_submit_crash_report', { endpoint, report: envelope });
+        await invoke('cmd_submit_crash_report', { report: envelope });
     } catch {
         writeQueue([...readQueue(), envelope]);
     }
@@ -61,7 +56,6 @@ export function configureCrashTelemetry(isEnabled: boolean) {
         writeQueue([]);
         return;
     }
-    if (!endpoint) return;
     const queued = readQueue();
     if (queued.length === 0) return;
     writeQueue([]);

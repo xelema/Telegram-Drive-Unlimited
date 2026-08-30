@@ -5,6 +5,7 @@ import { listen } from '@tauri-apps/api/event';
 import { TelegramFile } from '../../../types';
 import { isImageFile } from '../../../utils';
 import { useSettings } from '../../../context/SettingsContext';
+import { userFacingError } from '../../../services/userFacingError';
 import {
     forgetPreview,
     forgetThumbnail,
@@ -13,6 +14,7 @@ import {
     loadPreview,
     loadThumbnail,
 } from '../../../services/imagePreviewCache';
+import i18n from '../../../i18n';
 
 const MAX_PREFETCH_BYTES = 25 * 1024 * 1024;
 const MIN_IMAGE_ZOOM = 0.25;
@@ -216,7 +218,7 @@ export function PreviewModal({
             if (!imagePreview) setLoading(false);
         }).catch((loadError) => {
             if (requestId !== latestRequestRef.current) return;
-            setError(String(loadError));
+            setError(userFacingError(loadError, t));
             setLoading(false);
         });
     }, [file.id, file.name, activeFolderId, imagePreview, fitImage]);
@@ -452,7 +454,7 @@ export function PreviewModal({
                 <button
                     onClick={onClose}
                     className="viewer-control absolute -top-10 end-0 z-20 border border-white/10 bg-black/55"
-                    title="Close"
+                    title={i18n.t("common.close")}
                     aria-label="Close preview"
                 >
                     <X className="h-4 w-4" />

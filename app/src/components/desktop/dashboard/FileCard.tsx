@@ -10,6 +10,7 @@ import { VideoMetaBadge } from '../../shared/VideoMetaBadge';
 import { Skeleton } from '../../ui';
 import { EncryptionBadge } from '../../shared/EncryptionBadge';
 import { describeFileActions } from './fileActionDescriptors';
+import i18n from '../../../i18n';
 
 interface FileCardProps {
     file: TelegramFile;
@@ -112,6 +113,8 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
             style={{ opacity: isDragging ? 0.45 : undefined }}
             {...(!isFolder ? attributes : {})}
             {...(!isFolder ? listeners : {})}
+            role="group"
+            aria-label={file.name}
             onContextMenu={onContextMenu}
             onClick={onClick}
         >
@@ -169,7 +172,7 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
 
                 {/* File info overlay at bottom */}
                 <div className={`file-card-info absolute inset-x-0 bottom-0 z-[1] min-h-12 overflow-hidden px-2.5 py-2 ${thumbnail ? 'text-white' : 'text-app-text'}`}>
-                    <h3 className="block w-full min-w-0 truncate text-ui font-medium" title={file.name}>{file.name}</h3>
+                    <h2 className="block w-full min-w-0 truncate text-ui font-medium" title={file.name}>{file.name}</h2>
                     <div className="file-card-metadata mt-0.5 flex h-4 w-full min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap">
                         <p className={`shrink-0 text-metadata ${thumbnail ? 'text-white/70' : 'text-app-text-secondary'}`}>{file.sizeStr}</p>
                         <EncryptionBadge state={file.encryption_state ?? 'plain'} className="shrink-0" />
@@ -189,14 +192,14 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
 
                 {/* Quick actions on hover */}
                 <div className="file-card-actions absolute end-2 top-2 z-10 flex max-w-[calc(100%-2.75rem)] gap-0.5 overflow-hidden rounded-control border border-white/10 bg-black/55 p-0.5 opacity-0 backdrop-blur-md transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-                    <button type="button" aria-label={`Preview ${file.name}`} onClick={(e) => { e.stopPropagation(); if (onPreview) onPreview() }} className="quiet-control file-action-btn flex h-7 w-7 items-center justify-center text-white/80 hover:text-white" title="Preview">
+                    <button type="button" aria-label={`Preview ${file.name}`} onClick={(e) => { e.stopPropagation(); if (onPreview) onPreview() }} className="quiet-control file-action-btn flex h-7 w-7 items-center justify-center text-white/80 hover:text-white" title={i18n.t("files.preview")}>
                         <Eye className="h-3.5 w-3.5" />
                     </button>
-                    <button type="button" aria-label={`Download ${file.name}`} onClick={(e) => { e.stopPropagation(); onDownload() }} className="quiet-control file-action-btn flex h-7 w-7 items-center justify-center text-white/80 hover:text-white" title="Download">
+                    <button type="button" aria-label={`Download ${file.name}`} onClick={(e) => { e.stopPropagation(); onDownload() }} className="quiet-control file-action-btn flex h-7 w-7 items-center justify-center text-white/80 hover:text-white" title={i18n.t("files.download")}>
                         <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-3 h-3"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
                     </button>
                     {actions.canShare && onShare && (
-                        <button type="button" aria-label={`Share ${file.name}`} onClick={(e) => { e.stopPropagation(); onShare() }} className="quiet-control file-action-btn flex h-7 w-7 items-center justify-center text-white/80 hover:text-white" title="Share">
+                        <button type="button" aria-label={`Share ${file.name}`} onClick={(e) => { e.stopPropagation(); onShare() }} className="quiet-control file-action-btn flex h-7 w-7 items-center justify-center text-white/80 hover:text-white" title={i18n.t("files.share")}>
                             <Link className="h-3.5 w-3.5" />
                         </button>
                     )}

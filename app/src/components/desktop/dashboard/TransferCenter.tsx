@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { CheckCircle2, ChevronDown, ChevronUp, Download, Pause, Play, RotateCcw, UploadCloud, X } from 'lucide-react';
 import type { DownloadItem, QueueItem } from '../../../types';
 import { formatBytes } from '../../../utils';
+import i18n from '../../../i18n';
 
 interface TransferCenterProps {
   openRequest?: number;
@@ -121,7 +122,7 @@ export function TransferCenter({
                       <p className="truncate text-xs text-app-text" title={item.url || item.path}>{(item.url || item.path).split(/[\\/]/).pop()}</p>
                       <StatusLabel status={item.status} />
                     </div>
-                    {(item.status === 'pending' || item.status === 'paused' || item.status === 'uploading' || item.status === 'downloading' || item.status === 'encrypting' || item.status === 'verifying') && <button type="button" onClick={() => onCancelUpload(item.id)} className="quiet-control p-1.5 text-app-text-secondary hover:text-app-danger" aria-label={`Cancel upload ${item.url || item.path}`} title="Cancel"><X className="h-3.5 w-3.5" aria-hidden="true" /></button>}
+                    {(item.status === 'pending' || item.status === 'paused' || item.status === 'uploading' || item.status === 'downloading' || item.status === 'encrypting' || item.status === 'verifying') && <button type="button" onClick={() => onCancelUpload(item.id)} className="quiet-control p-1.5 text-app-text-secondary hover:text-app-danger" aria-label={`Cancel upload ${item.url || item.path}`} title={i18n.t("common.cancel")}><X className="h-3.5 w-3.5" aria-hidden="true" /></button>}
                     {(item.status === 'error' || item.status === 'cancelled' || item.status === 'waiting_for_unlock') && <button type="button" onClick={() => onRetryUpload(item.id)} className="quiet-control p-1.5 text-app-text-secondary hover:text-app-accent" aria-label={`${item.status === 'waiting_for_unlock' ? 'Provide encryption credentials for' : 'Retry'} ${item.url || item.path}`} title={item.status === 'waiting_for_unlock' ? 'Provide encryption credentials' : 'Retry'}><RotateCcw className="h-3.5 w-3.5" aria-hidden="true" /></button>}
                   </div>
                   {(item.status === 'uploading' || item.status === 'downloading') && <TransferProgress value={item.progress} />}
@@ -147,7 +148,7 @@ export function TransferCenter({
                   <div className="flex items-center gap-3">
                     <Download className="h-4 w-4 shrink-0 text-app-info" />
                     <div className="min-w-0 flex-1"><p className="truncate text-xs text-app-text" title={item.filename}>{item.filename}</p><StatusLabel status={item.status} /></div>
-                    {(item.status === 'pending' || item.status === 'paused' || item.status === 'cooldown' || item.status === 'downloading' || item.status === 'decrypting' || item.status === 'verifying') && <button type="button" onClick={() => onCancelDownload(item.id)} className="quiet-control p-1.5 text-app-text-secondary hover:text-app-danger" aria-label={`Cancel download ${item.filename}`} title="Cancel"><X className="h-3.5 w-3.5" aria-hidden="true" /></button>}
+                    {(item.status === 'pending' || item.status === 'paused' || item.status === 'cooldown' || item.status === 'downloading' || item.status === 'decrypting' || item.status === 'verifying') && <button type="button" onClick={() => onCancelDownload(item.id)} className="quiet-control p-1.5 text-app-text-secondary hover:text-app-danger" aria-label={`Cancel download ${item.filename}`} title={i18n.t("common.cancel")}><X className="h-3.5 w-3.5" aria-hidden="true" /></button>}
                     {(item.status === 'error' || item.status === 'cancelled' || item.status === 'waiting_for_unlock') && <button type="button" onClick={() => onRetryDownload(item.id)} className="quiet-control p-1.5 text-app-text-secondary hover:text-app-accent" aria-label={`${item.status === 'waiting_for_unlock' ? 'Provide encryption credentials for' : 'Retry'} ${item.filename}`} title={item.status === 'waiting_for_unlock' ? 'Provide encryption credentials' : 'Retry'}><RotateCcw className="h-3.5 w-3.5" aria-hidden="true" /></button>}
                   </div>
                   {(item.status === 'downloading' || item.status === 'decrypting' || item.status === 'verifying') && <TransferProgress value={item.progress} tone="info" />}

@@ -78,7 +78,9 @@
     "storage_insights": "Mga insight sa storage",
     "large_files": "Malalaking file",
     "old_files": "Mga lumang file",
-    "duplicates": "Mga duplicate"
+    "duplicates": "Mga duplicate",
+    "operation_failed": "Hindi nakumpleto ang operasyon. Subukan ulit o suriin ang kaugnay na mga setting.",
+    "retry": "Subukan ulit"
   },
   "settings": {
     "tab_sync": "Folder Sync",
@@ -180,7 +182,7 @@
     "performance_mode": "Mode ng Pagganap",
     "performance_mode_desc": "Huwag paganahin ang blur, mabibigat na anino at animation",
     "linux_rendering_fix": "Linux Rendering Fix",
-    "linux_rendering_desc": "I-disable ang DMA-BUF renderer (nag-aayos ng mga pag-crash ng GPU, nangangailangan ng pag-restart)",
+    "linux_rendering_desc": "Gamitin ang shared-memory rendering fallback ng AppImage (kailangang i-restart)",
     "language_region": "Wika at Rehiyon",
     "app_language": "Wika ng Application",
     "choose_language": "Piliin ang iyong gustong wika",
@@ -276,7 +278,7 @@
     "copy_share_link": "Kopyahin ang share link",
     "revoke_link": "Bawiin ang link",
     "copy_diagnostics": "Kopyahin ang Diagnostics",
-    "tagline": "Gawing walang limitasyon at secure na cloud storage ang iyong Telegram account. Open-source at libre magpakailanman.",
+    "tagline": "Isang local-first na file workspace na pinapagana ng iyong Telegram account. Open-source at libreng gamitin.",
     "reset_defaults": "I-reset sa Mga Default",
     "done": "Tapos na",
     "clear_local_cache": "I-clear ang Lokal na Cache",
@@ -535,7 +537,7 @@
     "desktop_required": "Kinakailangan ang Desktop App",
     "desktop_required_desc": "Tinitingnan mo ang internal development server sa isang browser. Hindi maaaring gumana ang application na ito dito dahil nangangailangan ito ng access sa backend ng system (Rust).",
     "open_window_prompt": "Pakibuksan ang Telegram Drive window sa iyong OS taskbar/dock upang magpatuloy.",
-    "tagline": "Secure na storage na naka-host sa sarili",
+    "tagline": "Local-first na file workspace",
     "too_many_requests": "Masyadong Maraming Kahilingan",
     "flood_wait_msg": "Telegram ay pansamantalang nilimitahan ang iyong mga aksyon.",
     "please_wait": "Mangyaring maghintay bago subukang muli.",

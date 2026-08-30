@@ -9,6 +9,7 @@ pub mod desktop_power;
 pub mod desktop_preferences;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod desktop_tray;
+pub mod installation;
 pub mod linux_startup;
 pub mod models;
 #[cfg(not(target_os = "android"))]
@@ -76,11 +77,13 @@ use tokio::sync::Mutex;
 pub mod android_security;
 pub mod android_updates;
 pub mod api_routes;
+pub mod api_secret;
 pub mod crypto_commands;
 pub mod db;
 mod db_migrations;
 pub mod fmp4_remux;
 pub mod jni_cache;
+mod local_cors;
 pub mod mp4_utils;
 pub mod server;
 mod server_lifecycle;
@@ -208,15 +211,7 @@ pub async fn restart_api_server(app: &tauri::AppHandle) -> Result<(), String> {
             let server = match actix_web::HttpServer::new(move || {
                 let cors = actix_cors::Cors::default()
                     .allowed_origin_fn(|origin, _req_head| {
-                        let origin_bytes = origin.as_bytes();
-                        origin_bytes.starts_with(b"tauri://")
-                            || origin_bytes.starts_with(b"http://tauri.localhost")
-                            || origin_bytes.starts_with(b"https://tauri.localhost")
-                            || origin_bytes.starts_with(b"http://localhost")
-                            || origin_bytes.starts_with(b"http://127.0.0.1")
-                            || origin_bytes.starts_with(b"https://asset.localhost")
-                            || origin_bytes.starts_with(b"http://asset.localhost")
-                            || origin_bytes == b"null"
+                        local_cors::is_allowed_origin_header(origin)
                     })
                     .allow_any_method()
                     .allow_any_header();
@@ -828,6 +823,16 @@ fn cmd_get_system_diagnostics(app: tauri::AppHandle) -> Result<String, String> {
 
         #[cfg(target_os = "linux")]
         {
+            let installation = installation::current_installation_info();
+            let package_type = if installation.managed_by_package_manager {
+                "pacman package"
+            } else if std::env::var_os("APPIMAGE").is_some() || std::env::var_os("APPDIR").is_some()
+            {
+                "AppImage"
+            } else {
+                "native/unknown"
+            };
+            lines.push(format!("Package Type: {package_type}"));
             lines.push(format!(
                 "XDG_SESSION_TYPE: {}",
                 std::env::var("XDG_SESSION_TYPE").unwrap_or_else(|_| "unknown".into())
@@ -836,10 +841,19 @@ fn cmd_get_system_diagnostics(app: tauri::AppHandle) -> Result<String, String> {
                 "XDG_CURRENT_DESKTOP: {}",
                 std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_else(|_| "unknown".into())
             ));
-            lines.push(format!(
-                "WEBKIT_DISABLE_DMABUF_RENDERER: {}",
-                std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").unwrap_or_else(|_| "unset".into())
-            ));
+            for name in [
+                "GDK_BACKEND",
+                "EGL_PLATFORM",
+                "WEBKIT_DMABUF_RENDERER_FORCE_SHM",
+                "WEBKIT_DISABLE_DMABUF_RENDERER",
+                "WEBKIT_DISABLE_COMPOSITING_MODE",
+                "TELEGRAM_DRIVE_SAFE_RENDERING",
+            ] {
+                lines.push(format!(
+                    "{name}: {}",
+                    std::env::var(name).unwrap_or_else(|_| "unset".into())
+                ));
+            }
         }
 
         #[cfg(target_os = "macos")]
@@ -1376,6 +1390,9 @@ pub fn run() {
             commands::cmd_delete_temp_zip,
             commands::cmd_apply_proxy_settings,
             commands::cmd_migrate_proxy_secret,
+            api_secret::cmd_load_api_hash,
+            api_secret::cmd_store_api_hash,
+            api_secret::cmd_clear_api_hash,
             commands::cmd_clear_proxy_secret,
             commands::cmd_get_proxy_status,
             commands::cmd_apply_vpn_settings,
@@ -1393,6 +1410,7 @@ pub fn run() {
             cmd_list_cached_files,
             cmd_remove_cached_path,
             cmd_get_system_diagnostics,
+            installation::cmd_get_installation_info,
             android_updates::cmd_check_android_update,
             android_updates::cmd_download_and_install_android_update,
             android_security::cmd_get_android_authentication_available,

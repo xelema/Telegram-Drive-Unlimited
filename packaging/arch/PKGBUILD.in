@@ -1,0 +1,82 @@
+pkgname=telegram-drive-bin
+pkgver=@PKGVER@
+pkgrel=1
+pkgdesc='Local-first Telegram file workspace (prebuilt upstream binary)'
+arch=('x86_64')
+url='https://github.com/caamer20/Telegram-Drive'
+license=('LicenseRef-Upstream-Unspecified')
+depends=(
+  'cairo'
+  'dbus'
+  'gdk-pixbuf2'
+  'glib2'
+  'glibc'
+  'gtk3'
+  'libayatana-appindicator'
+  'libgcc'
+  'libsoup3'
+  'libstdc++'
+  'webkit2gtk-4.1'
+)
+makedepends=('libarchive')
+optdepends=(
+  'ffmpeg: HLS media transcoding'
+  'gnome-keyring: persistent Secret Service credential storage'
+)
+provides=("telegram-drive=${pkgver}")
+conflicts=('telegram-drive')
+options=('!strip' '!debug')
+
+_deb_name='@DEB_NAME@'
+source=(
+  "${_deb_name}"
+  'telegram-drive'
+  'com.cameronamer.telegramdrive.desktop'
+  'UPSTREAM-LICENSE-NOTICE'
+)
+noextract=("${_deb_name}")
+sha256sums=(
+  '@DEB_SHA256@'
+  '@LAUNCHER_SHA256@'
+  '@DESKTOP_SHA256@'
+  '@NOTICE_SHA256@'
+)
+
+package() {
+  local deb_root="${srcdir}/deb-root"
+  local data_archives=()
+  local data_archive
+  local icon
+
+  mkdir -p "${deb_root}"
+  (cd "${deb_root}" && ar x "${srcdir}/${_deb_name}")
+  data_archives=("${deb_root}"/data.tar.*)
+  if (( ${#data_archives[@]} != 1 )) || [[ ! -f "${data_archives[0]}" ]]; then
+    error 'Expected exactly one data.tar archive in the Debian package'
+    return 1
+  fi
+  data_archive="${data_archives[0]}"
+  bsdtar -xf "${data_archive}" -C "${pkgdir}"
+
+  if [[ ! -x "${pkgdir}/usr/bin/app" ]]; then
+    error 'The upstream Debian package did not contain /usr/bin/app'
+    return 1
+  fi
+
+  install -d "${pkgdir}/usr/lib/telegram-drive"
+  mv "${pkgdir}/usr/bin/app" "${pkgdir}/usr/lib/telegram-drive/app"
+  install -Dm755 "${srcdir}/telegram-drive" "${pkgdir}/usr/bin/telegram-drive"
+
+  rm -f "${pkgdir}/usr/share/applications/Telegram Drive.desktop"
+  install -Dm644 \
+    "${srcdir}/com.cameronamer.telegramdrive.desktop" \
+    "${pkgdir}/usr/share/applications/com.cameronamer.telegramdrive.desktop"
+
+  while IFS= read -r -d '' icon; do
+    mv "${icon}" "${icon%/app.png}/com.cameronamer.telegramdrive.png"
+  done < <(find "${pkgdir}/usr/share/icons/hicolor" -type f -path '*/apps/app.png' -print0)
+
+  install -Dm644 \
+    "${srcdir}/UPSTREAM-LICENSE-NOTICE" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/UPSTREAM-LICENSE-NOTICE"
+}

@@ -78,7 +78,9 @@
     "storage_insights": "存储分析",
     "large_files": "大文件",
     "old_files": "旧文件",
-    "duplicates": "重复文件"
+    "duplicates": "重复文件",
+    "operation_failed": "无法完成操作。请重试或检查相关设置。",
+    "retry": "重试"
   },
   "settings": {
     "tab_sync": "Folder Sync",
@@ -139,7 +141,7 @@
     "video_upload_media": "媒体",
     "performance_compatibility": "Performance & Compatibility",
     "performance_mode_desc": "Disable blur, heavy shadows & animations",
-    "linux_rendering_desc": "Disable DMA-BUF renderer (fixes GPU crashes, requires restart)",
+    "linux_rendering_desc": "使用 AppImage 共享内存渲染后备方案（需要重启）",
     "language_region": "Language & Region",
     "app_language": "Application Language",
     "choose_language": "Choose your preferred language",
@@ -213,7 +215,7 @@
     "copy_share_link": "Copy share link",
     "revoke_link": "Revoke link",
     "copy_diagnostics": "Copy Diagnostics",
-    "tagline": "Turn your Telegram account into unlimited, secure cloud storage. Open-source and free forever.",
+    "tagline": "由您的 Telegram 帐户提供支持的本地优先文件工作区。开源且可免费使用。",
     "reset_defaults": "Reset to Defaults",
     "done": "Done",
     "auto": "Auto",
@@ -535,7 +537,7 @@
     "desktop_required": "Desktop App Required",
     "desktop_required_desc": "You are viewing the internal development server in a browser. This application cannot function here because it requires access to the system backend (Rust).",
     "open_window_prompt": "Please open the Telegram Drive window in your OS taskbar/dock to continue.",
-    "tagline": "Self-hosted secure storage",
+    "tagline": "本地优先的文件工作区",
     "too_many_requests": "Too Many Requests",
     "flood_wait_msg": "Telegram has temporarily limited your actions.",
     "please_wait": "Please wait before trying again.",

@@ -78,7 +78,9 @@
     "storage_insights": "Analisi archiviazione",
     "large_files": "File di grandi dimensioni",
     "old_files": "File meno recenti",
-    "duplicates": "Duplicati"
+    "duplicates": "Duplicati",
+    "operation_failed": "Impossibile completare l’operazione. Riprova o controlla le impostazioni correlate.",
+    "retry": "Riprova"
   },
   "settings": {
     "tab_sync": "Folder Sync",
@@ -180,7 +182,7 @@
     "performance_mode": "Modalità prestazioni",
     "performance_mode_desc": "Disabilita sfocatura, ombre pesanti e animazioni",
     "linux_rendering_fix": "Correzione rendering Linux",
-    "linux_rendering_desc": "Disabilita il renderer DMA-BUF (corregge i crash della GPU, richiede il riavvio)",
+    "linux_rendering_desc": "Usa il fallback di rendering tramite memoria condivisa di AppImage (richiede il riavvio)",
     "language_region": "Lingua e area geografica",
     "app_language": "Lingua dell'applicazione",
     "choose_language": "Scegli la lingua preferita",
@@ -269,7 +271,7 @@
     "copy_share_link": "Copia link di condivisione",
     "revoke_link": "Revoca link",
     "copy_diagnostics": "Copia diagnostica",
-    "tagline": "Trasforma il tuo account Telegram in uno spazio cloud illimitato e sicuro. Open source e gratuito per sempre.",
+    "tagline": "Uno spazio di lavoro locale per i file, basato sul tuo account Telegram. Open source e gratuito.",
     "reset_defaults": "Ripristina impostazioni predefinite",
     "done": "Fine",
     "clear_local_cache": "Svuota cache locale",
@@ -535,7 +537,7 @@
     "desktop_required": "È richiesta l'app desktop",
     "desktop_required_desc": "Stai visualizzando il server di sviluppo interno in un browser. Questa applicazione non può funzionare qui perché richiede l'accesso al backend di sistema (Rust).",
     "open_window_prompt": "Apri la finestra di Telegram Drive dalla barra delle applicazioni o dal dock del sistema operativo per continuare.",
-    "tagline": "Archiviazione sicura self-hosted",
+    "tagline": "Spazio di lavoro locale per i file",
     "too_many_requests": "Troppe richieste",
     "flood_wait_msg": "Telegram ha limitato temporaneamente le tue azioni.",
     "please_wait": "Attendi prima di riprovare.",

@@ -1,3 +1,41 @@
+## [3.8.0] - 2026-08-30
+
+### Desktop Security and Data Safety
+
+- Hardened local share pages with bounded password handling, throttling, private-cache controls, content-security headers, and capability-safe diagnostics.
+- Added strict loopback CORS origin parsing, bounded fail-closed multipart uploads, sanitized upload names, and securely staged temporary files.
+- Added archive expansion limits to protect previews from decompression bombs and preserved recoverable Telegram session copies when corruption is detected.
+- Moved the Telegram API hash into operating-system credential storage with a verified legacy migration path, and bound crash submission to the reviewed compile-time endpoint.
+- Made bandwidth accounting overflow-safe and atomically persisted so malformed or interrupted writes cannot silently corrupt quota state.
+
+### Reliability, Accessibility, and Performance
+
+- Added serialized settings persistence with visible failure state and retry behavior while preserving every existing settings key and storage location.
+- Lazy-loaded optional media, archive, settings, help, and language resources, with release bundle ceilings that prevent startup-size regressions.
+- Normalized user-facing failures into localized, privacy-safe messages while retaining technical detail in sanitized diagnostics.
+- Expanded keyboard, focus, dialog, mobile-navigation, and Axe coverage across representative authentication, dashboard, settings, dialog, and mobile screens.
+- Reduced untranslated UI literal debt across all 24 shipped locale bundles and strengthened generated-key and no-regression localization checks.
+
+### Linux and Arch Compatibility
+
+- Replaced broad AppImage library rewriting with a testable WebKit shared-memory rendering fallback that is limited to AppImage launches and respects explicit user environment choices.
+- Added a checksummed `telegram-drive-bin` Arch package, standard desktop integration, pacman-owned updater behavior, install verification, upgrade-preservation checks, and a runtime SBOM.
+- Prevented the desktop updater from replacing pacman-owned files while retaining update availability notices and the existing self-managed updater on Windows, macOS, AppImage, Debian, and RPM installations.
+- Removed post-signing AppImage mutation so published Linux artifacts remain byte-for-byte consistent with their updater signatures and release provenance.
+
+### Release Assurance and Compatibility
+
+- Added pinned dependency, license, advisory, bundle, accessibility, packaging, checksum, SBOM, and provenance gates before a draft desktop release can be published.
+- Enforced exact parity between the release tag, npm package, Cargo package, Tauri configuration, Android version contract, and first changelog entry.
+- Standardized the optional supporter wording across application, service, privacy, terms, README, and website surfaces without changing the protected one-time $5.00 USD lifetime ad-free entitlement or three-device allowance.
+- Existing Telegram sessions, secure credentials, supporter tokens and recovery codes, settings, encrypted-file records, transfer queues, folder mappings, shares, and synchronized preferences remain compatible with this update.
+
+### Verification
+
+- Frontend unit and coverage tests, production compilation, bundle ceilings, locale validation, and visual accessibility checks pass.
+- Rust library tests, formatting, Clippy with warnings denied, supporter-service tests, Worker type checking, and the deployment dry-run pass.
+- Release contract tests verify signed-artifact integrity, package-manager updater ownership, Arch packaging, SBOM generation, and protected supporter invariants.
+
 ## [3.7.0] - 2026-08-27
 
 ### Protected Media Streaming

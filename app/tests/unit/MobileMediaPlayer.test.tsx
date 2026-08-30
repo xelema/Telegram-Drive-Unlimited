@@ -71,7 +71,8 @@ describe('MobileMediaPlayer', () => {
     invokeMock.mockRejectedValueOnce(new Error('temporary player error'));
     render(<MobileMediaPlayer file={file} activeFolderId={9} onClose={vi.fn()} />);
 
-    expect(await screen.findByText(/temporary player error/i)).toBeTruthy();
+    expect(await screen.findByText('The operation could not be completed. Try again or review the related settings.')).toBeTruthy();
+    expect(screen.queryByText(/temporary player error/i)).toBeNull();
     expect(invokeMock.mock.calls.some(([command]) => command === 'cmd_get_preview')).toBe(false);
   });
 

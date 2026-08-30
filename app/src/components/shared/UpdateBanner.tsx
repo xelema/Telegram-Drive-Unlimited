@@ -1,6 +1,7 @@
 import { motion, AnimatePresence } from 'framer-motion';
 import { Download, X, RefreshCw, Sparkles } from 'lucide-react';
 import type { UpdateInstallPhase } from '../../services/updateReliability';
+import { useTranslation } from 'react-i18next';
 
 interface UpdateBannerProps {
     available: boolean;
@@ -8,6 +9,7 @@ interface UpdateBannerProps {
     downloading: boolean;
     progress: number;
     phase: UpdateInstallPhase | null;
+    managedByPackageManager: boolean;
     onUpdate: () => void;
     onDismiss: () => void;
 }
@@ -18,9 +20,11 @@ export function UpdateBanner({
     downloading,
     progress,
     phase,
+    managedByPackageManager,
     onUpdate,
     onDismiss
 }: UpdateBannerProps) {
+    const { t } = useTranslation();
     return (
         <AnimatePresence>
             {available && (
@@ -58,7 +62,7 @@ export function UpdateBanner({
                                 className="flex items-center gap-2 px-4 py-1.5 bg-white text-telegram-primary font-semibold rounded-full hover:bg-white/90 transition-colors shadow-md"
                             >
                                 <Download className="w-4 h-4" />
-                                Update Now
+                                {managedByPackageManager ? t('common.open') : t('settings.update_restart')}
                             </button>
                         )}
 
@@ -66,7 +70,7 @@ export function UpdateBanner({
                             <button
                                 onClick={onDismiss}
                                 className="p-1 text-white/70 hover:text-white transition-colors"
-                                title="Dismiss"
+                                title={t('common.close')}
                             >
                                 <X className="w-4 h-4" />
                             </button>

@@ -30,6 +30,7 @@ import { Button, IconButton, MenuItem, MenuPanel, SearchField } from '../../ui';
 import type { SortDirection, SortField } from './FileExplorer';
 import type { FileSearchFilters } from '../../../services/fileSearch';
 import { useTopBarController } from './useTopBarController';
+import i18n from '../../../i18n';
 
 interface TopBarProps {
     currentFolderName: string;
@@ -168,12 +169,12 @@ export function TopBar({
                                     </select>
                                 </label>
                                 <div className="grid grid-cols-2 gap-2">
-                                    <label className="block text-xs font-medium text-app-text-secondary">Size
+                                    <label className="block text-xs font-medium text-app-text-secondary">{i18n.t("common.size")}
                                         <select value={searchFilters.size} onChange={(event) => onSearchFiltersChange({ ...searchFilters, size: event.target.value as FileSearchFilters['size'] })} className="quiet-control mt-1 h-8 w-full border border-app-border bg-app-surface-sunken px-2 text-sm text-app-text">
                                             <option value="any">Any</option><option value="small">Under 10 MB</option><option value="medium">10–100 MB</option><option value="large">100 MB+</option>
                                         </select>
                                     </label>
-                                    <label className="block text-xs font-medium text-app-text-secondary">Date
+                                    <label className="block text-xs font-medium text-app-text-secondary">{i18n.t("common.date")}
                                         <select value={searchFilters.date} onChange={(event) => onSearchFiltersChange({ ...searchFilters, date: event.target.value as FileSearchFilters['date'] })} className="quiet-control mt-1 h-8 w-full border border-app-border bg-app-surface-sunken px-2 text-sm text-app-text">
                                             <option value="any">Any</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option><option value="1y">Last year</option>
                                         </select>

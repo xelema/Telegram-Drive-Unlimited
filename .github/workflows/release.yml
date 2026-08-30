@@ -13,10 +13,10 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
@@ -25,7 +25,7 @@ jobs:
             supporter-service/package-lock.json
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
 
       - name: Install Linux desktop dependencies
         run: |
@@ -36,9 +36,13 @@ jobs:
         working-directory: app
         run: npm ci
 
+      - name: Verify release tag, application version, and changelog
+        working-directory: app
+        run: npm run release:version:check -- --tag "$GITHUB_REF_NAME" --changelog ../CHANGELOG.md
+
       - name: Test frontend behavior and architecture invariants
         working-directory: app
-        run: npm test
+        run: npm run test:coverage
 
       - name: Validate locale resources and generated key types
         working-directory: app
@@ -48,7 +52,7 @@ jobs:
 
       - name: Build production frontend
         working-directory: app
-        run: npm run build
+        run: npm run build:verify
 
       - name: Test Rust library invariants
         working-directory: app/src-tauri
@@ -70,7 +74,7 @@ jobs:
         working-directory: supporter-service
         run: |
           npm run check
-          npm test
+          npm run test:coverage
           npx wrangler deploy --dry-run
 
   create-release:
@@ -81,7 +85,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       
       - name: Get version from tag
         id: get_version
@@ -99,7 +103,7 @@ jobs:
 
       - name: Create Release
         id: create-release
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         env:
           RELEASE_BODY: ${{ steps.changelog.outputs.BODY }}
           RELEASE_VERSION: ${{ steps.get_version.outputs.VERSION }}
@@ -146,6 +150,7 @@ jobs:
     env:
       TELEGRAM_DRIVE_SUPPORTER_SERVICE_URL: ${{ vars.SUPPORTER_SERVICE_URL }}
       TELEGRAM_DRIVE_SUPPORTER_PUBLIC_KEY: ${{ vars.SUPPORTER_PUBLIC_KEY }}
+      TELEGRAM_DRIVE_CRASH_REPORT_ENDPOINT: ${{ vars.CRASH_REPORT_ENDPOINT }}
     strategy:
       fail-fast: false
       matrix:
@@ -172,15 +177,15 @@ jobs:
 
     runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           targets: ${{ matrix.target }}
 
@@ -236,7 +241,7 @@ jobs:
           fs.appendFileSync(process.env.GITHUB_ENV, `TAURI_SIGNING_PRIVATE_KEY=${b64}\n`);
 
       - name: Build the app
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ env.TAURI_SIGNING_PRIVATE_KEY }}
@@ -252,156 +257,216 @@ jobs:
         shell: pwsh
         run: ./app/scripts/verify-windows-bundle.ps1
 
-      - name: Patch AppImage for cross-distro EGL compatibility
-        if: matrix.platform == 'ubuntu-22.04'
+  build-arch:
+    name: Build and verify Arch package
+    needs: [create-release, build-tauri]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    container:
+      image: archlinux:base-devel-20260823.0.578598@sha256:68bfc3b0d277b08a99101dc9b94aaa03e5ae70cf1b4fb965c03b2b87b915760d
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install packaging and smoke-test tools
+        run: |
+          pacman -Syu --noconfirm \
+            dbus \
+            desktop-file-utils \
+            github-cli \
+            jq \
+            libarchive \
+            namcap \
+            pacman-contrib \
+            xorg-server-xvfb \
+            xorg-xauth
+
+      - name: Download the exact upstream Debian release artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-
-          APPIMAGE_DIR="app/src-tauri/target/release/bundle/appimage"
-          APPIMAGE=$(find "$APPIMAGE_DIR" -maxdepth 1 -name "*.AppImage" -type f 2>/dev/null | head -1)
-
-          if [ -z "$APPIMAGE" ]; then
-            echo "::warning::No .AppImage found under $APPIMAGE_DIR — skipping patch step"
-            exit 0
-          fi
-
-          echo "--- Found AppImage: $APPIMAGE ---"
-          chmod +x "$APPIMAGE"
-
-          # Download appimagetool
-          wget -q "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage" \
-            -O appimagetool-x86_64.AppImage
-          chmod +x appimagetool-x86_64.AppImage
-
-          # Extract the AppImage
-          "$APPIMAGE" --appimage-extract
-
-          # ── Strip bundled EGL / GL / GLVND libs that shadow host GPU drivers ──
-          STRIP_LIBS=(
-            libEGL.so      libEGL.so.1
-            libGL.so       libGL.so.1
-            libGLdispatch.so libGLdispatch.so.0
-            libGLX.so      libGLX.so.0
-            libGLESv2.so   libGLESv2.so.2
-          )
-          for lib in "${STRIP_LIBS[@]}"; do
-            find squashfs-root -name "$lib" -type f -delete -o -name "$lib" -type l -delete 2>/dev/null || true
-          done
-          echo "--- Stripped ${#STRIP_LIBS[@]} bundled GL/EGL library patterns ---"
-
-          # ── Detect inner binary name ──
-          # Stage 1: parse the .desktop file's Exec= line (most reliable)
-          INNER_BIN=$(find squashfs-root -maxdepth 2 -name "*.desktop" | \
-            xargs -I{} awk -F= '/^Exec=/{print $2; exit}' {} 2>/dev/null | \
-            awk '{print $1}' | xargs basename 2>/dev/null || true)
-          # Stage 2: first executable file in usr/bin
-          if [ -z "$INNER_BIN" ]; then
-            INNER_BIN=$(ls squashfs-root/usr/bin/ 2>/dev/null | head -1 || true)
-          fi
-          if [ -z "$INNER_BIN" ]; then
-            echo "::error::Could not detect inner binary name — aborting patch"
+          mkdir -p upstream-linux
+          gh release download "$GITHUB_REF_NAME" --dir upstream-linux --pattern '*.deb' --clobber
+          mapfile -t deb_packages < <(find upstream-linux -maxdepth 1 -type f -name '*.deb' -print)
+          if [[ ${#deb_packages[@]} -ne 1 ]]; then
+            echo "::error::Expected exactly one Debian release artifact; found ${#deb_packages[@]}"
             exit 1
           fi
-          echo "--- Inner binary: $INNER_BIN ---"
 
-          # ── Write new AppRun ──
-          cat > squashfs-root/AppRun << 'APPRUN_EOF'
-          #!/usr/bin/env bash
-          # ── Telegram Drive — cross-distro AppRun wrapper ──
-          # Fixes EGL_BAD_ALLOC on Arch/Fedora/rolling-release distros by ensuring
-          # the host's GPU driver stack is used instead of bundled Ubuntu Mesa libs.
-          set -u
+      - name: Render checksum-locked PKGBUILD
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          deb_package="upstream-linux/Telegram.Drive_${version}_amd64.deb"
+          bash scripts/render-arch-pkgbuild.sh "${deb_package}" "${version}" arch-package
+          useradd --create-home --shell /bin/bash arch-builder
+          chown -R arch-builder:arch-builder arch-package
 
-          SELF="$(readlink -f "$0")"
-          APPDIR="${SELF%/*}"
-          export APPDIR
-
-          # ── 1. Locale: normalise to C.UTF-8 if current locale is not generated ──
-          if ! locale -a 2>/dev/null | grep -qi "^${LANG:-C}$"; then
-            export LANG="C.UTF-8"
-            export LC_ALL="C.UTF-8"
+      - name: Build as an unprivileged user
+        run: |
+          set -euo pipefail
+          runuser -u arch-builder -- bash -c 'cd "$1" && makepkg --printsrcinfo > .SRCINFO && makepkg --cleanbuild --clean --noconfirm' _ "$PWD/arch-package"
+          mapfile -t packages < <(find arch-package -maxdepth 1 -type f -name 'telegram-drive-bin-*.pkg.tar.zst' -print)
+          if [[ ${#packages[@]} -ne 1 ]]; then
+            echo "::error::Expected exactly one Arch package; found ${#packages[@]}"
+            exit 1
           fi
 
-          # ── 2. Silence AT-SPI / atk-bridge warnings when no a11y bus is present ──
-          export NO_AT_BRIDGE=1
+      - name: Run package policy and structure checks
+        run: |
+          set -euo pipefail
+          package_path="$(find arch-package -maxdepth 1 -type f -name 'telegram-drive-bin-*.pkg.tar.zst' -print -quit)"
+          namcap arch-package/PKGBUILD "${package_path}" 2>&1 | tee arch-package/namcap.log
+          if grep -Eq '(^|[[:space:]])E:' arch-package/namcap.log; then
+            echo '::error::namcap reported a package error'
+            exit 1
+          fi
+          pacman -Qip "${package_path}"
+          pacman -Qlp "${package_path}"
+          pacman -U --noconfirm "${package_path}"
+          pacman -Qkk telegram-drive-bin
+          bash scripts/verify-arch-package.sh "${package_path}" "${GITHUB_REF_NAME#v}"
 
-          # ── 3. Auto-detect EGL platform ──
-          if [ -z "${EGL_PLATFORM:-}" ]; then
-            if [ -n "${WAYLAND_DISPLAY:-}" ]; then
-              export EGL_PLATFORM=wayland
-            elif [ -n "${DISPLAY:-}" ]; then
-              export EGL_PLATFORM=x11
-            else
-              export EGL_PLATFORM=surfaceless
-            fi
+      - name: Verify package reinstall preserves application data
+        run: |
+          set -euo pipefail
+          package_path="$(find arch-package -maxdepth 1 -type f -name 'telegram-drive-bin-*.pkg.tar.zst' -print -quit)"
+          seed_directory='/home/arch-builder/.local/share/com.cameronamer.telegramdrive'
+          install -d -o arch-builder -g arch-builder "${seed_directory}"
+          runuser -u arch-builder -- sh -c 'printf preserved > "$1/arch-package-preservation-test"' _ "${seed_directory}"
+          pacman -U --noconfirm "${package_path}"
+          grep -Fqx 'preserved' "${seed_directory}/arch-package-preservation-test"
+
+      - name: Run native X11 startup smoke test
+        run: |
+          set -euo pipefail
+          set +e
+          runuser -u arch-builder -- dbus-run-session -- xvfb-run -a timeout --kill-after=5s 15s telegram-drive > arch-package/startup-smoke.log 2>&1
+          smoke_status=$?
+          set -e
+          if [[ ${smoke_status} -ne 124 && ${smoke_status} -ne 137 ]]; then
+            cat arch-package/startup-smoke.log
+            echo "::error::Telegram Drive exited before the 15-second startup smoke window (status ${smoke_status})"
+            exit 1
+          fi
+          if grep -Eiq 'EGL_BAD_ALLOC|Could not create.*EGL display|segmentation fault|thread .* panicked' arch-package/startup-smoke.log; then
+            cat arch-package/startup-smoke.log
+            echo '::error::Linux startup smoke test found a rendering failure or crash'
+            exit 1
           fi
 
-          # ── 4. Point GLVND at system vendor ICDs ──
-          GLVND_DIRS=""
-          for d in /usr/share/glvnd/egl_vendor.d /etc/glvnd/egl_vendor.d; do
-            [ -d "$d" ] && GLVND_DIRS="${GLVND_DIRS:+$GLVND_DIRS:}$d"
-          done
-          if [ -n "$GLVND_DIRS" ]; then
-            export __EGL_VENDOR_LIBRARY_DIRS="$GLVND_DIRS"
+      - name: Generate resolved Arch runtime SBOM
+        run: |
+          bash scripts/generate-arch-runtime-sbom.sh \
+            "${GITHUB_REF_NAME#v}" \
+            arch-package/telegram-drive-arch-runtime-sbom.cdx.json
+
+      - name: Upload verified Arch assets to the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          package_path="$(find arch-package -maxdepth 1 -type f -name 'telegram-drive-bin-*.pkg.tar.zst' -print -quit)"
+          gh release upload "$GITHUB_REF_NAME" \
+            "${package_path}" \
+            arch-package/telegram-drive-arch-runtime-sbom.cdx.json \
+            --clobber
+
+  release-assurance:
+    needs: [create-release, build-tauri, build-arch]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+
+      - name: Generate locked source SBOM
+        run: node scripts/generate-sboms.cjs release-assurance
+
+      - name: Download the final draft release artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p release-assets
+          gh release download "$GITHUB_REF_NAME" --dir release-assets --clobber
+          rm -f release-assets/SHA256SUMS.txt release-assets/telegram-drive-source-sbom.cdx.json release-assets/provenance.sigstore.json release-assets/sbom-attestation.sigstore.json release-assets/arch-sbom-attestation.sigstore.json
+          cp release-assurance/telegram-drive-source-sbom.cdx.json release-assets/
+          node scripts/generate-checksums.cjs release-assets release-assurance/SUBJECTS.sha256
+
+      - name: Prepare the Arch package SBOM subject
+        run: |
+          set -euo pipefail
+          mapfile -t arch_packages < <(find release-assets -maxdepth 1 -type f -name 'telegram-drive-bin-*.pkg.tar.zst' -print)
+          if [[ ${#arch_packages[@]} -ne 1 ]]; then
+            echo "::error::Expected exactly one assured Arch package; found ${#arch_packages[@]}"
+            exit 1
           fi
+          test -s release-assets/telegram-drive-arch-runtime-sbom.cdx.json
+          sha256sum "${arch_packages[0]}" > release-assurance/ARCH_SUBJECT.sha256
 
-          # ── 5. Preload first found system libEGL.so.1 ──
-          SYS_EGL=""
-          for p in /usr/lib/x86_64-linux-gnu/libEGL.so.1 \
-                   /usr/lib64/libEGL.so.1 \
-                   /usr/lib/libEGL.so.1; do
-            if [ -f "$p" ]; then
-              SYS_EGL="$p"
-              break
-            fi
-          done
-          if [ -n "$SYS_EGL" ]; then
-            export LD_PRELOAD="${LD_PRELOAD:+$LD_PRELOAD:}$SYS_EGL"
-          fi
+      - name: Attest release provenance
+        id: provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-checksums: release-assurance/SUBJECTS.sha256
 
-          # ── 6. Software rendering fallback (opt-in via LIBGL_ALWAYS_SOFTWARE=1) ──
-          if [ "${LIBGL_ALWAYS_SOFTWARE:-0}" = "1" ]; then
-            export GALLIUM_DRIVER=llvmpipe
-            export WEBKIT_DISABLE_DMABUF_RENDERER=1
-          fi
+      - name: Attest release SBOM
+        id: sbom-attestation
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-checksums: release-assurance/SUBJECTS.sha256
+          sbom-path: release-assurance/telegram-drive-source-sbom.cdx.json
 
-          # ── 7. LD_LIBRARY_PATH: system paths BEFORE bundled paths ──
-          SYS_LIB_PATHS="/usr/lib/x86_64-linux-gnu:/usr/lib64:/usr/lib"
-          BUNDLED_PATHS="${APPDIR}/usr/lib:${APPDIR}/lib"
-          export LD_LIBRARY_PATH="${SYS_LIB_PATHS}:${BUNDLED_PATHS}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+      - name: Attest the Arch runtime SBOM
+        id: arch-sbom-attestation
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-checksums: release-assurance/ARCH_SUBJECT.sha256
+          sbom-path: release-assets/telegram-drive-arch-runtime-sbom.cdx.json
 
-          # ── 8. Exec the inner binary ──
-          exec "${APPDIR}/usr/bin/__INNER_BIN__" "$@"
-          APPRUN_EOF
-
-          # Un-indent the heredoc (it was indented for YAML readability)
-          sed -i 's/^          //' squashfs-root/AppRun
-
-          # Inject the detected binary name
-          sed -i "s|__INNER_BIN__|${INNER_BIN}|g" squashfs-root/AppRun
-          chmod +x squashfs-root/AppRun
-
-          echo "--- New AppRun written and configured ---"
-
-          # ── Repack with gzip compression ──
-          # APPIMAGE_EXTRACT_AND_RUN=1 avoids needing the FUSE kernel module
-          # on GitHub Actions runners (appimagetool is itself an AppImage)
-          APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 \
-            ./appimagetool-x86_64.AppImage --comp gzip squashfs-root "$APPIMAGE"
-
-          # Cleanup
-          rm -rf squashfs-root appimagetool-x86_64.AppImage
-
-          echo "::notice::AppImage patched successfully for cross-distro EGL compatibility"
+      - name: Verify and upload release assurance artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROVENANCE_BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+          SBOM_BUNDLE: ${{ steps.sbom-attestation.outputs.bundle-path }}
+          ARCH_SBOM_BUNDLE: ${{ steps.arch-sbom-attestation.outputs.bundle-path }}
+        run: |
+          cp "$PROVENANCE_BUNDLE" release-assets/provenance.sigstore.json
+          cp "$SBOM_BUNDLE" release-assets/sbom-attestation.sigstore.json
+          cp "$ARCH_SBOM_BUNDLE" release-assets/arch-sbom-attestation.sigstore.json
+          node scripts/generate-checksums.cjs release-assets release-assets/SHA256SUMS.txt
+          (cd release-assets && sha256sum -c SHA256SUMS.txt)
+          gh release upload "$GITHUB_REF_NAME" \
+            release-assets/telegram-drive-source-sbom.cdx.json \
+            release-assets/telegram-drive-arch-runtime-sbom.cdx.json \
+            release-assets/provenance.sigstore.json \
+            release-assets/sbom-attestation.sigstore.json \
+            release-assets/arch-sbom-attestation.sigstore.json \
+            release-assets/SHA256SUMS.txt \
+            --clobber
 
   publish-release:
-    needs: [create-release, build-tauri]
+    needs: [create-release, build-tauri, build-arch, release-assurance]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - name: Publish Release
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         env:
           release_id: ${{ needs.create-release.outputs.release_id }}
         with:

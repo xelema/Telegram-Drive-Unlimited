@@ -1,4 +1,34 @@
 {
-  "maxFindings": 580,
-  "policy": "This is a temporary no-regression ceiling. Lower it whenever literals are extracted; increases require an explicit review."
+  "maxFindings": 486,
+  "areaBudgets": {
+    "supporterAndSponsors": {
+      "maxFindings": 28,
+      "patterns": ["Supporter", "AdBanner", "Adsterra"]
+    },
+    "encryptionAndAccess": {
+      "maxFindings": 37,
+      "patterns": ["Encryption", "AccessTransparency"]
+    },
+    "authentication": {
+      "maxFindings": 27,
+      "patterns": ["/Auth", "/auth/"]
+    },
+    "sync": {
+      "maxFindings": 0,
+      "patterns": ["Sync"]
+    },
+    "transfersAndLocalServices": {
+      "maxFindings": 148,
+      "patterns": ["DownloadQueue", "UploadQueue", "TransferCenter", "ShareDialog", "SettingsModal", "SettingsTabs", "UploadChoiceContext", "BandwidthWidget", "RemoteUploadModal"]
+    },
+    "mediaAndHelp": {
+      "maxFindings": 102,
+      "patterns": ["AdaptiveMediaPlayer", "MediaPlayer", "PdfViewer", "ArchiveViewer", "PreviewModal", "HelpCenter", "KeyboardShortcuts", "QualitySelector"]
+    },
+    "other": {
+      "maxFindings": 144,
+      "patterns": []
+    }
+  },
+  "policy": "Temporary ratcheting ceilings. High-risk UI areas and the overall total cannot increase; lower the matching ceiling whenever literals are extracted. Increases require an explicit localization review."
 }

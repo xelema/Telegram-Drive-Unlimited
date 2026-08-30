@@ -1,6 +1,6 @@
 # Supporter Verification Service
 
-The desktop supporter feature is backed by a Cloudflare Worker, D1, and PayPal Orders v2. The service verifies payment before issuing an Ed25519-signed entitlement bound to a desktop device key. It deliberately does not request or store purchaser email addresses.
+The supporter feature in supported desktop and Android builds is backed by a Cloudflare Worker, D1, and PayPal Orders v2. The service verifies payment before issuing an Ed25519-signed entitlement bound to a device key. One entitlement supports up to three active supported devices in total, regardless of platform. The service deliberately does not request or store purchaser email addresses.
 
 > [!IMPORTANT]
 > The $5 one-time lifetime ad-free promise is a protected compatibility contract. Before changing this service, entitlement handling, advertisement visibility, secure storage, or release configuration, read [the supporter license invariants](SUPPORTER_LICENSE_INVARIANTS.md). Existing purchasers must retain their entitlement across updates and must never be required to pay again because of a refactor, refresh, outage, or backup failure.
@@ -8,8 +8,8 @@ The desktop supporter feature is backed by a Cloudflare Worker, D1, and PayPal O
 ## Security and privacy model
 
 - PayPal credentials, the webhook ID, the Ed25519 private JWK, and recovery-code keys are Cloudflare Worker secrets and must never be committed or placed in GitHub variables.
-- The desktop app embeds only the public Ed25519 verification key and public service URL.
-- Device private keys, recovery codes, and short-lived checkout secrets use macOS Keychain, Windows Credential Manager, or Linux Secret Service under the stable service name `com.cameronamer.telegramdrive.supporter`.
+- Supported application builds embed only the public Ed25519 verification key and public service URL.
+- On desktop, device private keys, recovery codes, and short-lived checkout secrets use macOS Keychain, Windows Credential Manager, or Linux Secret Service under the stable service name `com.cameronamer.telegramdrive.supporter`. Android protects the same credential account identifiers with Android Keystore-backed encryption.
 - Signed tokens are valid for 30 days with a seven-day offline grace period. The app attempts a refresh on startup, so a verified refund or reversal takes effect when the service is reachable.
 - PayPal webhook signatures are verified through PayPal before events are processed. Event IDs are deduplicated, and failed processing remains retryable.
 - Checkout creation records the exact supporter-terms version and acceptance timestamp before redirecting to PayPal.
@@ -53,9 +53,9 @@ Use PayPal sandbox credentials and `PAYPAL_ENVIRONMENT=sandbox` until the comple
 
 Provision the private R2 bucket and GitHub Actions secrets documented in [Supporter D1 Backup and Recovery](SUPPORTER_BACKUP_RECOVERY.md), then manually run `Supporter D1 Backup` once before enabling payments. The backup workflow is intentionally separate from Worker deployment: missing R2 configuration cannot prevent the supporter service from deploying, and a Worker defect cannot silently disable the independent export job.
 
-## Desktop release configuration
+## Application release configuration
 
-Set these non-secret GitHub repository variables before tagging a release:
+Set these non-secret GitHub repository variables before publishing a supported desktop or Android release:
 
 - `SUPPORTER_SERVICE_URL`
 - `SUPPORTER_PUBLIC_KEY` — the unpadded base64url Ed25519 public key (`x` from the signing JWK)
@@ -64,11 +64,11 @@ The release workflow passes them to Rust as `TELEGRAM_DRIVE_SUPPORTER_SERVICE_UR
 
 ## Operational checks
 
-Before publishing a desktop release:
+Before publishing a supported application release:
 
 1. Confirm `/health` returns the expected terms version, price, device limit, and public key.
 2. Complete an ASCII and Unicode PayPal sandbox payer checkout.
-3. Confirm the desktop app displays and securely saves the recovery code.
+3. Confirm each supported test build displays and securely saves the recovery code.
 4. Restart and update the app; verify it remains ad-free without reactivation.
 5. Restore on a second test device with the recovery code, then confirm the fourth activation is rejected.
 6. Refund the sandbox capture and confirm the next online refresh revokes ad-free access.

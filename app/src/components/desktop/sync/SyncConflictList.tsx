@@ -3,19 +3,20 @@ import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import { useSync } from '../../../context/SyncContext';
 import type { ConflictResolution } from '../../../types/sync';
+import { userFacingError } from '../../../services/userFacingError';
 
 export function SyncConflictList({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation();
   const { conflicts, resolveConflict } = useSync();
   const resolve = async (pairId: number, path: string, resolution: ConflictResolution) => {
     try { await resolveConflict(pairId, path, resolution); }
-    catch (error) { toast.error(String(error)); }
+    catch (error) { toast.error(userFacingError(error, t)); }
   };
   return (
-    <div className="fixed inset-x-6 bottom-6 z-[180] mx-auto max-w-3xl overflow-hidden rounded-xl border border-amber-500/30 bg-app-surface shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="sync-conflict-title">
+    <div className="fixed inset-x-6 bottom-6 z-[180] mx-auto max-w-3xl overflow-hidden rounded-xl border border-amber-500/30 bg-app-surface shadow-2xl" role="region" aria-labelledby="sync-conflict-title">
       <div className="flex items-center justify-between border-b border-app-border px-4 py-3">
         <h2 id="sync-conflict-title" className="flex items-center gap-2 text-sm font-semibold text-app-text"><AlertTriangle className="h-4 w-4 text-app-warning" />{t('sync.conflict.title')}</h2>
-        <button type="button" onClick={onClose} className="quiet-control p-1.5 text-app-text-secondary"><X className="h-4 w-4" /></button>
+        <button type="button" onClick={onClose} aria-label={t('common.close')} className="quiet-control p-1.5 text-app-text-secondary"><X className="h-4 w-4" /></button>
       </div>
       <div className="max-h-72 space-y-2 overflow-y-auto p-3">
         {(conflicts.data ?? []).map((conflict) => (

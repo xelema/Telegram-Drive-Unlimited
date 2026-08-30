@@ -3,7 +3,9 @@ import { check, Update } from '@tauri-apps/plugin-updater';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { type as osType } from '@tauri-apps/plugin-os';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import { installVerifiedUpdate, type UpdateInstallPhase } from '../services/updateReliability';
+import { getInstallationInfo, RELEASES_URL } from '../services/installationInfo';
 
 interface UpdateState {
     checking: boolean;
@@ -13,6 +15,7 @@ interface UpdateState {
     error: string | null;
     version: string | null;
     phase: UpdateInstallPhase | null;
+    managedByPackageManager: boolean;
 }
 
 interface AndroidUpdateManifest {
@@ -40,6 +43,7 @@ export function useUpdateCheck() {
         error: null,
         version: null,
         phase: null,
+        managedByPackageManager: false,
     });
     const [update, setUpdate] = useState<Update | null>(null);
     const [androidUpdate, setAndroidUpdate] = useState<AndroidUpdateManifest | null>(null);
@@ -61,6 +65,7 @@ export function useUpdateCheck() {
                 }));
                 return;
             }
+            const installation = await getInstallationInfo();
             const updateInfo = await check();
             if (updateInfo) {
                 setUpdate(updateInfo);
@@ -69,9 +74,15 @@ export function useUpdateCheck() {
                     checking: false,
                     available: true,
                     version: updateInfo.version,
+                    managedByPackageManager: installation.managedByPackageManager,
                 }));
             } else {
-                setState(s => ({ ...s, checking: false, available: false }));
+                setState(s => ({
+                    ...s,
+                    checking: false,
+                    available: false,
+                    managedByPackageManager: installation.managedByPackageManager,
+                }));
             }
         } catch (err: unknown) {
             const message = err instanceof Error ? err.message : 'Failed to check for updates';
@@ -85,6 +96,16 @@ export function useUpdateCheck() {
 
     const downloadAndInstall = useCallback(async () => {
         if (!update && !androidUpdate) return;
+
+        if (state.managedByPackageManager) {
+            try {
+                await openUrl(RELEASES_URL);
+            } catch (err: unknown) {
+                const message = err instanceof Error ? err.message : 'Failed to open the release page';
+                setState(s => ({ ...s, error: message }));
+            }
+            return;
+        }
 
         setState(s => ({ ...s, downloading: true, progress: 0, phase: 'downloading', error: null }));
         try {
@@ -128,7 +149,7 @@ export function useUpdateCheck() {
                 error: message,
             }));
         }
-    }, [androidUpdate, isAndroid, update]);
+    }, [androidUpdate, isAndroid, state.managedByPackageManager, update]);
 
     const dismissUpdate = useCallback(() => {
         setState(s => ({ ...s, available: false, phase: null }));

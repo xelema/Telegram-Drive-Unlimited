@@ -106,7 +106,7 @@ describe('settings persistence', () => {
   it('falls back safely when the settings store is unavailable', async () => {
     const unavailable = async (): Promise<SettingsStore> => { throw new Error('unavailable'); };
     expect(await readPersistedSettings(DEFAULT_SETTINGS, unavailable)).toBe(DEFAULT_SETTINGS);
-    await expect(writePersistedSettings(DEFAULT_SETTINGS, unavailable)).resolves.toBeUndefined();
+    await expect(writePersistedSettings(DEFAULT_SETTINGS, unavailable)).rejects.toThrow('unavailable');
   });
 });
 
