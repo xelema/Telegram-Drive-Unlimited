@@ -275,13 +275,19 @@ jobs:
       - name: Install packaging and smoke-test tools
         run: |
           pacman -Syu --noconfirm \
+            cairo \
             dbus \
             desktop-file-utils \
+            gdk-pixbuf2 \
             github-cli \
+            gtk3 \
             jq \
+            libayatana-appindicator \
             libarchive \
+            libsoup3 \
             namcap \
             pacman-contrib \
+            webkit2gtk-4.1 \
             xorg-server-xvfb \
             xorg-xauth
 
