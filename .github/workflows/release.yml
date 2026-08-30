@@ -291,7 +291,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p upstream-linux
-          gh release download "$GITHUB_REF_NAME" --dir upstream-linux --pattern '*.deb' --clobber
+          gh release download "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir upstream-linux \
+            --pattern '*.deb' \
+            --clobber
           mapfile -t deb_packages < <(find upstream-linux -maxdepth 1 -type f -name '*.deb' -print)
           if [[ ${#deb_packages[@]} -ne 1 ]]; then
             echo "::error::Expected exactly one Debian release artifact; found ${#deb_packages[@]}"
@@ -373,6 +377,7 @@ jobs:
           set -euo pipefail
           package_path="$(find arch-package -maxdepth 1 -type f -name 'telegram-drive-bin-*.pkg.tar.zst' -print -quit)"
           gh release upload "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
             "${package_path}" \
             arch-package/telegram-drive-arch-runtime-sbom.cdx.json \
             --clobber
