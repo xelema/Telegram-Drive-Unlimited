@@ -28,7 +28,7 @@ describe('DesktopAdBanner', () => {
     vi.useRealTimers();
   });
 
-  it('starts its countdown after the creative loads and returns after 15 minutes', async () => {
+  it('starts its countdown after the creative loads and returns after 15 minutes in the same session', async () => {
     const onManualDismiss = vi.fn();
     render(<DesktopAdBanner onManualDismiss={onManualDismiss} />);
     const iframe = screen.getByTitle('Sponsored') as HTMLIFrameElement;
@@ -51,13 +51,22 @@ describe('DesktopAdBanner', () => {
     }
     await act(async () => { await vi.advanceTimersByTimeAsync(200); });
     expect(screen.queryByRole('complementary')).toBeNull();
-    expect(localStorage.getItem('desktopAdDismissedAt')).not.toBeNull();
+    expect(localStorage.getItem('desktopAdDismissedAt')).toBeNull();
     expect(onManualDismiss).not.toHaveBeenCalled();
 
     await act(async () => { await vi.advanceTimersByTimeAsync(14 * 60 * 1000); });
     expect(screen.queryByRole('complementary')).toBeNull();
     await act(async () => { await vi.advanceTimersByTimeAsync(60 * 1000); });
     expect(screen.getByRole('complementary')).toBeTruthy();
+  });
+
+  it('shows immediately in a new app session and clears a persisted legacy cooldown', () => {
+    localStorage.setItem('desktopAdDismissedAt', Date.now().toString());
+
+    render(<DesktopAdBanner />);
+
+    expect(screen.getByRole('complementary')).toBeTruthy();
+    expect(localStorage.getItem('desktopAdDismissedAt')).toBeNull();
   });
 
   it('renders an interactive isolated provider frame with ad-free and manual-dismiss actions', async () => {

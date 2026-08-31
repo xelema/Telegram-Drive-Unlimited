@@ -71,7 +71,7 @@ describe('Android sponsor visibility', () => {
     expect(openSponsorLink).toHaveBeenCalledWith('android_banner');
   });
 
-  it('returns 15 minutes after the user closes it', async () => {
+  it('returns 15 minutes after the user closes it in the same session', async () => {
     const onManualDismiss = vi.fn();
     render(<AdsterraBanner visible onManualDismiss={onManualDismiss} />);
     await screen.findByRole('complementary', { name: /sponsored content/i });
@@ -87,7 +87,7 @@ describe('Android sponsor visibility', () => {
     expect(screen.queryByRole('complementary', { name: /sponsored content/i })).toBeNull();
     await act(async () => { await vi.advanceTimersByTimeAsync(1); });
     expect(screen.getByRole('complementary', { name: /sponsored content/i })).toBeTruthy();
-    expect(store.set).toHaveBeenCalledWith('adBannerDismissedAt', expect.any(Number));
+    expect(store.set).not.toHaveBeenCalled();
   });
 
   it('provides a separate lifetime ad-free action', async () => {
@@ -100,13 +100,14 @@ describe('Android sponsor visibility', () => {
     expect(openSponsorLink).not.toHaveBeenCalled();
   });
 
-  it('migrates a legacy permanent dismissal into a 15-minute cooldown', async () => {
-    store.get.mockImplementation(async (key: string) => key === 'adBannerDismissed');
+  it('clears persisted dismissal formats and shows again in a new app session', async () => {
+    store.delete.mockResolvedValue(true);
 
     render(<AdsterraBanner visible />);
 
-    await waitFor(() => expect(store.set).toHaveBeenCalledWith('adBannerDismissedAt', expect.any(Number)));
-    expect(screen.queryByRole('complementary', { name: /sponsored content/i })).toBeNull();
+    expect(await screen.findByRole('complementary', { name: /sponsored content/i })).toBeTruthy();
+    expect(store.delete).toHaveBeenCalledWith('adBannerDismissedAt');
     expect(store.delete).toHaveBeenCalledWith('adBannerDismissed');
+    expect(store.save).toHaveBeenCalledOnce();
   });
 });

@@ -10,7 +10,7 @@ import i18n from '../../../i18n';
 
 const AUTO_DISMISS_SECONDS = 10;
 const AD_LOAD_TIMEOUT_MS = 12_000;
-const DISMISSED_AT_KEY = 'desktopAdDismissedAt';
+const LEGACY_DISMISSED_AT_KEY = 'desktopAdDismissedAt';
 const AD_IFRAME_ORIGIN = 'http://localhost:14201';
 const AD_IFRAME_URL = `${AD_IFRAME_ORIGIN}/ad-banner`;
 const AD_STATUS_MESSAGE = 'telegram-drive:ad-banner-status';
@@ -25,20 +25,11 @@ interface DesktopAdBannerProps {
   previewContent?: ReactNode;
 }
 
-function readDismissedAt(): number | null {
+function clearPersistedDismissal(): void {
   try {
-    const value = Number.parseInt(localStorage.getItem(DISMISSED_AT_KEY) ?? '', 10);
-    return Number.isFinite(value) ? value : null;
+    localStorage.removeItem(LEGACY_DISMISSED_AT_KEY);
   } catch {
-    return null;
-  }
-}
-
-function saveDismissedAt(timestamp: number): void {
-  try {
-    localStorage.setItem(DISMISSED_AT_KEY, timestamp.toString());
-  } catch {
-    // Persistence is optional; the component also retains the timestamp in memory.
+    // A blocked storage backend must not prevent a free user's session banner.
   }
 }
 
@@ -56,13 +47,16 @@ export function DesktopAdBanner({ suppressed = false, onSupport, onManualDismiss
   const [cycle, setCycle] = useState(0);
   const eligible = !suppressed && shouldShowSponsorContent(supporterStatus);
 
+  // Older builds persisted the cooldown across restarts. A fresh app session is
+  // always a fresh display opportunity, so remove that legacy state once.
+  useEffect(() => clearPersistedDismissal(), []);
+
   useEffect(() => {
     if (!eligible || visible) return;
 
     let timer: number | undefined;
     const showWhenDue = () => {
-      const dismissedAt = readDismissedAt() ?? sessionDismissedAtRef.current;
-      const remaining = sponsorAdCooldownRemaining(dismissedAt);
+      const remaining = sponsorAdCooldownRemaining(sessionDismissedAtRef.current);
       if (remaining > 0) {
         timer = window.setTimeout(showWhenDue, remaining);
         return;
@@ -84,7 +78,6 @@ export function DesktopAdBanner({ suppressed = false, onSupport, onManualDismiss
     dismissingRef.current = true;
     const dismissedAt = Date.now();
     sessionDismissedAtRef.current = dismissedAt;
-    saveDismissedAt(dismissedAt);
     setExiting(true);
     setCountdown(0);
     dismissTimerRef.current = window.setTimeout(() => {

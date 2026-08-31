@@ -16,17 +16,8 @@ interface AdsterraBannerProps {
   onManualDismiss?: () => void;
 }
 
-const DISMISSED_AT_KEY = 'adBannerDismissedAt';
+const LEGACY_DISMISSED_AT_KEY = 'adBannerDismissedAt';
 const LEGACY_DISMISSED_KEY = 'adBannerDismissed';
-
-function parseDismissedAt(value: unknown): number | null {
-  const parsed = typeof value === 'number'
-    ? value
-    : typeof value === 'string'
-      ? Number.parseInt(value, 10)
-      : Number.NaN;
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-}
 
 /** Clickable sponsor banner for Android. The offer always opens in an external browser. */
 export default function AdsterraBanner({ visible, onSupport, onManualDismiss }: AdsterraBannerProps) {
@@ -35,44 +26,18 @@ export default function AdsterraBanner({ visible, onSupport, onManualDismiss }: 
   const dismissAnimationRef = useRef<number | null>(null);
   const [dismissedAt, setDismissedAt] = useState<number | null>(null);
   const [exiting, setExiting] = useState(false);
-  const [loaded, setLoaded] = useState(false);
 
-  // Restore the timestamp-based cooldown and migrate the previous permanent dismissal.
+  // Older builds persisted dismissals across restarts. Clear both formats before
+  // they can affect a later build. This cleanup never blocks the current banner.
   useEffect(() => {
-    let cancelled = false;
     void load('config.json')
       .then(async (store) => {
-        let restoredAt = parseDismissedAt(await store.get<unknown>(DISMISSED_AT_KEY));
-        const legacyDismissed = await store.get<boolean>(LEGACY_DISMISSED_KEY);
-        let storeChanged = false;
-
-        if (restoredAt === null && legacyDismissed) {
-          restoredAt = Date.now();
-          await store.set(DISMISSED_AT_KEY, restoredAt);
-          storeChanged = true;
-        }
-        if (legacyDismissed !== undefined) {
-          await store.delete(LEGACY_DISMISSED_KEY);
-          storeChanged = true;
-        }
-
-        if (restoredAt !== null && sponsorAdCooldownRemaining(restoredAt) === 0) {
-          restoredAt = null;
-          await store.delete(DISMISSED_AT_KEY);
-          storeChanged = true;
-        }
-        if (storeChanged) await store.save();
-        return restoredAt;
+        const removedTimestamp = await store.delete(LEGACY_DISMISSED_AT_KEY);
+        const removedPermanentFlag = await store.delete(LEGACY_DISMISSED_KEY);
+        if (removedTimestamp || removedPermanentFlag) await store.save();
       })
-      .then((restoredAt) => {
-        if (!cancelled) setDismissedAt(restoredAt);
-        if (!cancelled) setLoaded(true);
-      })
-      .catch(() => {
-        if (!cancelled) setLoaded(true);
-      });
+      .catch(() => {});
     return () => {
-      cancelled = true;
       if (dismissAnimationRef.current !== null) window.clearTimeout(dismissAnimationRef.current);
     };
   }, []);
@@ -84,9 +49,6 @@ export default function AdsterraBanner({ visible, onSupport, onManualDismiss }: 
     const timer = window.setTimeout(() => {
       setDismissedAt(null);
       setExiting(false);
-      void load('config.json')
-        .then((store) => store.delete(DISMISSED_AT_KEY).then(() => store.save()))
-        .catch(() => {});
     }, remaining);
     return () => window.clearTimeout(timer);
   }, [dismissedAt]);
@@ -102,14 +64,6 @@ export default function AdsterraBanner({ visible, onSupport, onManualDismiss }: 
     e.stopPropagation();
     if (dismissAnimationRef.current !== null) return;
     const timestamp = Date.now();
-    // Persist the cooldown so the 15-minute cadence survives app restarts.
-    load('config.json')
-      .then(async (store) => {
-        await store.set(DISMISSED_AT_KEY, timestamp);
-        await store.delete(LEGACY_DISMISSED_KEY);
-        await store.save();
-      })
-      .catch(() => {});
     setExiting(true);
     dismissAnimationRef.current = window.setTimeout(() => {
       setDismissedAt(timestamp);
@@ -119,9 +73,9 @@ export default function AdsterraBanner({ visible, onSupport, onManualDismiss }: 
     }, 300);
   }, [onManualDismiss]);
 
-  // Don't render until store check completes, or while the recurrence cooldown is active.
-  // Using !loaded prevents a flash on restart when a dismissal was persisted.
-  if (!isAndroid || !loaded || sponsorAdCooldownRemaining(dismissedAt) > 0 || !shouldShowSponsorContent(supporterStatus)) {
+  // Entitlement resolution still gates every sponsor surface. Dismissal cooldowns
+  // apply only within this running session.
+  if (!isAndroid || sponsorAdCooldownRemaining(dismissedAt) > 0 || !shouldShowSponsorContent(supporterStatus)) {
     return null;
   }
 
