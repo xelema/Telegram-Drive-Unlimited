@@ -68,7 +68,7 @@ describe('Android sponsor visibility', () => {
 
     const sponsorAction = await screen.findByRole('button', { name: /sponsored — view offer/i });
     fireEvent.click(sponsorAction);
-    expect(openSponsorLink).toHaveBeenCalledOnce();
+    expect(openSponsorLink).toHaveBeenCalledWith('android_banner');
   });
 
   it('returns 15 minutes after the user closes it', async () => {

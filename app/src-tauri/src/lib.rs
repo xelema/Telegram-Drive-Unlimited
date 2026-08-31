@@ -88,6 +88,8 @@ pub mod mp4_utils;
 pub mod server;
 mod server_lifecycle;
 pub mod share_routes;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+mod sponsor_link_bridge;
 pub mod sync_engine;
 pub mod transcode;
 pub mod upload_service;
@@ -926,6 +928,9 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_clipboard_manager::init());
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let builder = builder.plugin(sponsor_link_bridge::init());
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let builder = builder.plugin(tauri_plugin_notification::init());

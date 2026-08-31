@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Heart, X } from 'lucide-react';
 import { useSupporter } from '../../../context/SupporterContext';
-import { openSponsorLink } from '../../../services/sponsorLinks';
+import { openSponsorDestination, openSponsorLink } from '../../../services/sponsorLinks';
 import {
   shouldShowSponsorContent,
   sponsorAdCooldownRemaining,
@@ -14,6 +14,7 @@ const DISMISSED_AT_KEY = 'desktopAdDismissedAt';
 const AD_IFRAME_ORIGIN = 'http://localhost:14201';
 const AD_IFRAME_URL = `${AD_IFRAME_ORIGIN}/ad-banner`;
 const AD_STATUS_MESSAGE = 'telegram-drive:ad-banner-status';
+const AD_LINK_MESSAGE = 'telegram-drive:ad-link';
 
 type AdLoadStatus = 'loading' | 'loaded' | 'fallback';
 
@@ -107,7 +108,15 @@ export function DesktopAdBanner({ suppressed = false, onSupport, onManualDismiss
       if (event.origin !== AD_IFRAME_ORIGIN || event.source !== iframeRef.current?.contentWindow) return;
       if (!event.data || typeof event.data !== 'object') return;
 
-      const message = event.data as { type?: unknown; status?: unknown };
+      const message = event.data as { type?: unknown; status?: unknown; url?: unknown };
+
+      if (message.type === AD_LINK_MESSAGE && typeof message.url === 'string') {
+        const userActivation = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
+        if (userActivation?.isActive !== true) return;
+        void openSponsorDestination(message.url);
+        return;
+      }
+
       if (message.type !== AD_STATUS_MESSAGE) return;
 
       if (message.status === 'loaded') {
@@ -137,7 +146,7 @@ export function DesktopAdBanner({ suppressed = false, onSupport, onManualDismiss
   }, [countdown, dismiss, eligible, exiting, isPreview, loadStatus, visible]);
 
   const openSponsor = useCallback(async () => {
-    await openSponsorLink();
+    await openSponsorLink('desktop_banner_fallback');
   }, []);
 
   if (!eligible || !visible) return null;
@@ -158,41 +167,46 @@ export function DesktopAdBanner({ suppressed = false, onSupport, onManualDismiss
         </button>
       </header>
 
-      <button
-        type="button"
-        onClick={isPreview ? undefined : openSponsor}
-        className="relative block h-[250px] w-full overflow-hidden bg-app-surface-sunken/40"
-        aria-label="Open sponsored content in browser"
-      >
+      <div className="relative block h-[250px] w-full overflow-hidden bg-app-surface-sunken/40">
         {isPreview ? (
           <span className="absolute inset-0 flex items-center justify-center px-5 text-center text-ui text-app-text-secondary">
             {previewContent}
           </span>
         ) : (
           <>
-            {loadStatus !== 'loaded' && (
+            {loadStatus === 'loading' && (
               <span className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 px-5 text-center">
                 <span className="sponsored-label">{i18n.t("ads.sponsored")}</span>
                 <span className="text-ui text-app-text-secondary">
-                  {loadStatus === 'loading' ? 'Loading advertisement…' : 'Sponsored content unavailable'}
+                  {i18n.t("common.loading")}
                 </span>
-                {loadStatus === 'fallback' && <span className="text-metadata text-app-accent">Open sponsor</span>}
               </span>
+            )}
+            {loadStatus === 'fallback' && (
+              <button
+                type="button"
+                onClick={() => void openSponsor()}
+                className="quiet-control absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 px-5 text-center hover:bg-app-hover"
+                aria-label={i18n.t("ads.browser_note")}
+              >
+                <span className="sponsored-label">{i18n.t("ads.sponsored")}</span>
+                <span className="text-ui text-app-text-secondary">{i18n.t("common.operation_failed")}</span>
+                <span className="text-metadata text-app-accent">{i18n.t("ads.sponsored")}</span>
+              </button>
             )}
             <iframe
               ref={iframeRef}
               src={`${AD_IFRAME_URL}?cycle=${cycle}`}
               sandbox="allow-scripts allow-same-origin"
-              referrerPolicy="no-referrer"
-              title="Sponsored advertisement"
+              title={i18n.t("ads.sponsored")}
               width={300}
               height={250}
-              className={`pointer-events-none relative border-0 bg-transparent transition-opacity duration-200 ${loadStatus === 'loaded' ? 'opacity-100' : 'opacity-0'}`}
+              className={`relative border-0 bg-transparent transition-opacity duration-200 ${loadStatus === 'loaded' ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'}`}
               onError={() => setLoadStatus('fallback')}
             />
           </>
         )}
-      </button>
+      </div>
 
       {onSupport && (
         <button type="button" onClick={onSupport} className="flex w-full items-center justify-center gap-2 border-t border-app-border-subtle bg-app-selected/40 px-3 py-2.5 text-xs font-semibold text-app-accent hover:bg-app-selected" aria-label="Remove ads forever for $5 once">

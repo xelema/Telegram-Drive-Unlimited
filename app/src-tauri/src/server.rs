@@ -12,12 +12,11 @@ use std::sync::Arc;
 mod desktop_ads {
     use super::*;
     use std::net::{IpAddr, SocketAddr};
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     const AD_SCRIPT_HOST: &str = "www.highperformanceformat.com";
     const AD_SCRIPT_URL: &str =
         "https://www.highperformanceformat.com/9cf449272b7e1c83054b82b7639c6029/invoke.js";
-    const AD_SCRIPT_CACHE_TTL: Duration = Duration::from_secs(30 * 60);
     const AD_SCRIPT_MAX_BYTES: usize = 512 * 1024;
     const AD_SCRIPT_FALLBACK_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36";
     const AD_DOH_URL: &str =
@@ -27,7 +26,6 @@ mod desktop_ads {
     #[derive(Clone)]
     struct CachedAdScript {
         body: bytes::Bytes,
-        fetched_at: Instant,
     }
 
     #[derive(Default)]
@@ -72,24 +70,44 @@ mod desktop_ads {
 
     (function () {
       var statusType = 'telegram-drive:ad-banner-status';
-      var settled = false;
+      var activeSource = 'direct';
+      var loaded = false;
+      var failureReported = false;
+      var inspectionTimer = null;
 
       function report(status) {
-        if (settled && status !== 'loaded') return;
-        if (status === 'loaded') settled = true;
-        window.parent.postMessage({ type: statusType, status: status }, '*');
+        if (status === 'loaded') {
+          if (loaded) return;
+          loaded = true;
+          if (inspectionTimer !== null) window.clearInterval(inspectionTimer);
+        } else if (loaded || failureReported) {
+          return;
+        } else {
+          failureReported = true;
+        }
+        window.parent.postMessage({ type: statusType, status: status, source: activeSource }, '*');
       }
 
-      function hasRenderableCreative(frame) {
+      function isDisplaySized(frame) {
+        var bounds = frame.getBoundingClientRect();
+        var declaredWidth = Number(frame.getAttribute('width')) || 0;
+        var declaredHeight = Number(frame.getAttribute('height')) || 0;
+        return Math.max(bounds.width, declaredWidth) >= 50 && Math.max(bounds.height, declaredHeight) >= 40;
+      }
+
+      function hasRenderableCreative(frame, frameLoadCompleted) {
         var frameDocument;
 
         try {
           frameDocument = frame.contentDocument;
         } catch (_) {
-          return frame.src && frame.src !== 'about:blank';
+          return frameLoadCompleted && frame.src && frame.src !== 'about:blank';
         }
 
-        if (!frameDocument || !frameDocument.body) return false;
+        if (!frameDocument) {
+          return frameLoadCompleted && frame.src && frame.src !== 'about:blank';
+        }
+        if (!frameDocument.body) return false;
 
         var media = frameDocument.querySelector(
           'a[href], img[src], video, canvas, svg, object[data], embed[src], iframe[src]:not([src="about:blank"])'
@@ -107,31 +125,58 @@ mod desktop_ads {
         return false;
       }
 
-      function inspectCreative() {
-        var attempts = 0;
-        var check = window.setInterval(function () {
-          attempts += 1;
-          var creativeFrame = document.querySelector('iframe');
+      function watchCreativeFrame(frame) {
+        if (frame.dataset.telegramDriveAdWatched !== 'true') {
+          frame.dataset.telegramDriveAdWatched = 'true';
+          frame.addEventListener('load', function () {
+            if (isDisplaySized(frame) && hasRenderableCreative(frame, true)) report('loaded');
+          });
+        }
+        if (!isDisplaySized(frame)) return;
+        if (hasRenderableCreative(frame, false)) report('loaded');
+      }
 
-          if (creativeFrame && hasRenderableCreative(creativeFrame)) {
-            window.clearInterval(check);
-            report('loaded');
-          } else if (attempts >= 40) {
-            window.clearInterval(check);
+      function scanCreativeFrames() {
+        var frames = document.querySelectorAll('iframe');
+        for (var index = 0; index < frames.length; index += 1) watchCreativeFrame(frames[index]);
+      }
+
+      var observer = new MutationObserver(scanCreativeFrames);
+      observer.observe(document.body, { childList: true, subtree: true });
+
+      function inspectCreative(source) {
+        if (loaded) return;
+        activeSource = source;
+        failureReported = false;
+        var attempts = 0;
+        if (inspectionTimer !== null) window.clearInterval(inspectionTimer);
+        scanCreativeFrames();
+        inspectionTimer = window.setInterval(function () {
+          attempts += 1;
+          scanCreativeFrames();
+          if (!loaded && attempts >= 40) {
+            window.clearInterval(inspectionTimer);
+            inspectionTimer = null;
             report('failed');
           }
         }, 250);
       }
 
-      window.telegramDriveAdLoaderReady = inspectCreative;
-      window.telegramDriveAdLoaderFailed = function () { report('failed'); };
+      window.telegramDriveDirectAdReady = function () { inspectCreative('direct'); };
+      window.telegramDriveDirectAdFailed = function () {
+        activeSource = 'relay';
+        var relay = document.createElement('script');
+        relay.src = '/ad-script?fallback=1';
+        relay.onload = function () { inspectCreative('relay'); };
+        relay.onerror = function () { report('failed'); };
+        document.body.appendChild(relay);
+      };
     })();
   </script>
   <script
-    src="/ad-script"
-    referrerpolicy="no-referrer"
-    onload="window.telegramDriveAdLoaderReady()"
-    onerror="window.telegramDriveAdLoaderFailed()">
+    src="https://www.highperformanceformat.com/9cf449272b7e1c83054b82b7639c6029/invoke.js"
+    onload="window.telegramDriveDirectAdReady()"
+    onerror="window.telegramDriveDirectAdFailed()">
   </script>
 </body>
 </html>"#;
@@ -140,9 +185,9 @@ mod desktop_ads {
     async fn ad_banner() -> impl Responder {
         HttpResponse::Ok()
             .content_type("text/html; charset=utf-8")
-            .insert_header(("Cache-Control", "no-cache"))
+            .insert_header(("Cache-Control", "no-store"))
             .insert_header(("X-Content-Type-Options", "nosniff"))
-            .insert_header(("Referrer-Policy", "no-referrer"))
+            .insert_header(("Referrer-Policy", "strict-origin-when-cross-origin"))
             .insert_header(("Content-Security-Policy", AD_BANNER_CSP))
             .body(AD_BANNER_HTML)
     }
@@ -178,17 +223,79 @@ mod desktop_ads {
             && contains_marker(b"currentScript")
     }
 
+    fn is_local_ad_referer(value: &str) -> bool {
+        let Ok(url) = reqwest::Url::parse(value) else {
+            return false;
+        };
+        let host_is_loopback = matches!(url.host_str(), Some("localhost" | "127.0.0.1"));
+        url.scheme() == "http"
+            && host_is_loopback
+            && url.port_or_known_default() == Some(crate::STREAM_PORT)
+            && url.path() == "/ad-banner"
+    }
+
+    fn relay_browser_headers(
+        req: &actix_web::HttpRequest,
+    ) -> Vec<(reqwest::header::HeaderName, reqwest::header::HeaderValue)> {
+        const FORWARDED_HEADERS: [&str; 8] = [
+            "accept-language",
+            "sec-ch-ua",
+            "sec-ch-ua-mobile",
+            "sec-ch-ua-platform",
+            "sec-ch-ua-platform-version",
+            "sec-ch-ua-model",
+            "dpr",
+            "viewport-width",
+        ];
+
+        let mut headers = Vec::new();
+        for name in FORWARDED_HEADERS {
+            let Some(value) = req
+                .headers()
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+            else {
+                continue;
+            };
+            if value.len() > 512 {
+                continue;
+            }
+            let Ok(header_name) = reqwest::header::HeaderName::from_bytes(name.as_bytes()) else {
+                continue;
+            };
+            let Ok(header_value) = reqwest::header::HeaderValue::from_str(value) else {
+                continue;
+            };
+            headers.push((header_name, header_value));
+        }
+
+        if let Some(referer) = req
+            .headers()
+            .get("referer")
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| is_local_ad_referer(value))
+        {
+            if let Ok(header_value) = reqwest::header::HeaderValue::from_str(referer) {
+                headers.push((reqwest::header::REFERER, header_value));
+            }
+        }
+
+        headers
+    }
+
     async fn request_ad_script(
         client: &reqwest::Client,
         user_agent: &str,
+        browser_headers: &[(reqwest::header::HeaderName, reqwest::header::HeaderValue)],
     ) -> Result<bytes::Bytes, String> {
-        let response = client
+        let mut request = client
             .get(AD_SCRIPT_URL)
             .header(reqwest::header::ACCEPT, "*/*")
-            .header(reqwest::header::USER_AGENT, user_agent)
-            .send()
-            .await
-            .map_err(|error| error.to_string())?;
+            .header(reqwest::header::USER_AGENT, user_agent);
+        for (name, value) in browser_headers {
+            request = request.header(name.clone(), value.clone());
+        }
+        let response = request.send().await.map_err(|error| error.to_string())?;
 
         if !response.status().is_success() {
             return Err(format!("loader returned HTTP {}", response.status()));
@@ -249,14 +356,17 @@ mod desktop_ads {
         }
     }
 
-    async fn fetch_ad_script(user_agent: &str) -> Result<bytes::Bytes, String> {
+    async fn fetch_ad_script(
+        user_agent: &str,
+        browser_headers: &[(reqwest::header::HeaderName, reqwest::header::HeaderValue)],
+    ) -> Result<bytes::Bytes, String> {
         let normal_client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(4))
             .timeout(Duration::from_secs(10))
             .build()
             .map_err(|error| error.to_string())?;
 
-        match request_ad_script(&normal_client, user_agent).await {
+        match request_ad_script(&normal_client, user_agent, browser_headers).await {
             Ok(body) => return Ok(body),
             Err(error) => log::warn!(
                 "Ad loader request using system DNS failed validation: {}. Retrying with public DNS.",
@@ -272,13 +382,13 @@ mod desktop_ads {
             .build()
             .map_err(|error| error.to_string())?;
 
-        request_ad_script(&resolved_client, user_agent).await
+        request_ad_script(&resolved_client, user_agent, browser_headers).await
     }
 
     fn ad_script_response(body: bytes::Bytes, cache_state: &'static str) -> HttpResponse {
         HttpResponse::Ok()
             .content_type("application/javascript; charset=utf-8")
-            .insert_header(("Cache-Control", "private, max-age=1800"))
+            .insert_header(("Cache-Control", "no-store"))
             .insert_header(("X-Content-Type-Options", "nosniff"))
             .insert_header(("X-Telegram-Drive-Ad-Cache", cache_state))
             .body(body)
@@ -289,29 +399,21 @@ mod desktop_ads {
         req: actix_web::HttpRequest,
         cache: web::Data<AdScriptCache>,
     ) -> impl Responder {
-        {
-            let cached = cache.value.read().await;
-            if let Some(script) = cached.as_ref() {
-                if script.fetched_at.elapsed() < AD_SCRIPT_CACHE_TTL {
-                    return ad_script_response(script.body.clone(), "fresh");
-                }
-            }
-        }
-
         let user_agent = req
             .headers()
             .get("user-agent")
             .and_then(|value| value.to_str().ok())
             .filter(|value| !value.trim().is_empty())
             .unwrap_or(AD_SCRIPT_FALLBACK_USER_AGENT);
+        let browser_headers = relay_browser_headers(&req);
 
-        match fetch_ad_script(user_agent).await {
+        // The provider marks this response non-cacheable and may tailor it to
+        // browser context. Always request a fresh validated loader first; the
+        // retained copy is outage recovery only.
+        match fetch_ad_script(user_agent, &browser_headers).await {
             Ok(body) => {
-                *cache.value.write().await = Some(CachedAdScript {
-                    body: body.clone(),
-                    fetched_at: Instant::now(),
-                });
-                ad_script_response(body, "refreshed")
+                *cache.value.write().await = Some(CachedAdScript { body: body.clone() });
+                ad_script_response(body, "network")
             }
             Err(error) => {
                 log::warn!("Ad loader relay unavailable: {}", error);
@@ -351,6 +453,11 @@ mod desktop_ads {
                 response.headers().get("x-content-type-options").unwrap(),
                 "nosniff"
             );
+            assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
+            assert_eq!(
+                response.headers().get("referrer-policy").unwrap(),
+                "strict-origin-when-cross-origin"
+            );
             assert!(response.headers().contains_key("content-security-policy"));
             let body = actix_test::read_body(response).await;
             assert!(body
@@ -361,13 +468,15 @@ mod desktop_ads {
         #[test]
         fn banner_reports_when_the_provider_inserts_a_creative() {
             assert!(AD_BANNER_HTML.contains("telegram-drive:ad-banner-status"));
-            assert!(AD_BANNER_HTML.contains("src=\"/ad-script\""));
-            assert!(AD_BANNER_HTML.contains("hasRenderableCreative(creativeFrame)"));
+            assert!(AD_BANNER_HTML.contains(&format!("src=\"{AD_SCRIPT_URL}\"")));
+            assert!(AD_BANNER_HTML.contains("relay.src = '/ad-script?fallback=1'"));
+            assert!(AD_BANNER_HTML.contains("new MutationObserver(scanCreativeFrames)"));
+            assert!(AD_BANNER_HTML.contains("frame.addEventListener('load'"));
             assert!(AD_BANNER_HTML.contains("iframe[src]:not([src=\"about:blank\"])"));
             assert!(AD_BANNER_HTML.contains("backgroundImage !== 'none'"));
             assert!(AD_BANNER_HTML.contains("report('loaded')"));
             assert!(!AD_BANNER_HTML.contains("replaceChildren"));
-            assert!(!AD_BANNER_HTML.contains(AD_SCRIPT_HOST));
+            assert!(!AD_BANNER_HTML.contains("no-referrer"));
         }
 
         #[test]
@@ -380,6 +489,30 @@ mod desktop_ads {
             assert!(AD_BANNER_CSP
                 .contains("script-src 'unsafe-inline' http://localhost:14201/ad-script https:"));
             assert!(AD_BANNER_CSP.contains("object-src 'none'"));
+        }
+
+        #[test]
+        fn relay_forwards_only_non_identifying_browser_context() {
+            let request = actix_test::TestRequest::default()
+                .insert_header(("accept-language", "en-US,en;q=0.9"))
+                .insert_header(("sec-ch-ua-platform", "\"macOS\""))
+                .insert_header(("referer", "http://localhost:14201/ad-banner?cycle=4"))
+                .insert_header(("cookie", "local-session=must-not-leave-device"))
+                .to_http_request();
+            let headers = relay_browser_headers(&request);
+            let names: Vec<&str> = headers.iter().map(|(name, _)| name.as_str()).collect();
+
+            assert!(names.contains(&"accept-language"));
+            assert!(names.contains(&"sec-ch-ua-platform"));
+            assert!(names.contains(&"referer"));
+            assert!(!names.contains(&"cookie"));
+            assert!(!is_local_ad_referer("https://example.com/ad-banner"));
+        }
+
+        #[test]
+        fn relayed_loader_is_never_served_as_a_fresh_browser_cache_entry() {
+            let response = ad_script_response(bytes::Bytes::from_static(b"test"), "network");
+            assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
         }
 
         #[test]

@@ -94,7 +94,7 @@ export default function AdsterraBanner({ visible, onSupport, onManualDismiss }: 
   const handleClick = useCallback(async (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    await openSponsorLink();
+    await openSponsorLink('android_banner');
   }, []);
 
   const handleDismiss = useCallback((e: React.MouseEvent) => {

@@ -1,3 +1,18 @@
+## [3.8.5] - 2026-08-30
+
+### Reliability and Safety
+
+- Improved desktop startup and isolated WebView loading reliability.
+- Hardened external navigation so only validated, user-initiated HTTP or HTTPS destinations can open outside the application.
+- Improved network fallback behavior while keeping application data and local credentials isolated.
+- Expanded privacy disclosure and regression coverage for startup gating, network fallbacks, and cross-frame messaging.
+- Preserved existing Telegram sessions, settings, transfer queues, secure credentials, and the protected one-time $5.00 USD lifetime supporter entitlement.
+
+### Verification
+
+- Frontend, native, supporter-service, localization, release-version, and production bundle checks pass.
+- Cloudflare Worker packaging was verified with a deployment dry run; no production service or payment state was changed.
+
 ## [3.8.0] - 2026-08-30
 
 ### Desktop Security and Data Safety

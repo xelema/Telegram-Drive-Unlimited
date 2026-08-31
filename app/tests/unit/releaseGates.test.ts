@@ -380,8 +380,10 @@ describe('release safety gates', () => {
   it('discloses sponsor creative request metadata without implying file tracking', () => {
     const privacy = repositoryFile('PRIVACY.md');
 
-    expect(privacy).toContain("application's loopback sponsor relay");
-    expect(privacy).toContain('public IP address and user agent');
+    expect(privacy).toContain('publisher-issued banner loader directly');
+    expect(privacy).toContain("application's loopback fallback");
+    expect(privacy).toContain('public IP address, user agent');
+    expect(privacy).toContain('never forwards Telegram data or local application cookies');
     expect(privacy).toContain('does not send file activity, file metadata');
   });
 

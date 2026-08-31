@@ -10,6 +10,7 @@ import "./App.css";
 
 const DesktopDashboard = React.lazy(() => import("./components/desktop/DesktopDashboard").then(m => ({ default: m.Dashboard })));
 const AuthWizard = React.lazy(() => import("./components/shared/AuthWizard").then(m => ({ default: m.AuthWizard })));
+const AdGateway = React.lazy(() => import("./components/shared/AdGateway").then(m => ({ default: m.AdGateway })));
 // Vite requires a fully static import path for dynamic imports so it can
 // perform static analysis and code-splitting. Template literals with
 // variables prevent Vite from resolving the module at build time.
@@ -39,8 +40,12 @@ import { version as appVersion } from "../package.json";
 import { consumeWhatsNew, type WhatsNewDetails } from "./services/updateReliability";
 import { useTvSpatialNavigation } from "./hooks/useTvSpatialNavigation";
 import { ensureLanguageResource } from "./i18n";
+import { useSupporter } from "./context/SupporterContext";
+import { shouldShowSponsorContent } from "./services/supporterVisibility";
 
-type AuthStatus = "loading" | "authenticated" | "unauthenticated";
+type AuthStatus = "loading" | "authenticated" | "unauthenticated" | "sponsor-check" | "ad-gateway";
+
+const AD_GATEWAY_PASSED_KEY = "ad_gateway_passed";
 
 interface StartupProgress {
   label: string;
@@ -61,6 +66,7 @@ function AppContent() {
   const { isMobile, isTelevision } = usePlatform();
   useTvSpatialNavigation(isTelevision);
   const { settings, updateSetting, isLoaded, persistenceStatus, retryPersistence } = useSettings();
+  const { status: supporterStatus } = useSupporter();
   const { i18n, t } = useTranslation();
 
   useEffect(() => {
@@ -160,8 +166,8 @@ function AppContent() {
         setStartupProgress({ label: "Checking your account", detail: "Confirming the session with Telegram…", percent: 82 });
         const ok = await invoke<boolean>("cmd_check_connection");
         if (ok) {
-          setStartupProgress({ label: "Opening your drive", detail: "Everything is ready.", percent: 100 });
-          setAuthStatus("authenticated");
+          setStartupProgress({ label: "Checking sponsor access", detail: "Finishing your local access checks…", percent: 96 });
+          setAuthStatus("sponsor-check");
         } else {
           setAuthStatus("unauthenticated");
         }
@@ -181,6 +187,32 @@ function AppContent() {
 
     checkSession();
   }, []);
+
+  // Resolve supporter access before deciding whether the one-time sponsor
+  // gateway is eligible. This prevents any sponsor surface from flashing
+  // while a lifetime entitlement or offline-grace token is still loading.
+  useEffect(() => {
+    if (authStatus !== "sponsor-check" || supporterStatus.state === "loading") return;
+
+    let cancelled = false;
+    const finishSponsorCheck = async () => {
+      if (!shouldShowSponsorContent(supporterStatus)) {
+        if (!cancelled) setAuthStatus("authenticated");
+        return;
+      }
+
+      try {
+        const store = await load("config.json");
+        const gatewayPassed = await store.get<boolean>(AD_GATEWAY_PASSED_KEY);
+        if (!cancelled) setAuthStatus(gatewayPassed ? "authenticated" : "ad-gateway");
+      } catch {
+        if (!cancelled) setAuthStatus("ad-gateway");
+      }
+    };
+
+    void finishSponsorCheck();
+    return () => { cancelled = true; };
+  }, [authStatus, supporterStatus.ad_free, supporterStatus.state]);
 
   // Show thank-you toast when user enters the app after clicking the ad
   useEffect(() => {
@@ -212,17 +244,20 @@ function AppContent() {
   }, [authStatus]);
 
   // Warm-up screen driven by actual Rust health and Telegram session steps.
-  if (authStatus === "loading") {
+  if (authStatus === "loading" || authStatus === "sponsor-check") {
+    const visibleProgress = authStatus === "sponsor-check"
+      ? { label: "Checking sponsor access", detail: "Finishing your local access checks…", percent: 96 }
+      : startupProgress;
     return (
       <main className="h-screen w-screen flex items-center justify-center bg-telegram-bg">
         <div className="flex w-full max-w-sm flex-col items-center gap-5 px-8" role="status" aria-live="polite">
           <img src="/logo.svg" className="w-16 h-16 drop-shadow-lg animate-pulse" alt={i18n.t("common.app_title")} />
           <div className="w-full text-center">
-            <p className="text-sm font-semibold text-telegram-text">{startupProgress.label}</p>
-            <p className="mt-1 text-xs text-telegram-subtext">{startupProgress.detail}</p>
+            <p className="text-sm font-semibold text-telegram-text">{visibleProgress.label}</p>
+            <p className="mt-1 text-xs text-telegram-subtext">{visibleProgress.detail}</p>
           </div>
-          <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10" aria-label={`${startupProgress.percent}% complete`}>
-            <div className="h-full rounded-full bg-telegram-primary transition-[width] duration-300" style={{ width: `${startupProgress.percent}%` }} />
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10" aria-label={`${visibleProgress.percent}% complete`}>
+            <div className="h-full rounded-full bg-telegram-primary transition-[width] duration-300" style={{ width: `${visibleProgress.percent}%` }} />
           </div>
         </div>
       </main>
@@ -253,6 +288,11 @@ function AppContent() {
       )}
       {whatsNew && <WhatsNewDialog details={whatsNew} onClose={() => setWhatsNew(null)} />}
       {isLoaded && <CrashReportingConsent />}
+      {authStatus === "ad-gateway" && (
+        <Suspense fallback={<div className="h-screen bg-telegram-bg" />}>
+          <AdGateway onContinue={() => setAuthStatus("authenticated")} />
+        </Suspense>
+      )}
       {authStatus === "authenticated" && (
         <Suspense fallback={
           <div className="h-screen w-screen flex flex-col items-center justify-center bg-telegram-bg">
@@ -272,7 +312,7 @@ function AppContent() {
       )}
       {authStatus === "unauthenticated" && (
         <Suspense fallback={<div className="h-screen bg-telegram-bg" />}>
-          <AuthWizard onLogin={() => setAuthStatus("authenticated")} />
+          <AuthWizard onLogin={() => setAuthStatus("sponsor-check")} />
         </Suspense>
       )}
     </main>
