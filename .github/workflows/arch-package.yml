@@ -44,13 +44,19 @@ jobs:
       - name: Install package validation tools
         run: |
           pacman -Syu --noconfirm \
+            cairo \
             curl \
             dbus \
             desktop-file-utils \
+            gdk-pixbuf2 \
+            gtk3 \
             jq \
+            libayatana-appindicator \
             libarchive \
+            libsoup3 \
             namcap \
             pacman-contrib \
+            webkit2gtk-4.1 \
             xorg-server-xvfb \
             xorg-xauth
 

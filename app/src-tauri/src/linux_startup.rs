@@ -2,11 +2,11 @@
 use serde::Deserialize;
 #[cfg(any(target_os = "linux", test))]
 use std::ffi::OsStr;
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 use std::path::PathBuf;
 
 /// Must match the application identifier in tauri.conf.json.
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 const BUNDLE_ID: &str = "com.cameronamer.telegramdrive";
 
 #[cfg(target_os = "linux")]
@@ -47,7 +47,7 @@ fn is_appimage(appimage: Option<&OsStr>, appdir: Option<&OsStr>) -> bool {
         .any(|value| !value.is_empty())
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 fn settings_path(home: Option<&OsStr>, xdg_data_home: Option<&OsStr>) -> Option<PathBuf> {
     let data_home = xdg_data_home
         .filter(|value| !value.is_empty())
@@ -140,6 +140,7 @@ pub fn configure_before_webview() {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
     use std::path::Path;
 
     #[test]
@@ -215,6 +216,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn honors_an_absolute_xdg_data_home() {
         assert_eq!(
             settings_path(Some(OsStr::new("/home/user")), Some(OsStr::new("/data"))),
