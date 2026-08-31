@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -418,16 +418,16 @@ describe('release safety gates', () => {
     expect(android).toContain('subject-checksums: app/android-release/SHA256SUMS.txt');
   });
 
-  it('enforces dependency policy without automatically mutating locks or merging updates', () => {
+  it('enforces dependency policy without automatic update PRs or lock mutation', () => {
     const assurance = workflow('dependency-assurance.yml');
-    const dependabot = repositoryFile('.github', 'dependabot.yml');
+    const dependabotPath = resolve(process.cwd(), '..', '.github', 'dependabot.yml');
 
     expect(assurance).toContain('node scripts/check-npm-audit.cjs');
     expect(assurance).toContain('node scripts/check-node-licenses.cjs');
     expect(assurance).toContain('cargo deny --manifest-path app/src-tauri/Cargo.toml check --config ../../deny.toml --hide-inclusion-graph');
     expect(assurance).not.toContain('npm audit fix');
     expect(assurance).not.toContain('cargo update');
-    expect(dependabot).not.toContain('automerge');
+    expect(existsSync(dependabotPath)).toBe(false);
     expect(repositoryFile('scripts', 'check-npm-audit.cjs')).toContain(
       'npm audit did not return a complete advisory report',
     );
