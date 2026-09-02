@@ -49,6 +49,8 @@ local.properties
 
 # Internal development and handoff Markdown. Product, release, privacy, REST,
 # and WebDAV documentation remains tracked.
+/APPLICATION_AUDIT_REPORT.md
+/architecture-report-site/
 /DESIGN_HANDOFF.md
 /app/CurrentStreamingSetup.md
 /app/docs/adr/
