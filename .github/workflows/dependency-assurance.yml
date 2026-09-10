@@ -29,7 +29,9 @@ jobs:
     runs-on: ubuntu-22.04
     strategy:
       matrix:
-        project: [app, supporter-service]
+        # The app npm assurance check is intentionally disabled at the owner's request.
+        # Keep the supporter service and the separate Rust assurance jobs covered.
+        project: [supporter-service]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
