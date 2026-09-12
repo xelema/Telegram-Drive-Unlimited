@@ -267,7 +267,7 @@ Every Telegram Drive feature is available to non-paying users. Supported desktop
 
 The Android build is currently distributed separately from the desktop release as a signed sideload preview. It is not available through Google Play.
 
-1. Open the [Telegram Drive releases page](https://github.com/caamer20/Telegram-Drive/releases) and select the latest signed Android preview.
+1. Open the [Android / Android TV 4.1.0 release](https://github.com/caamer20/Telegram-Drive/releases/tag/Androidv4.1.0beta).
 2. Download the signed universal Android APK listed in that release.
 3. On Android, allow **Install unknown apps** for the browser or file manager you used.
 4. Open the APK and choose **Install**.
@@ -280,7 +280,7 @@ Android requirements and notes:
 - Google TV users can transfer the APK to the television or install it with ADB:
 
   ```bash
-  adb install Telegram-Drive-vX.Y.Z-android-universal.apk
+  adb install -r Telegram-Drive-v4.1.0-android-universal.apk
   ```
 
 - Android validates the package signature during installation. Future compatible updates must use the same signing identity.
