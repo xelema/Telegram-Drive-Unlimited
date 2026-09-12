@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "3.8.5"
+version = "3.9.0"
 description = "A local-first file workspace for files stored in Telegram, built with Tauri, Rust, and React."
 authors = ["Cameron Amer"]
 edition = "2021"
@@ -22,6 +22,7 @@ tauri-plugin-opener = "2"
 tauri-plugin-os = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+libc = "0.2"
 grammers-client = { git = "https://github.com/Lonami/grammers", rev = "d07f96f", features = ["proxy"] }
 grammers-session = { git = "https://github.com/Lonami/grammers", rev = "d07f96f" }
 grammers-mtsender = { git = "https://github.com/Lonami/grammers", rev = "d07f96f", features = ["proxy"] }

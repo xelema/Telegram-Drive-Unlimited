@@ -12,7 +12,7 @@
     }
   },
   "productName": "Telegram Drive",
-  "version": "3.8.5",
+  "version": "3.9.0",
   "identifier": "com.cameronamer.telegramdrive",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -33,12 +33,13 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' http://localhost:* http://127.0.0.1:* https://asset.localhost http://asset.localhost; media-src 'self' blob: http://localhost:* http://127.0.0.1:*; img-src 'self' data: blob: asset: https://asset.localhost http://asset.localhost; style-src 'self' 'unsafe-inline'; script-src 'self' blob:; frame-src 'self' blob: http://localhost:* http://127.0.0.1:*; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self';",
+      "csp": "default-src 'self'; connect-src 'self' http://localhost:* http://127.0.0.1:* https://asset.localhost http://asset.localhost; media-src 'self' blob: asset: https://asset.localhost http://asset.localhost http://localhost:* http://127.0.0.1:*; img-src 'self' data: blob: asset: https://asset.localhost http://asset.localhost; style-src 'self' 'unsafe-inline'; script-src 'self' blob:; frame-src 'self' blob: http://localhost:* http://127.0.0.1:*; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self';",
       "assetProtocol": {
         "enable": true,
         "scope": [
           "$APPCACHE/previews/**",
-          "$APPDATA/thumbnails/**"
+          "$APPDATA/thumbnails/**",
+          "$APPDATA/workspace/*/offline/**"
         ]
       },
       "capabilities": [

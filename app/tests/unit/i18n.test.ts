@@ -1,9 +1,33 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
 import i18n, { ensureLanguageResource } from '../../src/i18n';
 import { getLanguageInfo, LANGUAGES } from '../../src/i18n/languages';
 import { resolveSupportedLanguage } from '../../src/i18n/resolveLanguage';
 
+const localeFixtures=import.meta.glob('../../src/i18n/locales/*.json',{eager:true,import:'default'});
+beforeAll(()=>{
+  vi.stubGlobal('fetch',vi.fn(async(input:string)=>{
+    const filename=new URL(input,'http://localhost').pathname.split('/').pop();
+    const data=localeFixtures[`../../src/i18n/locales/${filename}`];
+    return new Response(data?JSON.stringify(data):'',{status:data?200:404,headers:{'Content-Type':'application/json'}});
+  }));
+});
+afterAll(()=>vi.unstubAllGlobals());
+
 describe('supported languages', () => {
+  it('fetches only the selected local catalog, shares concurrent loads and permits retry after failure',async()=>{
+    i18n.removeResourceBundle('es','translation');
+    const transport=vi.mocked(fetch);transport.mockClear();
+    transport.mockResolvedValueOnce(new Response('',{status:503}));
+    await expect(ensureLanguageResource('es')).rejects.toThrow('Language resource unavailable');
+    expect(i18n.hasResourceBundle('es','translation')).toBe(false);
+    transport.mockClear();
+    await Promise.all([ensureLanguageResource('es'),ensureLanguageResource('es')]);
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(String(transport.mock.calls[0][0])).toMatch(/\/es\.json$/);
+    expect(i18n.t('workspace.title',{lng:'es'})).toBe('Tu biblioteca');
+    await ensureLanguageResource('es');expect(transport).toHaveBeenCalledTimes(1);
+    await expect(ensureLanguageResource('../unknown')).rejects.toThrow('Unsupported language');
+  });
   it('registers Japanese with native labels and regional formatting', () => {
     expect(LANGUAGES).toContainEqual(expect.objectContaining({
       code: 'ja',

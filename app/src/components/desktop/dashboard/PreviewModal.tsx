@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, File, Maximize, Scan, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { listen } from '@tauri-apps/api/event';
+import { convertFileSrc } from '@tauri-apps/api/core';
 import { TelegramFile } from '../../../types';
 import { isImageFile } from '../../../utils';
 import { useSettings } from '../../../context/SettingsContext';
@@ -50,6 +51,7 @@ interface PreviewModalProps {
     nextFile?: TelegramFile | null;
     prevFile?: TelegramFile | null;
     activeFolderId: number | null;
+    localPath?: string;
 }
 
 export function PreviewModal({
@@ -61,6 +63,7 @@ export function PreviewModal({
     totalItems,
     nextFile,
     activeFolderId,
+    localPath,
 }: PreviewModalProps) {
     const { t } = useTranslation();
     const { settings } = useSettings();
@@ -156,6 +159,7 @@ export function PreviewModal({
     }, [fitImage, zoomImageTo]);
 
     useEffect(() => {
+        if (localPath) return;
         let disposed = false;
         let unlisten: (() => void) | undefined;
 
@@ -177,10 +181,16 @@ export function PreviewModal({
             disposed = true;
             unlisten?.();
         };
-    }, [file.id, activeFolderId]);
+    }, [file.id, activeFolderId, localPath]);
 
     useEffect(() => {
         const requestId = ++latestRequestRef.current;
+        if (localPath) {
+            setThumbnailSrc(null); setFullSrc(convertFileSrc(localPath));
+            setFullReady(false); setLoading(imagePreview); setProgress(100); setError(null);
+            fitImage(); activePointersRef.current.clear(); pointerGestureRef.current = null; setImageInteracting(false);
+            return;
+        }
         const cachedPreview = getCachedPreview(file.id, activeFolderId);
         const cachedThumbnail = imagePreview
             ? getCachedThumbnail(file.id, activeFolderId)
@@ -221,11 +231,12 @@ export function PreviewModal({
             setError(userFacingError(loadError, t));
             setLoading(false);
         });
-    }, [file.id, file.name, activeFolderId, imagePreview, fitImage]);
+    }, [file.id, file.name, activeFolderId, imagePreview, fitImage, localPath]);
 
     // Prefetch only the likely next image, after the current one is fully decoded and
     // the browser is idle. Avoid speculative downloads when a bandwidth cap is active.
     useEffect(() => {
+        if (localPath) return;
         if (!fullReady || !nextFile || !isImageFile(nextFile.name)) return;
         if (nextFile.size > MAX_PREFETCH_BYTES) return;
         if (settings.vpnMode && settings.bandwidthLimitDownKBs > 0) return;
@@ -253,7 +264,7 @@ export function PreviewModal({
             window.clearTimeout(timerId);
             if (idleId !== undefined) idleWindow.cancelIdleCallback?.(idleId);
         };
-    }, [fullReady, nextFile, activeFolderId, settings.vpnMode, settings.bandwidthLimitDownKBs]);
+    }, [fullReady, nextFile, activeFolderId, settings.vpnMode, settings.bandwidthLimitDownKBs, localPath]);
 
     useEffect(() => {
         if (!fullReady) return;
@@ -488,7 +499,7 @@ export function PreviewModal({
                                 aria-hidden="true"
                                 draggable={false}
                                 onError={() => {
-                                    forgetThumbnail(file.id, activeFolderId);
+                                    if (!localPath) forgetThumbnail(file.id, activeFolderId);
                                     setThumbnailSrc(null);
                                 }}
                             />
@@ -524,7 +535,7 @@ export function PreviewModal({
                                     }
                                 }}
                                 onError={() => {
-                                    forgetPreview(file.id, activeFolderId);
+                                    if (!localPath) forgetPreview(file.id, activeFolderId);
                                     setError('Failed to render image preview');
                                     setLoading(false);
                                 }}

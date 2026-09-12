@@ -447,12 +447,12 @@ describe('release safety gates', () => {
     expect(desktop).toContain("import('./dashboard/SettingsModal')");
     expect(mobile).toContain('lazy(() => import(');
     expect(media).toContain("import('hls.js').then(");
-    expect(i18n).toContain("es: () => import('./locales/es.json')");
+    expect(i18n).toContain("query: '?url'");
+    expect(i18n).toContain("await fetch(url)");
     expect(i18n).not.toContain("import es from './locales/es.json'");
     expect(fileOperations).not.toContain("import('@tauri-apps/plugin-dialog')");
     expect(bundleBudget.routeJavaScriptBudgets).toMatchObject({
       'src/components/desktop/DesktopDashboard.tsx': expect.any(Number),
-      'src/components/mobile/MobileDashboard.tsx': expect.any(Number),
     });
     expect(bundleBudget.featureChunkBudgets).toMatchObject({
       'src/components/desktop/dashboard/SettingsModal.tsx': expect.any(Number),

@@ -2,12 +2,12 @@ use std::collections::HashMap;
 
 use grammers_client::types::{Media, Peer};
 use serde::Serialize;
-use tauri::State;
+use tauri::{Manager, State};
 
 use crate::commands::utils::{media_size, resolve_peer};
 use crate::commands::TelegramState;
-use crate::db::DbConnection;
 use crate::models::FileMetadata;
+use crate::workspace::AccountGuard;
 
 const DEFAULT_LARGE_FILE_BYTES: u64 = 100 * 1024 * 1024;
 const DEFAULT_OLD_FILE_DAYS: i64 = 365;
@@ -26,73 +26,32 @@ struct IndexedFile {
     created_at_unix: i64,
 }
 
-#[derive(Clone)]
-struct ProtectedInsight {
-    plaintext_size: Option<u64>,
-    protection_mode: String,
-    metadata_protected: bool,
-}
-
 fn duplicate_key(file: &FileMetadata) -> (String, u64) {
     (file.name.trim().to_lowercase(), file.size)
 }
 
-async fn load_protected_files(
-    db_pool: DbConnection,
-) -> Result<HashMap<(String, i32), ProtectedInsight>, String> {
-    crate::db::with_connection(db_pool, |connection| {
-        let mut statement = connection
-            .prepare(
-                "SELECT folder_key, message_id, plaintext_size, protection_mode, metadata_protected
-             FROM encrypted_files WHERE record_state = 'active'",
-            )
-            .map_err(|error| error.to_string())?;
-        let mut protected = HashMap::new();
-        while let sqlite::State::Row = statement.next().map_err(|error| error.to_string())? {
-            let folder_key = statement
-                .read::<String, _>(0)
-                .map_err(|error| error.to_string())?;
-            let message_id = statement
-                .read::<i64, _>(1)
-                .map_err(|error| error.to_string())? as i32;
-            protected.insert(
-                (folder_key, message_id),
-                ProtectedInsight {
-                    plaintext_size: statement
-                        .read::<Option<i64>, _>(2)
-                        .ok()
-                        .flatten()
-                        .and_then(|size| u64::try_from(size).ok()),
-                    protection_mode: statement
-                        .read::<String, _>(3)
-                        .unwrap_or_else(|_| "vault".to_string()),
-                    metadata_protected: statement.read::<i64, _>(4).unwrap_or(1) != 0,
-                },
-            );
-        }
-        Ok(protected)
-    })
-    .await
-}
-
 async fn scan_drive_files(
     state: &TelegramState,
-    protected_files: &HashMap<(String, i32), ProtectedInsight>,
+    account: &AccountGuard,
     vault_unlocked: bool,
 ) -> Result<Vec<IndexedFile>, String> {
+    account.validate()?;
     let client = state
         .client
         .lock()
         .await
         .clone()
         .ok_or_else(|| "Telegram client is not connected".to_string())?;
+    account.validate_client(&client).await?;
     let mut peers = Vec::new();
     if let Ok(peer) = resolve_peer(&client, None, &state.peer_cache).await {
         peers.push((None, peer));
     }
+    account.validate()?;
 
     let mut dialogs = client.iter_dialogs();
     while let Some(dialog) = dialogs.next().await.map_err(|error| error.to_string())? {
+        account.validate()?;
         if let Peer::Channel(ref channel) = dialog.peer {
             if channel.raw.title.to_lowercase().contains("[td]") {
                 peers.push((Some(channel.raw.id), dialog.peer.clone()));
@@ -102,13 +61,15 @@ async fn scan_drive_files(
 
     let mut files = Vec::new();
     for (folder_id, peer) in peers {
+        account.validate()?;
         let mut messages = client.iter_messages(peer).limit(FILES_PER_FOLDER_LIMIT);
         while let Some(message) = messages.next().await.map_err(|error| error.to_string())? {
+            account.validate()?;
             let Some(media) = message.media() else {
                 continue;
             };
             let size = media_size(&media);
-            let (document_name, mut mime_type) = match media {
+            let (document_name, mut mime_type) = match &media {
                 Media::Document(document) => (
                     document.name().to_string(),
                     document.mime_type().map(str::to_string),
@@ -118,16 +79,29 @@ async fn scan_drive_files(
             };
             let caption = message.text();
             let mut name = if caption.is_empty() {
-                document_name
+                document_name.clone()
             } else {
                 caption.to_string()
             };
-            let folder_key = folder_id
-                .map(|id| id.to_string())
-                .unwrap_or_else(|| "home".to_string());
-            let protected = protected_files.get(&(folder_key, message.id()));
             let suspected_protected =
-                name == "TDENC2" || name.to_ascii_lowercase().ends_with(".tdenc");
+                crate::workspace::envelope_cache::suspected_envelope(&document_name, caption);
+            let protected = match crate::commands::fs::resolve_remote_envelope(
+                account,
+                &client,
+                folder_id,
+                message.id(),
+                &media,
+                caption,
+            )
+            .await
+            {
+                Ok(record) => record,
+                Err(error) => {
+                    account.validate()?;
+                    log::debug!("Storage insight could not inspect encrypted header: {error}");
+                    None
+                }
+            };
             let (size, encryption_state) = if let Some(info) = protected {
                 if info.metadata_protected {
                     name = "Encrypted file".to_string();
@@ -172,21 +146,24 @@ async fn scan_drive_files(
             });
         }
     }
+    account.validate()?;
     Ok(files)
 }
 
 #[tauri::command]
 pub async fn cmd_get_storage_insight(
+    app: tauri::AppHandle,
+    owner_id: Option<String>,
     state: State<'_, TelegramState>,
-    db_pool: State<'_, DbConnection>,
     crypto_state: State<'_, crate::crypto::state::CryptoState>,
     view: String,
     large_threshold_bytes: Option<u64>,
     old_file_days: Option<i64>,
 ) -> Result<StorageInsightResult, String> {
-    let protected_files = load_protected_files(db_pool.inner().clone()).await?;
+    let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let account = AccountGuard::open(&root, owner_id.as_deref())?;
     let vault_unlocked = crypto_state.get_current_wrapping_key().is_ok();
-    let indexed = scan_drive_files(&state, &protected_files, vault_unlocked).await?;
+    let indexed = scan_drive_files(&state, &account, vault_unlocked).await?;
     let scanned_count = indexed.len();
     let mut duplicate_groups = 0;
 
@@ -236,6 +213,7 @@ pub async fn cmd_get_storage_insight(
     };
 
     files.truncate(1_000);
+    account.validate()?;
     Ok(StorageInsightResult {
         files,
         scanned_count,

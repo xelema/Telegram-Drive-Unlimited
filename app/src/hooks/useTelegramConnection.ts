@@ -8,8 +8,11 @@ import { useNetworkStatus } from './useNetworkStatus';
 import { clearImageMemoryCaches } from '../services/imagePreviewCache';
 import { userFacingError } from '../services/userFacingError';
 import { useTranslation } from 'react-i18next';
+import { useQueryClient } from '@tanstack/react-query';
+import { getCurrentAccountId } from '../services/currentAccount';
 
 export function useTelegramConnection(onLogoutParent: () => void) {
+    const queryClient = useQueryClient();
     const { confirm } = useConfirm();
     const { t } = useTranslation();
 
@@ -19,6 +22,21 @@ export function useTelegramConnection(onLogoutParent: () => void) {
     const [store, setStore] = useState<Store | null>(null);
     const [isSyncing, setIsSyncing] = useState(false);
     const [isConnected, setIsConnected] = useState(true);
+    const [accountId, setAccountId] = useState<string | null>(null);
+    const accountGeneration = useRef(0);
+    useEffect(() => {
+        const refresh = () => {
+            const generation = ++accountGeneration.current;
+            void getCurrentAccountId().then(id => {
+                if (generation === accountGeneration.current) setAccountId(id);
+            }).catch(() => {
+                if (generation === accountGeneration.current) setAccountId(null);
+            });
+        };
+        refresh();
+        document.addEventListener('visibilitychange', refresh);
+        return () => { accountGeneration.current++; document.removeEventListener('visibilitychange', refresh); };
+    }, []);
 
     const networkIsOnline = useNetworkStatus();
     const handleSyncFoldersRef = useRef<((silentParam?: boolean | unknown) => Promise<void>) | null>(null);
@@ -146,7 +164,10 @@ export function useTelegramConnection(onLogoutParent: () => void) {
         if (!await confirm({ title: "Sign Out", message: "Are you sure you want to sign out? This will disconnect your active session.", confirmText: "Sign Out", variant: 'danger' })) return;
 
         try {
+            accountGeneration.current++;
+            setAccountId(null);
             await invoke('cmd_logout');
+            queryClient.clear();
             await invoke('cmd_clean_cache');
             await invoke('cmd_clear_api_hash').catch((error) => {
                 toast.error(userFacingError(error, t));
@@ -391,6 +412,7 @@ export function useTelegramConnection(onLogoutParent: () => void) {
 
     return {
         store,
+        accountId,
         folders,
         groups,
         activeFolderId,

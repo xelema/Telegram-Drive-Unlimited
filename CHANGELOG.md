@@ -1,3 +1,19 @@
+## [3.9.0] - 2026-09-12
+
+### Workspace and media
+
+- Added a local library with collections, tags, saved searches, a photo timeline, and slideshows.
+- Added Continue Watching, playback queues, and offline trip packs with storage controls.
+- Added transfer activity, storage insights, and scheduled cleanup with a restore window.
+- Added sync plan previews and clearer conflict and retry controls.
+- Aligned desktop headers, dividers, and content spacing across the sidebar and main workspace.
+
+### Reliability
+
+- Isolated local metadata, transfers, shares, and sync operations by the signed-in account.
+- Improved download collision choices, file refresh, offline previews, media navigation, and recovery from interrupted operations.
+- Preserved existing sessions, settings, and the one-time $5.00 USD lifetime ad-free supporter license.
+
 ## [3.8.5] - 2026-08-30
 
 ### Reliability and Safety

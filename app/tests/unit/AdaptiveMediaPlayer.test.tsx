@@ -45,6 +45,7 @@ describe('AdaptiveMediaPlayer native fallback', () => {
     mocks.invoke.mockReset();
     mocks.progressiveCallback = null;
     mocks.streamUrls.length = 0;
+    localStorage.removeItem('debug_overlay');
   });
 
   it('keeps parser and background-remux state from covering playable native video', async () => {
@@ -90,5 +91,71 @@ describe('AdaptiveMediaPlayer native fallback', () => {
     expect(screen.queryByText('Playback Error')).toBeNull();
     expect(screen.queryByText('Converting to streaming format...')).toBeNull();
     expect(mocks.streamUrls.every(url => url.startsWith(streamUrl))).toBe(true);
+  });
+
+  it('clears the account-scoped key returned by the backend for the displayed media', async () => {
+    localStorage.setItem('debug_overlay', '1');
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === 'cmd_get_master_playlist_info') return Promise.resolve({ file_key: '123_0_42', variants: [], master_playlist_url: null });
+      if (command === 'cmd_clear_transcode_cache') return Promise.resolve('Cleared selected file');
+      return Promise.resolve({ available: false, variants: [], mode: 'original' });
+    });
+    render(<AdaptiveMediaPlayer file={{ id: 42, name: 'video.mp4', size: 100, sizeStr: '100 B' }} activeFolderId={null} onClose={vi.fn()} streamUrl="http://127.0.0.1:14201/stream/home/42?token=token" />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear Transcodes' }));
+
+    await waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith('cmd_clear_transcode_cache', { fileKey: '123_0_42' }));
+    expect(mocks.invoke).toHaveBeenCalledWith('cmd_get_master_playlist_info', { messageId: 42, folderId: null });
+    expect(mocks.invoke).not.toHaveBeenCalledWith('cmd_clear_transcode_cache', { fileKey: '0_42' });
+  });
+
+  it.each([undefined, ''])('never turns a missing backend key (%s) into clear-all', async fileKey => {
+    localStorage.setItem('debug_overlay', '1');
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === 'cmd_get_master_playlist_info') return Promise.resolve({ file_key: fileKey });
+      return Promise.resolve({ available: false, variants: [], mode: 'original' });
+    });
+    render(<AdaptiveMediaPlayer file={{ id: 42, name: 'video.mp4', size: 100, sizeStr: '100 B' }} activeFolderId={null} onClose={vi.fn()} streamUrl="http://127.0.0.1:14201/stream/home/42?token=token" />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear Transcodes' }));
+
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Clear Transcodes' }) as HTMLButtonElement).disabled).toBe(false));
+    expect(mocks.invoke.mock.calls.some(([command]) => command === 'cmd_clear_transcode_cache')).toBe(false);
+  });
+
+  it('discards a late cache identity when the source changes and allows clearing the new file', async () => {
+    localStorage.setItem('debug_overlay', '1');
+    let finishLookup: ((value: { file_key: string }) => void) | undefined;
+    mocks.invoke.mockImplementation((command: string, args?: { messageId?: number }) => {
+      if (command === 'cmd_get_master_playlist_info') return args?.messageId === 42
+        ? new Promise(resolve => { finishLookup = resolve; })
+        : Promise.resolve({ file_key: '123_7_43' });
+      return Promise.resolve({ available: false, variants: [], mode: 'original' });
+    });
+    const { rerender } = render(<AdaptiveMediaPlayer file={{ id: 42, name: 'first.mp4', size: 100, sizeStr: '100 B' }} activeFolderId={null} onClose={vi.fn()} streamUrl="http://127.0.0.1:14201/stream/home/42?token=token" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Clear Transcodes' }));
+
+    rerender(<AdaptiveMediaPlayer file={{ id: 43, name: 'second.mp4', size: 100, sizeStr: '100 B' }} activeFolderId={7} onClose={vi.fn()} streamUrl="http://127.0.0.1:14201/stream/7/43?token=token" />);
+    await act(async () => { finishLookup?.({ file_key: '123_0_42' }); });
+    expect(mocks.invoke.mock.calls.some(([command]) => command === 'cmd_clear_transcode_cache')).toBe(false);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear Transcodes' }));
+    await waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith('cmd_clear_transcode_cache', { fileKey: '123_7_43' }));
+  });
+
+  it('does not clear a cache when its key arrives after the player closes', async () => {
+    localStorage.setItem('debug_overlay', '1');
+    let finishLookup: ((value: { file_key: string }) => void) | undefined;
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === 'cmd_get_master_playlist_info') return new Promise(resolve => { finishLookup = resolve; });
+      return Promise.resolve({ available: false, variants: [], mode: 'original' });
+    });
+    const { unmount } = render(<AdaptiveMediaPlayer file={{ id: 42, name: 'video.mp4', size: 100, sizeStr: '100 B' }} activeFolderId={null} onClose={vi.fn()} streamUrl="http://127.0.0.1:14201/stream/home/42?token=token" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Clear Transcodes' }));
+    unmount();
+
+    await act(async () => { finishLookup?.({ file_key: '123_0_42' }); });
+
+    expect(mocks.invoke.mock.calls.some(([command]) => command === 'cmd_clear_transcode_cache')).toBe(false);
   });
 });

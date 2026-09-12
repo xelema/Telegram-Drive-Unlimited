@@ -195,7 +195,7 @@ export function SupporterSettingsSection() {
   const supportUrl = 'https://github.com/caamer20/Telegram-Drive/issues/new/choose';
   const canPurchase = shouldOfferNewSupporterPurchase(status) && !status.checkout_pending;
   const canRefresh = ['active', 'needs_refresh', 'expired'].includes(status.state);
-  const canRestore = !status.ad_free && !status.checkout_pending && !['loading', 'unavailable', 'revoked'].includes(status.state);
+  const canRestore = !status.ad_free && !['loading', 'unavailable', 'revoked'].includes(status.state);
   const isReturningSupporter = !status.ad_free && !canPurchase
     && (status.state === 'expired' || status.recovery_code_saved);
   const statusTitle = status.state === 'loading'
@@ -216,7 +216,6 @@ export function SupporterSettingsSection() {
     try {
       const result = await pollCheckout();
       if (result.status === 'completed') {
-        setCheckoutPending(false);
         if (result.recovery_code) setNewRecoveryCode(result.recovery_code);
         toast.success('Payment verified. Ad-free supporter access is active.');
       } else if (!quiet) {
@@ -228,7 +227,7 @@ export function SupporterSettingsSection() {
   };
 
   useEffect(() => {
-    setCheckoutPending(Boolean(status.checkout_pending) && !status.ad_free);
+    setCheckoutPending(Boolean(status.checkout_pending));
   }, [status.ad_free, status.checkout_pending]);
 
   const startCheckout = async () => {
@@ -356,6 +355,7 @@ export function SupporterSettingsSection() {
         {canPurchase && (
           <button type="button" disabled={!acceptedTerms || busy || checkoutPending} onClick={() => void startCheckout()} className="quiet-control bg-app-accent px-5 py-3 text-sm font-semibold text-app-accent-contrast disabled:cursor-not-allowed disabled:opacity-50">{busy ? 'Preparing secure checkout…' : checkoutPending ? 'Checkout opened' : 'Get lifetime ad-free · $5'}</button>
         )}
+        {checkoutPending && !status.ad_free && <button type="button" disabled={busy} onClick={() => void startCheckout()} className="quiet-control px-4 py-2.5 text-xs font-medium text-app-text">{i18n.t("supporter_offer.resume_checkout")}</button>}
         {checkoutPending && <button type="button" onClick={() => void checkPayment()} className="quiet-control px-4 py-2.5 text-xs font-medium text-app-text">Check payment</button>}
         {canRefresh && <button type="button" onClick={() => void refreshEntitlement().then(() => toast.success('Supporter verification refreshed.')).catch(error => toast.error(String(error)))} className="quiet-control px-4 py-2.5 text-xs font-medium text-app-text">Refresh verification</button>}
         <button type="button" onClick={() => void open(termsUrl)} className="quiet-control px-3 py-2.5 text-xs text-app-text-secondary">Read full terms</button>

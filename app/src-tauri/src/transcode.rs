@@ -11,6 +11,7 @@
 //       720p/...
 //       1080p/...
 
+use crate::workspace::AccountGuard;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -20,7 +21,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use actix_web::{web, HttpRequest, HttpResponse, Responder};
 use tokio::io::AsyncBufReadExt;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, Notify, RwLock};
 
 use crate::commands::TelegramState;
 use crate::mp4_utils;
@@ -136,6 +137,7 @@ pub struct TranscodeStatusResult {
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct TranscodeKey {
+    pub owner_id: i64,
     pub folder_id: i64, // 0 = root/me
     pub message_id: i32,
     pub quality: String,
@@ -143,11 +145,14 @@ pub struct TranscodeKey {
 
 impl TranscodeKey {
     pub fn file_key(&self) -> String {
-        format!("{}_{}", self.folder_id, self.message_id)
+        format!("{}_{}_{}", self.owner_id, self.folder_id, self.message_id)
     }
 
     pub fn job_id(&self) -> String {
-        format!("{}_{}_{}", self.folder_id, self.message_id, self.quality)
+        format!(
+            "{}_{}_{}_{}",
+            self.owner_id, self.folder_id, self.message_id, self.quality
+        )
     }
 }
 
@@ -167,6 +172,53 @@ pub struct TranscodeJob {
     pub cancel_tx: Option<tokio::sync::oneshot::Sender<()>>,
     pub last_access: Instant,
     pub source_height: Option<u32>,
+    worker: Arc<WorkerState>,
+}
+
+#[derive(Default)]
+struct WorkerState {
+    active: AtomicBool,
+    cancelled: AtomicBool,
+    stopped: Notify,
+}
+pub(crate) struct WorkerLease(Arc<WorkerState>);
+impl Drop for WorkerLease {
+    fn drop(&mut self) {
+        self.0.active.store(false, Ordering::Release);
+        self.0.stopped.notify_waiters();
+    }
+}
+impl TranscodeJob {
+    pub fn has_live_writer(&self) -> bool {
+        self.worker.active.load(Ordering::Acquire)
+    }
+    /// Acquire exactly once after get_or_create_job returns is_new=true.
+    pub(crate) fn writer_lease(&self) -> WorkerLease {
+        WorkerLease(self.worker.clone())
+    }
+}
+async fn wait_for_worker(worker: &WorkerState) -> Result<(), String> {
+    tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            let changed = worker.stopped.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if !worker.active.load(Ordering::Acquire) {
+                return;
+            }
+            changed.await;
+        }
+    })
+    .await
+    .map_err(|_| "CACHE_BUSY: The previous conversion is still stopping".into())
+}
+fn bounded_source_prefix(path: &Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut bytes = Vec::with_capacity(2 * 1024 * 1024);
+    std::fs::File::open(path)?
+        .take(2 * 1024 * 1024)
+        .read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 // ── TranscodeManager ────────────────────────────────────────────────────
@@ -336,32 +388,49 @@ impl TranscodeManager {
         }
     }
 
-    /// Get or create a job entry. Returns (job_arc, is_new).
+    /// Register before accessing any source/output. Cache mutation holds the same map lock.
     pub async fn get_or_create_job(&self, key: &TranscodeKey) -> (Arc<Mutex<TranscodeJob>>, bool) {
         let mut jobs = self.jobs.lock().await;
         let job_id = key.job_id();
         if let Some(job) = jobs.get(&job_id) {
-            let mut j = job.lock().await;
-            j.last_access = Instant::now();
-            drop(j);
-            (job.clone(), false)
-        } else {
-            let job = Arc::new(Mutex::new(TranscodeJob {
-                key: key.clone(),
-                phase: JobPhase::NotStarted,
-                cancel_tx: None,
-                last_access: Instant::now(),
-                source_height: None,
-            }));
-            jobs.insert(job_id, job.clone());
-            (job, true)
+            let mut current = job.lock().await;
+            if current.has_live_writer() {
+                current.last_access = Instant::now();
+                return (job.clone(), false);
+            }
         }
+        let worker = Arc::new(WorkerState::default());
+        worker.active.store(true, Ordering::Release);
+        let job = Arc::new(Mutex::new(TranscodeJob {
+            key: key.clone(),
+            phase: JobPhase::NotStarted,
+            cancel_tx: None,
+            last_access: Instant::now(),
+            source_height: None,
+            worker,
+        }));
+        jobs.insert(job_id, job.clone());
+        (job, true)
     }
 
-    /// Remove a job from the map.
-    pub async fn remove_job(&self, job_id: &str) {
-        let mut jobs = self.jobs.lock().await;
-        jobs.remove(job_id);
+    pub(crate) fn account(&self, expected: Option<&str>) -> Result<AccountGuard, String> {
+        AccountGuard::open(
+            self.cache_root
+                .parent()
+                .ok_or("Invalid streaming cache root")?,
+            expected,
+        )
+    }
+    pub(crate) fn account_for_key(&self, file_key: &str) -> Result<AccountGuard, String> {
+        let parts: Vec<_> = file_key.split('_').collect();
+        if parts.len() != 3
+            || !parts[0].parse::<i64>().is_ok_and(|id| id > 0)
+            || parts[1].parse::<i64>().is_err()
+            || !parts[2].parse::<i32>().is_ok_and(|id| id > 0)
+        {
+            return Err("ACCOUNT_CHANGED: Invalid or unassigned cache identity".into());
+        }
+        self.account(Some(parts[0]))
     }
 
     /// Get a clone of the jobs map for status queries.
@@ -396,6 +465,18 @@ impl TranscodeManager {
     /// Evict oldest files until cache is under the limit.
     /// Never evict files that belong to active jobs.
     pub async fn evict_lru(&self) {
+        let jobs = self.jobs.lock().await;
+        let mut protected = Vec::new();
+        for job in jobs.values() {
+            let job = job.lock().await;
+            if job.has_live_writer() {
+                let original = self.original_path(&job.key.file_key());
+                protected.push(original.with_extension("mp4.part"));
+                protected.push(original);
+                protected.push(self.hls_output_dir(&job.key.file_key(), &job.key.quality));
+                protected.push(self.cache_root.join("fmp4").join(job.key.file_key()));
+            }
+        }
         let max = *self.max_cache_bytes.lock().await;
         let current = self.total_cache_size();
         if current <= max {
@@ -428,6 +509,12 @@ impl TranscodeManager {
                 break;
             }
 
+            if protected
+                .iter()
+                .any(|root| path == root || path.starts_with(root))
+            {
+                continue;
+            }
             if let Err(e) = std::fs::remove_file(path) {
                 log::warn!("Transcode: Failed to evict {:?}: {}", path, e);
             } else {
@@ -473,6 +560,7 @@ impl TranscodeManager {
         quality: &str,
         segment: Option<&str>,
     ) -> Option<PathBuf> {
+        self.account_for_key(file_key).ok()?;
         // Sanitize inputs — only allow alphanumeric, underscores, hyphens, dots
         if file_key
             .chars()
@@ -594,6 +682,13 @@ async fn test_ffmpeg(path: &Path) -> Result<bool, String> {
 
 // ── Source Cache (Phase 2) ──────────────────────────────────────────────
 
+struct SourcePartial(PathBuf);
+impl Drop for SourcePartial {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// Download the original MP4 file from Telegram to local cache.
 /// Returns the total file size on success.
 pub async fn cache_original(
@@ -602,7 +697,9 @@ pub async fn cache_original(
     dest_path: &Path,
     cancel_rx: &mut tokio::sync::oneshot::Receiver<()>,
     progress_callback: impl Fn(f32),
+    account: &AccountGuard,
 ) -> Result<u64, String> {
+    account.validate()?;
     let total_size = match media {
         Media::Document(d) => d.size() as u64,
         _ => return Err("Not a document".to_string()),
@@ -615,6 +712,7 @@ pub async fn cache_original(
     }
 
     let tmp_path = dest_path.with_extension("mp4.part");
+    let _temporary = SourcePartial(tmp_path.clone());
     let mut file = tokio::fs::File::create(&tmp_path)
         .await
         .map_err(|e| format!("Failed to create cache file: {}", e))?;
@@ -627,6 +725,7 @@ pub async fn cache_original(
 
     loop {
         tokio::select! {
+            _ = async { loop { if account.validate().is_err() { break; } tokio::time::sleep(std::time::Duration::from_millis(200)).await; } } => return Err("ACCOUNT_CHANGED".into()),
             _ = &mut *cancel_rx => {
                 let _ = tokio::fs::remove_file(&tmp_path).await;
                 return Err("Cancelled".to_string());
@@ -634,6 +733,8 @@ pub async fn cache_original(
             result = download_iter.next() => {
                 match result {
                     Ok(Some(chunk)) => {
+                        account.validate()?;
+                        if downloaded.saturating_add(chunk.len() as u64) > total_size { return Err("Incomplete download: source exceeded expected size".into()); }
                         file.write_all(&chunk).await.map_err(|e| format!("Write error: {}", e))?;
                         downloaded += chunk.len() as u64;
                         progress_callback(downloaded as f32 / total_size as f32);
@@ -672,6 +773,7 @@ pub async fn cache_original(
         ));
     }
 
+    account.validate()?;
     // Rename .part → .mp4
     tokio::fs::rename(&tmp_path, dest_path)
         .await
@@ -697,6 +799,10 @@ fn validate_hls_output(output_dir: &Path) -> Result<(), String> {
         .any(|line| line.trim().starts_with("#EXTINF:"))
     {
         return Err("HLS playlist has no segments".to_string());
+    }
+
+    if !playlist.lines().any(|line| line.trim() == "#EXT-X-ENDLIST") {
+        return Err("HLS playlist is incomplete".into());
     }
 
     let mut segment_count = 0usize;
@@ -731,6 +837,7 @@ fn validate_hls_output(output_dir: &Path) -> Result<(), String> {
 }
 
 /// Run FFmpeg to generate a single HLS variant.
+#[allow(clippy::too_many_arguments)] // The account epoch travels with the source, output, conversion policy and cancellation channel.
 pub async fn run_transcode(
     ffmpeg_path: &Path,
     input_path: &Path,
@@ -739,7 +846,9 @@ pub async fn run_transcode(
     duration_secs: Option<f64>,
     cancel_rx: &mut tokio::sync::oneshot::Receiver<()>,
     progress_callback: impl Fn(f32),
+    account: &AccountGuard,
 ) -> Result<(), String> {
+    account.validate()?;
     // Create output directory
     std::fs::create_dir_all(output_dir)
         .map_err(|e| format!("Failed to create HLS output dir: {}", e))?;
@@ -801,6 +910,11 @@ pub async fn run_transcode(
 
     let parse_result: Result<(), String> = loop {
         tokio::select! {
+            _ = async { loop { if account.validate().is_err() { break; } tokio::time::sleep(std::time::Duration::from_millis(200)).await; } } => {
+                let _ = child.kill().await; let _ = child.wait().await;
+                let _ = std::fs::remove_dir_all(output_dir);
+                break Err("ACCOUNT_CHANGED".into());
+            }
             _ = &mut *cancel_rx => {
                 // Kill the FFmpeg process
                 let _ = child.kill().await;
@@ -815,7 +929,8 @@ pub async fn run_transcode(
                         // Only store lines containing 'error' (case-insensitive) — avoids
                         // collecting thousands of progress lines for successful transcodes
                         if line.to_lowercase().contains("error") {
-                            stderr_error_lines.push(line.clone());
+                            if stderr_error_lines.len() == 32 { stderr_error_lines.remove(0); }
+                            stderr_error_lines.push(line.chars().take(2048).collect());
                         }
 
                         // Parse time=HH:MM:SS.MS from FFmpeg stderr
@@ -866,6 +981,7 @@ pub async fn run_transcode(
         ));
     }
 
+    account.validate()?;
     if let Err(error) = validate_hls_output(output_dir) {
         let _ = std::fs::remove_dir_all(output_dir);
         return Err(error);
@@ -898,6 +1014,7 @@ pub fn get_source_height(cached_path: &std::path::Path) -> Option<u32> {
 
 /// Run the full pipeline: cache original → transcode HLS.
 /// Runs entirely on the async runtime (FFmpeg runs in its own OS process).
+#[allow(clippy::too_many_arguments)] // Carries the prepared Telegram media and its account epoch into the owned worker.
 pub async fn execute_transcode_pipeline(
     manager: &TranscodeManager,
     key: &TranscodeKey,
@@ -906,6 +1023,7 @@ pub async fn execute_transcode_pipeline(
     media: Media,
     duration_secs: Option<f64>,
     mut cancel_rx: tokio::sync::oneshot::Receiver<()>,
+    account: AccountGuard,
 ) {
     let job_arc = {
         let jobs = manager.jobs.lock().await;
@@ -928,6 +1046,20 @@ pub async fn execute_transcode_pipeline(
         }
     };
 
+    if account.validate().is_err() {
+        job_arc.lock().await.phase = JobPhase::Error("ACCOUNT_CHANGED".into());
+        return;
+    }
+    let source_lock = crate::workspace::assets::file_lock(format!(
+        "transcode-source:{}:{}",
+        manager.cache_root.display(),
+        key.file_key()
+    ))
+    .await;
+    let source_guard = tokio::select! {
+        guard = source_lock.lock() => guard,
+        _ = &mut cancel_rx => { job_arc.lock().await.phase = JobPhase::Cancelled; return; }
+    };
     let file_key = key.file_key();
     let original_path = manager.original_path(&file_key);
     let output_dir = manager.hls_output_dir(&file_key, &key.quality);
@@ -949,9 +1081,15 @@ pub async fn execute_transcode_pipeline(
                 let job_arc = job_arc_clone.clone();
                 tauri::async_runtime::spawn(async move {
                     let mut job = job_arc.lock().await;
-                    job.phase = JobPhase::CachingOriginal { progress };
+                    if job.has_live_writer()
+                        && !job.worker.cancelled.load(Ordering::Acquire)
+                        && matches!(job.phase, JobPhase::CachingOriginal { .. })
+                    {
+                        job.phase = JobPhase::CachingOriginal { progress };
+                    }
                 });
             },
+            &account,
         )
         .await
         {
@@ -963,15 +1101,24 @@ pub async fn execute_transcode_pipeline(
             }
             Err(e) => {
                 let mut job = job_arc.lock().await;
-                job.phase = JobPhase::Error(format!("Cache failed: {}", e));
+                job.phase = if job.worker.cancelled.load(Ordering::Acquire) {
+                    JobPhase::Cancelled
+                } else {
+                    JobPhase::Error(format!("Cache failed: {}", e))
+                };
                 return;
             }
         }
     }
 
+    drop(source_guard);
+    if account.validate().is_err() {
+        job_arc.lock().await.phase = JobPhase::Error("ACCOUNT_CHANGED".into());
+        return;
+    }
     // ── Step 2: Detect source resolution ────────────────────────────
     let source_height = {
-        let data = std::fs::read(&original_path).unwrap_or_default();
+        let data = bounded_source_prefix(&original_path).unwrap_or_default();
         if data.len() > 1024 {
             mp4_utils::scan_video_tkhd_dimensions(
                 &data[..std::cmp::min(2 * 1024 * 1024, data.len())],
@@ -1017,9 +1164,15 @@ pub async fn execute_transcode_pipeline(
             let job_arc = job_arc_clone.clone();
             tauri::async_runtime::spawn(async move {
                 let mut job = job_arc.lock().await;
-                job.phase = JobPhase::Transcoding { progress };
+                if job.has_live_writer()
+                    && !job.worker.cancelled.load(Ordering::Acquire)
+                    && matches!(job.phase, JobPhase::Transcoding { .. })
+                {
+                    job.phase = JobPhase::Transcoding { progress };
+                }
             });
         },
+        &account,
     )
     .await;
 
@@ -1031,7 +1184,11 @@ pub async fn execute_transcode_pipeline(
         }
         Err(e) => {
             let mut job = job_arc.lock().await;
-            job.phase = JobPhase::Error(e);
+            job.phase = if job.worker.cancelled.load(Ordering::Acquire) {
+                JobPhase::Cancelled
+            } else {
+                JobPhase::Error(e)
+            };
         }
     }
 }
@@ -1090,153 +1247,134 @@ pub async fn cmd_prepare_transcoded_stream(
     state: tauri::State<'_, TelegramState>,
     manager: tauri::State<'_, Arc<TranscodeManager>>,
 ) -> Result<TranscodePrepareResult, String> {
+    let account = manager.account(None)?;
     let folder_id = folder_id.unwrap_or(0);
     let key = TranscodeKey {
+        owner_id: account.owner,
         folder_id,
         message_id,
         quality: quality.clone(),
     };
-
-    // Validate quality
     let preset = QUALITY_PRESETS
         .iter()
         .find(|p| p.label == quality)
-        .ok_or_else(|| format!("Unknown quality: {}", quality))?;
-
-    // Reuse only a complete, playable cached variant. An interrupted FFmpeg
-    // process can leave index.m3u8 behind before all segments are durable.
+        .ok_or_else(|| format!("Unknown quality: {quality}"))?;
+    let job_arc = loop {
+        let (job, is_new) = manager.get_or_create_job(&key).await;
+        if is_new {
+            break job;
+        }
+        let existing = job.lock().await;
+        if existing.worker.cancelled.load(Ordering::Acquire) {
+            let worker = existing.worker.clone();
+            drop(existing);
+            wait_for_worker(&worker).await?;
+            account.validate()?;
+            continue;
+        }
+        let (status, progress) = match &existing.phase {
+            JobPhase::CachingOriginal { progress } => ("caching", *progress),
+            JobPhase::Transcoding { progress } => ("transcoding", *progress),
+            _ => ("pending", 0.0),
+        };
+        account.validate()?;
+        return Ok(TranscodePrepareResult {
+            job_id: key.job_id(),
+            status: status.into(),
+            progress,
+            playlist_url: None,
+            error: None,
+        });
+    };
+    let worker = job_arc.lock().await.worker.clone();
+    let lease = WorkerLease(worker.clone());
+    let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel();
+    job_arc.lock().await.cancel_tx = Some(cancel_tx);
     let output_dir = manager.hls_output_dir(&key.file_key(), &quality);
     if output_dir.join("index.m3u8").exists() {
-        match validate_hls_output(&output_dir) {
-            Ok(()) => {
-                return Ok(TranscodePrepareResult {
-                    job_id: key.job_id(),
-                    status: "ready".to_string(),
-                    progress: 1.0,
-                    playlist_url: Some(format!("/hls/{}/{}/index.m3u8", key.file_key(), quality)),
-                    error: None,
-                });
-            }
-            Err(error) => {
-                log::warn!(
-                    "Transcode: Removing invalid cached variant {:?}: {}",
-                    output_dir,
-                    error
-                );
-                let _ = std::fs::remove_dir_all(&output_dir);
-            }
+        if validate_hls_output(&output_dir).is_ok() {
+            account.validate()?;
+            job_arc.lock().await.phase = JobPhase::Ready;
+            return Ok(TranscodePrepareResult {
+                job_id: key.job_id(),
+                status: "ready".into(),
+                progress: 1.0,
+                playlist_url: Some(format!("/hls/{}/{}/index.m3u8", key.file_key(), quality)),
+                error: None,
+            });
         }
+        std::fs::remove_dir_all(&output_dir).map_err(|e| e.to_string())?;
     }
-
-    // Check if job already exists
-    let (mut job_arc, is_new) = manager.get_or_create_job(&key).await;
-    let phase = {
-        let job = job_arc.lock().await;
-        job.phase.clone()
+    let preparation = async {
+        let client = state
+            .client
+            .lock()
+            .await
+            .clone()
+            .ok_or("Not connected to Telegram")?;
+        let actual = client.get_me().await.map_err(|e| e.to_string())?;
+        if actual.bare_id() != account.owner {
+            return Err("ACCOUNT_CHANGED".into());
+        }
+        account.validate()?;
+        let peer = crate::commands::utils::resolve_peer(
+            &client,
+            if folder_id == 0 {
+                None
+            } else {
+                Some(folder_id)
+            },
+            &state.peer_cache,
+        )
+        .await?;
+        let message = client
+            .get_messages_by_id(&peer, &[message_id])
+            .await
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .flatten()
+            .next()
+            .ok_or("Message not found")?;
+        let media = message.media().ok_or("No media")?;
+        if message.text() == "TDENC2"
+            || matches!(&media, Media::Document(document) if document.name().to_ascii_lowercase().ends_with(".tdenc"))
+        {
+            return Err("ENCRYPTED_PREVIEW_UNAVAILABLE".into());
+        }
+        let duration = get_duration_from_media(&client, message_id, folder_id, &state)
+            .await
+            .ok();
+        account.validate()?;
+        Ok::<_, String>((client, media, duration))
     };
-
-    if !is_new {
-        // Failed and cancelled jobs are replaceable so the Retry button starts
-        // a fresh pipeline instead of returning the same terminal state forever.
-        if matches!(
-            &phase,
-            JobPhase::Ready | JobPhase::Error(_) | JobPhase::Cancelled
-        ) {
-            manager.remove_job(&key.job_id()).await;
-            job_arc = manager.get_or_create_job(&key).await.0;
-        } else {
-            return match &phase {
-                JobPhase::NotStarted => Ok(TranscodePrepareResult {
-                    job_id: key.job_id(),
-                    status: "pending".to_string(),
-                    progress: 0.0,
-                    playlist_url: None,
-                    error: None,
-                }),
-                JobPhase::CachingOriginal { progress } => Ok(TranscodePrepareResult {
-                    job_id: key.job_id(),
-                    status: "caching".to_string(),
-                    progress: *progress,
-                    playlist_url: None,
-                    error: None,
-                }),
-                JobPhase::Transcoding { progress } => Ok(TranscodePrepareResult {
-                    job_id: key.job_id(),
-                    status: "transcoding".to_string(),
-                    progress: *progress,
-                    playlist_url: None,
-                    error: None,
-                }),
-                JobPhase::Ready | JobPhase::Error(_) | JobPhase::Cancelled => unreachable!(),
-            };
-        }
-    }
-
-    // New job — start the pipeline
-    let client = { state.client.lock().await.clone() };
-    let client = client.ok_or_else(|| "Not connected to Telegram".to_string())?;
-
-    let peer = crate::commands::utils::resolve_peer(
-        &client,
-        if folder_id == 0 {
-            None
-        } else {
-            Some(folder_id)
-        },
-        &state.peer_cache,
-    )
-    .await?;
-
-    let messages = client
-        .get_messages_by_id(&peer, &[message_id])
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let msg = messages
-        .into_iter()
-        .flatten()
-        .next()
-        .ok_or_else(|| format!("Message {} not found", message_id))?;
-
-    let media = msg.media().ok_or_else(|| "No media".to_string())?;
-
-    // Get duration from mp4parse (quick moov chunk)
-    let duration_secs = get_duration_from_media(&client, message_id, folder_id, &state)
-        .await
-        .ok();
-
-    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
-
-    {
-        let mut job = job_arc.lock().await;
-        job.cancel_tx = Some(cancel_tx);
-    }
-
-    let manager_clone = manager.inner().clone();
-    let key_clone = key.clone();
-    let preset_clone = preset.clone();
-
-    // Spawn the pipeline on a background task
+    let (client, media, duration_secs) = tokio::select! {
+        prepared = preparation => prepared?,
+        _ = &mut cancel_rx => { job_arc.lock().await.phase = JobPhase::Cancelled; return Err("Cancelled".into()); },
+        _ = async {loop {if account.validate().is_err() {break;} tokio::time::sleep(std::time::Duration::from_millis(200)).await;}} => return Err("ACCOUNT_CHANGED".into()),
+    };
+    let manager = manager.inner().clone();
+    let preset = preset.clone();
+    let spawned_key = key.clone();
     tauri::async_runtime::spawn(async move {
         execute_transcode_pipeline(
-            &manager_clone,
-            &key_clone,
-            &preset_clone,
+            &manager,
+            &spawned_key,
+            &preset,
             client,
             media,
             duration_secs,
             cancel_rx,
+            account,
         )
         .await;
-
-        // LRU eviction after job completes
-        manager_clone.evict_lru().await;
-        manager_clone.start_cache_reconciliation(false);
+        // The lease still protects this newly completed output during eviction.
+        manager.evict_lru().await;
+        drop(lease);
+        manager.start_cache_reconciliation(false);
     });
-
     Ok(TranscodePrepareResult {
         job_id: key.job_id(),
-        status: "started".to_string(),
+        status: "started".into(),
         progress: 0.0,
         playlist_url: None,
         error: None,
@@ -1319,12 +1457,17 @@ pub async fn cmd_get_transcode_status(
     job_id: String,
     manager: tauri::State<'_, Arc<TranscodeManager>>,
 ) -> Result<TranscodeStatusResult, String> {
+    let account = manager.account(None)?;
     let jobs = manager.jobs.lock().await;
     let job_arc = jobs
         .get(&job_id)
         .ok_or_else(|| format!("Job {} not found", job_id))?;
 
     let job = job_arc.lock().await;
+    if job.key.owner_id != account.owner {
+        return Err("ACCOUNT_CHANGED".into());
+    }
+    account.validate()?;
     let (status_str, progress, error, playlist_url) = match &job.phase {
         JobPhase::NotStarted => ("pending".to_string(), 0.0, None, None),
         JobPhase::CachingOriginal { progress } => ("caching".to_string(), *progress, None, None),
@@ -1357,18 +1500,23 @@ pub async fn cmd_cancel_transcode(
     job_id: String,
     manager: tauri::State<'_, Arc<TranscodeManager>>,
 ) -> Result<(), String> {
-    let jobs = manager.jobs.lock().await;
-    let job_arc = jobs
-        .get(&job_id)
-        .ok_or_else(|| format!("Job {} not found", job_id))?;
-
-    let mut job = job_arc.lock().await;
-    if let Some(tx) = job.cancel_tx.take() {
-        let _ = tx.send(());
-    }
-    job.phase = JobPhase::Cancelled;
-
-    Ok(())
+    let account = manager.account(None)?;
+    let worker = {
+        let jobs = manager.jobs.lock().await;
+        let job = jobs.get(&job_id).ok_or("Transcode job not found")?;
+        let mut job = job.lock().await;
+        if job.key.owner_id != account.owner {
+            return Err("ACCOUNT_CHANGED".into());
+        }
+        job.worker.cancelled.store(true, Ordering::Release);
+        if let Some(tx) = job.cancel_tx.take() {
+            let _ = tx.send(());
+        }
+        job.phase = JobPhase::Cancelled;
+        job.worker.clone()
+    };
+    wait_for_worker(&worker).await?;
+    account.validate()
 }
 
 // ── Cache management commands ───────────────────────────────────────
@@ -1422,8 +1570,9 @@ pub async fn cmd_get_cached_variants(
     folder_id: Option<i64>,
     manager: tauri::State<'_, Arc<TranscodeManager>>,
 ) -> Result<Vec<CachedVariantInfo>, String> {
+    let account = manager.account(None)?;
     let folder_id = folder_id.unwrap_or(0);
-    let file_key = format!("{}_{}", folder_id, message_id);
+    let file_key = format!("{}_{}_{}", account.owner, folder_id, message_id);
 
     let variants: Vec<CachedVariantInfo> = QUALITY_PRESETS
         .iter()
@@ -1436,6 +1585,7 @@ pub async fn cmd_get_cached_variants(
         })
         .collect();
 
+    account.validate()?;
     Ok(variants)
 }
 
@@ -1602,6 +1752,10 @@ fn validate_hls_inventory(
     {
         return Err("HLS playlist has no segments".to_string());
     }
+    if !playlist.lines().any(|line| line.trim() == "#EXT-X-ENDLIST") {
+        return Err("HLS playlist is incomplete".into());
+    }
+
     let mut segment_count = 0usize;
     for line in playlist.lines().map(str::trim) {
         if line.is_empty() || line.starts_with('#') {
@@ -1691,7 +1845,11 @@ fn cache_directory_is_empty(path: &Path) -> Result<bool, String> {
 fn clear_all_transcode_cache(cache_root: &Path) -> Result<String, String> {
     let mut removed_count = 0u64;
     let mut failures = Vec::new();
-    for directory in [cache_root.join(HLS_DIR), cache_root.join(ORIGINALS_DIR)] {
+    for directory in [
+        cache_root.join(HLS_DIR),
+        cache_root.join(ORIGINALS_DIR),
+        cache_root.join("fmp4"),
+    ] {
         match std::fs::read_dir(&directory) {
             Ok(entries) => {
                 for entry in entries {
@@ -1728,6 +1886,7 @@ fn clear_all_transcode_cache(cache_root: &Path) -> Result<String, String> {
 fn clear_file_transcode_cache(cache_root: &Path, file_key: &str) -> Result<String, String> {
     validate_cache_component(file_key, "file key")?;
     remove_cache_path(&cache_root.join(HLS_DIR).join(file_key))?;
+    remove_cache_path(&cache_root.join("fmp4").join(file_key))?;
     remove_cache_path(
         &cache_root
             .join(ORIGINALS_DIR)
@@ -1769,17 +1928,39 @@ pub async fn cmd_clear_transcode_cache(
     manager: tauri::State<'_, Arc<TranscodeManager>>,
 ) -> Result<String, String> {
     let manager = manager.inner().clone();
+    let account = if let Some(key) = &file_key {
+        manager.account_for_key(key)?
+    } else {
+        manager.account(None)?
+    };
     let cache_root = manager.cache_root.clone();
-    let result = tokio::task::spawn_blocking(move || match (file_key, quality) {
-        (None, None) => clear_all_transcode_cache(&cache_root),
-        (Some(file_key), None) => clear_file_transcode_cache(&cache_root, &file_key),
-        (Some(file_key), Some(quality)) => {
-            clear_variant_transcode_cache(&cache_root, &file_key, &quality)
+    // Keep registration locked until removal completes so a newly queued job
+    // cannot start writing into a directory that is being cleared.
+    let jobs = manager.jobs.lock().await;
+    for job in jobs.values() {
+        let job = job.lock().await;
+        let selected = file_key
+            .as_ref()
+            .is_none_or(|key| key == &job.key.file_key());
+        if selected && job.has_live_writer() {
+            return Err("CACHE_BUSY: Wait for active video conversions to finish before clearing their cache".into());
         }
-        (None, Some(_)) => Err("Cannot clear quality without specifying file key".to_string()),
+    }
+    account.validate()?;
+    let result = tokio::task::spawn_blocking(move || {
+        account.validate()?;
+        match (file_key, quality) {
+            (None, None) => clear_all_transcode_cache(&cache_root),
+            (Some(file_key), None) => clear_file_transcode_cache(&cache_root, &file_key),
+            (Some(file_key), Some(quality)) => {
+                clear_variant_transcode_cache(&cache_root, &file_key, &quality)
+            }
+            (None, Some(_)) => Err("Cannot clear quality without specifying file key".to_string()),
+        }
     })
     .await
     .map_err(|error| format!("Transcode cache clear task failed: {error}"))?;
+    drop(jobs);
     if result.is_ok() {
         manager.start_cache_reconciliation(false);
     }
@@ -1792,8 +1973,9 @@ pub async fn cmd_get_master_playlist_info(
     folder_id: Option<i64>,
     manager: tauri::State<'_, Arc<TranscodeManager>>,
 ) -> Result<MasterPlaylistInfo, String> {
+    let account = manager.account(None)?;
     let folder_id = folder_id.unwrap_or(0);
-    let file_key = format!("{}_{}", folder_id, message_id);
+    let file_key = format!("{}_{}_{}", account.owner, folder_id, message_id);
 
     let mut variants: Vec<MasterVariant> = Vec::new();
 
@@ -1820,6 +2002,7 @@ pub async fn cmd_get_master_playlist_info(
         None
     };
 
+    account.validate()?;
     Ok(MasterPlaylistInfo {
         file_key: file_key.clone(),
         variants,
@@ -1916,6 +2099,10 @@ async fn serve_hls_file(
         _ => return HttpResponse::Forbidden().body("Invalid or missing stream token"),
     }
 
+    let account = match manager.account_for_key(file_key) {
+        Ok(account) => account,
+        Err(_) => return HttpResponse::Forbidden().body("Account changed"),
+    };
     // Validate path
     let file_path = match manager.validate_hls_path(file_key, quality, segment) {
         Some(p) => p,
@@ -1938,6 +2125,9 @@ async fn serve_hls_file(
 
     match std::fs::read(&file_path) {
         Ok(data) => {
+            if account.validate().is_err() {
+                return HttpResponse::Forbidden().body("Account changed");
+            }
             let body = if is_playlist {
                 match String::from_utf8(data) {
                     Ok(playlist) => {
@@ -1960,18 +2150,11 @@ async fn serve_hls_file(
                 .insert_header(("Accept-Ranges", "bytes"))
                 .body(body);
 
-            // Cache headers: segments can be cached longer, playlists shorter
-            if mime == "video/mp2t" {
-                resp.headers_mut().insert(
-                    actix_web::http::header::CACHE_CONTROL,
-                    actix_web::http::header::HeaderValue::from_static("public, max-age=3600"),
-                );
-            } else {
-                resp.headers_mut().insert(
-                    actix_web::http::header::CACHE_CONTROL,
-                    actix_web::http::header::HeaderValue::from_static("private, max-age=10"),
-                );
-            }
+            // A session switch must re-authorize every cached media response.
+            resp.headers_mut().insert(
+                actix_web::http::header::CACHE_CONTROL,
+                actix_web::http::header::HeaderValue::from_static("private, no-store"),
+            );
 
             resp
         }
@@ -1999,6 +2182,10 @@ async fn hls_master_playlist(
         _ => return HttpResponse::Forbidden().body("Invalid or missing stream token"),
     }
 
+    let account = match manager.account_for_key(&file_key) {
+        Ok(account) => account,
+        Err(_) => return HttpResponse::Forbidden().body("Account changed"),
+    };
     // Build master playlist from available variants
     let mut playlist = String::from("#EXTM3U\n#EXT-X-VERSION:3\n");
 
@@ -2018,9 +2205,12 @@ async fn hls_master_playlist(
         return HttpResponse::NotFound().body("No HLS variants available");
     }
 
+    if account.validate().is_err() {
+        return HttpResponse::Forbidden().body("Account changed");
+    }
     HttpResponse::Ok()
         .content_type("application/vnd.apple.mpegurl")
-        .insert_header(("Cache-Control", "private, max-age=5"))
+        .insert_header(("Cache-Control", "private, no-store"))
         .body(playlist_with_stream_token(&playlist, &token_data.token))
 }
 
@@ -2083,6 +2273,24 @@ mod cache_tests {
         root: PathBuf,
     }
 
+    fn sign_in(root: &Path, owner: i64) {
+        use grammers_session::{storages::SqliteSession, types::PeerInfo, Session};
+        for file in [
+            "telegram.session",
+            "telegram.session-wal",
+            "telegram.session-shm",
+        ] {
+            let _ = std::fs::remove_file(root.join(file));
+        }
+        let session = SqliteSession::open(root.join("telegram.session")).unwrap();
+        session.cache_peer(&PeerInfo::User {
+            id: owner,
+            auth: None,
+            bot: Some(false),
+            is_self: Some(true),
+        });
+    }
+
     impl TestCache {
         fn new() -> Self {
             let unique = format!(
@@ -2090,7 +2298,7 @@ mod cache_tests {
                 std::process::id(),
                 chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
             );
-            let root = std::env::temp_dir().join(unique);
+            let root = std::env::temp_dir().join(unique).join("streaming");
             std::fs::create_dir_all(root.join(HLS_DIR)).unwrap();
             std::fs::create_dir_all(root.join(ORIGINALS_DIR)).unwrap();
             Self { root }
@@ -2120,7 +2328,7 @@ mod cache_tests {
 
     impl Drop for TestCache {
         fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.root);
+            let _ = std::fs::remove_dir_all(self.root.parent().unwrap());
         }
     }
 
@@ -2210,7 +2418,8 @@ mod cache_tests {
     #[actix_web::test]
     async fn hls_routes_deliver_an_authenticated_playlist_and_segment() {
         let cache = TestCache::new();
-        cache.add_variant("123_456", "480p", &[1, 2, 3, 4]);
+        sign_in(cache.root.parent().unwrap(), 77);
+        cache.add_variant("77_123_456", "480p", &[1, 2, 3, 4]);
         let manager = Arc::new(TranscodeManager::new(cache.root.clone()));
         let service = actix_web::test::init_service(
             actix_web::App::new()
@@ -2223,7 +2432,7 @@ mod cache_tests {
         .await;
 
         let playlist_request = actix_web::test::TestRequest::get()
-            .uri("/hls/123_456/480p/index.m3u8?token=abc123")
+            .uri("/hls/77_123_456/480p/index.m3u8?token=abc123")
             .to_request();
         let playlist_response = actix_web::test::call_service(&service, playlist_request).await;
         assert!(playlist_response.status().is_success());
@@ -2231,7 +2440,7 @@ mod cache_tests {
         assert!(String::from_utf8_lossy(&playlist_body).contains("segment_000.ts?token=abc123"));
 
         let segment_request = actix_web::test::TestRequest::get()
-            .uri("/hls/123_456/480p/segment_000.ts?token=abc123")
+            .uri("/hls/77_123_456/480p/segment_000.ts?token=abc123")
             .to_request();
         let segment_response = actix_web::test::call_service(&service, segment_request).await;
         assert!(segment_response.status().is_success());
@@ -2241,7 +2450,7 @@ mod cache_tests {
         );
 
         let unauthenticated_request = actix_web::test::TestRequest::get()
-            .uri("/hls/123_456/480p/segment_000.ts")
+            .uri("/hls/77_123_456/480p/segment_000.ts")
             .to_request();
         let unauthenticated_response =
             actix_web::test::call_service(&service, unauthenticated_request).await;
@@ -2249,5 +2458,136 @@ mod cache_tests {
             unauthenticated_response.status(),
             actix_web::http::StatusCode::FORBIDDEN
         );
+    }
+    #[tokio::test]
+    async fn eviction_preserves_live_sources_partials_hls_and_remux_outputs() {
+        let cache = TestCache::new();
+        let manager = TranscodeManager::new_with_max_cache_bytes(cache.root.clone(), 1);
+        let key = TranscodeKey {
+            owner_id: 77,
+            folder_id: 0,
+            message_id: 10,
+            quality: "480p".into(),
+        };
+        let (job, fresh) = manager.get_or_create_job(&key).await;
+        assert!(fresh);
+        let lease = job.lock().await.writer_lease();
+        cache.add_variant(&key.file_key(), "480p", &[1, 2, 3, 4]);
+        cache.add_original(&key.file_key(), &[5, 6, 7]);
+        let partial = manager
+            .original_path(&key.file_key())
+            .with_extension("mp4.part");
+        std::fs::write(&partial, [8, 9]).unwrap();
+        let remux = cache.root.join("fmp4").join(key.file_key());
+        std::fs::create_dir_all(&remux).unwrap();
+        std::fs::write(remux.join("output.mp4.part"), [10]).unwrap();
+        cache.add_original("77_0_99", &[11, 12, 13]);
+        manager.evict_lru().await;
+        assert!(manager.original_path(&key.file_key()).is_file());
+        assert!(partial.is_file());
+        assert!(manager
+            .hls_output_dir(&key.file_key(), "480p")
+            .join("segment_000.ts")
+            .is_file());
+        assert!(remux.join("output.mp4.part").is_file());
+        assert!(!manager.original_path("77_0_99").exists());
+        drop(lease);
+        manager.evict_lru().await;
+        assert!(manager.total_cache_size() <= 1);
+    }
+
+    #[tokio::test]
+    async fn cancelled_display_state_cannot_release_or_replace_a_live_writer() {
+        let cache = TestCache::new();
+        let manager = TranscodeManager::new(cache.root.clone());
+        let key = TranscodeKey {
+            owner_id: 77,
+            folder_id: 0,
+            message_id: 10,
+            quality: "480p".into(),
+        };
+        let (job, _) = manager.get_or_create_job(&key).await;
+        let (lease, worker) = {
+            let mut job = job.lock().await;
+            job.phase = JobPhase::Cancelled;
+            job.worker.cancelled.store(true, Ordering::Release);
+            (job.writer_lease(), job.worker.clone())
+        };
+        let (same, fresh) = manager.get_or_create_job(&key).await;
+        assert!(!fresh);
+        assert!(Arc::ptr_eq(&same, &job));
+        assert!(same.lock().await.has_live_writer());
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(10),
+            wait_for_worker(&worker)
+        )
+        .await
+        .is_err());
+        drop(lease);
+        wait_for_worker(&worker).await.unwrap();
+        let (replacement, fresh) = manager.get_or_create_job(&key).await;
+        assert!(fresh);
+        assert!(!Arc::ptr_eq(&replacement, &job));
+        drop(replacement.lock().await.writer_lease());
+    }
+
+    #[test]
+    fn source_resolution_reads_only_the_bounded_header_prefix() {
+        let cache = TestCache::new();
+        let path = cache.root.join("large-video.mp4");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(512 * 1024 * 1024).unwrap();
+        assert_eq!(bounded_source_prefix(&path).unwrap().len(), 2 * 1024 * 1024);
+    }
+
+    #[test]
+    fn account_keys_never_adopt_legacy_or_foreign_cached_media() {
+        let cache = TestCache::new();
+        sign_in(cache.root.parent().unwrap(), 77);
+        cache.add_variant("0_10", "480p", &[1]);
+        cache.add_variant("77_0_10", "480p", &[2]);
+        cache.add_variant("88_0_10", "480p", &[3]);
+        let manager = TranscodeManager::new(cache.root.clone());
+        assert!(manager.validate_hls_path("77_0_10", "480p", None).is_some());
+        for invalid in [
+            "0_10",
+            "88_0_10",
+            "77_0_10/../../../private",
+            "77_0_10_extra",
+            "77_0_-1",
+        ] {
+            assert!(manager.validate_hls_path(invalid, "480p", None).is_none());
+        }
+        sign_in(cache.root.parent().unwrap(), 88);
+        assert!(manager.validate_hls_path("77_0_10", "480p", None).is_none());
+        assert!(manager.validate_hls_path("88_0_10", "480p", None).is_some());
+        assert!(cache.root.join(HLS_DIR).join("0_10").exists());
+    }
+
+    #[test]
+    fn cache_clear_includes_disposable_remux_outputs() {
+        let cache = TestCache::new();
+        let remux = cache.root.join("fmp4").join("77_0_10");
+        std::fs::create_dir_all(&remux).unwrap();
+        std::fs::write(remux.join("output.mp4"), [1]).unwrap();
+        clear_file_transcode_cache(&cache.root, "77_0_10").unwrap();
+        assert!(!remux.exists());
+        std::fs::create_dir_all(&remux).unwrap();
+        std::fs::write(remux.join("output.mp4"), [1]).unwrap();
+        clear_all_transcode_cache(&cache.root).unwrap();
+        assert!(!remux.exists());
+    }
+    #[test]
+    fn interrupted_hls_playlist_is_not_reported_as_a_complete_cached_variant() {
+        let cache = TestCache::new();
+        cache.add_variant("77_0_10", "480p", &[1, 2, 3]);
+        let output = cache.root.join(HLS_DIR).join("77_0_10").join("480p");
+        std::fs::write(
+            output.join("index.m3u8"),
+            "#EXTM3U\n#EXTINF:6.0,\nsegment_000.ts\n",
+        )
+        .unwrap();
+        assert!(validate_hls_output(&output).is_err());
+        assert!(!scan_transcode_cache(&cache.root).unwrap()[0].playlist_exists);
     }
 }

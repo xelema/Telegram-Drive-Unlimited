@@ -9,6 +9,7 @@ import { formatBytes } from '../../../utils';
 import { toast } from 'sonner';
 import { useModalFocus } from '../../../hooks/useModalFocus';
 import { userFacingError } from '../../../services/userFacingError';
+import { invalidateFolderFileQueries } from '../../../services/fileListRefresh';
 import i18n from '../../../i18n';
 
 interface ArchiveViewerModalProps {
@@ -54,26 +55,36 @@ export function ArchiveViewerModal({
     // flood React Query with individual refetch requests.
     const invalidationPending = useRef<Set<number | null>>(new Set());
     const invalidationTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const mountedRef = useRef(true);
     const debouncedInvalidate = (folderId: number | null) => {
+        // A per-entry upload may finish just after the viewer closes. Its result
+        // still needs to reach the folder even though no debounce remains mounted.
+        if (!mountedRef.current) {
+            void invalidateFolderFileQueries(queryClient, folderId);
+            return;
+        }
         invalidationPending.current.add(folderId);
         if (invalidationTimer.current) clearTimeout(invalidationTimer.current);
         invalidationTimer.current = setTimeout(() => {
             const ids = invalidationPending.current;
             invalidationPending.current = new Set();
             for (const id of ids) {
-                queryClient.invalidateQueries({ queryKey: ['files', id] });
+                void invalidateFolderFileQueries(queryClient, id);
             }
+            invalidationTimer.current = null;
         }, 300);
     };
     // Clean up on unmount — flush pending invalidations, cancel running extract-all
     useEffect(() => {
+        mountedRef.current = true;
         return () => {
+            mountedRef.current = false;
             if (invalidationTimer.current) clearTimeout(invalidationTimer.current);
             const ids = invalidationPending.current;
             if (ids.size > 0) {
                 invalidationPending.current = new Set();
                 for (const id of ids) {
-                    queryClient.invalidateQueries({ queryKey: ['files', id] });
+                    void invalidateFolderFileQueries(queryClient, id);
                 }
             }
             // Cancel any running extract-all so orphaned uploads don't continue

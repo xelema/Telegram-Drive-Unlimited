@@ -20,14 +20,14 @@ if (!fs.existsSync(manifestPath)) {
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
 const budget = JSON.parse(fs.readFileSync(budgetPath, 'utf8'));
 const assetFiles = fs.readdirSync(path.join(distRoot, 'assets'))
-  .filter((file) => /\.(js|css)$/.test(file))
+  .filter((file) => /\.(js|css|json)$/.test(file))
   .sort();
 
 const assets = assetFiles.map((file) => {
   const body = fs.readFileSync(path.join(distRoot, 'assets', file));
   return {
     file: `assets/${file}`,
-    type: file.endsWith('.js') ? 'javascript' : 'css',
+    type: file.endsWith('.js') ? 'javascript' : file.endsWith('.css') ? 'css' : 'locale-data',
     bytes: body.length,
     gzipBytes: zlib.gzipSync(body, { level: 9 }).length,
     brotliBytes: zlib.brotliCompressSync(body).length,
@@ -52,11 +52,14 @@ for (const file of entryFiles) collectInitial(file);
 
 const javascript = assets.filter((asset) => asset.type === 'javascript');
 const css = assets.filter((asset) => asset.type === 'css');
+const localeData = assets.filter((asset) => asset.type === 'locale-data');
 const summary = {
   initialJavaScriptBytes: javascript.filter((asset) => initialFiles.has(asset.file)).reduce((sum, asset) => sum + asset.bytes, 0),
   maxJavaScriptChunkBytes: Math.max(0, ...javascript.map((asset) => asset.bytes)),
   totalJavaScriptBytes: javascript.reduce((sum, asset) => sum + asset.bytes, 0),
   totalCssBytes: css.reduce((sum, asset) => sum + asset.bytes, 0),
+  totalLocaleDataBytes: localeData.reduce((sum, asset) => sum + asset.bytes, 0),
+  maxLocaleDataBytes: Math.max(0, ...localeData.map((asset) => asset.bytes)),
 };
 
 function resolveManifestKey(reference) {
@@ -123,7 +126,15 @@ const checks = [
   ['largest JavaScript chunk', summary.maxJavaScriptChunkBytes, budget.maxJavaScriptChunkBytes],
   ['total JavaScript', summary.totalJavaScriptBytes, budget.maxTotalJavaScriptBytes],
   ['total CSS', summary.totalCssBytes, budget.maxTotalCssBytes],
+  ['total locale data', summary.totalLocaleDataBytes, budget.maxTotalLocaleDataBytes],
+  ['largest locale catalog', summary.maxLocaleDataBytes, budget.maxLocaleDataBytes],
 ];
+
+const expectedCatalogs = fs.readdirSync(path.join(appRoot, 'src/i18n/locales'))
+  .filter(file => file.endsWith('.json') && file !== 'en.json');
+if (localeData.length !== expectedCatalogs.length) {
+  fail(`Expected ${expectedCatalogs.length} locally bundled language catalogs, found ${localeData.length}.`);
+}
 
 for (const [label, actual, maximum] of checks) {
   const status = actual <= maximum ? 'PASS' : 'FAIL';

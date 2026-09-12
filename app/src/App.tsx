@@ -14,7 +14,6 @@ const AdGateway = React.lazy(() => import("./components/shared/AdGateway").then(
 // Vite requires a fully static import path for dynamic imports so it can
 // perform static analysis and code-splitting. Template literals with
 // variables prevent Vite from resolving the module at build time.
-const MobileDashboard = React.lazy(() => import("./components/mobile/MobileDashboard.tsx"));
 const DesignGallery = import.meta.env.DEV
   ? React.lazy(() => import("./components/dev/DesignGallery"))
   : null;
@@ -30,7 +29,7 @@ import { useTheme } from "./context/ThemeContext";
 import { CrashReportingConsent } from "./components/shared/CrashReportingConsent";
 import { configureCrashTelemetry } from "./services/crashTelemetry";
 import { TelegramCooldownBanner } from "./components/shared/TelegramCooldownBanner";
-import { WhatsNewDialog } from "./components/shared/WhatsNewDialog";
+const WhatsNewDialog = React.lazy(() => import("./components/shared/WhatsNewDialog").then(m => ({ default: m.WhatsNewDialog })));
 import { useSettings } from "./context/SettingsContext";
 import { useTranslation } from "react-i18next";
 
@@ -63,7 +62,7 @@ function AppContent() {
   const [whatsNew, setWhatsNew] = useState<WhatsNewDetails | null>(() => consumeWhatsNew(appVersion));
   const { theme } = useTheme();
   const { available, version, downloading, progress, phase, managedByPackageManager, downloadAndInstall, dismissUpdate } = useUpdateCheck();
-  const { isMobile, isTelevision } = usePlatform();
+  const { isTelevision } = usePlatform();
   useTvSpatialNavigation(isTelevision);
   const { settings, updateSetting, isLoaded, persistenceStatus, retryPersistence } = useSettings();
   const { status: supporterStatus } = useSupporter();
@@ -286,7 +285,7 @@ function AppContent() {
           </button>
         </div>
       )}
-      {whatsNew && <WhatsNewDialog details={whatsNew} onClose={() => setWhatsNew(null)} />}
+      {whatsNew && <Suspense fallback={null}><WhatsNewDialog details={whatsNew} onClose={() => setWhatsNew(null)} /></Suspense>}
       {isLoaded && <CrashReportingConsent />}
       {authStatus === "ad-gateway" && (
         <Suspense fallback={<div className="h-screen bg-telegram-bg" />}>
@@ -299,15 +298,9 @@ function AppContent() {
             <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-telegram-primary"></div>
           </div>
         }>
-          {isMobile ? (
-            <ErrorBoundary>
-              <MobileDashboard onLogout={() => setAuthStatus("unauthenticated")} />
-            </ErrorBoundary>
-          ) : (
-            <ErrorBoundary>
-              <DesktopDashboard onLogout={() => setAuthStatus("unauthenticated")} />
-            </ErrorBoundary>
-          )}
+          <ErrorBoundary>
+            <DesktopDashboard onLogout={() => setAuthStatus("unauthenticated")} />
+          </ErrorBoundary>
         </Suspense>
       )}
       {authStatus === "unauthenticated" && (

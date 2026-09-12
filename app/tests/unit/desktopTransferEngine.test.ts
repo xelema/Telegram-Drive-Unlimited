@@ -78,4 +78,18 @@ describe('desktop transfer engine projections', () => {
     const earlier = { ...uploadJob(), id: 'earlier', queuePosition: 0 };
     expect(mergeTransferJob([current], earlier).map(job => job.id)).toEqual(['earlier', 'upload-1']);
   });
+  it('preserves collision decisions, actual published names, and skipped outcomes', () => {
+    const item = transferJobToDownloadItem({
+      ...uploadJob(), ownerId: 'owner-a', direction: 'download', kind: 'download', messageId: 7,
+      filename: 'report (2).pdf', savePath: '/tmp/report (2).pdf', status: 'completed',
+      collisionPolicy: 'keep_both', downloadOutcome: 'saved',
+    });
+    expect(item).toMatchObject({ filename: 'report (2).pdf', savePath: '/tmp/report (2).pdf', downloadOutcome: 'saved', ownerId: 'owner-a' });
+    expect(downloadItemToTransferRequest(item).collisionPolicy).toBe('keep_both');
+    const skipped = transferJobToDownloadItem({ ...uploadJob(), direction: 'download', kind: 'download', status: 'completed', downloadOutcome: 'skipped', collisionPolicy: 'skip' });
+    expect(skipped.downloadOutcome).toBe('skipped');
+    expect(downloadItemToTransferRequest(skipped).collisionPolicy).toBe('skip');
+    expect(downloadItemToTransferRequest({ ...item, collisionPolicy: undefined }).collisionPolicy).toBe('keep_both');
+  });
+
 });

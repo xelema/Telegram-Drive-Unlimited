@@ -6,9 +6,13 @@ import { nativeShareOrCopy } from '../../../utils';
 import { useModalFocus } from '../../../hooks/useModalFocus';
 import { useTranslation } from 'react-i18next';
 import { userFacingError } from '../../../services/userFacingError';
+import { sourceFolder as resolveSourceFolder } from '../../../services/fileIdentity';
+import { createOwnedShare } from '../../../services/shareLinks';
+import { useActionScope } from '../../../hooks/useActionScope';
 import i18n from '../../../i18n';
 
 interface ShareDialogProps {
+    ownerId: string;
     file: TelegramFile;
     folders?: TelegramFolder[];
     activeFolderId?: number | null;
@@ -18,7 +22,12 @@ interface ShareDialogProps {
 
 type ShareMode = 'telegram' | 'local' | 'power';
 
-export function ShareDialog({ file, folders = [], activeFolderId = null, onClose, onOpenSettings }: ShareDialogProps) {
+export function ShareDialog(props: ShareDialogProps) {
+    const key = JSON.stringify([props.ownerId, resolveSourceFolder(props.file, props.activeFolderId ?? null), props.file.id]);
+    return <OwnedShareDialog key={key} {...props} />;
+}
+
+function OwnedShareDialog({ ownerId, file, folders = [], activeFolderId = null, onClose, onOpenSettings }: ShareDialogProps) {
     const { t } = useTranslation();
     const [mode, setMode] = useState<ShareMode | null>(null);
     const [password, setPassword] = useState('');
@@ -29,27 +38,34 @@ export function ShareDialog({ file, folders = [], activeFolderId = null, onClose
     const [copied, setCopied] = useState(false);
     const [webDav, setWebDav] = useState<{ supported: boolean; enabled: boolean; running: boolean; port: number; token_set: boolean } | null>(null);
     const panelRef = useRef<HTMLDivElement>(null);
+    const capture = useActionScope(ownerId || null);
     const close = useCallback(onClose, [onClose]);
     useModalFocus(panelRef, close);
 
-    const sourceFolderId = file.folder_id ?? activeFolderId;
+    const sourceFolderId = resolveSourceFolder(file, activeFolderId);
     const sourceFolder = folders.find((folder) => folder.id === sourceFolderId);
     const telegramLink = sourceFolder?.username ? `https://t.me/${sourceFolder.username}/${file.id}` : null;
 
     useEffect(() => {
         if (mode !== 'power') return;
+        const isCurrent = capture();
         invoke<{ supported: boolean; enabled: boolean; running: boolean; port: number; token_set: boolean }>('cmd_get_webdav_settings')
-            .then(setWebDav)
-            .catch(() => setWebDav(null));
-    }, [mode]);
+            .then(value => { if (isCurrent()) setWebDav(value); })
+            .catch(() => { if (isCurrent()) setWebDav(null); });
+    }, [capture, mode]);
 
     const copy = async (value: string) => {
+        const isCurrent = capture();
+        if (!isCurrent()) return;
         await navigator.clipboard.writeText(value);
+        if (!isCurrent()) return;
         setCopied(true);
-        window.setTimeout(() => setCopied(false), 1800);
+        window.setTimeout(() => { if (isCurrent()) setCopied(false); }, 1800);
     };
 
     const generateLocalLink = async () => {
+        const isCurrent = capture();
+        if (!isCurrent()) return;
         if (password.trim().length < 4 || password.trim().length > 128 || new TextEncoder().encode(password.trim()).length > 72) {
             setError(t('common.operation_failed'));
             return;
@@ -58,19 +74,12 @@ export function ShareDialog({ file, folders = [], activeFolderId = null, onClose
         setError(null);
         try {
             const expiryHours = expiryType === '1h' ? 1 : expiryType === '1d' ? 24 : expiryType === '7d' ? 168 : null;
-            const result = await invoke<ShareInfo>('cmd_create_share', {
-                folderId: sourceFolderId,
-                messageId: file.id,
-                fileName: file.name,
-                fileSize: file.size,
-                password: password.trim(),
-                expiryHours,
-            });
-            setShareInfo(result);
+            const result = await createOwnedShare(ownerId, file, sourceFolderId, password.trim(), expiryHours);
+            if (isCurrent()) setShareInfo(result);
         } catch (reason) {
-            setError(userFacingError(reason, t));
+            if (isCurrent()) setError(userFacingError(reason, t));
         } finally {
-            setLoading(false);
+            if (isCurrent()) setLoading(false);
         }
     };
 

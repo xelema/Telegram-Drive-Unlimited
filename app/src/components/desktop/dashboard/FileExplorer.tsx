@@ -1,3 +1,4 @@
+import { sourceFolder } from '../../../services/fileIdentity';
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { Plus, ArrowUpDown, ArrowUp, ArrowDown, FolderUp } from 'lucide-react';
 import { useVirtualizer } from '@tanstack/react-virtual';
@@ -188,7 +189,7 @@ export function FileExplorer({
 
     if (loading) {
         return (
-            <div className="custom-scrollbar flex-1 overflow-hidden p-5" aria-label={t('common.loading')}>
+            <div className="custom-scrollbar flex-1 overflow-hidden p-3" aria-label={t('common.loading')}>
                 {viewMode === 'grid' ? (
                     <div className="grid grid-cols-[repeat(auto-fill,minmax(120px,1fr))] gap-3">
                         {Array.from({ length: 12 }, (_, index) => (
@@ -215,12 +216,12 @@ export function FileExplorer({
     }
 
     if (error) {
-        return <div className="flex flex-1 items-center justify-center p-5 text-ui text-app-danger">Error loading files</div>;
+        return <div className="flex flex-1 items-center justify-center p-3 text-ui text-app-danger">Error loading files</div>;
     }
 
     if (files.length === 0) {
         return (
-            <div className="flex-1 overflow-auto p-5">
+            <div className="flex-1 overflow-auto p-3">
                 <EmptyState onUpload={onManualUpload} />
             </div>
         );
@@ -229,7 +230,7 @@ export function FileExplorer({
     return (
         <div
             ref={parentRef}
-            className="custom-scrollbar flex-1 overflow-auto p-5"
+            className="custom-scrollbar flex-1 overflow-auto p-3"
         >
             {syncProgress?.active && syncProgress.count > 0 && (
                 <div className="sticky top-0 z-10 mx-auto mb-3 flex w-fit items-center gap-2 rounded-full border border-app-accent/20 bg-app-surface-raised px-3 py-1.5 text-xs text-app-text-secondary shadow-lg" role="status" aria-live="polite">
@@ -294,7 +295,7 @@ export function FileExplorer({
                                                 onDelete={() => onDelete(file)}
                                                 onDownload={() => onDownload(file)}
                                                 onPreview={() => handlePreviewRequest(file)}
-                                                activeFolderId={file.folder_id ?? activeFolderId}
+                                                activeFolderId={sourceFolder(file, activeFolderId)}
                                                 height={cardHeight}
                                                 onToggleSelection={() => onToggleSelection(file.id)}
                                                 onShare={onShare ? () => onShare(file) : undefined}

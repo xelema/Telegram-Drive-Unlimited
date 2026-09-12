@@ -66,7 +66,7 @@ describe('SettingsModal transcode cache state', () => {
   });
 
   it('shows a recoverable error instead of an infinite loading state', async () => {
-    render(<SettingsModal isOpen onClose={vi.fn()} />);
+    render(<SettingsModal ownerId={null} isOpen onClose={vi.fn()} />);
 
     expect((await screen.findByRole('alert')).textContent).toContain('Windows cache access denied');
     await waitFor(() => {
@@ -76,7 +76,7 @@ describe('SettingsModal transcode cache state', () => {
   });
 
   it('directs Windows users to the official FFmpeg download page when HLS is unavailable', async () => {
-    render(<SettingsModal isOpen onClose={vi.fn()} />);
+    render(<SettingsModal ownerId={null} isOpen onClose={vi.fn()} />);
 
     expect(await screen.findByText('FFmpeg is needed for HLS playback')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Download FFmpeg for Windows' }));

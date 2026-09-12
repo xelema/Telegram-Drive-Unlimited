@@ -58,7 +58,7 @@ export default function AccessibilityFixtures() {
     return (
       <main className="h-screen bg-app-canvas text-app-text">
         <h1 className="sr-only">Settings accessibility fixture</h1>
-        <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
+        <SettingsModal ownerId={null} isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
       </main>
     );
   }
@@ -67,7 +67,7 @@ export default function AccessibilityFixtures() {
     return (
       <main className="h-screen bg-app-canvas text-app-text">
         <h1 className="p-6 text-xl font-semibold">Sharing accessibility fixture</h1>
-        {dialogOpen && <ShareDialog file={file} folders={[folder]} activeFolderId={folder.id} onClose={() => setDialogOpen(false)} />}
+        {dialogOpen && <ShareDialog ownerId="fixture-owner" file={file} folders={[folder]} activeFolderId={folder.id} onClose={() => setDialogOpen(false)} />}
       </main>
     );
   }

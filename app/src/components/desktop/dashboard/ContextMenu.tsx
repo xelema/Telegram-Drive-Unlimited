@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { TelegramFile, TelegramFolder } from '../../../types';
 import { toast } from 'sonner';
 import { describeFileActions, resolvePublicFolderUsername } from './fileActionDescriptors';
+import { requestFileOrganization } from '../../../services/workspace';
 
 interface ContextMenuProps {
     x: number;
@@ -121,6 +122,7 @@ export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPrevi
                     {file.is_favorite ? 'Remove from Favorites' : 'Add to Favorites'}
                 </button>
             )}
+            {!actions.isFolder && <button type="button" onClick={() => { requestFileOrganization(file, activeFolderId ?? null); onClose(); }} className="flex min-h-9 w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-telegram-text hover:bg-telegram-hover"><FolderOpen className="h-4 w-4 text-telegram-primary" />{t('workspace.organize_file')}</button>}
             {!actions.isFolder && onTogglePinned && (
                 <button onClick={onTogglePinned} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-telegram-text transition-colors hover:bg-telegram-hover">
                     <Pin className={`h-4 w-4 ${file.is_pinned ? 'fill-blue-400 text-blue-400' : 'text-blue-400'}`} />

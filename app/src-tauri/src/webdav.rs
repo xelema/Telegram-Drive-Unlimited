@@ -29,6 +29,44 @@ use crate::commands::{
 };
 use crate::db::DbConnection;
 use crate::vpn_optimizer::NetworkConfig;
+use crate::workspace::AccountGuard;
+
+struct DavRequestAccess {
+    account: AccountGuard,
+    client: tokio::sync::OnceCell<grammers_client::Client>,
+}
+
+tokio::task_local! {
+    static DAV_REQUEST: Arc<DavRequestAccess>;
+}
+
+async fn scoped_dav_request<T>(
+    account: &AccountGuard,
+    operation: impl std::future::Future<Output = FsResult<T>>,
+) -> FsResult<T> {
+    account.validate().map_err(|_| FsError::Forbidden)?;
+    let access = Arc::new(DavRequestAccess {
+        account: account.clone(),
+        client: tokio::sync::OnceCell::new(),
+    });
+    let result = DAV_REQUEST.scope(access, operation).await;
+    account.validate().map_err(|_| FsError::Forbidden)?;
+    result
+}
+
+async fn protected_media(
+    account: &AccountGuard,
+    client: &grammers_client::Client,
+    folder: Option<i64>,
+    message: i32,
+    media: &Media,
+    caption: &str,
+) -> FsResult<bool> {
+    crate::commands::fs::resolve_remote_envelope(account, client, folder, message, media, caption)
+        .await
+        .map(|record| record.is_some())
+        .map_err(|_| FsError::Forbidden)
+}
 
 const INDEX_TTL: Duration = Duration::from_secs(15);
 const MAX_LISTED_FILES: usize = 50_000;
@@ -78,9 +116,27 @@ impl DavNode {
 
 #[derive(Default)]
 struct DavIndex {
+    account: Option<AccountGuard>,
     nodes: HashMap<String, DavNode>,
     children: HashMap<String, Vec<String>>,
     refreshed: HashMap<String, Instant>,
+}
+
+impl DavIndex {
+    fn bind(&mut self, account: &AccountGuard) -> FsResult<()> {
+        account.validate().map_err(|_| FsError::Forbidden)?;
+        if self.account.as_ref().is_none_or(|previous| {
+            previous.owner != account.owner
+                || previous.root != account.root
+                || previous.validate().is_err()
+        }) {
+            *self = Self {
+                account: Some(account.clone()),
+                ..Self::default()
+            };
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -91,6 +147,7 @@ pub struct TelegramDavFs {
     db: DbConnection,
     write_enabled: bool,
     staging_dir: PathBuf,
+    account_root: PathBuf,
     index: Arc<tokio::sync::RwLock<DavIndex>>,
 }
 
@@ -102,6 +159,7 @@ impl TelegramDavFs {
         db: DbConnection,
         write_enabled: bool,
         staging_dir: PathBuf,
+        account_root: PathBuf,
     ) -> Self {
         Self {
             state,
@@ -110,17 +168,62 @@ impl TelegramDavFs {
             db,
             write_enabled,
             staging_dir,
+            account_root,
             index: Arc::new(tokio::sync::RwLock::new(DavIndex::default())),
         }
     }
 
+    fn account(&self) -> FsResult<AccountGuard> {
+        let account = DAV_REQUEST
+            .try_with(|access| access.account.clone())
+            .map_err(|_| FsError::Forbidden)?;
+        account.validate().map_err(|_| FsError::Forbidden)?;
+        Ok(account)
+    }
+
+    async fn with_account<T>(
+        &self,
+        operation: impl std::future::Future<Output = FsResult<T>>,
+    ) -> FsResult<T> {
+        let account =
+            AccountGuard::open(&self.account_root, None).map_err(|_| FsError::Forbidden)?;
+        self.with_existing_account(&account, operation).await
+    }
+
+    async fn with_existing_account<T>(
+        &self,
+        account: &AccountGuard,
+        operation: impl std::future::Future<Output = FsResult<T>>,
+    ) -> FsResult<T> {
+        self.index.write().await.bind(account)?;
+        scoped_dav_request(account, operation).await
+    }
+
     async fn client(&self) -> FsResult<grammers_client::Client> {
-        self.state
+        let access = DAV_REQUEST
+            .try_with(Arc::clone)
+            .map_err(|_| FsError::Forbidden)?;
+        access.account.validate().map_err(|_| FsError::Forbidden)?;
+        let client = access
             .client
-            .lock()
-            .await
-            .clone()
-            .ok_or(FsError::GeneralFailure)
+            .get_or_try_init(|| async {
+                let client = self
+                    .state
+                    .client
+                    .lock()
+                    .await
+                    .clone()
+                    .ok_or(FsError::GeneralFailure)?;
+                access
+                    .account
+                    .validate_client(&client)
+                    .await
+                    .map_err(|_| FsError::Forbidden)?;
+                Ok::<_, FsError>(client)
+            })
+            .await?;
+        access.account.validate().map_err(|_| FsError::Forbidden)?;
+        Ok(client.clone())
     }
 
     async fn should_refresh(&self, path: &str) -> bool {
@@ -167,7 +270,12 @@ impl TelegramDavFs {
                     }
                 }
             }
-            self.state.peer_cache.write().await.extend(discovered);
+            self.account()?;
+            self.state
+                .peer_cache
+                .write()
+                .await
+                .extend(discovered.clone());
         }
 
         // The desktop app persists the folder/channel index locally. Use it as a
@@ -192,7 +300,13 @@ impl TelegramDavFs {
         })
         .await
         .unwrap_or_default();
-        for (channel_id, name) in cached_folders {
+        for (channel_id, _name) in cached_folders {
+            // Legacy rows have no owner. Only a channel verified in this request's
+            // actual account may supplement discovery, using its current title.
+            let Some(Peer::Channel(channel)) = discovered.get(&channel_id) else {
+                continue;
+            };
+            let name = channel.title().replace(" [TD]", "").replace(" [td]", "");
             if !raw_folders
                 .iter()
                 .any(|(folder_id, _, _)| *folder_id == Some(channel_id))
@@ -209,6 +323,7 @@ impl TelegramDavFs {
         );
 
         let mut index = self.index.write().await;
+        index.bind(&self.account()?)?;
         let previous = index.children.remove("/").unwrap_or_default();
         for path in previous {
             index.nodes.remove(&path);
@@ -233,25 +348,6 @@ impl TelegramDavFs {
         Ok(())
     }
 
-    async fn encrypted_message_ids(&self, folder_id: Option<i64>) -> HashSet<i32> {
-        let folder_key = folder_id
-            .map(|id| id.to_string())
-            .unwrap_or_else(|| "home".to_string());
-        crate::db::with_connection(self.db.clone(), move |connection| {
-            let mut statement = connection.prepare(
-                "SELECT message_id FROM encrypted_files WHERE folder_key = ? AND record_state = 'active'",
-            ).map_err(|error| error.to_string())?;
-            statement.bind((1, folder_key.as_str())).map_err(|error| error.to_string())?;
-            let mut ids = HashSet::new();
-            while matches!(statement.next(), Ok(sqlite::State::Row)) {
-                if let Ok(id) = statement.read::<i64, _>(0) {
-                    ids.insert(id as i32);
-                }
-            }
-            Ok(ids)
-        }).await.unwrap_or_default()
-    }
-
     async fn refresh_folder(&self, folder_path: &str) -> FsResult<()> {
         if !self.should_refresh(folder_path).await {
             return Ok(());
@@ -273,7 +369,7 @@ impl TelegramDavFs {
         let peer = resolve_peer(&client, folder_id, &self.state.peer_cache)
             .await
             .map_err(|_| FsError::GeneralFailure)?;
-        let encrypted_ids = self.encrypted_message_ids(folder_id).await;
+        let account = self.account()?;
         let mut messages = client.iter_messages(&peer);
         let mut raw_files = Vec::new();
         while raw_files.len() < MAX_LISTED_FILES {
@@ -283,6 +379,15 @@ impl TelegramDavFs {
             let Some(media) = message.media() else {
                 continue;
             };
+            let encrypted = protected_media(
+                &account,
+                &client,
+                folder_id,
+                message.id(),
+                &media,
+                message.text(),
+            )
+            .await?;
             let size = media_size(&media);
             let remote_name = match media {
                 Media::Document(document) => document.name().to_string(),
@@ -301,7 +406,7 @@ impl TelegramDavFs {
                 name,
                 size,
                 UNIX_EPOCH + Duration::from_secs(timestamp),
-                encrypted_ids.contains(&message.id()),
+                encrypted,
             ));
         }
         raw_files.sort_by_key(|entry| entry.0);
@@ -312,6 +417,7 @@ impl TelegramDavFs {
         );
 
         let mut index = self.index.write().await;
+        index.bind(&account)?;
         let previous = index.children.remove(folder_path).unwrap_or_default();
         for path in previous {
             index.nodes.remove(&path);
@@ -385,7 +491,7 @@ impl TelegramDavFs {
         &self,
         folder_id: Option<i64>,
         message_id: i32,
-    ) -> FsResult<(grammers_client::Client, Media)> {
+    ) -> FsResult<(grammers_client::Client, Media, DavMetadata)> {
         let client = self.client().await?;
         let peer = resolve_peer(&client, folder_id, &self.state.peer_cache)
             .await
@@ -400,7 +506,27 @@ impl TelegramDavFs {
             .next()
             .ok_or(FsError::NotFound)?;
         let media = message.media().ok_or(FsError::NotFound)?;
-        Ok((client, media))
+        let account = self.account()?;
+        if protected_media(
+            &account,
+            &client,
+            folder_id,
+            message_id,
+            &media,
+            message.text(),
+        )
+        .await?
+        {
+            return Err(FsError::Forbidden);
+        }
+        let size = media_size(&media);
+        let metadata = DavMetadata {
+            len: size,
+            modified: UNIX_EPOCH + Duration::from_secs(message.date().timestamp().max(0) as u64),
+            is_dir: false,
+            etag: Some(format!("td-{message_id}-{size}")),
+        };
+        Ok((client, media, metadata))
     }
 
     async fn upload_temp_file(&self, target_path: &str, temp_path: &Path) -> FsResult<DavMetadata> {
@@ -426,6 +552,14 @@ impl TelegramDavFs {
         ) {
             return Err(FsError::Forbidden);
         }
+        if let Some(DavNode::File {
+            folder_id,
+            message_id,
+            ..
+        }) = &existing
+        {
+            self.fetch_media(*folder_id, *message_id).await?;
+        }
 
         let size = tokio::fs::metadata(temp_path)
             .await
@@ -449,6 +583,7 @@ impl TelegramDavFs {
         let mut sent = None;
         let mut last_error = String::new();
         for attempt in 0..=self.network.retry_attempts() {
+            self.account()?;
             match client.send_message(&peer, outgoing.clone()).await {
                 Ok(message) => {
                     sent = Some(message);
@@ -490,6 +625,7 @@ impl TelegramDavFs {
         }) = existing
         {
             if let Ok(old_peer) = resolve_peer(&client, old_folder, &self.state.peer_cache).await {
+                self.account()?;
                 if let Err(error) = client.delete_messages(&old_peer, &[old_message]).await {
                     log::error!(
                         "WebDAV replacement uploaded as message {} but old message {} could not be deleted: {}",
@@ -499,6 +635,15 @@ impl TelegramDavFs {
                     );
                     return Err(FsError::GeneralFailure);
                 }
+                crate::workspace::remote_changes::record(
+                    &self.account()?,
+                    vec![crate::workspace::remote_changes::Change::Delete {
+                        folder: old_folder,
+                        message: old_message,
+                    }],
+                )
+                .await
+                .map_err(|_| FsError::GeneralFailure)?;
             }
         }
         self.invalidate(&folder_path).await;
@@ -523,14 +668,25 @@ impl TelegramDavFs {
         if *encrypted {
             return Err(FsError::Forbidden);
         }
+        self.fetch_media(*folder_id, *message_id).await?;
         let client = self.client().await?;
         let peer = resolve_peer(&client, *folder_id, &self.state.peer_cache)
             .await
             .map_err(|_| FsError::GeneralFailure)?;
+        self.account()?;
         client
             .delete_messages(&peer, &[*message_id])
             .await
             .map_err(|_| FsError::GeneralFailure)?;
+        crate::workspace::remote_changes::record(
+            &self.account()?,
+            vec![crate::workspace::remote_changes::Change::Delete {
+                folder: *folder_id,
+                message: *message_id,
+            }],
+        )
+        .await
+        .map_err(|_| FsError::GeneralFailure)?;
         Ok(())
     }
 
@@ -542,6 +698,7 @@ impl TelegramDavFs {
         new_name: String,
     ) -> FsResult<()> {
         let input_peer = peer_to_input_peer(peer)?;
+        self.account()?;
         client
             .invoke(&tl::functions::messages::EditMessage {
                 peer: input_peer,
@@ -578,6 +735,7 @@ impl TelegramDavFs {
         if encrypted {
             return Err(FsError::Forbidden);
         }
+        self.fetch_media(source_folder_id, message_id).await?;
         let to_segments = path_segments(to);
         if to_segments.len() != 2 {
             return Err(FsError::Forbidden);
@@ -591,12 +749,23 @@ impl TelegramDavFs {
             .map_err(|_| FsError::GeneralFailure)?;
 
         if move_file && source_folder_id == target_folder_id {
-            self.edit_message_name(&client, &source_peer, message_id, new_name)
+            self.edit_message_name(&client, &source_peer, message_id, new_name.clone())
                 .await?;
+            crate::workspace::remote_changes::record(
+                &self.account()?,
+                vec![crate::workspace::remote_changes::Change::Rename {
+                    folder: source_folder_id,
+                    message: message_id,
+                    name: new_name,
+                }],
+            )
+            .await
+            .map_err(|_| FsError::GeneralFailure)?;
         } else {
             let target_peer = resolve_peer(&client, target_folder_id, &self.state.peer_cache)
                 .await
                 .map_err(|_| FsError::GeneralFailure)?;
+            self.account()?;
             let forwarded = client
                 .forward_messages(&target_peer, &[message_id], &source_peer)
                 .await
@@ -607,13 +776,32 @@ impl TelegramDavFs {
                 .next()
                 .map(|message| message.id())
                 .ok_or(FsError::GeneralFailure)?;
-            self.edit_message_name(&client, &target_peer, new_message_id, new_name)
+            self.edit_message_name(&client, &target_peer, new_message_id, new_name.clone())
                 .await?;
             if move_file {
+                self.account()?;
                 client
                     .delete_messages(&source_peer, &[message_id])
                     .await
                     .map_err(|_| FsError::GeneralFailure)?;
+                crate::workspace::remote_changes::record(
+                    &self.account()?,
+                    vec![
+                        crate::workspace::remote_changes::Change::Move {
+                            source: source_folder_id,
+                            message: message_id,
+                            target: target_folder_id,
+                            new_message: new_message_id,
+                        },
+                        crate::workspace::remote_changes::Change::Rename {
+                            folder: target_folder_id,
+                            message: new_message_id,
+                            name: new_name,
+                        },
+                    ],
+                )
+                .await
+                .map_err(|_| FsError::GeneralFailure)?;
             }
         }
         self.invalidate(&source_folder_path).await;
@@ -628,7 +816,7 @@ impl DavFileSystem for TelegramDavFs {
         path: &'a DavPath,
         options: OpenOptions,
     ) -> FsFuture<'a, Box<dyn DavFile>> {
-        Box::pin(async move {
+        Box::pin(self.with_account(async move {
             let path = dav_path_string(path)?;
             if options.write {
                 if !self.write_enabled || !supports_staged_write(&options) {
@@ -662,6 +850,7 @@ impl DavFileSystem for TelegramDavFs {
                     etag: None,
                 };
                 return Ok(Box::new(TelegramDavFile::Write {
+                    account: self.account()?,
                     fs: self.clone(),
                     target_path: path,
                     temp_path,
@@ -675,25 +864,22 @@ impl DavFileSystem for TelegramDavFs {
             let DavNode::File {
                 folder_id,
                 message_id,
-                encrypted,
                 ..
             } = node.clone()
             else {
                 return Err(FsError::Forbidden);
             };
-            if encrypted {
-                return Err(FsError::Forbidden);
-            }
-            let (client, media) = self.fetch_media(folder_id, message_id).await?;
+            let (client, media, metadata) = self.fetch_media(folder_id, message_id).await?;
             Ok(Box::new(TelegramDavFile::Read {
+                account: self.account()?,
                 client,
                 media,
                 position: 0,
-                metadata: node.metadata(),
+                metadata,
                 bandwidth: self.bandwidth.clone(),
                 download_limit: self.network.download_limit_bytes_per_sec(),
             }) as Box<dyn DavFile>)
-        })
+        }))
     }
 
     fn read_dir<'a>(
@@ -701,7 +887,7 @@ impl DavFileSystem for TelegramDavFs {
         path: &'a DavPath,
         _meta: ReadDirMeta,
     ) -> FsFuture<'a, FsStream<Box<dyn DavDirEntry>>> {
-        Box::pin(async move {
+        Box::pin(self.with_account(async move {
             let path = dav_path_string(path)?;
             let node = self.node(&path).await?;
             if !matches!(node, DavNode::Root | DavNode::Folder { .. }) {
@@ -711,6 +897,7 @@ impl DavFileSystem for TelegramDavFs {
                 self.refresh_folder(&path).await?;
             }
             let index = self.index.read().await;
+            let account = self.account()?;
             let entries: Vec<FsResult<Box<dyn DavDirEntry>>> = index
                 .children
                 .get(&path)
@@ -720,25 +907,26 @@ impl DavFileSystem for TelegramDavFs {
                     let child = index.nodes.get(child_path)?.clone();
                     let name = child_path.rsplit('/').next()?.as_bytes().to_vec();
                     Some(Ok(Box::new(TelegramDavDirEntry {
+                        account: account.clone(),
                         name,
                         metadata: child.metadata(),
                     }) as Box<dyn DavDirEntry>))
                 })
                 .collect();
             Ok(Box::pin(stream::iter(entries)) as FsStream<Box<dyn DavDirEntry>>)
-        })
+        }))
     }
 
     fn metadata<'a>(&'a self, path: &'a DavPath) -> FsFuture<'a, Box<dyn DavMetaData>> {
-        Box::pin(async move {
+        Box::pin(self.with_account(async move {
             let path = dav_path_string(path)?;
             let node = self.node(&path).await?;
             Ok(Box::new(node.metadata()) as Box<dyn DavMetaData>)
-        })
+        }))
     }
 
     fn create_dir<'a>(&'a self, path: &'a DavPath) -> FsFuture<'a, ()> {
-        Box::pin(async move {
+        Box::pin(self.with_account(async move {
             if !self.write_enabled {
                 return Err(FsError::Forbidden);
             }
@@ -757,11 +945,11 @@ impl DavFileSystem for TelegramDavFs {
                 .map_err(|_| FsError::GeneralFailure)?;
             self.invalidate("/").await;
             Ok(())
-        })
+        }))
     }
 
     fn remove_dir<'a>(&'a self, path: &'a DavPath) -> FsFuture<'a, ()> {
-        Box::pin(async move {
+        Box::pin(self.with_account(async move {
             if !self.write_enabled {
                 return Err(FsError::Forbidden);
             }
@@ -790,11 +978,11 @@ impl DavFileSystem for TelegramDavFs {
                 .map_err(|_| FsError::GeneralFailure)?;
             self.invalidate("/").await;
             Ok(())
-        })
+        }))
     }
 
     fn remove_file<'a>(&'a self, path: &'a DavPath) -> FsFuture<'a, ()> {
-        Box::pin(async move {
+        Box::pin(self.with_account(async move {
             if !self.write_enabled {
                 return Err(FsError::Forbidden);
             }
@@ -804,11 +992,11 @@ impl DavFileSystem for TelegramDavFs {
             self.delete_file_node(&node).await?;
             self.invalidate(&folder_path).await;
             Ok(())
-        })
+        }))
     }
 
     fn rename<'a>(&'a self, from: &'a DavPath, to: &'a DavPath) -> FsFuture<'a, ()> {
-        Box::pin(async move {
+        Box::pin(self.with_account(async move {
             if !self.write_enabled {
                 return Err(FsError::Forbidden);
             }
@@ -835,18 +1023,18 @@ impl DavFileSystem for TelegramDavFs {
                 .map_err(|_| FsError::GeneralFailure)?;
             self.invalidate("/").await;
             Ok(())
-        })
+        }))
     }
 
     fn copy<'a>(&'a self, from: &'a DavPath, to: &'a DavPath) -> FsFuture<'a, ()> {
-        Box::pin(async move {
+        Box::pin(self.with_account(async move {
             let from = dav_path_string(from)?;
             let to = dav_path_string(to)?;
             if !matches!(self.node(&from).await?, DavNode::File { .. }) {
                 return Err(FsError::Forbidden);
             }
             self.copy_or_move_file(&from, &to, false).await
-        })
+        }))
     }
 }
 
@@ -855,6 +1043,7 @@ impl DavFileSystem for TelegramDavFs {
 #[allow(clippy::large_enum_variant)]
 enum TelegramDavFile {
     Read {
+        account: AccountGuard,
         client: grammers_client::Client,
         media: Media,
         position: u64,
@@ -863,6 +1052,7 @@ enum TelegramDavFile {
         download_limit: u64,
     },
     Write {
+        account: AccountGuard,
         fs: TelegramDavFs,
         target_path: String,
         temp_path: PathBuf,
@@ -870,6 +1060,14 @@ enum TelegramDavFile {
         metadata: DavMetadata,
         committed: bool,
     },
+}
+
+impl TelegramDavFile {
+    fn account(&self) -> &AccountGuard {
+        match self {
+            Self::Read { account, .. } | Self::Write { account, .. } => account,
+        }
+    }
 }
 
 impl fmt::Debug for TelegramDavFile {
@@ -910,6 +1108,7 @@ impl Drop for TelegramDavFile {
 impl DavFile for TelegramDavFile {
     fn metadata(&mut self) -> FsFuture<'_, Box<dyn DavMetaData>> {
         Box::pin(async move {
+            self.account().validate().map_err(|_| FsError::Forbidden)?;
             let metadata = match self {
                 Self::Read { metadata, .. } | Self::Write { metadata, .. } => metadata.clone(),
             };
@@ -924,6 +1123,7 @@ impl DavFile for TelegramDavFile {
 
     fn write_bytes(&mut self, bytes: Bytes) -> FsFuture<'_, ()> {
         Box::pin(async move {
+            self.account().validate().map_err(|_| FsError::Forbidden)?;
             let Self::Write { file, metadata, .. } = self else {
                 return Err(FsError::Forbidden);
             };
@@ -942,6 +1142,7 @@ impl DavFile for TelegramDavFile {
     fn read_bytes(&mut self, count: usize) -> FsFuture<'_, Bytes> {
         Box::pin(async move {
             let Self::Read {
+                account,
                 client,
                 media,
                 position,
@@ -952,6 +1153,7 @@ impl DavFile for TelegramDavFile {
             else {
                 return Err(FsError::Forbidden);
             };
+            account.validate().map_err(|_| FsError::Forbidden)?;
             if *position >= metadata.len || count == 0 {
                 return Ok(Bytes::new());
             }
@@ -967,6 +1169,7 @@ impl DavFile for TelegramDavFile {
                     tokio::time::sleep(delay).await;
                 }
             }
+            account.validate().map_err(|_| FsError::Forbidden)?;
             *position += bytes.len() as u64;
             reservation.commit();
             Ok(bytes)
@@ -975,6 +1178,7 @@ impl DavFile for TelegramDavFile {
 
     fn seek(&mut self, seek: SeekFrom) -> FsFuture<'_, u64> {
         Box::pin(async move {
+            self.account().validate().map_err(|_| FsError::Forbidden)?;
             match self {
                 Self::Read {
                     position, metadata, ..
@@ -993,6 +1197,7 @@ impl DavFile for TelegramDavFile {
     fn flush(&mut self) -> FsFuture<'_, ()> {
         Box::pin(async move {
             let Self::Write {
+                account,
                 fs,
                 target_path,
                 temp_path,
@@ -1003,11 +1208,14 @@ impl DavFile for TelegramDavFile {
             else {
                 return Ok(());
             };
+            account.validate().map_err(|_| FsError::Forbidden)?;
             if *committed {
                 return Ok(());
             }
             file.flush().await.map_err(|_| FsError::GeneralFailure)?;
-            *metadata = fs.upload_temp_file(target_path, temp_path).await?;
+            *metadata = fs
+                .with_existing_account(account, fs.upload_temp_file(target_path, temp_path))
+                .await?;
             *committed = true;
             Ok(())
         })
@@ -1057,18 +1265,26 @@ impl DavMetaData for DavMetadata {
 }
 
 struct TelegramDavDirEntry {
+    account: AccountGuard,
     name: Vec<u8>,
     metadata: DavMetadata,
 }
 
 impl DavDirEntry for TelegramDavDirEntry {
     fn name(&self) -> Vec<u8> {
-        self.name.clone()
+        if self.account.validate().is_ok() {
+            self.name.clone()
+        } else {
+            Vec::new()
+        }
     }
 
     fn metadata(&self) -> FsFuture<'_, Box<dyn DavMetaData>> {
         let metadata = self.metadata.clone();
-        Box::pin(async move { Ok(Box::new(metadata) as Box<dyn DavMetaData>) })
+        Box::pin(async move {
+            self.account.validate().map_err(|_| FsError::Forbidden)?;
+            Ok(Box::new(metadata) as Box<dyn DavMetaData>)
+        })
     }
 }
 
@@ -1346,6 +1562,10 @@ fn supports_staged_write(options: &OpenOptions) -> bool {
     // open is required by Finder and Explorer before they send the eventual PUT.
     options.truncate || (options.create && options.size.is_none() && options.checksum.is_none())
 }
+
+#[cfg(test)]
+#[path = "webdav_scope_tests.rs"]
+mod account_scope_tests;
 
 #[cfg(test)]
 mod tests {

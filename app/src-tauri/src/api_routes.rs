@@ -1,4 +1,5 @@
 use crate::bandwidth::{BandwidthManager, BandwidthReservation};
+use crate::commands::fs::verify_forwarded_messages;
 use crate::commands::preview::THUMBNAIL_EXTS;
 use crate::commands::utils::{map_error, media_size, resolve_peer};
 use crate::commands::TelegramState;
@@ -46,6 +47,7 @@ pub struct ApiState {
 /// The thumbnail and preview caches live on disk and can become stale
 /// when files are moved (forwarded → new message IDs).
 pub struct CacheDirs {
+    pub account_root: std::path::PathBuf,
     pub thumbnail_dir: std::path::PathBuf,
     pub preview_dir: std::path::PathBuf,
 }
@@ -72,24 +74,91 @@ fn json_error(code: &str, message: &str, status: u16) -> HttpResponse {
 }
 
 async fn api_registered_encrypted(
-    db_pool: crate::db::DbConnection,
+    account: &crate::workspace::AccountGuard,
+    client: &grammers_client::Client,
+    state: &TelegramState,
     folder_id: Option<i64>,
     message_id: i32,
 ) -> Result<bool, String> {
-    let folder_key = folder_id
-        .map(|id| id.to_string())
-        .unwrap_or_else(|| "home".to_string());
-    crate::db::with_connection(db_pool, move |connection| {
-        let mut statement = connection
-            .prepare("SELECT 1 FROM encrypted_files WHERE folder_key = ? AND message_id = ? AND record_state = 'active'")
-            .map_err(|error| error.to_string())?;
-        statement.bind((1, folder_key.as_str())).map_err(|error| error.to_string())?;
-        statement.bind((2, i64::from(message_id))).map_err(|error| error.to_string())?;
-        Ok(matches!(statement.next(), Ok(sqlite::State::Row)))
-    }).await
+    account.validate()?;
+    let peer = resolve_peer(client, folder_id, &state.peer_cache).await?;
+    let message = client
+        .get_messages_by_id(peer, &[message_id])
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .flatten()
+        .next()
+        .ok_or("File not found")?;
+    let Some(media) = message.media() else {
+        account.validate()?;
+        return Ok(false);
+    };
+    let encrypted = crate::commands::fs::resolve_remote_envelope(
+        account,
+        client,
+        folder_id,
+        message_id,
+        &media,
+        message.text(),
+    )
+    .await?
+    .is_some();
+    account.validate()?;
+    Ok(encrypted)
+}
+
+async fn api_account_client(
+    root: &std::path::Path,
+    state: &TelegramState,
+) -> Result<(crate::workspace::AccountGuard, grammers_client::Client), String> {
+    let account = crate::workspace::AccountGuard::open(root, None)?;
+    let client = state
+        .client
+        .lock()
+        .await
+        .clone()
+        .ok_or("Telegram client is not connected")?;
+    account.validate_client(&client).await?;
+    Ok((account, client))
+}
+
+fn api_scope_error(account: &crate::workspace::AccountGuard) -> Option<HttpResponse> {
+    account
+        .validate()
+        .err()
+        .map(|error| json_error("ACCOUNT_CHANGED", &error, 409))
+}
+
+fn account_response(
+    account: &crate::workspace::AccountGuard,
+    response: HttpResponse,
+) -> HttpResponse {
+    api_scope_error(account).unwrap_or(response)
+}
+
+async fn api_protected_response(
+    account: &crate::workspace::AccountGuard,
+    client: &grammers_client::Client,
+    folder: Option<i64>,
+    message: i32,
+    media: &Media,
+    caption: &str,
+    explanation: &str,
+) -> Option<HttpResponse> {
+    match crate::commands::fs::resolve_remote_envelope(
+        account, client, folder, message, media, caption,
+    )
+    .await
+    {
+        Ok(None) => None,
+        Ok(Some(_)) => Some(json_error("ENCRYPTED_ROUTE_UNAVAILABLE", explanation, 409)),
+        Err(error) => Some(json_error("ENCRYPTION_STATE_UNKNOWN", &error, 503)),
+    }
 }
 
 struct CleanupStream {
+    account: crate::workspace::AccountGuard,
     file: tokio::fs::File,
     path: std::path::PathBuf,
 }
@@ -98,12 +167,24 @@ impl futures::Stream for CleanupStream {
     type Item = Result<Bytes, std::io::Error>;
 
     fn poll_next(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        if let Err(error) = this.account.validate() {
+            return Poll::Ready(Some(Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                error,
+            ))));
+        }
         let mut buf = [0u8; 16384];
         let mut read_buf = tokio::io::ReadBuf::new(&mut buf);
-        // SAFETY: we project the pin to the file field — no other field is moved.
-        let file_pin = unsafe { self.map_unchecked_mut(|s| &mut s.file) };
+        let file_pin = std::pin::Pin::new(&mut this.file);
         match file_pin.poll_read(cx, &mut read_buf) {
             Poll::Ready(Ok(())) => {
+                if let Err(error) = this.account.validate() {
+                    return Poll::Ready(Some(Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        error,
+                    ))));
+                }
                 let filled = read_buf.filled();
                 if filled.is_empty() {
                     Poll::Ready(None)
@@ -578,29 +659,22 @@ async fn api_download_file(
     query: web::Query<FolderQuery>,
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
-    db_pool: web::Data<crate::db::DbConnection>,
+    cache_dirs: web::Data<CacheDirs>,
 ) -> impl Responder {
     if let Err(e) = check_auth(&req, &api_state) {
         return e;
     }
 
+    let (account, client) =
+        match api_account_client(&cache_dirs.account_root, tg_state.get_ref()).await {
+            Ok(value) => value,
+            Err(error) => return json_error("ACCOUNT_UNAVAILABLE", &error, 503),
+        };
+    let response = async {
+
     let message_id = path.into_inner() as i32;
-    match api_registered_encrypted(db_pool.get_ref().clone(), query.folder_id, message_id).await {
-        Ok(true) => {
-            return json_error(
-                "ENCRYPTED_ROUTE_UNAVAILABLE",
-                "Encrypted API downloads require a scoped decryption credential and are disabled",
-                409,
-            )
-        }
-        Ok(false) => {}
-        Err(error) => return json_error("ENCRYPTION_STATE_UNKNOWN", &error, 503),
-    }
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
-    };
+
+
 
     let peer = match resolve_peer(&client, query.folder_id, &tg_state.peer_cache).await {
         Ok(p) => p,
@@ -610,20 +684,8 @@ async fn api_download_file(
     match client.get_messages_by_id(peer, &[message_id]).await {
         Ok(messages) => {
             if let Some(Some(msg)) = messages.first() {
-                if msg.text() == "TDENC2"
-                    || matches!(
-                        msg.media(),
-                        Some(Media::Document(document))
-                            if document.name().to_ascii_lowercase().ends_with(".tdenc")
-                    )
-                {
-                    return json_error(
-                        "ENCRYPTED_ROUTE_UNAVAILABLE",
-                        "Encrypted API downloads require a scoped decryption credential and are disabled",
-                        409,
-                    );
-                }
-                if let Some(media) = msg.media() {
+            if let Some(media) = msg.media() {
+                if let Some(error) = api_protected_response(&account, &client, query.folder_id, message_id, &media, msg.text(), "Encrypted API downloads require a scoped decryption credential and are disabled").await { return error; }
                     let mime = match &media {
                         Media::Document(d) => d
                             .mime_type()
@@ -637,7 +699,7 @@ async fn api_download_file(
                         _ => "download".to_string(),
                     };
 
-                    return crate::server::build_media_response(
+                    return crate::server::build_media_response_guarded(
                         &client,
                         &media,
                         &req,
@@ -647,6 +709,7 @@ async fn api_download_file(
                             extra_headers: vec![],
                             log_label: "API download",
                         },
+                        Some(account.clone()),
                     );
                 }
             }
@@ -654,6 +717,8 @@ async fn api_download_file(
         }
         Err(e) => json_error("FETCH_ERROR", &format!("Failed to fetch file: {}", e), 500),
     }
+    }.await;
+    account_response(&account, response)
 }
 
 #[derive(serde::Deserialize)]
@@ -675,6 +740,74 @@ struct BulkResponse {
     count: usize,
 }
 
+fn parse_bulk_file_ids(values: &[serde_json::Value]) -> Result<Vec<i32>, String> {
+    if values.is_empty() {
+        return Err("Select at least one file".to_string());
+    }
+    values
+        .iter()
+        .map(|value| {
+            let id = value
+                .as_i64()
+                .and_then(|id| i32::try_from(id).ok())
+                .or_else(|| value.as_str().and_then(|id| id.parse::<i32>().ok()))
+                .filter(|id| *id > 0);
+            id.ok_or_else(|| {
+                "Every selected file must have a valid Telegram message ID".to_string()
+            })
+        })
+        .collect()
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ArchiveDownloadError {
+    Remote(String),
+    Incomplete { expected: u64, actual: u64 },
+    TooLarge,
+}
+
+/// Collect a selected file only if every remote read succeeds and its byte
+/// length matches Telegram's declaration. ZIP integrity alone cannot detect a
+/// truncated input because the ZIP writer would checksum those partial bytes.
+async fn collect_archive_file<S>(
+    chunks: S,
+    expected_size: u64,
+    previous_bytes: u64,
+    max_bytes: u64,
+) -> Result<Vec<u8>, ArchiveDownloadError>
+where
+    S: futures::Stream<Item = Result<Vec<u8>, String>>,
+{
+    let total = previous_bytes
+        .checked_add(expected_size)
+        .ok_or(ArchiveDownloadError::TooLarge)?;
+    if max_bytes > 0 && total > max_bytes {
+        return Err(ArchiveDownloadError::TooLarge);
+    }
+    futures::pin_mut!(chunks);
+    let mut data = Vec::new();
+    while let Some(chunk) = chunks.next().await {
+        let chunk = chunk.map_err(ArchiveDownloadError::Remote)?;
+        let actual = (data.len() as u64)
+            .checked_add(chunk.len() as u64)
+            .ok_or(ArchiveDownloadError::TooLarge)?;
+        if actual > expected_size {
+            return Err(ArchiveDownloadError::Incomplete {
+                expected: expected_size,
+                actual,
+            });
+        }
+        data.extend_from_slice(&chunk);
+    }
+    if data.len() as u64 != expected_size {
+        return Err(ArchiveDownloadError::Incomplete {
+            expected: expected_size,
+            actual: data.len() as u64,
+        });
+    }
+    Ok(data)
+}
+
 #[post("/api/v1/files/bulk")]
 async fn api_bulk_files(
     req: HttpRequest,
@@ -683,31 +816,24 @@ async fn api_bulk_files(
     api_state: web::Data<ApiState>,
     net_config: web::Data<Arc<NetworkConfig>>,
     cache_dirs: web::Data<CacheDirs>,
-    db_pool: web::Data<crate::db::DbConnection>,
 ) -> impl Responder {
     if let Err(e) = check_auth(&req, &api_state) {
         return e;
     }
 
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
-    };
+    let (account, client) =
+        match api_account_client(&cache_dirs.account_root, tg_state.get_ref()).await {
+            Ok(value) => value,
+            Err(error) => return json_error("ACCOUNT_UNAVAILABLE", &error, 503),
+        };
+    let response = async {
 
-    let ids: Vec<i32> = body
-        .file_ids
-        .iter()
-        .filter_map(|val| {
-            if let Some(i) = val.as_i64() {
-                Some(i as i32)
-            } else if let Some(s) = val.as_str() {
-                s.parse::<i32>().ok()
-            } else {
-                None
-            }
-        })
-        .collect();
+
+
+    let ids = match parse_bulk_file_ids(&body.file_ids) {
+        Ok(ids) => ids,
+        Err(error) => return json_error("INVALID_FILE_IDS", &error, 400),
+    };
 
     let source_folder: Option<i64> = body.folder_id.as_ref().and_then(|val| {
         if let Some(i) = val.as_i64() {
@@ -733,34 +859,14 @@ async fn api_bulk_files(
             }
         });
 
-    let ids_for_check = ids.clone();
-    let folder_key = source_folder
-        .map(|id| id.to_string())
-        .unwrap_or_else(|| "home".to_string());
-    let contains_encrypted = crate::db::with_connection(
-        db_pool.get_ref().clone(),
-        move |connection| {
-            for message_id in ids_for_check {
-                let mut statement = connection
-                    .prepare("SELECT 1 FROM encrypted_files WHERE folder_key = ? AND message_id = ? AND record_state = 'active'")
-                    .map_err(|error| error.to_string())?;
-                statement.bind((1, folder_key.as_str())).map_err(|error| error.to_string())?;
-                statement.bind((2, i64::from(message_id))).map_err(|error| error.to_string())?;
-                if matches!(statement.next(), Ok(sqlite::State::Row)) {
-                    return Ok(true);
-                }
+    if body.action != "delete" {
+        for message_id in &ids {
+            match api_registered_encrypted(&account, &client, tg_state.get_ref(), source_folder, *message_id).await {
+                Ok(false) => {},
+                Ok(true) => return json_error("ENCRYPTED_BULK_ACTION_UNAVAILABLE", "This bulk action is disabled for encrypted files until registry-safe handling is available", 409),
+                Err(error) => return json_error("ENCRYPTION_STATE_UNKNOWN", &error, 503),
             }
-            Ok(false)
-        },
-    )
-    .await
-    .unwrap_or(true);
-    if contains_encrypted && body.action != "delete" {
-        return json_error(
-            "ENCRYPTED_BULK_ACTION_UNAVAILABLE",
-            "This bulk action is disabled for encrypted files until registry-safe handling is available",
-            409,
-        );
+        }
     }
 
     match body.action.as_str() {
@@ -769,26 +875,14 @@ async fn api_bulk_files(
                 Ok(p) => p,
                 Err(e) => return json_error("PEER_ERROR", &e, 400),
             };
+            if let Some(error) = api_scope_error(&account) { return error; }
             if let Err(e) = client.delete_messages(&peer, &ids).await {
                 return json_error("DELETE_FAILED", &e.to_string(), 500);
             }
-            let folder_key = source_folder
-                .map(|id| id.to_string())
-                .unwrap_or_else(|| "home".to_string());
-            let ids_for_registry = ids.clone();
-            let _ = crate::db::with_connection(db_pool.get_ref().clone(), move |connection| {
-                for message_id in &ids_for_registry {
-                    if let Ok(mut statement) = connection.prepare(
-                        "DELETE FROM encrypted_files WHERE folder_key = ? AND message_id = ?",
-                    ) {
-                        let _ = statement.bind((1, folder_key.as_str()));
-                        let _ = statement.bind((2, i64::from(*message_id)));
-                        let _ = statement.next();
-                    }
-                }
-                Ok(())
-            })
-            .await;
+            let changes = ids.iter().map(|message| crate::workspace::remote_changes::Change::Delete { folder: source_folder, message: *message }).collect();
+            if let Err(error) = crate::workspace::remote_changes::record(&account, changes).await {
+                return json_error("LOCAL_UPDATE_FAILED", &error, 500);
+            }
 
             // Clean up stale thumbnail and preview caches for deleted messages.
             let source_folder_key = source_folder
@@ -813,17 +907,25 @@ async fn api_bulk_files(
                 Err(e) => return json_error("PEER_ERROR", &e, 400),
             };
             if source_folder != target_folder {
-                if let Err(e) = client
+                if let Some(error) = api_scope_error(&account) { return error; }
+            let forwarded = match client
                     .forward_messages(&target_peer, &ids, &source_peer)
                     .await
                 {
-                    return json_error(
-                        "MOVE_FORWARD_FAILED",
-                        &format!("Forward failed: {}", e),
-                        500,
-                    );
+                    Ok(messages) => messages,
+                    Err(e) => {
+                        return json_error(
+                            "MOVE_FORWARD_FAILED",
+                            &format!("Forward failed: {}", e),
+                            500,
+                        )
+                    }
+                };
+                if let Err(error) = verify_forwarded_messages(&ids, &forwarded) {
+                    return json_error("MOVE_COPY_INCOMPLETE", &error, 502);
                 }
-                if let Err(e) = client.delete_messages(&source_peer, &ids).await {
+                if let Some(error) = api_scope_error(&account) { return error; }
+            if let Err(e) = client.delete_messages(&source_peer, &ids).await {
                     return json_error(
                         "MOVE_DELETE_FAILED",
                         &format!("Delete original failed: {}", e),
@@ -832,6 +934,12 @@ async fn api_bulk_files(
                 }
 
                 // Clean up stale thumbnail and preview caches for the old message IDs.
+                let changes = ids.iter().zip(forwarded.iter().flatten()).map(|(message, forwarded)| crate::workspace::remote_changes::Change::Move {
+                    source: source_folder, message: *message, target: target_folder, new_message: forwarded.id(),
+                }).collect();
+                if let Err(error) = crate::workspace::remote_changes::record(&account, changes).await {
+                    return json_error("LOCAL_UPDATE_FAILED", &error, 500);
+                }
                 // After a move (forward+delete), messages get new IDs in the target folder,
                 // so any cached thumbnails/previews under the old IDs are orphaned.
                 let source_folder_key = source_folder
@@ -860,35 +968,68 @@ async fn api_bulk_files(
             for mid in &ids {
                 let messages = match client.get_messages_by_id(&peer, &[*mid]).await {
                     Ok(m) => m,
-                    Err(_) => continue,
-                };
-                if let Some(m) = messages.into_iter().flatten().next() {
-                    if let Some(media) = m.media() {
-                        let filename = match &media {
-                            Media::Document(d) => d.name().to_string(),
-                            Media::Photo(_) => format!("photo_{}.jpg", mid),
-                            _ => format!("file_{}.bin", mid),
-                        };
-
-                        let mut data = Vec::new();
-                        let mut download_iter = client.iter_download(&media);
-                        while let Some(chunk) = download_iter.next().await.ok().flatten() {
-                            total_bytes += chunk.len() as u64;
-                            if max_bytes > 0 && total_bytes > max_bytes {
-                                return json_error(
-                                    "ARCHIVE_TOO_LARGE",
-                                    &format!(
-                                        "Archive exceeds the {} MiB limit",
-                                        max_bytes / (1024 * 1024)
-                                    ),
-                                    413,
-                                );
-                            }
-                            data.extend_from_slice(&chunk);
-                        }
-                        entries.push((filename, data));
+                    Err(error) => {
+                        return json_error(
+                            "ARCHIVE_FETCH_FAILED",
+                            &format!("Could not fetch selected file {mid}: {error}"),
+                            502,
+                        )
                     }
-                }
+                };
+                let Some(message) = messages.into_iter().flatten().next() else {
+                    return json_error(
+                        "ARCHIVE_FILE_MISSING",
+                        &format!("Selected file {mid} no longer exists"),
+                        404,
+                    );
+                };
+                let Some(media) = message.media() else {
+                    return json_error(
+                        "ARCHIVE_MEDIA_MISSING",
+                        &format!("Selected file {mid} has no downloadable media"),
+                        409,
+                    );
+                };
+                let filename = match &media {
+                    Media::Document(document) => sanitise_upload_filename(document.name()),
+                    Media::Photo(_) => format!("photo_{mid}.jpg"),
+                    _ => {
+                        return json_error(
+                            "ARCHIVE_MEDIA_UNSUPPORTED",
+                            &format!("Selected file {mid} cannot be archived"),
+                            409,
+                        )
+                    }
+                };
+                let expected_size = media_size(&media);
+                let mut download_iter = client.iter_download(&media);
+                let chunk_account = account.clone();
+                let chunks = async_stream::try_stream! {
+                    while let Some(chunk) = download_iter.next().await.map_err(|error| error.to_string())? {
+                        chunk_account.validate()?;
+                        yield chunk;
+                    }
+                };
+                let data = match collect_archive_file(chunks, expected_size, total_bytes, max_bytes).await {
+                    Ok(data) => data,
+                    Err(ArchiveDownloadError::TooLarge) => return json_error(
+                        "ARCHIVE_TOO_LARGE",
+                        &format!("Archive exceeds the {} MiB limit", max_bytes / (1024 * 1024)),
+                        413,
+                    ),
+                    Err(ArchiveDownloadError::Remote(error)) => return json_error(
+                        "ARCHIVE_DOWNLOAD_FAILED",
+                        &format!("Could not finish selected file {mid}: {error}"),
+                        502,
+                    ),
+                    Err(ArchiveDownloadError::Incomplete { expected, actual }) => return json_error(
+                        "ARCHIVE_DOWNLOAD_INCOMPLETE",
+                        &format!("Selected file {mid} has {actual} downloaded bytes; expected {expected}"),
+                        502,
+                    ),
+                };
+                total_bytes += data.len() as u64;
+                entries.push((filename, data));
             }
 
             let temp_zip_path = std::env::temp_dir().join(format!(
@@ -941,6 +1082,7 @@ async fn api_bulk_files(
             };
 
             let stream = CleanupStream {
+                account: account.clone(),
                 file,
                 path: temp_zip_path,
             };
@@ -960,6 +1102,8 @@ async fn api_bulk_files(
         success: true,
         count: ids.len(),
     })
+    }.await;
+    account_response(&account, response)
 }
 
 #[derive(serde::Deserialize)]
@@ -1087,7 +1231,7 @@ async fn api_delete_file(
     query: web::Query<FolderQuery>,
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
-    db_pool: web::Data<crate::db::DbConnection>,
+    cache_dirs: web::Data<CacheDirs>,
 ) -> impl Responder {
     if let Err(e) = check_auth(&req, &api_state) {
         return e;
@@ -1095,34 +1239,37 @@ async fn api_delete_file(
     let message_id = path.into_inner();
     let folder_id = query.folder_id;
 
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
-    };
+    let (account, client) =
+        match api_account_client(&cache_dirs.account_root, tg_state.get_ref()).await {
+            Ok(value) => value,
+            Err(error) => return json_error("ACCOUNT_UNAVAILABLE", &error, 503),
+        };
 
     let peer = match resolve_peer(&client, folder_id, &tg_state.peer_cache).await {
         Ok(p) => p,
         Err(e) => return json_error("PEER_ERROR", &e, 400),
     };
 
+    if let Some(error) = api_scope_error(&account) {
+        return error;
+    }
     match client.delete_messages(&peer, &[message_id]).await {
         Ok(_) => {
-            let folder_key = folder_id
-                .map(|id| id.to_string())
-                .unwrap_or_else(|| "home".to_string());
-            let _ = crate::db::with_connection(db_pool.get_ref().clone(), move |connection| {
-                if let Ok(mut statement) = connection
-                    .prepare("DELETE FROM encrypted_files WHERE folder_key = ? AND message_id = ?")
-                {
-                    let _ = statement.bind((1, folder_key.as_str()));
-                    let _ = statement.bind((2, i64::from(message_id)));
-                    let _ = statement.next();
-                }
-                Ok(())
-            })
-            .await;
-            HttpResponse::Ok().json(serde_json::json!({ "success": true }))
+            if let Err(error) = crate::workspace::remote_changes::record(
+                &account,
+                vec![crate::workspace::remote_changes::Change::Delete {
+                    folder: folder_id,
+                    message: message_id,
+                }],
+            )
+            .await
+            {
+                return json_error("LOCAL_UPDATE_FAILED", &error, 500);
+            }
+            account_response(
+                &account,
+                HttpResponse::Ok().json(serde_json::json!({ "success": true })),
+            )
         }
         Err(e) => json_error("DELETE_FAILED", &e.to_string(), 500),
     }
@@ -1141,95 +1288,95 @@ async fn api_copy_file(
     body: web::Json<CopyRequest>,
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
-    db_pool: web::Data<crate::db::DbConnection>,
+    cache_dirs: web::Data<CacheDirs>,
 ) -> impl Responder {
     if let Err(e) = check_auth(&req, &api_state) {
         return e;
     }
-    let message_id = path.into_inner();
-    let source_folder_id = body.source_folder_id;
-    let target_folder_id = body.folder_id;
 
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
-    };
+    let (account, client) =
+        match api_account_client(&cache_dirs.account_root, tg_state.get_ref()).await {
+            Ok(value) => value,
+            Err(error) => return json_error("ACCOUNT_UNAVAILABLE", &error, 503),
+        };
+    let response = async {
+        let message_id = path.into_inner();
+        let source_folder_id = body.source_folder_id;
+        let target_folder_id = body.folder_id;
 
-    let source_peer = match resolve_peer(&client, source_folder_id, &tg_state.peer_cache).await {
-        Ok(p) => p,
-        Err(e) => return json_error("SOURCE_PEER_ERROR", &e, 400),
-    };
-    let target_peer = match resolve_peer(&client, target_folder_id, &tg_state.peer_cache).await {
-        Ok(p) => p,
-        Err(e) => return json_error("TARGET_PEER_ERROR", &e, 400),
-    };
+        let source_peer = match resolve_peer(&client, source_folder_id, &tg_state.peer_cache).await
+        {
+            Ok(p) => p,
+            Err(e) => return json_error("SOURCE_PEER_ERROR", &e, 400),
+        };
+        let target_peer = match resolve_peer(&client, target_folder_id, &tg_state.peer_cache).await
+        {
+            Ok(p) => p,
+            Err(e) => return json_error("TARGET_PEER_ERROR", &e, 400),
+        };
 
-    // Resolve the registry state before changing Telegram. Treat an unavailable
-    // registry as a hard failure so an encrypted copy can never silently lose
-    // the metadata required to decrypt it.
-    let source_is_encrypted =
-        match api_registered_encrypted(db_pool.get_ref().clone(), source_folder_id, message_id)
-            .await
+        // Resolve the registry state before changing Telegram. Treat an unavailable
+        // registry as a hard failure so an encrypted copy can never silently lose
+        // the metadata required to decrypt it.
+        let source_is_encrypted = match api_registered_encrypted(
+            &account,
+            &client,
+            tg_state.get_ref(),
+            source_folder_id,
+            message_id,
+        )
+        .await
         {
             Ok(value) => value,
             Err(e) => return json_error("ENCRYPTION_REGISTRY_UNAVAILABLE", &e, 503),
         };
 
-    match client
-        .forward_messages(&target_peer, &[message_id], &source_peer)
-        .await
-    {
-        Ok(forwarded) => {
-            if source_is_encrypted {
-                let new_id = forwarded
-                    .first()
-                    .and_then(|message| message.as_ref())
-                    .map(|message| message.id());
-                let Some(new_id) = new_id else {
-                    return json_error(
-                        "ENCRYPTED_COPY_RECONCILIATION_REQUIRED",
-                        "Telegram copied the file but did not return its new identifier",
-                        500,
-                    );
-                };
+        if let Some(error) = api_scope_error(&account) {
+            return error;
+        }
+        match client
+            .forward_messages(&target_peer, &[message_id], &source_peer)
+            .await
+        {
+            Ok(forwarded) => {
+                if source_is_encrypted {
+                    let new_id = forwarded
+                        .first()
+                        .and_then(|message| message.as_ref())
+                        .map(|message| message.id());
+                    let Some(new_id) = new_id else {
+                        return json_error(
+                            "ENCRYPTED_COPY_RECONCILIATION_REQUIRED",
+                            "Telegram copied the file but did not return its new identifier",
+                            500,
+                        );
+                    };
 
-                let registry_result = crate::db::with_connection(db_pool.get_ref().clone(), move |connection| {
-                    let source_key = source_folder_id.map(|id| id.to_string()).unwrap_or_else(|| "home".to_string());
-                    let target_key = target_folder_id.map(|id| id.to_string()).unwrap_or_else(|| "home".to_string());
-                    let mut statement = connection.prepare(
-                        "INSERT OR REPLACE INTO encrypted_files (folder_key, message_id, file_uuid, envelope_version, cipher_suite, ciphertext_size, plaintext_size, remote_name, key_profile_id, protection_mode, metadata_protected, header_blob, header_sha256, record_state, reconciliation_state, created_at, last_verified_at) SELECT ?, ?, file_uuid, envelope_version, cipher_suite, ciphertext_size, plaintext_size, remote_name, key_profile_id, protection_mode, metadata_protected, header_blob, header_sha256, record_state, 'ok', created_at, last_verified_at FROM encrypted_files WHERE folder_key = ? AND message_id = ?",
-                    ).map_err(|e| e.to_string())?;
-                    statement.bind((1, target_key.as_str())).map_err(|e| e.to_string())?;
-                    statement.bind((2, i64::from(new_id))).map_err(|e| e.to_string())?;
-                    statement.bind((3, source_key.as_str())).map_err(|e| e.to_string())?;
-                    statement.bind((4, i64::from(message_id))).map_err(|e| e.to_string())?;
-                    statement.next().map_err(|e| e.to_string())?;
-                    Ok(())
-                }).await;
-
-                if registry_result.is_err()
-                    || !matches!(
+                    if !matches!(
                         api_registered_encrypted(
-                            db_pool.get_ref().clone(),
+                            &account,
+                            &client,
+                            tg_state.get_ref(),
                             target_folder_id,
                             new_id
                         )
                         .await,
                         Ok(true)
-                    )
-                {
-                    return json_error(
-                        "ENCRYPTED_COPY_RECONCILIATION_REQUIRED",
-                        "Remote copy succeeded but local encryption indexing failed",
-                        500,
-                    );
+                    ) {
+                        return json_error(
+                            "ENCRYPTED_COPY_RECONCILIATION_REQUIRED",
+                            "Remote copy succeeded but local encryption indexing failed",
+                            500,
+                        );
+                    }
                 }
+                HttpResponse::Ok().json(serde_json::json!({ "success": true }))
             }
-            HttpResponse::Ok().json(serde_json::json!({ "success": true }))
+            Err(e) => json_error("COPY_FAILED", &e.to_string(), 500),
         }
-        Err(e) => json_error("COPY_FAILED", &e.to_string(), 500),
     }
+    .await;
+    account_response(&account, response)
 }
 
 #[derive(serde::Deserialize)]
@@ -1247,13 +1394,19 @@ async fn api_update_file(
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
     cache_dirs: web::Data<CacheDirs>,
-    db_pool: web::Data<crate::db::DbConnection>,
 ) -> impl Responder {
     if let Err(e) = check_auth(&req, &api_state) {
         return e;
     }
+
+    let (account, client) =
+        match api_account_client(&cache_dirs.account_root, tg_state.get_ref()).await {
+            Ok(value) => value,
+            Err(error) => return json_error("ACCOUNT_UNAVAILABLE", &error, 503),
+        };
+    let response = async {
     let message_id = path.into_inner();
-    match api_registered_encrypted(db_pool.get_ref().clone(), body.source_folder_id, message_id).await {
+    match api_registered_encrypted(&account, &client, tg_state.get_ref(), body.source_folder_id, message_id).await {
         Ok(true) => return json_error(
             "ENCRYPTED_UPDATE_UNAVAILABLE",
             "Encrypted rename/move through the local API is disabled until authenticated metadata and registry updates are supported",
@@ -1263,11 +1416,7 @@ async fn api_update_file(
         Err(error) => return json_error("ENCRYPTION_STATE_UNKNOWN", &error, 503),
     }
 
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
-    };
+
 
     // Rename first — edits the original message's caption so the
     // updated name is carried over if a move (forward) follows.
@@ -1307,6 +1456,7 @@ async fn api_update_file(
             Err(e) => return json_error("PEER_CONVERT_ERROR", &e, 400),
         };
 
+        if let Some(error) = api_scope_error(&account) { return error; }
         if let Err(e) = client
             .invoke(&tl::functions::messages::EditMessage {
                 peer: input_peer,
@@ -1325,6 +1475,11 @@ async fn api_update_file(
         {
             return json_error("RENAME_FAILED", &e.to_string(), 500);
         }
+        if let Err(error) = crate::workspace::remote_changes::record(&account, vec![crate::workspace::remote_changes::Change::Rename {
+            folder: body.source_folder_id, message: message_id, name: new_name.clone(),
+        }]).await {
+            return json_error("LOCAL_UPDATE_FAILED", &error, 500);
+        }
     }
 
     if let Some(target_folder_id) = body.folder_id {
@@ -1341,17 +1496,29 @@ async fn api_update_file(
                     Err(e) => return json_error("TARGET_PEER_ERROR", &e, 400),
                 };
 
-            if let Err(e) = client
+            if let Some(error) = api_scope_error(&account) { return error; }
+            let forwarded = match client
                 .forward_messages(&target_peer, &[message_id], &source_peer)
                 .await
             {
-                return json_error("MOVE_FORWARD_FAILED", &e.to_string(), 500);
+                Ok(messages) => messages,
+                Err(e) => return json_error("MOVE_FORWARD_FAILED", &e.to_string(), 500),
+            };
+            if let Err(error) = verify_forwarded_messages(&[message_id], &forwarded) {
+                return json_error("MOVE_COPY_INCOMPLETE", &error, 502);
             }
+            if let Some(error) = api_scope_error(&account) { return error; }
             if let Err(e) = client.delete_messages(&source_peer, &[message_id]).await {
                 return json_error("MOVE_DELETE_FAILED", &e.to_string(), 500);
             }
 
             // Clean up stale thumbnail and preview caches for the old message ID
+            let changes = forwarded.iter().flatten().map(|forwarded| crate::workspace::remote_changes::Change::Move {
+                source: source_folder_id, message: message_id, target: Some(target_folder_id), new_message: forwarded.id(),
+            }).collect();
+            if let Err(error) = crate::workspace::remote_changes::record(&account, changes).await {
+                return json_error("LOCAL_UPDATE_FAILED", &error, 500);
+            }
             let source_folder_key = source_folder_id
                 .map(|id| id.to_string())
                 .unwrap_or_else(|| "home".to_string());
@@ -1365,6 +1532,8 @@ async fn api_update_file(
     }
 
     HttpResponse::Ok().json(serde_json::json!({ "success": true }))
+    }.await;
+    account_response(&account, response)
 }
 
 #[post("/api/v1/files")]
@@ -2018,114 +2187,107 @@ async fn api_get_file_thumbnail(
     query: web::Query<FolderQuery>,
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
-    db_pool: web::Data<crate::db::DbConnection>,
+    cache_dirs: web::Data<CacheDirs>,
 ) -> impl Responder {
     if let Err(e) = check_auth(&req, &api_state) {
         return e;
     }
-    let message_id = path.into_inner();
-    let folder_id = query.folder_id;
-    match api_registered_encrypted(db_pool.get_ref().clone(), folder_id, message_id).await {
-        Ok(true) => {
-            return json_error(
-                "ENCRYPTED_ROUTE_UNAVAILABLE",
-                "Encrypted thumbnails are not exposed by the local API",
-                409,
-            )
-        }
-        Ok(false) => {}
-        Err(error) => return json_error("ENCRYPTION_STATE_UNKNOWN", &error, 503),
-    }
 
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
-    };
+    let (account, client) =
+        match api_account_client(&cache_dirs.account_root, tg_state.get_ref()).await {
+            Ok(value) => value,
+            Err(error) => return json_error("ACCOUNT_UNAVAILABLE", &error, 503),
+        };
+    let response = async {
+        let message_id = path.into_inner();
+        let folder_id = query.folder_id;
 
-    let peer = match resolve_peer(&client, folder_id, &tg_state.peer_cache).await {
-        Ok(p) => p,
-        Err(e) => return json_error("PEER_ERROR", &e, 400),
-    };
+        let peer = match resolve_peer(&client, folder_id, &tg_state.peer_cache).await {
+            Ok(p) => p,
+            Err(e) => return json_error("PEER_ERROR", &e, 400),
+        };
 
-    let messages = match client.get_messages_by_id(&peer, &[message_id]).await {
-        Ok(msgs) => msgs,
-        Err(e) => return json_error("GET_MESSAGE_ERROR", &e.to_string(), 500),
-    };
+        let messages = match client.get_messages_by_id(&peer, &[message_id]).await {
+            Ok(msgs) => msgs,
+            Err(e) => return json_error("GET_MESSAGE_ERROR", &e.to_string(), 500),
+        };
 
-    if let Some(m) = messages.into_iter().flatten().next() {
-        if m.text() == "TDENC2"
-            || matches!(
-                m.media(),
-                Some(Media::Document(document))
-                    if document.name().to_ascii_lowercase().ends_with(".tdenc")
-            )
-        {
-            return json_error(
-                "ENCRYPTED_ROUTE_UNAVAILABLE",
-                "Encrypted thumbnails are not exposed by the local API",
-                409,
-            );
-        }
-        if let Some(media) = m.media() {
-            let (is_image, ext) = match &media {
-                Media::Photo(_) => (true, "jpg"),
-                Media::Document(d) => {
-                    let mime = d.mime_type().unwrap_or("");
-                    if mime.starts_with("image/") || mime.starts_with("video/") {
-                        if !d.thumbs().is_empty() {
-                            (true, "jpg")
+        if let Some(m) = messages.into_iter().flatten().next() {
+            if let Some(media) = m.media() {
+                if let Some(error) = api_protected_response(
+                    &account,
+                    &client,
+                    folder_id,
+                    message_id,
+                    &media,
+                    m.text(),
+                    "Encrypted thumbnails are not exposed by the local API",
+                )
+                .await
+                {
+                    return error;
+                }
+                let (is_image, ext) = match &media {
+                    Media::Photo(_) => (true, "jpg"),
+                    Media::Document(d) => {
+                        let mime = d.mime_type().unwrap_or("");
+                        if mime.starts_with("image/") || mime.starts_with("video/") {
+                            if !d.thumbs().is_empty() {
+                                (true, "jpg")
+                            } else {
+                                (false, "")
+                            }
                         } else {
                             (false, "")
                         }
+                    }
+                    _ => (false, ""),
+                };
+
+                if is_image {
+                    let temp_path = std::env::temp_dir().join(format!(
+                        "thumb_{}_{}",
+                        message_id,
+                        rand::random::<u32>()
+                    ));
+                    let temp_path_str = temp_path.to_string_lossy().to_string();
+
+                    let thumbs = match &media {
+                        Media::Photo(p) => p.thumbs(),
+                        Media::Document(d) => d.thumbs(),
+                        _ => vec![],
+                    };
+
+                    let download_success = if let Some(thumb) = thumbs
+                        .iter()
+                        .filter(|t| t.size() > 0)
+                        .max_by_key(|t| t.size())
+                    {
+                        client.download_media(thumb, &temp_path_str).await.is_ok()
                     } else {
-                        (false, "")
+                        client.download_media(&media, &temp_path_str).await.is_ok()
+                    };
+
+                    if download_success {
+                        if let Ok(bytes) = tokio::fs::read(&temp_path).await {
+                            let _ = tokio::fs::remove_file(&temp_path).await;
+                            let mime = match ext {
+                                "png" => "image/png",
+                                "gif" => "image/gif",
+                                _ => "image/jpeg",
+                            };
+                            return HttpResponse::Ok().content_type(mime).body(bytes);
+                        }
                     }
+                    let _ = tokio::fs::remove_file(&temp_path).await;
                 }
-                _ => (false, ""),
-            };
-
-            if is_image {
-                let temp_path = std::env::temp_dir().join(format!(
-                    "thumb_{}_{}",
-                    message_id,
-                    rand::random::<u32>()
-                ));
-                let temp_path_str = temp_path.to_string_lossy().to_string();
-
-                let thumbs = match &media {
-                    Media::Photo(p) => p.thumbs(),
-                    Media::Document(d) => d.thumbs(),
-                    _ => vec![],
-                };
-
-                let download_success = if let Some(thumb) = thumbs
-                    .iter()
-                    .filter(|t| t.size() > 0)
-                    .max_by_key(|t| t.size())
-                {
-                    client.download_media(thumb, &temp_path_str).await.is_ok()
-                } else {
-                    client.download_media(&media, &temp_path_str).await.is_ok()
-                };
-
-                if download_success {
-                    if let Ok(bytes) = tokio::fs::read(&temp_path).await {
-                        let _ = tokio::fs::remove_file(&temp_path).await;
-                        let mime = match ext {
-                            "png" => "image/png",
-                            "gif" => "image/gif",
-                            _ => "image/jpeg",
-                        };
-                        return HttpResponse::Ok().content_type(mime).body(bytes);
-                    }
-                }
-                let _ = tokio::fs::remove_file(&temp_path).await;
             }
         }
-    }
 
-    json_error("NOT_FOUND", "Thumbnail not found", 404)
+        json_error("NOT_FOUND", "Thumbnail not found", 404)
+    }
+    .await;
+    account_response(&account, response)
 }
 
 #[derive(Serialize)]
@@ -2144,94 +2306,86 @@ async fn api_media_info(
     query: web::Query<FolderQuery>,
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
-    db_pool: web::Data<crate::db::DbConnection>,
+    cache_dirs: web::Data<CacheDirs>,
 ) -> impl Responder {
     if let Err(e) = check_auth(&req, &api_state) {
         return e;
     }
-    let message_id = path.into_inner();
-    let folder_id = query.folder_id;
-    match api_registered_encrypted(db_pool.get_ref().clone(), folder_id, message_id).await {
-        Ok(true) => {
-            return json_error(
-                "ENCRYPTED_ROUTE_UNAVAILABLE",
-                "Encrypted media metadata is not exposed by the local API",
-                409,
-            )
-        }
-        Ok(false) => {}
-        Err(error) => return json_error("ENCRYPTION_STATE_UNKNOWN", &error, 503),
-    }
 
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
-    };
+    let (account, client) =
+        match api_account_client(&cache_dirs.account_root, tg_state.get_ref()).await {
+            Ok(value) => value,
+            Err(error) => return json_error("ACCOUNT_UNAVAILABLE", &error, 503),
+        };
+    let response = async {
+        let message_id = path.into_inner();
+        let folder_id = query.folder_id;
 
-    let peer = match resolve_peer(&client, folder_id, &tg_state.peer_cache).await {
-        Ok(p) => p,
-        Err(e) => return json_error("PEER_ERROR", &e, 400),
-    };
+        let peer = match resolve_peer(&client, folder_id, &tg_state.peer_cache).await {
+            Ok(p) => p,
+            Err(e) => return json_error("PEER_ERROR", &e, 400),
+        };
 
-    let messages = match client.get_messages_by_id(&peer, &[message_id]).await {
-        Ok(msgs) => msgs,
-        Err(e) => return json_error("GET_MESSAGE_ERROR", &e.to_string(), 500),
-    };
+        let messages = match client.get_messages_by_id(&peer, &[message_id]).await {
+            Ok(msgs) => msgs,
+            Err(e) => return json_error("GET_MESSAGE_ERROR", &e.to_string(), 500),
+        };
 
-    let msg = match messages.into_iter().flatten().next() {
-        Some(m) => m,
-        None => return json_error("NOT_FOUND", "File message not found", 404),
-    };
+        let msg = match messages.into_iter().flatten().next() {
+            Some(m) => m,
+            None => return json_error("NOT_FOUND", "File message not found", 404),
+        };
 
-    if msg.text() == "TDENC2"
-        || matches!(
-            msg.media(),
-            Some(Media::Document(document))
-                if document.name().to_ascii_lowercase().ends_with(".tdenc")
-        )
-    {
-        return json_error(
-            "ENCRYPTED_ROUTE_UNAVAILABLE",
+        let media = match msg.media() {
+            Some(m) => m,
+            None => return json_error("NO_MEDIA", "Message has no media", 400),
+        };
+        if let Some(error) = api_protected_response(
+            &account,
+            &client,
+            folder_id,
+            message_id,
+            &media,
+            msg.text(),
             "Encrypted media metadata is not exposed by the local API",
-            409,
-        );
-    }
+        )
+        .await
+        {
+            return error;
+        }
 
-    let media = match msg.media() {
-        Some(m) => m,
-        None => return json_error("NO_MEDIA", "Message has no media", 400),
-    };
+        let mut info = MediaInfoResponse {
+            duration_secs: None,
+            width: None,
+            height: None,
+            audio_title: None,
+            audio_performer: None,
+        };
 
-    let mut info = MediaInfoResponse {
-        duration_secs: None,
-        width: None,
-        height: None,
-        audio_title: None,
-        audio_performer: None,
-    };
-
-    if let Media::Document(d) = media {
-        if let Some(tl::enums::Document::Document(doc)) = &d.raw.document {
-            for attr in &doc.attributes {
-                match attr {
-                    tl::enums::DocumentAttribute::Video(v) => {
-                        info.duration_secs = Some(v.duration);
-                        info.width = Some(v.w);
-                        info.height = Some(v.h);
+        if let Media::Document(d) = media {
+            if let Some(tl::enums::Document::Document(doc)) = &d.raw.document {
+                for attr in &doc.attributes {
+                    match attr {
+                        tl::enums::DocumentAttribute::Video(v) => {
+                            info.duration_secs = Some(v.duration);
+                            info.width = Some(v.w);
+                            info.height = Some(v.h);
+                        }
+                        tl::enums::DocumentAttribute::Audio(a) => {
+                            info.duration_secs = Some(a.duration as f64);
+                            info.audio_title = a.title.clone();
+                            info.audio_performer = a.performer.clone();
+                        }
+                        _ => {}
                     }
-                    tl::enums::DocumentAttribute::Audio(a) => {
-                        info.duration_secs = Some(a.duration as f64);
-                        info.audio_title = a.title.clone();
-                        info.audio_performer = a.performer.clone();
-                    }
-                    _ => {}
                 }
             }
         }
-    }
 
-    HttpResponse::Ok().json(info)
+        HttpResponse::Ok().json(info)
+    }
+    .await;
+    account_response(&account, response)
 }
 
 /// Register all API routes on the Actix App
@@ -2258,8 +2412,80 @@ pub fn configure_api(cfg: &mut web::ServiceConfig) {
 }
 
 #[cfg(test)]
+#[path = "api_scope_tests.rs"]
+mod account_scope_tests;
+
+#[cfg(test)]
 mod tests {
-    use super::{sanitise_upload_filename, MAX_UPLOAD_FILENAME_CHARS};
+    use super::{
+        collect_archive_file, parse_bulk_file_ids, sanitise_upload_filename, ArchiveDownloadError,
+        MAX_UPLOAD_FILENAME_CHARS,
+    };
+
+    #[test]
+    fn bulk_requests_never_silently_drop_or_wrap_selected_ids() {
+        assert_eq!(
+            parse_bulk_file_ids(&[serde_json::json!(1), serde_json::json!("2")]).unwrap(),
+            vec![1, 2]
+        );
+        for invalid in [
+            serde_json::Value::Null,
+            serde_json::json!("missing"),
+            serde_json::json!(0),
+            serde_json::json!(-1),
+            serde_json::json!(i64::from(i32::MAX) + 1),
+        ] {
+            assert!(parse_bulk_file_ids(&[serde_json::json!(1), invalid]).is_err());
+        }
+        assert!(parse_bulk_file_ids(&[]).is_err());
+    }
+
+    #[tokio::test]
+    async fn archive_collection_rejects_remote_errors_and_incorrect_lengths() {
+        let failed =
+            futures::stream::iter(vec![Ok(vec![1, 2]), Err("connection lost".to_string())]);
+        assert_eq!(
+            collect_archive_file(failed, 4, 0, 10).await,
+            Err(ArchiveDownloadError::Remote("connection lost".to_string()))
+        );
+        let truncated = futures::stream::iter(vec![Ok(vec![1, 2])]);
+        assert_eq!(
+            collect_archive_file(truncated, 4, 0, 10).await,
+            Err(ArchiveDownloadError::Incomplete {
+                expected: 4,
+                actual: 2
+            })
+        );
+        let oversized = futures::stream::iter(vec![Ok(vec![1, 2, 3])]);
+        assert_eq!(
+            collect_archive_file(oversized, 2, 0, 10).await,
+            Err(ArchiveDownloadError::Incomplete {
+                expected: 2,
+                actual: 3
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn archive_collection_accepts_exact_content_and_enforces_total_limit() {
+        let chunks = || futures::stream::iter(vec![Ok(vec![1, 2]), Ok(vec![3, 4])]);
+        assert_eq!(
+            collect_archive_file(chunks(), 4, 6, 10).await.unwrap(),
+            vec![1, 2, 3, 4]
+        );
+        assert_eq!(
+            collect_archive_file(chunks(), 4, 7, 10).await,
+            Err(ArchiveDownloadError::TooLarge)
+        );
+        assert_eq!(
+            collect_archive_file(chunks(), 4, u64::MAX, 0).await,
+            Err(ArchiveDownloadError::TooLarge)
+        );
+        assert!(collect_archive_file(futures::stream::empty(), 0, 0, 10)
+            .await
+            .unwrap()
+            .is_empty());
+    }
 
     #[test]
     fn multipart_upload_filenames_are_reduced_to_safe_basenames() {

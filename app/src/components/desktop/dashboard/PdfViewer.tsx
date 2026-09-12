@@ -29,9 +29,10 @@ interface PdfViewerProps {
     currentIndex?: number;
     totalItems?: number;
     activeFolderId: number | null;
+    localPath?: string;
 }
 
-export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalItems, activeFolderId }: PdfViewerProps) {
+export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalItems, activeFolderId, localPath }: PdfViewerProps) {
     const [streamInfo, setStreamInfo] = useState<StreamInfo | null>(null);
     const [pdf, setPdf] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
     const [numPages, setNumPages] = useState<number>(0);
@@ -46,7 +47,7 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
         e.stopPropagation();
         setOpeningExternal(true);
         try {
-            const path = await invoke<string>('cmd_get_preview', {
+            const path = localPath ?? await invoke<string>('cmd_get_preview', {
                 messageId: file.id,
                 folderId: activeFolderId
             });
@@ -64,12 +65,12 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
     };
 
     useEffect(() => {
-        if (isAndroidPlatform) return; // skip on Android
+        if (isAndroidPlatform || localPath) return;
         invoke<StreamInfo>('cmd_get_stream_info').then(setStreamInfo).catch((err) => {
             console.error("Failed to get stream info:", err);
             setError("Failed to initialize stream");
         });
-    }, []);
+    }, [localPath]);
 
     useEffect(() => {
         let cancelled = false;
@@ -119,6 +120,11 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
             });
             activeLoadingTask.promise.then(finishPdfLoad, (err) => {
                 if (cancelled) return;
+                if (localPath) {
+                    setError(i18n.t('workspace.preview_failed'));
+                    setLoading(false);
+                    return;
+                }
                 if (!isAndroidPlatform) {
                     console.warn("Cached PDF could not be rendered; falling back to streaming:", err);
                     loadStream();
@@ -138,6 +144,10 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
             });
         };
 
+        if (localPath) {
+            loadLocalFile(localPath);
+            return () => { cancelled = true; void activeLoadingTask?.destroy(); };
+        }
         if (!isAndroidPlatform && !streamInfo) {
             return;
         }
@@ -177,7 +187,7 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
             cancelled = true;
             void activeLoadingTask?.destroy();
         };
-    }, [streamInfo, activeFolderId, file.id, file.size]);
+    }, [streamInfo, activeFolderId, file.id, file.size, localPath]);
 
     useEffect(() => {
         return () => {

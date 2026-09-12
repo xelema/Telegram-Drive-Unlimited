@@ -5,7 +5,7 @@
 // Extensions pipeline, eliminating the need to fall back to native <video>.
 //
 // Cache layout:
-//   $APPDATA/streaming/fmp4/{folder_id}_{message_id}/output.mp4
+//   $APPDATA/streaming/fmp4/{owner}_{folder_id}_{message_id}/output.mp4
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -16,7 +16,8 @@ use tokio::sync::Mutex;
 
 use crate::commands::TelegramState;
 use crate::server::StreamTokenData;
-use crate::transcode::TranscodeManager;
+use crate::transcode::{JobPhase, TranscodeKey, TranscodeManager};
+use crate::workspace::AccountGuard;
 use actix_web::{web, HttpRequest, HttpResponse, Responder};
 
 // ── Constants ────────────────────────────────────────────────────────
@@ -82,7 +83,9 @@ pub async fn run_fmp4_remux(
     output_path: &Path,
     cancel_rx: &mut tokio::sync::oneshot::Receiver<()>,
     progress_callback: impl Fn(f32),
+    account: &AccountGuard,
 ) -> Result<(), String> {
+    account.validate()?;
     // Ensure output directory exists
     if let Some(parent) = output_path.parent() {
         std::fs::create_dir_all(parent)
@@ -119,8 +122,17 @@ pub async fn run_fmp4_remux(
     let mut lines = tokio::io::AsyncBufReadExt::lines(stderr_reader);
     let input_size = std::fs::metadata(input_path).map(|m| m.len()).unwrap_or(0);
 
+    let mut account_check = tokio::time::interval(std::time::Duration::from_secs(1));
     let parse_result: Result<(), String> = loop {
         tokio::select! {
+            _ = account_check.tick() => {
+                if let Err(error) = account.validate() {
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                    let _ = std::fs::remove_file(output_path);
+                    break Err(error);
+                }
+            }
             _ = &mut *cancel_rx => {
                 let _ = child.kill().await;
                 let _ = child.wait().await;
@@ -168,6 +180,7 @@ pub async fn run_fmp4_remux(
             status.code()
         ));
     }
+    account.validate()?;
 
     // Verify output
     if !output_path.exists() {
@@ -217,203 +230,156 @@ pub async fn cmd_prepare_fmp4_stream(
     manager: tauri::State<'_, Arc<TranscodeManager>>,
     remux_state: tauri::State<'_, Fmp4RemuxState>,
 ) -> Result<Fmp4StreamInfo, String> {
-    let folder_id = folder_id.unwrap_or(0);
-    let file_key = format!("{}_{}", folder_id, message_id);
-    let url = format!("/fmp4/{}/output.mp4", file_key);
+    let account = manager.account(None)?;
+    let key = TranscodeKey {
+        owner_id: account.owner,
+        folder_id: folder_id.unwrap_or(0),
+        message_id,
+        quality: "fmp4".into(),
+    };
+    let file_key = key.file_key();
+    let url = format!("/fmp4/{file_key}/output.mp4");
+    let (job, is_new) = manager.get_or_create_job(&key).await;
+    if !is_new {
+        account.validate()?;
+        return Ok(Fmp4StreamInfo {
+            url,
+            output_file_key: file_key,
+            status: "processing".into(),
+        });
+    }
+    // The same registration protects originals and remux output from cache
+    // clearing/eviction until all writers (including FFmpeg) have terminated.
+    let lease = job.lock().await.writer_lease();
+    let output_path = manager
+        .cache_root
+        .join(FMP4_DIR)
+        .join(&file_key)
+        .join("output.mp4");
+    account.validate()?;
+    if completed_output(&output_path) {
+        job.lock().await.phase = JobPhase::Ready;
+        remux_state.jobs.lock().await.remove(&file_key);
+        return Ok(Fmp4StreamInfo {
+            url,
+            output_file_key: file_key,
+            status: "ready".into(),
+        });
+    }
 
-    // Check if fMP4 output already exists
-    let output_dir = manager.cache_root.join(FMP4_DIR).join(&file_key);
-    let output_path = output_dir.join("output.mp4");
-    if output_path.exists() {
-        let size = std::fs::metadata(&output_path)
-            .map(|m| m.len())
-            .unwrap_or(0);
-        if size > 0 {
-            log::info!(
-                "fMP4 remux: cached output already exists at {:?}",
-                output_path
-            );
-            return Ok(Fmp4StreamInfo {
-                url,
-                output_file_key: file_key,
-                status: "ready".to_string(),
-            });
+    let setup: Result<_, String> = async {
+        let client = state.client.lock().await.clone().ok_or("Not connected to Telegram")?;
+        let actual = client.get_me().await.map_err(|e| e.to_string())?;
+        if actual.bare_id() != account.owner { return Err("ACCOUNT_CHANGED".into()); }
+        account.validate()?;
+        let peer = crate::commands::utils::resolve_peer(&client, folder_id, &state.peer_cache).await?;
+        let message = client.get_messages_by_id(&peer, &[message_id]).await.map_err(|e| e.to_string())?
+            .into_iter().flatten().next().ok_or("Message not found")?;
+        let media = message.media().ok_or("No media")?;
+        if message.text() == "TDENC2"
+            || matches!(&media, grammers_client::types::Media::Document(document) if document.name().to_ascii_lowercase().ends_with(".tdenc")) {
+            return Err("ENCRYPTED_PREVIEW_UNAVAILABLE".into());
         }
-    }
-
-    // Check if a job is already in progress for this file
-    {
-        let jobs = remux_state.jobs.lock().await;
-        if let Some(status) = jobs.get(&file_key) {
-            return match status {
-                None => Ok(Fmp4StreamInfo {
-                    url,
-                    output_file_key: file_key,
-                    status: "processing".to_string(),
-                }),
-                Some(err) => Err(err.clone()),
-            };
+        let ffmpeg = manager.ffmpeg_path.lock().await.clone().ok_or("FFmpeg is not available")?;
+        account.validate()?;
+        Ok((client, media, ffmpeg))
+    }.await;
+    let (client, media, ffmpeg) = match setup {
+        Ok(values) => values,
+        Err(error) => {
+            job.lock().await.phase = JobPhase::Error(error.clone());
+            return Err(error);
         }
-    }
-
-    // Mark as in-progress
-    {
-        let mut jobs = remux_state.jobs.lock().await;
-        jobs.insert(file_key.clone(), None);
-    }
-
-    // Get Telegram client
-    let client = { state.client.lock().await.clone() };
-    let client = client.ok_or_else(|| {
-        // Clean up job state on error
-        let rs = remux_state.inner().clone();
-        let fk = file_key.clone();
-        tokio::spawn(async move {
-            rs.jobs.lock().await.remove(&fk);
-        });
-        "Not connected to Telegram".to_string()
-    })?;
-
-    // Resolve peer and get media
-    let peer = crate::commands::utils::resolve_peer(
-        &client,
-        if folder_id == 0 {
-            None
-        } else {
-            Some(folder_id)
-        },
-        &state.peer_cache,
-    )
-    .await
-    .inspect_err(|_| {
-        let rs = remux_state.inner().clone();
-        let fk = file_key.clone();
-        tokio::spawn(async move {
-            rs.jobs.lock().await.remove(&fk);
-        });
-    })?;
-
-    let messages = client
-        .get_messages_by_id(&peer, &[message_id])
-        .await
-        .map_err(|e| {
-            let rs = remux_state.inner().clone();
-            let fk = file_key.clone();
-            tokio::spawn(async move {
-                rs.jobs.lock().await.remove(&fk);
-            });
-            e.to_string()
-        })?;
-
-    let msg = messages.into_iter().flatten().next().ok_or_else(|| {
-        let rs = remux_state.inner().clone();
-        let fk = file_key.clone();
-        tokio::spawn(async move {
-            rs.jobs.lock().await.remove(&fk);
-        });
-        format!("Message {} not found", message_id)
-    })?;
-
-    let media = msg.media().ok_or_else(|| {
-        let rs = remux_state.inner().clone();
-        let fk = file_key.clone();
-        tokio::spawn(async move {
-            rs.jobs.lock().await.remove(&fk);
-        });
-        "No media".to_string()
-    })?;
-
-    // Get FFmpeg path
-    let ffmpeg_path = { manager.ffmpeg_path.lock().await.clone() };
-    let ffmpeg_path = ffmpeg_path.ok_or_else(|| {
-        let rs = remux_state.inner().clone();
-        let fk = file_key.clone();
-        tokio::spawn(async move {
-            rs.jobs.lock().await.remove(&fk);
-        });
-        "FFmpeg is not available. Install FFmpeg to enable fMP4 streaming.".to_string()
-    })?;
-
-    // Spawn the download + remux pipeline in the background
-    let manager_clone = manager.inner().clone();
-    let remux_state_clone = remux_state.inner().clone();
-    let file_key_clone = file_key.clone();
-
+    };
+    let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel();
+    job.lock().await.cancel_tx = Some(cancel_tx);
+    remux_state.jobs.lock().await.insert(file_key.clone(), None);
+    let manager = manager.inner().clone();
+    let remux_state = remux_state.inner().clone();
+    let task_key = file_key.clone();
     tokio::spawn(async move {
-        let original_path = manager_clone.original_path(&file_key_clone);
-        let output_path = manager_clone
-            .cache_root
-            .join(FMP4_DIR)
-            .join(&file_key_clone)
-            .join("output.mp4");
-
+        let _lease = lease;
+        let original_path = manager.original_path(&task_key);
+        let partial_path = output_path.with_extension("mp4.part");
         let result: Result<(), String> = async {
-            // Step 1: Download original if needed
-            if !original_path.exists() {
-                log::info!("fMP4 remux: downloading original to {:?}...", original_path);
-                let (_cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel();
-
-                let total_size = crate::transcode::cache_original(
+            let source_lock = crate::workspace::assets::file_lock(format!(
+                "transcode-source:{}:{}",
+                manager.cache_root.display(),
+                task_key
+            ))
+            .await;
+            let source_guard = tokio::select! {
+                guard = source_lock.lock() => guard,
+                _ = &mut cancel_rx => return Err("Cancelled".into()),
+            };
+            account.validate()?;
+            if !original_path.is_file() {
+                job.lock().await.phase = JobPhase::CachingOriginal { progress: 0.0 };
+                crate::transcode::cache_original(
                     &client,
                     &media,
                     &original_path,
                     &mut cancel_rx,
-                    |progress| {
-                        log::debug!("fMP4: download progress: {:.0}%", progress * 100.0);
-                    },
+                    |_| {},
+                    &account,
                 )
-                .await
-                .map_err(|e| format!("Failed to download original: {}", e))?;
-
-                log::info!(
-                    "fMP4 remux: original cached ({:.1} MB)",
-                    total_size as f64 / (1024.0 * 1024.0)
-                );
-                manager_clone.evict_lru().await;
+                .await?;
             }
-
-            // Step 2: Run FFmpeg remux
-            log::info!(
-                "fMP4 remux: starting FFmpeg remux for {:?} → {:?}",
-                original_path,
-                output_path
-            );
-            let (_cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel();
-
+            drop(source_guard);
+            account.validate()?;
+            job.lock().await.phase = JobPhase::Transcoding { progress: 0.0 };
             run_fmp4_remux(
-                &ffmpeg_path,
+                &ffmpeg,
                 &original_path,
-                &output_path,
+                &partial_path,
                 &mut cancel_rx,
                 |_| {},
+                &account,
             )
-            .await
-            .map_err(|e| format!("fMP4 remux failed: {}", e))?;
-
+            .await?;
+            publish_output(&partial_path, &output_path, || account.validate())?;
             Ok(())
         }
         .await;
-
-        // Update job status
-        let mut jobs = remux_state_clone.jobs.lock().await;
+        if result.is_err() {
+            let _ = std::fs::remove_file(&partial_path);
+        }
+        let mut jobs = remux_state.jobs.lock().await;
         match result {
             Ok(()) => {
-                log::info!("fMP4 remux: completed for {}", file_key_clone);
-                // Remove from jobs map — absence + file exists = ready
-                jobs.remove(&file_key_clone);
+                job.lock().await.phase = JobPhase::Ready;
+                jobs.remove(&task_key);
             }
-            Err(e) => {
-                log::error!("fMP4 remux: failed for {}: {}", file_key_clone, e);
-                jobs.insert(file_key_clone, Some(e));
+            Err(error) => {
+                job.lock().await.phase = JobPhase::Error(error.clone());
+                jobs.insert(task_key, Some(error));
             }
         }
+        drop(jobs);
+        drop(_lease);
+        manager.evict_lru().await;
     });
-
     Ok(Fmp4StreamInfo {
         url,
         output_file_key: file_key,
-        status: "processing".to_string(),
+        status: "processing".into(),
     })
+}
+
+fn completed_output(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_file() && meta.len() > 0)
+}
+
+fn publish_output(
+    partial: &Path,
+    output: &Path,
+    validate: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    validate()?;
+    if !completed_output(partial) {
+        return Err("Incomplete fMP4 output".into());
+    }
+    std::fs::rename(partial, output).map_err(|error| error.to_string())
 }
 
 /// Poll the status of an fMP4 remux job.
@@ -423,27 +389,25 @@ pub async fn cmd_get_fmp4_status(
     manager: tauri::State<'_, Arc<TranscodeManager>>,
     remux_state: tauri::State<'_, Fmp4RemuxState>,
 ) -> Result<Fmp4StatusResult, String> {
+    let account = manager.account_for_key(&file_key)?;
     // Check if output file already exists (ready)
     let output_path = manager
         .cache_root
         .join(FMP4_DIR)
         .join(&file_key)
         .join("output.mp4");
-    if output_path.exists() {
-        let size = std::fs::metadata(&output_path)
-            .map(|m| m.len())
-            .unwrap_or(0);
-        if size > 0 {
-            // Clean up job entry if still present
-            remux_state.jobs.lock().await.remove(&file_key);
-            return Ok(Fmp4StatusResult {
-                status: "ready".to_string(),
-                error: None,
-            });
-        }
+    if completed_output(&output_path) {
+        account.validate()?;
+        // Clean up job entry if still present
+        remux_state.jobs.lock().await.remove(&file_key);
+        return Ok(Fmp4StatusResult {
+            status: "ready".to_string(),
+            error: None,
+        });
     }
 
     let jobs = remux_state.jobs.lock().await;
+    account.validate()?;
     match jobs.get(&file_key) {
         Some(None) => Ok(Fmp4StatusResult {
             status: "processing".to_string(),
@@ -494,6 +458,10 @@ async fn serve_fmp4(
     {
         return HttpResponse::BadRequest().body("Invalid file key");
     }
+    let account = match manager.account_for_key(&file_key) {
+        Ok(account) => account,
+        Err(_) => return HttpResponse::Forbidden().body("Account changed"),
+    };
 
     // Build path and validate it stays within the cache root
     let fmp4_root = manager.cache_root.join(FMP4_DIR);
@@ -524,9 +492,13 @@ async fn serve_fmp4(
     // Use NamedFile for automatic Range/Content-Range support and
     // streaming from disk (no full-file memory load).
     match actix_files::NamedFile::open_async(&safe_path).await {
-        Ok(f) => f
-            .set_content_type("video/mp4".parse().unwrap())
-            .into_response(&_req),
+        Ok(f) => {
+            if account.validate().is_err() {
+                return HttpResponse::Forbidden().body("Account changed");
+            }
+            f.set_content_type("video/mp4".parse().unwrap())
+                .into_response(&_req)
+        }
         Err(e) => {
             log::error!("Failed to open fMP4 file {:?}: {}", safe_path, e);
             HttpResponse::InternalServerError().body("Failed to read file")
@@ -537,4 +509,84 @@ async fn serve_fmp4(
 /// Register fMP4 routes on the Actix service config.
 pub fn configure_fmp4_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(serve_fmp4);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[actix_web::test]
+    async fn serving_cached_remux_requires_current_owner_even_with_a_valid_token() {
+        use actix_web::test as web_test;
+        use grammers_session::{storages::SqliteSession, types::PeerInfo, Session};
+        let root = std::env::temp_dir().join(format!("fmp4-account-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let session = SqliteSession::open(root.join("telegram.session")).unwrap();
+        session.cache_peer(&PeerInfo::User {
+            id: 22,
+            auth: None,
+            bot: Some(false),
+            is_self: Some(true),
+        });
+        drop(session);
+        let manager = Arc::new(TranscodeManager::new(root.join("streaming")));
+        for key in ["11_0_42", "22_0_42", "0_42"] {
+            let output = manager.cache_root.join(FMP4_DIR).join(key);
+            std::fs::create_dir_all(&output).unwrap();
+            std::fs::write(output.join("output.mp4"), b"owner-specific media").unwrap();
+        }
+        let app = web_test::init_service(
+            actix_web::App::new()
+                .app_data(web::Data::new(manager))
+                .app_data(web::Data::new(StreamTokenData {
+                    token: "fixture".into(),
+                }))
+                .service(serve_fmp4),
+        )
+        .await;
+        for (key, expected) in [("11_0_42", 403), ("0_42", 403), ("22_0_42", 200)] {
+            let request = web_test::TestRequest::get()
+                .uri(&format!("/fmp4/{key}/output.mp4?token=fixture"))
+                .to_request();
+            let response = web_test::call_service(&app, request).await;
+            assert_eq!(response.status().as_u16(), expected);
+        }
+        drop(app);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn partial_remux_is_not_ready_and_account_change_prevents_publication() {
+        let root = std::env::temp_dir().join(format!("fmp4-publish-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let partial = root.join("output.mp4.part");
+        let output = root.join("output.mp4");
+        std::fs::write(&partial, b"partial remux").unwrap();
+        assert!(!completed_output(&output));
+        assert!(publish_output(&partial, &output, || Err("ACCOUNT_CHANGED".into())).is_err());
+        assert!(!completed_output(&output));
+        assert!(partial.exists());
+        publish_output(&partial, &output, || Ok(())).unwrap();
+        assert!(completed_output(&output));
+        assert!(!partial.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn empty_remux_and_symlink_are_never_completed_output() {
+        let root = std::env::temp_dir().join(format!("fmp4-empty-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let partial = root.join("output.mp4.part");
+        let output = root.join("output.mp4");
+        std::fs::write(&partial, []).unwrap();
+        assert!(publish_output(&partial, &output, || Ok(())).is_err());
+        #[cfg(unix)]
+        {
+            let other = root.join("other.mp4");
+            std::fs::write(&other, b"other account media").unwrap();
+            std::os::unix::fs::symlink(&other, &output).unwrap();
+            assert!(!completed_output(&output));
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

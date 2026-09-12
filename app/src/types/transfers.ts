@@ -1,7 +1,11 @@
 import type { UploadProtectionIntent } from './encryption';
 import type { VideoUploadMode } from './settings';
 
+export type DownloadCollisionPolicy = 'keep_both' | 'skip' | 'replace';
+export type DownloadOutcome = 'saved' | 'skipped';
+
 export interface QueueItem {
+    ownerId?: string;
   id: string;
   path: string;
   url?: string;
@@ -39,6 +43,7 @@ export interface DropUploadResult {
 }
 
 export interface DownloadItem {
+    ownerId?: string;
   id: string;
   messageId: number;
   filename: string;
@@ -50,6 +55,8 @@ export interface DownloadItem {
   totalBytes?: number;
   speedBytesPerSec?: number;
   savePath?: string;
+  collisionPolicy?: DownloadCollisionPolicy;
+  downloadOutcome?: DownloadOutcome;
   protectionMode?: 'vault' | 'passphrase' | 'vault_and_passphrase';
   /** In-memory only. Never persist this single-use credential handle. */
   promptToken?: number;

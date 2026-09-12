@@ -1,3 +1,4 @@
+import { sourceFolder } from '../../../services/fileIdentity';
 import { useCallback, useState, useEffect } from 'react';
 import { Folder, Eye, Trash2, Link, Check } from 'lucide-react';
 import { useDraggable, useDroppable } from '@dnd-kit/core';
@@ -36,6 +37,7 @@ function isImageFile(filename: string): boolean {
 
 
 export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSelected, onClick, onContextMenu, activeFolderId, height, onToggleSelection, selectedIds, disableDrag = false }: FileCardProps) {
+    const sourceFolderId = sourceFolder(file, activeFolderId ?? null);
     const actions = describeFileActions(file);
     const { isFolder } = actions;
     const [thumbnail, setThumbnail] = useState<string | null>(null);
@@ -70,14 +72,14 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
     // Lazy video metadata badge (.mp4 only)
     const { data: videoMeta, isLoading: videoMetaLoading } = useVideoMetadata(
         file.id,
-        file.folder_id ?? null,
+        sourceFolderId,
         file.name,
     );
 
     // Cached HLS variants
     const { data: cachedVariants } = useCachedVariants(
         file.id,
-        file.folder_id ?? null,
+        sourceFolderId,
         file.name,
     );
     const cachedQualities = (cachedVariants || []).filter(v => v.available).map(v => v.quality);
@@ -87,12 +89,12 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
         if (isFolder || !isImageFile(file.name)) return;
 
         let cancelled = false;
-        const cached = getCachedThumbnail(file.id, activeFolderId);
+        const cached = getCachedThumbnail(file.id, sourceFolderId);
         setThumbnail(cached);
         setThumbnailLoading(!cached);
         setThumbnailReady(Boolean(cached));
 
-        loadThumbnail(file.id, activeFolderId).then((result) => {
+        loadThumbnail(file.id, sourceFolderId).then((result) => {
             if (!cancelled && result) {
                 if (result !== cached) setThumbnailReady(false);
                 setThumbnail(result);
@@ -104,7 +106,7 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
         });
 
         return () => { cancelled = true; };
-    }, [file.id, file.name, activeFolderId, isFolder]);
+    }, [file.id, file.name, sourceFolderId, isFolder]);
 
     return (
         <div
@@ -136,7 +138,7 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
                             className={`h-full w-full object-cover transition-opacity duration-300 motion-reduce:transition-none ${thumbnailReady ? 'opacity-100' : 'opacity-0'}`}
                             onLoad={() => setThumbnailReady(true)}
                             onError={() => {
-                                forgetThumbnail(file.id, activeFolderId);
+                                forgetThumbnail(file.id, sourceFolderId);
                                 setThumbnail(null);
                                 setThumbnailReady(false);
                             }}

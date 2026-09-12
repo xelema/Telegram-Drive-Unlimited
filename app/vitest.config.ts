@@ -6,7 +6,7 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     setupFiles: ['./tests/unit/setup.ts'],
-    include: ['tests/unit/**/*.test.{ts,tsx}'],
+    include: ['tests/unit/**/*.test.{ts,tsx}', 'src/**/*.test.{ts,tsx}'],
     clearMocks: true,
     restoreMocks: true,
     coverage: {
@@ -15,6 +15,7 @@ export default defineConfig({
       reporter: ['text', 'json-summary', 'lcov', 'html'],
       include: ['src/**/*.{ts,tsx}'],
       exclude: [
+        'src/**/*.test.{ts,tsx}',
         'src/**/*.generated.ts',
         'src/components/dev/**',
         'src/main.tsx',

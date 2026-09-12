@@ -53,6 +53,7 @@ pub mod api_settings;
 pub mod archive;
 pub mod auth;
 pub mod crash_reporting;
+pub mod download_destination;
 pub mod file_activity;
 pub mod file_inventory;
 pub mod folder_groups;

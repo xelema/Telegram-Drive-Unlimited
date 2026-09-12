@@ -3,7 +3,7 @@ use sqlite::{Connection, State};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-const APPLICATION_SCHEMA_VERSION: i64 = 3;
+const APPLICATION_SCHEMA_VERSION: i64 = 4;
 const BASELINE_SCHEMA_VERSION: i64 = 1;
 const ENCRYPTION_SCHEMA_VERSION: i64 = 3;
 const BASELINE_NAME: &str = "baseline_known_schema";
@@ -13,6 +13,9 @@ const SYNC_MIGRATION_NAME: &str = "telegram_folder_sync";
 const SYNC_MIGRATION_DEFINITION: &str = "2:telegram_folder_sync:sync_settings(key,value);sync_pairs(id,local_path,channel_id,folder_key,label,sync_direction,is_active,created_at);sync_state(id,pair_id,relative_path,local_hash,remote_hash,file_size,local_mtime,remote_date,message_id,sync_status);sync_log(id,pair_id,action,relative_path,detail,created_at)";
 const FILE_INVENTORY_MIGRATION_NAME: &str = "telegram_file_inventory";
 const FILE_INVENTORY_MIGRATION_DEFINITION: &str = "3:telegram_file_inventory:file_inventory(folder_key,folder_id,message_id,file_name,file_size,mime_type,file_ext,created_at,icon_type,encryption_state,last_seen_scan,updated_at);file_inventory_state(folder_key,completed_at,file_count)";
+
+const SHARE_OWNER_MIGRATION_NAME: &str = "account_owned_share_links";
+const SHARE_OWNER_MIGRATION_DEFINITION: &str = "4:account_owned_share_links:shared_links(owner_id INTEGER NULL);legacy_unowned_links_quarantined";
 
 const MIGRATION_LEDGER_SQL: &str = "CREATE TABLE app_schema_migrations (
         version INTEGER PRIMARY KEY,
@@ -273,6 +276,7 @@ pub fn inspect_schema(conn: &Connection) -> Result<SchemaLayout, String> {
         validate_existing_baseline(conn)?;
         validate_sync_migration(conn, has_sync)?;
         validate_file_inventory_migration(conn, has_file_inventory)?;
+        validate_share_owner_migration(conn)?;
         if !(has_groups && has_encryption && has_file_activity) {
             return Err(
                 "Managed database is missing tables required by its recorded schema version. No changes were made."
@@ -483,6 +487,79 @@ fn validate_file_inventory_migration(
         }
     }
     Ok(())
+}
+
+fn has_share_owner(conn: &Connection) -> Result<bool, String> {
+    let mut statement = conn
+        .prepare("SELECT 1 FROM pragma_table_info('shared_links') WHERE name='owner_id'")
+        .map_err(|e| e.to_string())?;
+    Ok(matches!(
+        statement.next().map_err(|e| e.to_string())?,
+        State::Row
+    ))
+}
+
+fn share_owner_checksum() -> String {
+    format!(
+        "{:x}",
+        Sha256::digest(SHARE_OWNER_MIGRATION_DEFINITION.as_bytes())
+    )
+}
+
+fn validate_share_owner_migration(conn: &Connection) -> Result<(), String> {
+    let mut statement = conn
+        .prepare("SELECT name, checksum FROM app_schema_migrations WHERE version=4")
+        .map_err(|e| e.to_string())?;
+    let recorded = matches!(statement.next().map_err(|e| e.to_string())?, State::Row);
+    if recorded != has_share_owner(conn)? {
+        return Err(
+            "Share ownership schema and migration record do not match. No changes were made."
+                .into(),
+        );
+    }
+    if recorded
+        && (statement.read::<String, _>(0).map_err(|e| e.to_string())?
+            != SHARE_OWNER_MIGRATION_NAME
+            || statement.read::<String, _>(1).map_err(|e| e.to_string())? != share_owner_checksum())
+    {
+        return Err(
+            "Share ownership migration does not match this build. No changes were made.".into(),
+        );
+    }
+    Ok(())
+}
+
+/// Add ownership without assigning old links to whichever account happens to
+/// be signed in during an update. NULL-owner rows are preserved but not served.
+pub fn install_share_ownership(conn: &Connection) -> Result<(), String> {
+    validate_share_owner_migration(conn)?;
+    if has_share_owner(conn)? {
+        return Ok(());
+    }
+    conn.execute("BEGIN IMMEDIATE").map_err(|e| e.to_string())?;
+    let result = (|| {
+        conn.execute("ALTER TABLE shared_links ADD COLUMN owner_id INTEGER; CREATE INDEX idx_shared_links_owner ON shared_links(owner_id, revoked, created_at)").map_err(|e| e.to_string())?;
+        let mut statement = conn.prepare("INSERT INTO app_schema_migrations(version,name,checksum,applied_at,app_version) VALUES(4,?,?,?,?)").map_err(|e| e.to_string())?;
+        statement
+            .bind((1, SHARE_OWNER_MIGRATION_NAME))
+            .map_err(|e| e.to_string())?;
+        statement
+            .bind((2, share_owner_checksum().as_str()))
+            .map_err(|e| e.to_string())?;
+        statement
+            .bind((3, chrono::Utc::now().timestamp()))
+            .map_err(|e| e.to_string())?;
+        statement
+            .bind((4, env!("CARGO_PKG_VERSION")))
+            .map_err(|e| e.to_string())?;
+        statement.next().map_err(|e| e.to_string())?;
+        Ok(())
+    })();
+    let result = result.and_then(|()| conn.execute("COMMIT").map_err(|e| e.to_string()));
+    if result.is_err() {
+        let _ = conn.execute("ROLLBACK");
+    }
+    result
 }
 
 pub fn sync_migration_record() -> (&'static str, String) {
@@ -879,14 +956,14 @@ mod tests {
         create_current_schema(&newer);
         newer.execute(MIGRATION_LEDGER_SQL).unwrap();
         newer
-            .execute(
-                "INSERT INTO app_schema_migrations
-                 VALUES (4, 'future', 'future', 1, '9.0.0')",
-            )
+            .execute(format!(
+                "INSERT INTO app_schema_migrations VALUES ({}, 'future', 'future', 1, '9.0.0')",
+                APPLICATION_SCHEMA_VERSION + 1,
+            ))
             .unwrap();
         assert!(inspect_schema(&newer)
             .unwrap_err()
-            .contains("supports up to 3"));
+            .contains(&format!("supports up to {}", APPLICATION_SCHEMA_VERSION)));
 
         let modified = connection();
         create_current_schema(&modified);
@@ -989,6 +1066,47 @@ mod tests {
         inventory_record.next().unwrap();
 
         assert_eq!(inspect_schema(&conn).unwrap(), SchemaLayout::Current);
+    }
+
+    #[test]
+    fn share_ownership_migration_preserves_and_quarantines_legacy_links() {
+        let conn = connection();
+        create_current_schema(&conn);
+        install_baseline(&conn).unwrap();
+        conn.execute("INSERT INTO shared_links(id,folder_id,message_id,file_name,file_size,password_hash,password_salt,expires_at,revoked,created_at) VALUES('legacy',NULL,42,'original.pdf',10,'existing-hash','existing-salt',123,0,1)").unwrap();
+        install_share_ownership(&conn).unwrap();
+        install_share_ownership(&conn).unwrap();
+        assert_eq!(inspect_schema(&conn).unwrap(), SchemaLayout::Current);
+        let mut row = conn.prepare("SELECT file_name,password_hash,password_salt,owner_id FROM shared_links WHERE id='legacy'").unwrap();
+        assert_eq!(row.next().unwrap(), State::Row);
+        assert_eq!(row.read::<String, _>(0).unwrap(), "original.pdf");
+        assert_eq!(row.read::<String, _>(1).unwrap(), "existing-hash");
+        assert_eq!(row.read::<String, _>(2).unwrap(), "existing-salt");
+        assert_eq!(row.read::<Option<i64>, _>(3).unwrap(), None);
+        drop(row);
+        conn.execute("UPDATE app_schema_migrations SET checksum='modified' WHERE version=4")
+            .unwrap();
+        assert!(inspect_schema(&conn)
+            .unwrap_err()
+            .contains("Share ownership migration"));
+    }
+
+    #[test]
+    fn failed_share_ownership_migration_rolls_back_schema_without_erasing_legacy_rows() {
+        let conn = connection();
+        create_current_schema(&conn);
+        install_baseline(&conn).unwrap();
+        conn.execute("INSERT INTO shared_links(id,message_id,file_name,created_at) VALUES('legacy',42,'original',1); CREATE TRIGGER fail_share_migration BEFORE INSERT ON app_schema_migrations WHEN NEW.version=4 BEGIN SELECT RAISE(FAIL,'disk unavailable'); END;").unwrap();
+        assert!(install_share_ownership(&conn).is_err());
+        assert!(!has_share_owner(&conn).unwrap());
+        assert_eq!(inspect_schema(&conn).unwrap(), SchemaLayout::Current);
+        conn.execute("DROP TRIGGER fail_share_migration").unwrap();
+        install_share_ownership(&conn).unwrap();
+        let mut row = conn
+            .prepare("SELECT COUNT(*) FROM shared_links WHERE id='legacy' AND owner_id IS NULL")
+            .unwrap();
+        assert_eq!(row.next().unwrap(), State::Row);
+        assert_eq!(row.read::<i64, _>(0).unwrap(), 1);
     }
 
     #[test]

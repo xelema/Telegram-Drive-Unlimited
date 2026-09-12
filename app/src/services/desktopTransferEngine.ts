@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { DownloadItem, QueueItem } from '../types';
+import type { DownloadCollisionPolicy, DownloadOutcome } from '../types/transfers';
 import type { VideoUploadMode } from '../types/settings';
 
 export type TransferDirection = 'upload' | 'download';
@@ -22,6 +23,7 @@ export type TransferStatus =
 
 export interface DesktopTransferJob {
     id: string;
+    ownerId?: string | null;
     direction: TransferDirection;
     kind: TransferKind;
     status: TransferStatus;
@@ -31,6 +33,8 @@ export interface DesktopTransferJob {
     messageId?: number;
     filename: string;
     savePath?: string;
+    collisionPolicy?: DownloadCollisionPolicy;
+    downloadOutcome?: DownloadOutcome;
     protectionMode?: string;
     protectMetadata?: boolean;
     videoUploadMode?: VideoUploadMode;
@@ -49,6 +53,7 @@ export interface DesktopTransferJob {
 
 export interface DesktopTransferRequest {
     id: string;
+    ownerId?: string | null;
     direction: TransferDirection;
     kind: TransferKind;
     path?: string;
@@ -57,6 +62,7 @@ export interface DesktopTransferRequest {
     messageId?: number;
     filename: string;
     savePath?: string;
+    collisionPolicy?: DownloadCollisionPolicy;
     protectionMode?: string;
     promptToken?: number;
     protectMetadata?: boolean;
@@ -82,6 +88,7 @@ const downloadStatus = (status: TransferStatus): DownloadItem['status'] => {
 
 export const transferJobToUploadItem = (job: DesktopTransferJob): QueueItem => ({
     id: job.id,
+    ownerId: job.ownerId ?? undefined,
     path: job.path || job.filename,
     url: job.url,
     folderId: job.folderId,
@@ -101,6 +108,7 @@ export const transferJobToUploadItem = (job: DesktopTransferJob): QueueItem => (
 
 export const transferJobToDownloadItem = (job: DesktopTransferJob): DownloadItem => ({
     id: job.id,
+    ownerId: job.ownerId ?? undefined,
     messageId: job.messageId || 0,
     filename: job.filename,
     folderId: job.folderId,
@@ -111,11 +119,14 @@ export const transferJobToDownloadItem = (job: DesktopTransferJob): DownloadItem
     totalBytes: job.totalBytes,
     speedBytesPerSec: job.speedBytesPerSec,
     savePath: job.savePath,
+    collisionPolicy: job.collisionPolicy ?? 'keep_both',
+    downloadOutcome: job.downloadOutcome,
     protectionMode: job.protectionMode as DownloadItem['protectionMode'],
 });
 
 export const uploadItemToTransferRequest = (item: QueueItem): DesktopTransferRequest => ({
     id: item.id,
+    ownerId: item.ownerId,
     direction: 'upload',
     kind: item.url ? 'url_upload' : 'local_upload',
     path: item.url ? undefined : item.path,
@@ -133,12 +144,14 @@ export const uploadItemToTransferRequest = (item: QueueItem): DesktopTransferReq
 
 export const downloadItemToTransferRequest = (item: DownloadItem): DesktopTransferRequest => ({
     id: item.id,
+    ownerId: item.ownerId,
     direction: 'download',
     kind: 'download',
     folderId: item.folderId,
     messageId: item.messageId,
     filename: item.filename,
     savePath: item.savePath,
+    collisionPolicy: item.collisionPolicy ?? 'keep_both',
     protectionMode: item.protectionMode,
     promptToken: item.promptToken,
     totalBytes: item.totalBytes,
@@ -174,22 +187,25 @@ export async function configureDesktopTransferLimits(maxUploads: number, maxDown
 export async function transferItemAction(
     action: 'pause' | 'resume' | 'cancel' | 'retry',
     id: string,
+    ownerId?: string,
 ): Promise<DesktopTransferJob> {
-    return invoke<DesktopTransferJob>(`cmd_transfer_${action}`, { id });
+    return invoke<DesktopTransferJob>(`cmd_transfer_${action}`, { id, ownerId });
 }
 
 export async function transferBulkAction(
     action: 'pause' | 'resume' | 'cancel',
     direction: TransferDirection,
+    ownerId?: string,
 ): Promise<DesktopTransferJob[]> {
-    return invoke<DesktopTransferJob[]>(`cmd_transfer_${action}_all`, { direction });
+    return invoke<DesktopTransferJob[]>(`cmd_transfer_${action}_all`, { direction, ownerId });
 }
 
 export async function clearTerminalTransfers(
     direction: TransferDirection,
     includeFailedAndCancelled: boolean,
+    ownerId?: string,
 ): Promise<string[]> {
-    return invoke<string[]>('cmd_transfer_clear_terminal', { direction, includeFailedAndCancelled });
+    return invoke<string[]>('cmd_transfer_clear_terminal', { direction, includeFailedAndCancelled, ownerId });
 }
 
 export async function supplyTransferPromptToken(id: string, promptToken: number): Promise<void> {

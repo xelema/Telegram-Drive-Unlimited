@@ -82,7 +82,8 @@ export function TransferCenter({
     .reduce((sum, item) => sum + (item.speedBytesPerSec || 0), 0);
   const allComplete = activeCount === 0 && pausedCount === 0
     && [...uploads, ...downloads].length > 0
-    && [...uploads, ...downloads].every((item) => item.status === 'success');
+    && [...uploads, ...downloads].every((item) => item.status === 'success')
+    && downloads.every(item => item.downloadOutcome !== 'skipped');
 
   return (
     <aside className="quiet-raised fixed bottom-4 start-4 z-50 w-[min(360px,calc(100vw-2rem))] overflow-hidden min-[1050px]:start-auto min-[1050px]:end-4" aria-label="Transfer activity">
@@ -147,7 +148,7 @@ export function TransferCenter({
                 <div key={item.id} className="border-t border-app-border-subtle px-4 py-3 first:border-t-0">
                   <div className="flex items-center gap-3">
                     <Download className="h-4 w-4 shrink-0 text-app-info" />
-                    <div className="min-w-0 flex-1"><p className="truncate text-xs text-app-text" title={item.filename}>{item.filename}</p><StatusLabel status={item.status} /></div>
+                    <div className="min-w-0 flex-1"><p className="truncate text-xs text-app-text" title={item.filename}>{item.filename}</p>{item.downloadOutcome === 'skipped' ? <span className="text-[10px] text-app-text-secondary">{i18n.t('downloadCollision.skipped')}</span> : <StatusLabel status={item.status} />}</div>
                     {(item.status === 'pending' || item.status === 'paused' || item.status === 'cooldown' || item.status === 'downloading' || item.status === 'decrypting' || item.status === 'verifying') && <button type="button" onClick={() => onCancelDownload(item.id)} className="quiet-control p-1.5 text-app-text-secondary hover:text-app-danger" aria-label={`Cancel download ${item.filename}`} title={i18n.t("common.cancel")}><X className="h-3.5 w-3.5" aria-hidden="true" /></button>}
                     {(item.status === 'error' || item.status === 'cancelled' || item.status === 'waiting_for_unlock') && <button type="button" onClick={() => onRetryDownload(item.id)} className="quiet-control p-1.5 text-app-text-secondary hover:text-app-accent" aria-label={`${item.status === 'waiting_for_unlock' ? 'Provide encryption credentials for' : 'Retry'} ${item.filename}`} title={item.status === 'waiting_for_unlock' ? 'Provide encryption credentials' : 'Retry'}><RotateCcw className="h-3.5 w-3.5" aria-hidden="true" /></button>}
                   </div>

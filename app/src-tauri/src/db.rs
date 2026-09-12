@@ -381,6 +381,10 @@ pub fn init_db(app: &AppHandle) -> Result<DbConnection, String> {
         })?;
     }
 
+    retry_initialization_step("share ownership migration", || {
+        db_migrations::install_share_ownership(&conn)
+    })?;
+
     log::info!("SQLite database initialized successfully using sqlite crate.");
     Ok(Arc::new(Mutex::new(conn)))
 }

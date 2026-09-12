@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen }));
+vi.mock('@tauri-apps/api/core', () => ({ convertFileSrc: (path: string) => `asset://localhost${path}` }));
 vi.mock('react-i18next', () => ({
   initReactI18next: { type: '3rdParty', init: vi.fn() },
   useTranslation: () => ({
@@ -76,6 +77,17 @@ describe('PreviewModal image controls', () => {
     mocks.listen.mockReset().mockResolvedValue(() => {});
     mocks.loadPreview.mockReset().mockResolvedValue('asset://localhost/photo.jpg');
     mocks.loadThumbnail.mockReset().mockResolvedValue(null);
+  });
+
+  it('opens an approved offline image without requesting or prefetching Telegram files', async () => {
+    render(<PreviewModal file={{ id: 42, name: 'photo.jpg', size: 1, sizeStr: '1 B' }} nextFile={{ id: 43, name: 'next.jpg', size: 1, sizeStr: '1 B' }} activeFolderId={null} localPath="/offline/photo.jpg" onClose={vi.fn()} />);
+    const image = await screen.findByAltText('photo.jpg');
+    expect(image.getAttribute('src')).toBe('asset://localhost/offline/photo.jpg');
+    fireEvent.load(image);
+    fireEvent.error(image);
+    expect(mocks.loadPreview).not.toHaveBeenCalled();
+    expect(mocks.loadThumbnail).not.toHaveBeenCalled();
+    expect(mocks.listen).not.toHaveBeenCalled();
   });
 
   it('supports desktop controls and reserves arrow keys for panning while zoomed', async () => {

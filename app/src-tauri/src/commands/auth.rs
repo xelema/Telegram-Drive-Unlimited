@@ -235,6 +235,7 @@ pub async fn cmd_connect(
     state: State<'_, TelegramState>,
     api_id: i32,
 ) -> Result<bool, String> {
+    crate::workspace::resume();
     // Store API ID for auto-reconnect
     *state.api_id.lock().await = Some(api_id);
     ensure_client_initialized(&app_handle, &state, api_id).await?;
@@ -334,6 +335,7 @@ pub async fn cmd_logout(
     crypto_state: State<'_, crate::crypto::state::CryptoState>,
 ) -> Result<bool, String> {
     log::info!("Logging out...");
+    crate::workspace::suspend();
     crypto_state.lock();
 
     // 1. Shutdown the network runner FIRST to prevent any operations

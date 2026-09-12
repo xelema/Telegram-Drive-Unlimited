@@ -1,10 +1,13 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { X, ChevronLeft, ChevronRight, Maximize2, Minimize2 } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';
+import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { TelegramFile } from '../../../types';
 import { isVideoFile, isAudioFile } from '../../../utils';
 import { AdaptiveMediaPlayer } from './AdaptiveMediaPlayer';
+import { shouldHandleMediaShortcut } from '../../../services/mediaKeyboard';
+import { useDesktopPlayback } from '../../../hooks/useDesktopPlayback';
+import { PlaybackControls } from '../playback/PlaybackControls';
 import i18n from '../../../i18n';
 
 interface StreamInfo {
@@ -21,16 +24,23 @@ interface MediaPlayerProps {
     currentIndex?: number;
     totalItems?: number;
     activeFolderId: number | null;
+    ownerId?: string;
+    restart?: boolean;
+    onPlayFile?: (file: TelegramFile) => void;
+    /** Path returned by the account-scoped offline file service. */
+    localPath?: string;
 }
 
 function isMp4Video(name: string): boolean {
     return name.toLowerCase().endsWith('.mp4');
 }
 
-export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, totalItems, activeFolderId }: MediaPlayerProps) {
+export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, totalItems, activeFolderId, ownerId, restart, onPlayFile, localPath }: MediaPlayerProps) {
     const [streamInfo, setStreamInfo] = useState<StreamInfo | null>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const [isFullscreen, setIsFullscreen] = useState(false);
+    const sourceFolder = file.folder_id === undefined ? activeFolderId : file.folder_id;
+    const playback = useDesktopPlayback(file, sourceFolder, ownerId, restart, onPlayFile);
 
     const toggleFullscreen = useCallback(async () => {
         try {
@@ -54,13 +64,18 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
     useEffect(() => {
         let mounted = true;
         let unlistenFn: (() => void) | undefined;
-        getCurrentWindow().onResized(async () => {
-            if (!mounted) return;
-            try {
-                const fs = await getCurrentWindow().isFullscreen();
-                setIsFullscreen(fs);
-            } catch {}
-        }).then(fn => { if (mounted) unlistenFn = fn; });
+        const attach = async () => {
+            const dispose = await getCurrentWindow().onResized(async () => {
+                if (!mounted) return;
+                try {
+                    const fs = await getCurrentWindow().isFullscreen();
+                    if (mounted) setIsFullscreen(fs);
+                } catch {}
+            });
+            if (mounted) unlistenFn = dispose;
+            else dispose();
+        };
+        void attach().catch(() => {});
         return () => {
             mounted = false;
             unlistenFn?.();
@@ -68,14 +83,20 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
     }, []);
 
     useEffect(() => {
-        invoke<StreamInfo>('cmd_get_stream_info').then(setStreamInfo).catch(() => {});
-    }, []);
+        let cancelled = false;
+        setStreamInfo(null);
+        if (localPath) return;
+        invoke<StreamInfo>('cmd_get_stream_info').then(info => {
+            if (!cancelled) setStreamInfo(info);
+        }).catch(() => {});
+        return () => { cancelled = true; };
+    }, [localPath]);
 
-    const folderIdParam = activeFolderId !== null ? activeFolderId.toString() : 'home';
+    const folderIdParam = sourceFolder !== null ? sourceFolder.toString() : 'home';
     const streamCredential = streamInfo?.operation_token
         ? `&credential=${encodeURIComponent(streamInfo.operation_token)}`
         : '';
-    const streamUrl = streamInfo
+    const streamUrl = localPath ? convertFileSrc(localPath) : streamInfo
         ? `${streamInfo.base_url}/stream/${folderIdParam}/${file.id}?token=${encodeURIComponent(streamInfo.token)}${streamCredential}`
         : null;
 
@@ -84,11 +105,11 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
     const isMp4 = isMp4Video(file.name);
 
     useEffect(() => {
+        // The adaptive child owns its own controls. Keeping this listener alive
+        // while it is mounted toggles playback twice for a single keypress.
+        if (isMp4 && streamUrl && !localPath) return;
         const handleKeyDown = (e: KeyboardEvent) => {
-            const target = e.target as HTMLElement;
-            if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
-                return;
-            }
+            if (!shouldHandleMediaShortcut(e)) return;
 
             const key = e.key.toLowerCase();
 
@@ -116,37 +137,38 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
 
             if (key === 'm') {
                 e.preventDefault();
-                const video = document.querySelector('video');
-                if (video) {
-                    video.muted = !video.muted;
+                const media = containerRef.current?.querySelector('video, audio') as HTMLMediaElement | null;
+                if (media) {
+                    media.muted = !media.muted;
                 }
             }
 
             if (e.key === ' ') {
                 e.preventDefault();
-                const video = document.querySelector('video');
-                if (video) {
-                    video.paused ? video.play().catch(() => {}) : video.pause();
+                const media = containerRef.current?.querySelector('video, audio') as HTMLMediaElement | null;
+                if (media) {
+                    media.paused ? media.play().catch(() => {}) : media.pause();
                 }
             }
         };
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [onClose, onNext, onPrev, toggleFullscreen]);
+    }, [isMp4, streamUrl, localPath, onClose, onNext, onPrev, toggleFullscreen]);
 
     // MP4 files: use adaptive streaming with quality controls + throttling
-    if (isMp4 && streamUrl) {
+    if (isMp4 && streamUrl && !localPath) {
         return (
             <AdaptiveMediaPlayer
                 file={file}
                 streamUrl={streamUrl}
-                activeFolderId={activeFolderId}
+                activeFolderId={sourceFolder}
                 onClose={onClose}
                 onNext={onNext}
                 onPrev={onPrev}
                 currentIndex={currentIndex}
                 totalItems={totalItems}
+                playback={playback}
             />
         );
     }
@@ -198,6 +220,7 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
                         </div>
                     ) : isVideo ? (
                         <video
+                            ref={playback.attachMedia}
                             src={streamUrl}
                             controls
                             controlsList="nodownload"
@@ -209,7 +232,7 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
                             <div className="w-32 h-32 rounded-full bg-telegram-surface flex items-center justify-center mb-8 shadow-xl animate-pulse-slow">
                                 <svg xmlns="http://www.w3.org/2000/svg" className="w-12 h-12 text-telegram-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></svg>
                             </div>
-                            <audio src={streamUrl} controls autoPlay className="w-full max-w-md" />
+                            <audio ref={playback.attachMedia} src={streamUrl} controls autoPlay className="w-full max-w-md" />
                         </div>
                     ) : (
                         <div className="text-white">Unsupported media type</div>
@@ -219,12 +242,14 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
                 {!isFullscreen && <div className="mt-3 max-w-full text-center">
                     <h3 className="max-w-2xl truncate text-ui font-medium text-white" title={file.name}>{file.name}</h3>
                     <p className="text-metadata text-white/45">
-                        Streaming from Telegram Drive
+                        {i18n.t(localPath ? 'playback.offline_source' : 'playback.remote_source')}
                         {typeof currentIndex === 'number' && typeof totalItems === 'number' && totalItems > 0 && (
                             <span className="ms-2">• {currentIndex + 1}/{totalItems}</span>
                         )}
                     </p>
                 </div>}
+
+                {!isFullscreen && <PlaybackControls playback={playback} />}
 
                 {/* Keyboard shortcut hints */}
                 {!isFullscreen && <div className="mt-2 flex items-center gap-4 text-[10px] text-white/25 select-none">

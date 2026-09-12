@@ -173,7 +173,7 @@ export function Sidebar({
             style={{ width: settings.sidebarCollapsed ? quietMetrics.sidebarWidth.collapsed : quietMetrics.sidebarWidth.expanded }}
             onClick={e => e.stopPropagation()}
         >
-            <div className={`flex h-12 shrink-0 border-b border-app-border-subtle ${settings.sidebarCollapsed ? 'flex-col items-center justify-center gap-px px-1' : 'items-center justify-between px-3'}`}>
+            <div className={`desktop-chrome-row ${settings.sidebarCollapsed ? 'flex-col justify-center gap-px' : 'justify-between'}`}>
                 <div className="flex items-center gap-2">
                     <img src="/logo.svg" className={settings.sidebarCollapsed ? 'h-[22px] w-[22px]' : 'h-6 w-6'} alt="Logo" />
                     {!settings.sidebarCollapsed && (
@@ -189,16 +189,16 @@ export function Sidebar({
                 </button>
             </div>
 
-                {!settings.sidebarCollapsed && (
-                    <div className="flex flex-col gap-2 border-b border-app-border-subtle px-3 py-2.5">
-                        <div className="flex items-center justify-between">
-                            <span className="flex items-center gap-1.5 text-badge font-medium text-app-text-tertiary">
+                {settings.sidebarCollapsed ? <div className="desktop-chrome-row" aria-hidden="true" /> : (
+                    <div className="flex shrink-0 flex-col">
+                        <div className="desktop-chrome-row justify-between">
+                            <span className="text-ui font-medium text-app-text-tertiary">
                                 {t('common.groups') || "Groups"}
                             </span>
                             <div className="flex items-center gap-1">
                                 <button
                                     onClick={() => updateSetting('hideGroups', !settings.hideGroups)}
-                                    className="quiet-control p-1 text-app-text-tertiary hover:text-app-text"
+                                    className="quiet-control flex h-7 w-7 items-center justify-center text-app-text-tertiary hover:text-app-text"
                                     title={settings.hideGroups ? t('common.show_groups') || "Show Groups" : t('common.hide_groups') || "Hide Groups"}
                                 >
                                     {settings.hideGroups ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
@@ -211,7 +211,7 @@ export function Sidebar({
                                             setGroupColor("#3B82F6");
                                             setShowGroupEditor(true);
                                         }}
-                                        className="quiet-control p-1 text-app-text-tertiary hover:text-app-text"
+                                        className="quiet-control flex h-7 w-7 items-center justify-center text-app-text-tertiary hover:text-app-text"
                                         title={t('common.create_group') || "Create Group"}
                                     >
                                         <Plus className="w-3.5 h-3.5" />
@@ -221,7 +221,7 @@ export function Sidebar({
                         </div>
 
                         {!settings.hideGroups && showGroupEditor && (
-                            <div className="quiet-surface flex flex-col gap-2.5 p-2.5 animate-in fade-in duration-150">
+                            <div className="quiet-surface mx-3 mb-2.5 flex flex-col gap-2.5 p-2.5 animate-in fade-in duration-150">
                                 <div>
                                     <label className="mb-1 block text-badge font-medium text-app-text-secondary">
                                         {editingGroup ? t('common.edit_group_name') : t('common.new_group_name')}
@@ -290,7 +290,7 @@ export function Sidebar({
 
                         {!settings.hideGroups && (
                             <div 
-                                className="group-tabs-scroll flex items-center gap-2 overflow-x-auto py-1"
+                                className="group-tabs-scroll flex items-center gap-2 overflow-x-auto px-3 pb-2.5 pt-2"
                                 style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
                             >
                                 <style>{`

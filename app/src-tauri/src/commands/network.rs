@@ -7,6 +7,8 @@ use tauri::State;
 #[serde(rename_all = "camelCase")]
 pub struct AndroidTransferEnvironment {
     pub connected: bool,
+    #[serde(default)]
+    pub wifi: bool,
     pub metered: bool,
     pub roaming: bool,
     pub charging: bool,
@@ -53,6 +55,7 @@ pub fn cmd_get_android_transfer_environment() -> Result<AndroidTransferEnvironme
     #[cfg(not(target_os = "android"))]
     Ok(AndroidTransferEnvironment {
         connected: true,
+        wifi: false,
         metered: false,
         roaming: false,
         charging: true,

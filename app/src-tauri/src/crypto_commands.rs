@@ -1,8 +1,7 @@
 use crate::crypto::error::CryptoError;
 use crate::crypto::state::{CryptoState, UnlockSessionId};
-use crate::db::DbConnection;
 use serde::{Deserialize, Serialize};
-use tauri::{Emitter, State};
+use tauri::{Emitter, Manager, State};
 use zeroize::Zeroize;
 
 const CRYPTO_CONTRACT_VERSION: u16 = 2;
@@ -179,51 +178,40 @@ pub async fn cmd_get_encryption_capabilities(
 /// ciphertext can be identified and preserved.
 #[tauri::command]
 pub async fn cmd_get_crypto_inventory(
-    db_pool: State<'_, DbConnection>,
+    app: tauri::AppHandle,
+    owner_id: Option<String>,
     crypto_state: State<'_, CryptoState>,
 ) -> Result<CryptoInventory, String> {
-    let (entries, total_files, total_ciphertext_bytes, experimental_format_quarantined) =
-        crate::db::with_connection(db_pool.inner().clone(), |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT envelope_version, COUNT(*), COALESCE(SUM(ciphertext_size), 0) \
-             FROM encrypted_files GROUP BY envelope_version ORDER BY envelope_version",
-                )
-                .map_err(|e| e.to_string())?;
-
-            let mut entries = Vec::new();
-            let mut total_files = 0i64;
-            let mut total_ciphertext_bytes = 0i64;
-            let mut experimental_format_quarantined = false;
-            while let sqlite::State::Row = stmt.next().map_err(|e| e.to_string())? {
-                let envelope_version = stmt.read::<i64, _>(0).map_err(|e| e.to_string())?;
-                let file_count = stmt.read::<i64, _>(1).map_err(|e| e.to_string())?;
-                let ciphertext_bytes = stmt.read::<i64, _>(2).map_err(|e| e.to_string())?;
-                total_files = total_files.saturating_add(file_count);
-                total_ciphertext_bytes = total_ciphertext_bytes.saturating_add(ciphertext_bytes);
-                experimental_format_quarantined |= envelope_version == 1;
-                entries.push(CryptoInventoryEntry {
-                    envelope_version,
-                    file_count,
-                    ciphertext_bytes,
-                });
-            }
-
-            Ok((
-                entries,
-                total_files,
-                total_ciphertext_bytes,
-                experimental_format_quarantined,
-            ))
+    let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let account = crate::workspace::AccountGuard::open(&root, owner_id.as_deref())?;
+    let groups = tokio::task::spawn_blocking(move || {
+        account.validate()?;
+        let groups = crate::workspace::envelope_cache::inventory(
+            &crate::workspace::store::Store::open(&account.root, account.owner)?,
+        )?;
+        account.validate()?;
+        Ok::<_, String>(groups)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let entries: Vec<_> = groups
+        .into_iter()
+        .map(|(version, count, size)| CryptoInventoryEntry {
+            envelope_version: i64::from(version),
+            file_count: i64::try_from(count).unwrap_or(i64::MAX),
+            ciphertext_bytes: i64::try_from(size).unwrap_or(i64::MAX),
         })
-        .await?;
-
+        .collect();
     Ok(CryptoInventory {
+        total_files: entries
+            .iter()
+            .fold(0i64, |total, entry| total.saturating_add(entry.file_count)),
+        total_ciphertext_bytes: entries.iter().fold(0i64, |total, entry| {
+            total.saturating_add(entry.ciphertext_bytes)
+        }),
+        experimental_format_quarantined: entries.iter().any(|entry| entry.envelope_version == 1),
         entries,
-        total_files,
-        total_ciphertext_bytes,
         vault_exists: crypto_state.vault_exists(),
-        experimental_format_quarantined,
     })
 }
 
@@ -439,79 +427,142 @@ pub async fn cmd_generate_recovery_key() -> Result<String, String> {
 /// Get file encryption info for a given message.
 #[tauri::command]
 pub async fn cmd_get_file_encryption_info(
+    app: tauri::AppHandle,
     message_id: i32,
     folder_id: Option<i64>,
-    db_pool: State<'_, DbConnection>,
+    owner_id: Option<String>,
+    state: State<'_, crate::TelegramState>,
     crypto_state: State<'_, CryptoState>,
 ) -> Result<FileEncryptionInfo, String> {
-    let folder_key = folder_id
-        .map(|id| id.to_string())
-        .unwrap_or_else(|| "home".to_string());
-    let row = crate::db::with_connection(db_pool.inner().clone(), move |conn| {
-    let query = "SELECT envelope_version, key_profile_id, record_state, ciphertext_size, protection_mode, metadata_protected FROM encrypted_files WHERE folder_key = ? AND message_id = ?";
-    let mut stmt = conn.prepare(query).map_err(|e| e.to_string())?;
-    stmt.bind((1, folder_key.as_str()))
+    let account = crate::workspace::AccountGuard::open(
+        &app.path().app_data_dir().map_err(|e| e.to_string())?,
+        owner_id.as_deref(),
+    )?;
+    let client = state
+        .client
+        .lock()
+        .await
+        .clone()
+        .ok_or_else(|| "Client not connected".to_string())?;
+    account.validate_client(&client).await?;
+    let peer = crate::commands::utils::resolve_peer(&client, folder_id, &state.peer_cache).await?;
+    account.validate()?;
+    let messages = client
+        .get_messages_by_id(&peer, &[message_id])
+        .await
         .map_err(|e| e.to_string())?;
-    stmt.bind((2, message_id as i64))
-        .map_err(|e| e.to_string())?;
+    account.validate()?;
+    let message = messages
+        .into_iter()
+        .flatten()
+        .next()
+        .ok_or_else(|| "Message not found".to_string())?;
+    let media = message
+        .media()
+        .ok_or_else(|| "No media in message".to_string())?;
+    let record = crate::commands::fs::resolve_remote_envelope(
+        &account,
+        &client,
+        folder_id,
+        message_id,
+        &media,
+        message.text(),
+    )
+    .await?;
+    account.validate()?;
+    Ok(encryption_info_from_current_record(
+        record,
+        !crypto_state.is_locked(),
+    ))
+}
 
-    if let sqlite::State::Row = stmt.next().map_err(|e| e.to_string())? {
-        let version: Option<i64> = stmt.read::<Option<i64>, _>(0).ok().flatten();
-        let profile_id: Option<String> = stmt.read::<Option<String>, _>(1).ok().flatten();
-        let state_str: String = stmt
-            .read::<String, _>(2)
-            .unwrap_or_else(|_| "active".to_string());
-        let ct_size: Option<i64> = stmt.read::<Option<i64>, _>(3).ok().flatten();
-        let protection_mode: Option<String> = stmt.read::<Option<String>, _>(4).ok().flatten();
-        let metadata_protected = stmt
-            .read::<Option<i64>, _>(5)
-            .ok()
-            .flatten()
-            .map(|value| value != 0);
-
-        Ok(Some((version, profile_id, state_str, ct_size, protection_mode, metadata_protected)))
-    } else {
-        Ok(None)
-    }
-    }).await?;
-
-    if let Some((version, profile_id, state_str, ct_size, protection_mode, metadata_protected)) =
-        row
-    {
-        let state = match state_str.as_str() {
-            "active" if version == Some(1) => "encrypted_unsupported_version",
-            "active"
-                if !crypto_state.is_locked()
-                    && matches!(
-                        protection_mode.as_deref(),
-                        Some("vault") | Some("vault_and_passphrase")
-                    ) =>
+fn encryption_info_from_current_record(
+    record: Option<crate::crypto::registry::EncryptedFileRecord>,
+    vault_unlocked: bool,
+) -> FileEncryptionInfo {
+    match record {
+        Some(record) => FileEncryptionInfo {
+            state: if record.envelope_version != crate::crypto::policy::FORMAT_VERSION {
+                "encrypted_unsupported_version"
+            } else if vault_unlocked
+                && matches!(
+                    record.protection_mode.as_str(),
+                    "vault" | "vault_and_passphrase"
+                )
             {
                 "encrypted_unlocked"
+            } else {
+                "encrypted_locked"
             }
-            "active" => "encrypted_locked",
-            "verifying" => "encrypted_verifying",
-            "corrupt" => "encrypted_corrupt",
-            _ => "encrypted_locked",
-        };
-
-        Ok(FileEncryptionInfo {
-            state: state.to_string(),
-            envelope_version: version.map(|v| v as u16),
-            profile_id,
-            protection_mode,
-            metadata_protected,
-            ciphertext_size: ct_size.map(|s| s as u64),
-        })
-    } else {
-        Ok(FileEncryptionInfo {
-            state: "plain".to_string(),
+            .into(),
+            envelope_version: Some(record.envelope_version),
+            profile_id: record.key_profile_id,
+            protection_mode: Some(record.protection_mode),
+            metadata_protected: Some(record.metadata_protected),
+            ciphertext_size: Some(record.ciphertext_size),
+        },
+        None => FileEncryptionInfo {
+            state: "plain".into(),
             envelope_version: None,
             profile_id: None,
             protection_mode: None,
             metadata_protected: None,
             ciphertext_size: None,
-        })
+        },
+    }
+}
+
+#[cfg(test)]
+mod encryption_info_tests {
+    use super::*;
+    use crate::crypto::registry::{EncryptedFileRecord, EncryptedFileState};
+
+    fn current_record(mode: &str) -> EncryptedFileRecord {
+        EncryptedFileRecord {
+            folder_key: "home".into(),
+            message_id: 42,
+            file_uuid: vec![7; 16],
+            envelope_version: crate::crypto::policy::FORMAT_VERSION,
+            cipher_suite: 1,
+            ciphertext_size: 512,
+            plaintext_size: Some(123),
+            remote_name: "private.tdenc".into(),
+            key_profile_id: Some(mode.into()),
+            protection_mode: mode.into(),
+            metadata_protected: true,
+            header_blob: None,
+            header_sha256: None,
+            record_state: EncryptedFileState::Active,
+            reconciliation_state: "owner_document_bound".into(),
+            created_at: 0,
+            last_verified_at: None,
+        }
+    }
+
+    #[test]
+    fn current_header_keeps_passphrase_prompt_and_vault_unlock_contract() {
+        let passphrase =
+            encryption_info_from_current_record(Some(current_record("passphrase")), true);
+        assert_eq!(passphrase.state, "encrypted_locked");
+        assert_eq!(passphrase.protection_mode.as_deref(), Some("passphrase"));
+        assert_eq!(passphrase.profile_id.as_deref(), Some("passphrase"));
+        assert_eq!(
+            encryption_info_from_current_record(Some(current_record("vault_and_passphrase")), true)
+                .state,
+            "encrypted_unlocked"
+        );
+        assert_eq!(
+            encryption_info_from_current_record(
+                Some(current_record("vault_and_passphrase")),
+                false
+            )
+            .state,
+            "encrypted_locked"
+        );
+        let plain = encryption_info_from_current_record(None, true);
+        assert_eq!(plain.state, "plain");
+        assert!(plain.protection_mode.is_none());
+        assert!(plain.ciphertext_size.is_none());
     }
 }
 

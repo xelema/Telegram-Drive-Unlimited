@@ -14,6 +14,7 @@ const previewCache = new Map<string, CacheEntry>();
 const thumbnailCache = new Map<string, CacheEntry>();
 const pendingPreviews = new Map<string, Promise<string | null>>();
 const pendingThumbnails = new Map<string, Promise<string | null>>();
+let cacheGeneration = 0;
 
 export const getImageCacheKey = (fileId: number, folderId?: number | null): string =>
     `${folderId ?? 'home'}:${fileId}`;
@@ -59,16 +60,17 @@ const load = (
     const existing = pending.get(key);
     if (existing) return existing;
 
+    const generation = cacheGeneration;
     const request = invoke<string>(command, {
         messageId: fileId,
         folderId: folderId ?? null,
     }).then((path) => {
-        if (!path) return null;
+        if (!path || generation !== cacheGeneration) return null;
         const src = normalizeAssetSource(path);
         remember(cache, key, src, maxItems);
         return src;
     }).finally(() => {
-        pending.delete(key);
+        if (pending.get(key) === request) pending.delete(key);
     });
     pending.set(key, request);
     return request;
@@ -95,6 +97,9 @@ export const forgetThumbnail = (fileId: number, folderId?: number | null): void 
 };
 
 export const clearImageMemoryCaches = (): void => {
+    cacheGeneration++;
     previewCache.clear();
     thumbnailCache.clear();
+    pendingPreviews.clear();
+    pendingThumbnails.clear();
 };

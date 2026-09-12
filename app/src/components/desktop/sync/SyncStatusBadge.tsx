@@ -6,7 +6,7 @@ export function SyncStatusBadge({ collapsed = false }: { collapsed?: boolean }) 
   const { t } = useTranslation();
   const { status } = useSync();
   const value = status.data;
-  const state = !value?.enabled ? 'disabled' : value.conflicts > 0 || value.lastError ? 'warning' : value.running ? 'syncing' : 'synced';
+  const state = !value?.enabled || value.activePairs === 0 ? 'disabled' : value.conflicts > 0 || value.lastError ? 'warning' : value.running ? 'syncing' : 'synced';
   const details = {
     disabled: { label: t('sync.status.disabled'), icon: CloudOff, className: 'text-app-text-tertiary' },
     warning: { label: t('sync.status.conflicts'), icon: AlertTriangle, className: 'text-app-warning' },

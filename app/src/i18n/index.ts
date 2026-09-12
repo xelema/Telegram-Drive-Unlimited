@@ -3,31 +3,12 @@ import { initReactI18next } from 'react-i18next';
 
 import en from './locales/en.json';
 
-const localeLoaders = {
-  es: () => import('./locales/es.json'),
-  ru: () => import('./locales/ru.json'),
-  'uk-UA': () => import('./locales/uk-UA.json'),
-  'pl-PL': () => import('./locales/pl-PL.json'),
-  'fa-IR': () => import('./locales/fa-IR.json'),
-  'ur-PK': () => import('./locales/ur-PK.json'),
-  'ms-MY': () => import('./locales/ms-MY.json'),
-  'zh-CN': () => import('./locales/zh-CN.json'),
-  'zh-TW': () => import('./locales/zh-TW.json'),
-  fr: () => import('./locales/fr.json'),
-  it: () => import('./locales/it.json'),
-  ar: () => import('./locales/ar.json'),
-  'pt-BR': () => import('./locales/pt-BR.json'),
-  de: () => import('./locales/de.json'),
-  hi: () => import('./locales/hi.json'),
-  'bn-BD': () => import('./locales/bn-BD.json'),
-  id: () => import('./locales/id.json'),
-  'fil-PH': () => import('./locales/fil-PH.json'),
-  tr: () => import('./locales/tr.json'),
-  'th-TH': () => import('./locales/th-TH.json'),
-  ja: () => import('./locales/ja.json'),
-  ko: () => import('./locales/ko.json'),
-  vi: () => import('./locales/vi.json'),
-} as const;
+// Translation catalogs are data, not executable JavaScript. Only the selected
+// language is fetched; Vite bundles the local JSON assets into desktop/Android.
+const localeUrls = import.meta.glob<string>(['./locales/*.json', '!./locales/en.json'], {
+  eager: true, query: '?url', import: 'default',
+});
+const languageRequests = new Map<string, Promise<void>>();
 
 i18n
   .use(initReactI18next)
@@ -49,12 +30,23 @@ i18n
 
 export async function ensureLanguageResource(language: string): Promise<void> {
   if (language === 'en' || i18n.hasResourceBundle(language, 'translation')) return;
-  const loader = localeLoaders[language as keyof typeof localeLoaders];
-  if (!loader) throw new Error(`Unsupported language resource: ${language}`);
-  const resource = await loader();
-  if (!i18n.hasResourceBundle(language, 'translation')) {
-    i18n.addResourceBundle(language, 'translation', resource.default, true, true);
+  const url = localeUrls[`./locales/${language}.json`];
+  if (!url) throw new Error(`Unsupported language resource: ${language}`);
+  let request = languageRequests.get(language);
+  if (!request) {
+    request = (async () => {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`Language resource unavailable: ${language}`);
+      const resource: unknown = await response.json();
+      if (!resource || typeof resource !== 'object' || Array.isArray(resource)) throw new Error(`Invalid language resource: ${language}`);
+      if (!i18n.hasResourceBundle(language, 'translation')) {
+        i18n.addResourceBundle(language, 'translation', resource, true, true);
+      }
+    })();
+    languageRequests.set(language, request);
   }
+  try { await request; }
+  finally { if (languageRequests.get(language) === request) languageRequests.delete(language); }
 }
 
 export default i18n;

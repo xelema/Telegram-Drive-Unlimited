@@ -1,6 +1,10 @@
 use crate::commands::utils::resolve_peer;
 use crate::commands::TelegramState;
 use crate::db::DbConnection;
+use crate::workspace::AccountGuard;
+
+#[derive(Clone)]
+pub struct ShareAccountRoot(pub std::path::PathBuf);
 use actix_web::{
     cookie::Cookie, get, middleware::DefaultHeaders, post, web, HttpRequest, HttpResponse,
     Responder,
@@ -135,6 +139,7 @@ fn with_password_attempt_limiter<T>(operation: impl FnOnce(&mut PasswordAttemptL
 #[derive(Clone)]
 struct SharedLinkRow {
     _id: String,
+    owner_id: Option<i64>,
     folder_id: Option<i64>,
     message_id: i32,
     file_name: String,
@@ -169,7 +174,7 @@ async fn get_share_by_token(
     crate::db::with_connection(db, move |conn| {
         let mut stmt = conn
         .prepare(
-            "SELECT id, folder_id, message_id, file_name, file_size, password_hash, password_salt, expires_at, revoked 
+            "SELECT id, owner_id, folder_id, message_id, file_name, file_size, password_hash, password_salt, expires_at, revoked
              FROM shared_links WHERE id = ?"
         )
         .map_err(|e| e.to_string())?;
@@ -189,6 +194,7 @@ async fn get_share_by_token(
 
             Ok(Some(SharedLinkRow {
             _id: id,
+            owner_id: stmt.read::<Option<i64>, _>("owner_id").map_err(|e| e.to_string())?,
             folder_id,
             message_id,
             file_name,
@@ -202,6 +208,14 @@ async fn get_share_by_token(
             Ok(None)
         }
     }).await
+}
+
+fn share_account(root: &ShareAccountRoot, row: &SharedLinkRow) -> Result<AccountGuard, String> {
+    let owner = row
+        .owner_id
+        .filter(|owner| *owner > 0)
+        .ok_or("This legacy link has no verified owner; recreate it from the original account")?;
+    AccountGuard::open(&root.0, Some(&owner.to_string()))
 }
 
 /// Renders the password entry form for protected share links.
@@ -513,6 +527,7 @@ async fn get_shared_file(
     req: HttpRequest,
     path: web::Path<String>,
     db_conn: web::Data<DbConnection>,
+    account_root: web::Data<ShareAccountRoot>,
     tg_state: web::Data<Arc<TelegramState>>,
 ) -> impl Responder {
     let token = path.into_inner();
@@ -523,6 +538,14 @@ async fn get_shared_file(
         Err(e) => {
             log::error!("Database error resolving share link: {}", e);
             return HttpResponse::InternalServerError().body("Internal server error");
+        }
+    };
+
+    let account = match share_account(&account_root, &row) {
+        Ok(account) => account,
+        Err(_) => {
+            return HttpResponse::NotFound()
+                .body("Shared link is unavailable for the current account")
         }
     };
 
@@ -560,6 +583,11 @@ async fn get_shared_file(
         None => return HttpResponse::ServiceUnavailable().body("Telegram client is not connected"),
     };
 
+    if account.validate().is_err()
+        || !matches!(client.get_me().await, Ok(user) if user.bare_id() == account.owner)
+    {
+        return HttpResponse::NotFound().body("Shared link is unavailable for the current account");
+    }
     let peer = match resolve_peer(&client, row.folder_id, &tg_state.peer_cache).await {
         Ok(p) => p,
         Err(e) => {
@@ -568,10 +596,33 @@ async fn get_shared_file(
         }
     };
 
+    if account.validate().is_err() {
+        return HttpResponse::NotFound().body("Shared link is unavailable for the current account");
+    }
     match client.get_messages_by_id(peer, &[row.message_id]).await {
         Ok(messages) => {
             if let Some(Some(msg)) = messages.first() {
                 if let Some(media) = msg.media() {
+                    match crate::commands::fs::resolve_remote_envelope(
+                        &account,
+                        &client,
+                        row.folder_id,
+                        row.message_id,
+                        &media,
+                        msg.text(),
+                    )
+                    .await
+                    {
+                        Ok(None) => {}
+                        Ok(Some(_)) => {
+                            return HttpResponse::Forbidden()
+                                .body("Encrypted sharing is unavailable")
+                        }
+                        Err(_) => {
+                            return HttpResponse::NotFound()
+                                .body("Shared file could not be verified for the current account")
+                        }
+                    }
                     let mime = match &media {
                         Media::Document(d) => d
                             .mime_type()
@@ -581,7 +632,7 @@ async fn get_shared_file(
                     };
                     let filename = &row.file_name;
 
-                    return crate::server::build_media_response(
+                    return crate::server::build_media_response_guarded(
                         &client,
                         &media,
                         &req,
@@ -591,6 +642,7 @@ async fn get_shared_file(
                             extra_headers: vec![],
                             log_label: "Share download",
                         },
+                        Some(account),
                     );
                 }
             }
@@ -609,6 +661,7 @@ async fn verify_shared_file_password(
     path: web::Path<String>,
     form: web::Form<VerifyForm>,
     db_conn: web::Data<DbConnection>,
+    account_root: web::Data<ShareAccountRoot>,
 ) -> impl Responder {
     let token = path.into_inner();
 
@@ -618,6 +671,14 @@ async fn verify_shared_file_password(
         Err(e) => {
             log::error!("Database error resolving share link: {}", e);
             return HttpResponse::InternalServerError().body("Internal server error");
+        }
+    };
+
+    let account = match share_account(&account_root, &row) {
+        Ok(account) => account,
+        Err(_) => {
+            return HttpResponse::NotFound()
+                .body("Shared link is unavailable for the current account")
         }
     };
 
@@ -661,6 +722,9 @@ async fn verify_shared_file_password(
             .await
             .unwrap_or(false);
 
+    if account.validate().is_err() {
+        return HttpResponse::NotFound().body("Shared link is unavailable for the current account");
+    }
     if verified {
         with_password_attempt_limiter(|limiter| limiter.clear(&token_key));
         // Set session cookie (30 min).
@@ -819,3 +883,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "share_ownership_tests.rs"]
+mod ownership_tests;

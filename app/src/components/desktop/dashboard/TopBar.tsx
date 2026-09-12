@@ -107,7 +107,7 @@ export function TopBar({
 
     return (
         <header
-            className="quiet-toolbar sticky top-0 z-20 flex h-12 shrink-0 items-center gap-2.5 border-b border-app-border-subtle px-3"
+            className="desktop-chrome-row quiet-toolbar sticky top-0 z-20 gap-2.5"
             onClick={(event) => event.stopPropagation()}
         >
             {hasSelection ? (

@@ -1,3 +1,4 @@
+use super::policy::SyncPreferences;
 use notify_debouncer_full::{
     new_debouncer,
     notify::{
@@ -21,7 +22,7 @@ pub struct LocalWatcher;
 
 impl LocalWatcher {
     pub fn spawn(
-        paths: Vec<PathBuf>,
+        paths: Vec<(PathBuf, SyncPreferences)>,
         debounce: Duration,
         app: tauri::AppHandle,
         mut shutdown: tokio::sync::watch::Receiver<bool>,
@@ -39,8 +40,8 @@ impl LocalWatcher {
                     return;
                 }
             };
-            for path in paths {
-                if let Err(error) = debouncer.watch(&path, RecursiveMode::Recursive) {
+            for (path, _) in &paths {
+                if let Err(error) = debouncer.watch(path, RecursiveMode::Recursive) {
                     log::error!("Failed to watch sync folder {}: {error}", path.display());
                 }
             }
@@ -60,10 +61,15 @@ impl LocalWatcher {
                                         EventKind::Create(CreateKind::File) | EventKind::Create(CreateKind::Any) => "upload",
                                         EventKind::Modify(ModifyKind::Data(_)) | EventKind::Modify(ModifyKind::Any) => "hash_upload",
                                         EventKind::Remove(RemoveKind::File) | EventKind::Remove(RemoveKind::Any) => "delete",
+                                        EventKind::Create(CreateKind::Folder) | EventKind::Remove(RemoveKind::Folder) | EventKind::Modify(ModifyKind::Name(_)) => "rescan",
                                         _ => continue,
                                     };
                                     for path in debounced.event.paths {
                                         if path.to_string_lossy().ends_with(".td-sync-tmp") { continue; }
+                                        if paths.iter().any(|(root, preferences)| path.strip_prefix(root).ok().is_some_and(|relative| {
+                                            let relative = relative.components().map(|part| part.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
+                                            preferences.ignores(&relative) || (path.is_dir() && preferences.ignores(&format!("{relative}/")))
+                                        })) { continue; }
                                         let _ = app.emit("sync-fs-event", LocalFsEvent { action: action.into(), path: path.to_string_lossy().into_owned() });
                                         should_reconcile = true;
                                     }

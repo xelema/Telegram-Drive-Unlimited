@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 use std::{
     io::Write,
     path::{Path, PathBuf},
+    sync::OnceLock,
 };
 use tauri::{AppHandle, Manager};
 
@@ -17,6 +18,21 @@ const DEVICE_KEY_ACCOUNT: &str = "device-signing-key-v1";
 const RECOVERY_CODE_ACCOUNT: &str = "recovery-code-v1";
 const CHECKOUT_SECRET_ACCOUNT: &str = "checkout-claim-secret-v1";
 const TERMS_VERSION: &str = "2026-08-11";
+static OPERATIONS: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+async fn supporter_operation() -> tokio::sync::MutexGuard<'static, ()> {
+    OPERATIONS
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await
+}
+
+fn http_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|_| "Supporter verification is temporarily unavailable".into())
+}
 
 fn service_url() -> Option<&'static str> {
     option_env!("TELEGRAM_DRIVE_SUPPORTER_SERVICE_URL")
@@ -98,7 +114,14 @@ struct CheckoutStatusResponse {
     status: String,
     entitlement_token: Option<String>,
     recovery_code: Option<String>,
-    error_code: Option<String>,
+    #[serde(default)]
+    claim_id: Option<String>,
+    #[serde(default)]
+    unpaid_final: bool,
+    #[serde(default)]
+    approval_url: Option<String>,
+    #[serde(default)]
+    expires_at: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -137,12 +160,16 @@ fn state_path(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| format!("Unable to locate app data: {error}"))
 }
 
-fn load_state(app: &AppHandle) -> SupporterLocalState {
-    state_path(app)
-        .ok()
-        .and_then(|path| std::fs::read(path).ok())
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+fn read_state_file(path: &Path) -> Result<SupporterLocalState, String> {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| "Stored supporter activation could not be read. It has been preserved; do not pay again.".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(SupporterLocalState::default()),
+        Err(_) => Err("Stored supporter activation is temporarily unavailable. It has been preserved; do not pay again.".into()),
+    }
+}
+
+fn load_state(app: &AppHandle) -> Result<SupporterLocalState, String> {
+    read_state_file(&state_path(app)?)
 }
 
 fn save_state(app: &AppHandle, state: &SupporterLocalState) -> Result<(), String> {
@@ -173,7 +200,14 @@ fn persist_state_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .map_err(|error| format!("Unable to save supporter state: {error}"))?;
     drop(file);
     replace_state_file(&temporary, path)
-        .map_err(|error| format!("Unable to commit supporter state: {error}"))
+        .map_err(|error| format!("Unable to commit supporter state: {error}"))?;
+    #[cfg(unix)]
+    if let Some(parent) = path.parent() {
+        std::fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| format!("Unable to durably commit supporter state: {error}"))?;
+    }
+    Ok(())
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -263,10 +297,12 @@ fn signing_key() -> Result<SigningKey, String> {
 }
 
 #[cfg(not(target_os = "android"))]
-fn recovery_code_is_saved() -> bool {
-    keyring_entry(RECOVERY_CODE_ACCOUNT)
-        .and_then(|entry| entry.get_password().map_err(|error| error.to_string()))
-        .is_ok()
+fn recovery_code_present() -> Result<bool, String> {
+    match keyring_entry(RECOVERY_CODE_ACCOUNT)?.get_password() {
+        Ok(_) => Ok(true),
+        Err(keyring::Error::NoEntry) => Ok(false),
+        Err(_) => Err("Secure supporter recovery storage is temporarily unavailable. Do not start another payment.".into()),
+    }
 }
 
 #[cfg(not(target_os = "android"))]
@@ -310,6 +346,14 @@ fn android_main_class() -> Result<jni::objects::JClass<'static>, String> {
 }
 
 #[cfg(target_os = "android")]
+fn android_storage_error(env: &mut jni::JNIEnv<'_>, action: &str) -> String {
+    // Kotlin deliberately throws instead of reporting an unreadable credential as absent.
+    // Clear that pending exception so the attached thread can retry the original entry.
+    let _ = env.exception_clear();
+    format!("Unable to {action} Android secure supporter credentials. Try again; do not pay again.")
+}
+
+#[cfg(target_os = "android")]
 fn load_android_secret(account: &str) -> Result<Option<String>, String> {
     let main_class = android_main_class()?;
     let context = ndk_context::android_context();
@@ -320,7 +364,7 @@ fn load_android_secret(account: &str) -> Result<Option<String>, String> {
         .map_err(|error| format!("Unable to attach Android secure storage: {error}"))?;
     let account = env
         .new_string(account)
-        .map_err(|error| format!("Unable to prepare Android credential name: {error}"))?;
+        .map_err(|_| android_storage_error(&mut env, "read"))?;
     let value = env
         .call_static_method(
             &main_class,
@@ -328,16 +372,16 @@ fn load_android_secret(account: &str) -> Result<Option<String>, String> {
             "(Ljava/lang/String;)Ljava/lang/String;",
             &[jni::objects::JValue::from(&account)],
         )
-        .map_err(|error| format!("Unable to read Android secure credential: {error}"))?
+        .map_err(|_| android_storage_error(&mut env, "read"))?
         .l()
-        .map_err(|error| format!("Android secure credential returned an invalid value: {error}"))?;
+        .map_err(|_| android_storage_error(&mut env, "read"))?;
     if value.is_null() {
-        return Ok(None);
+        return Err(android_storage_error(&mut env, "read"));
     }
     let value = jni::objects::JString::from(value);
     let value: String = env
         .get_string(&value)
-        .map_err(|error| format!("Unable to decode Android secure credential: {error}"))?
+        .map_err(|_| android_storage_error(&mut env, "read"))?
         .into();
     Ok((!value.is_empty()).then_some(value))
 }
@@ -353,10 +397,10 @@ fn save_android_secret(account: &str, secret: &str) -> Result<(), String> {
         .map_err(|error| format!("Unable to attach Android secure storage: {error}"))?;
     let account = env
         .new_string(account)
-        .map_err(|error| format!("Unable to prepare Android credential name: {error}"))?;
+        .map_err(|_| android_storage_error(&mut env, "save"))?;
     let secret = env
         .new_string(secret)
-        .map_err(|error| format!("Unable to prepare Android secure credential: {error}"))?;
+        .map_err(|_| android_storage_error(&mut env, "save"))?;
     let saved = env
         .call_static_method(
             &main_class,
@@ -367,9 +411,9 @@ fn save_android_secret(account: &str, secret: &str) -> Result<(), String> {
                 jni::objects::JValue::from(&secret),
             ],
         )
-        .map_err(|error| format!("Unable to save Android secure credential: {error}"))?
+        .map_err(|_| android_storage_error(&mut env, "save"))?
         .z()
-        .map_err(|error| format!("Android secure storage returned an invalid result: {error}"))?;
+        .map_err(|_| android_storage_error(&mut env, "save"))?;
     if saved {
         Ok(())
     } else {
@@ -388,7 +432,7 @@ fn delete_android_secret(account: &str) -> Result<(), String> {
         .map_err(|error| format!("Unable to attach Android secure storage: {error}"))?;
     let account = env
         .new_string(account)
-        .map_err(|error| format!("Unable to prepare Android credential name: {error}"))?;
+        .map_err(|_| android_storage_error(&mut env, "clear"))?;
     let deleted = env
         .call_static_method(
             &main_class,
@@ -396,9 +440,9 @@ fn delete_android_secret(account: &str) -> Result<(), String> {
             "(Ljava/lang/String;)Z",
             &[jni::objects::JValue::from(&account)],
         )
-        .map_err(|error| format!("Unable to clear Android secure credential: {error}"))?
+        .map_err(|_| android_storage_error(&mut env, "clear"))?
         .z()
-        .map_err(|error| format!("Android secure storage returned an invalid result: {error}"))?;
+        .map_err(|_| android_storage_error(&mut env, "clear"))?;
     if deleted {
         Ok(())
     } else {
@@ -434,11 +478,8 @@ fn signing_key() -> Result<SigningKey, String> {
 }
 
 #[cfg(target_os = "android")]
-fn recovery_code_is_saved() -> bool {
-    load_android_secret(RECOVERY_CODE_ACCOUNT)
-        .ok()
-        .flatten()
-        .is_some()
+fn recovery_code_present() -> Result<bool, String> {
+    Ok(load_android_secret(RECOVERY_CODE_ACCOUNT)?.is_some())
 }
 
 #[cfg(target_os = "android")]
@@ -562,9 +603,110 @@ fn unix_time() -> i64 {
 
 fn checkout_is_pending(state: &SupporterLocalState) -> bool {
     state.checkout_claim_id.is_some()
-        && state
-            .checkout_expires_at
-            .is_some_and(|expires_at| expires_at > unix_time())
+}
+
+fn ensure_new_checkout_allowed(
+    state: &SupporterLocalState,
+    recovery_saved: bool,
+) -> Result<(), String> {
+    if state.entitlement_token.is_some()
+        || state.revoked
+        || checkout_is_pending(state)
+        || recovery_saved
+    {
+        return Err("An existing purchase or payment verification is stored on this device. Refresh or restore it; do not pay again.".into());
+    }
+    Ok(())
+}
+
+fn valid_approval_url(value: &str) -> bool {
+    reqwest::Url::parse(value).is_ok_and(|url| {
+        url.scheme() == "https"
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url
+                .host_str()
+                .is_some_and(|host| host == "paypal.com" || host.ends_with(".paypal.com"))
+    })
+}
+
+fn checkout_url(base: &str, claim_id: &str, action: &str) -> Result<reqwest::Url, String> {
+    let mut url = reqwest::Url::parse(base).map_err(|_| "Invalid supporter service URL")?;
+    url.path_segments_mut()
+        .map_err(|_| "Invalid supporter service URL")?
+        .pop_if_empty()
+        .extend(["v1", "checkout", claim_id, action]);
+    Ok(url)
+}
+
+async fn fetch_checkout(
+    client: &reqwest::Client,
+    base: &str,
+    claim_id: &str,
+    secret: &str,
+) -> Result<CheckoutStatusResponse, String> {
+    let response = client.get(checkout_url(base, claim_id, "status")?).bearer_auth(secret).send().await
+        .map_err(|_| "Payment verification is temporarily unavailable. The existing payment has been kept; do not pay again.")?;
+    if !response.status().is_success() {
+        return Err(response_error(response).await);
+    }
+    response.json().await.map_err(|_| "The payment response could not be verified. The existing payment has been kept; do not pay again.".into())
+}
+
+/// The secret is only disposable after both durable stores have succeeded.
+/// Missing old delivery material may restore a valid license, but retains its
+/// only remaining claim instead of pretending its recovery code was saved.
+fn commit_completed_checkout(
+    previous: &SupporterLocalState,
+    checkout: &CheckoutStatusResponse,
+    verify: impl Fn(&str, &str) -> Result<String, String>,
+    save_code: impl FnOnce(&str) -> Result<(), String>,
+    persist: impl FnOnce(&SupporterLocalState) -> Result<(), String>,
+) -> Result<(SupporterLocalState, bool), String> {
+    if checkout.status != "completed" {
+        return Err("Payment has not completed".into());
+    }
+    let token = checkout
+        .entitlement_token
+        .as_deref()
+        .ok_or("Completed checkout did not include an entitlement")?;
+    let device_key = previous
+        .device_public_key
+        .as_deref()
+        .ok_or("The local device identity is missing")?;
+    let completed_entitlement = verify(token, device_key)?;
+    if let Some(existing) = previous.entitlement_token.as_deref() {
+        if verify(existing, device_key)? != completed_entitlement {
+            return Err("The pending payment belongs to a different purchase. Your restored license and the pending payment have both been preserved; do not pay again.".into());
+        }
+    }
+    let receipt_saved = if let Some(code) = checkout.recovery_code.as_deref() {
+        if code.trim().is_empty() {
+            return Err("Completed checkout returned an empty recovery code".into());
+        }
+        save_code(code)?;
+        true
+    } else {
+        // A saved code can belong to an earlier recovery attempt whose local
+        // state commit failed. Presence alone never proves this receipt is saved.
+        false
+    };
+    let mut next = previous.clone();
+    next.entitlement_token = Some(token.to_owned());
+    next.revoked = false;
+    if receipt_saved {
+        next.checkout_claim_id = None;
+        next.checkout_expires_at = None;
+    }
+    persist(&next)?;
+    Ok((next, receipt_saved))
+}
+
+fn confirmed_unpaid(state: &SupporterLocalState, response: &CheckoutStatusResponse) -> bool {
+    response.unpaid_final
+        && matches!(response.status.as_str(), "expired" | "cancelled" | "failed")
+        && state.checkout_claim_id.is_some()
+        && response.claim_id == state.checkout_claim_id
 }
 
 fn clear_pending_checkout(app: &AppHandle, state: &mut SupporterLocalState) -> Result<(), String> {
@@ -586,18 +728,67 @@ async fn response_error(response: reqwest::Response) -> String {
     }
 }
 
-fn status_from_state(state: &SupporterLocalState) -> SupporterStatus {
+fn explicit_revocation(status: StatusCode, body: Option<&ServiceErrorEnvelope>) -> bool {
+    status == StatusCode::FORBIDDEN
+        && body
+            .and_then(|body| body.error.as_ref())
+            .is_some_and(|error| {
+                matches!(
+                    error.code.as_str(),
+                    "ENTITLEMENT_NOT_ACTIVE" | "DEVICE_NOT_ACTIVE"
+                )
+            })
+}
+
+async fn refresh_error(
+    app: &AppHandle,
+    state: &mut SupporterLocalState,
+    response: reqwest::Response,
+) -> String {
+    let status = response.status();
+    let body = response.json::<ServiceErrorEnvelope>().await.ok();
+    if explicit_revocation(status, body.as_ref()) {
+        // Keep the signed purchase as recovery evidence. Only the service's
+        // explicit entitlement/device decision can revoke cached access.
+        state.revoked = true;
+        if let Err(error) = save_state(app, state) {
+            return error;
+        }
+    }
+    body.and_then(|body| body.error)
+        .map(|error| format!("{}: {}", error.code, error.message))
+        .unwrap_or_else(|| format!("Supporter service returned {status}"))
+}
+
+fn recovery_presence_for_status(
+    state: &SupporterLocalState,
+    presence: Result<bool, String>,
+) -> Result<bool, String> {
+    match presence {
+        Ok(saved) => Ok(saved),
+        Err(_) if state.entitlement_token.is_some() || state.revoked => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+fn status_from_state(state: &SupporterLocalState) -> Result<SupporterStatus, String> {
+    // A recovery-secret read is not needed to verify an existing signed token.
+    // Still fail closed on empty state so a locked keychain cannot enable a
+    // second checkout for a purchaser whose recovery code is stored there.
+    let recovery_code_saved = recovery_presence_for_status(state, recovery_code_present())?;
     let terms_url = service_url().map(|url| format!("{url}/terms"));
-    let unavailable = |message: String| SupporterStatus {
-        state: "unavailable",
-        ad_free: false,
-        message,
-        terms_version: TERMS_VERSION,
-        terms_url: terms_url.clone(),
-        expires_at: None,
-        offline_until: None,
-        recovery_code_saved: recovery_code_is_saved(),
-        checkout_pending: checkout_is_pending(state),
+    let unavailable = |message: String| {
+        Ok(SupporterStatus {
+            state: "unavailable",
+            ad_free: false,
+            message,
+            terms_version: TERMS_VERSION,
+            terms_url: terms_url.clone(),
+            expires_at: None,
+            offline_until: None,
+            recovery_code_saved,
+            checkout_pending: checkout_is_pending(state),
+        })
     };
     if service_url().is_none() || configured_public_key().is_none() {
         return unavailable(
@@ -605,7 +796,7 @@ fn status_from_state(state: &SupporterLocalState) -> SupporterStatus {
         );
     }
     if state.revoked {
-        return SupporterStatus {
+        return Ok(SupporterStatus {
             state: "revoked",
             ad_free: false,
             message: "This supporter entitlement was revoked after a refund, reversal, dispute, or device deactivation.".to_string(),
@@ -613,12 +804,12 @@ fn status_from_state(state: &SupporterLocalState) -> SupporterStatus {
             terms_url,
             expires_at: None,
             offline_until: None,
-            recovery_code_saved: recovery_code_is_saved(),
+            recovery_code_saved,
             checkout_pending: checkout_is_pending(state),
-        };
+        });
     }
     let Some(token) = state.entitlement_token.as_deref() else {
-        return SupporterStatus {
+        return Ok(SupporterStatus {
             state: "inactive",
             ad_free: false,
             message: "No verified supporter activation is stored on this device.".to_string(),
@@ -626,9 +817,9 @@ fn status_from_state(state: &SupporterLocalState) -> SupporterStatus {
             terms_url,
             expires_at: None,
             offline_until: None,
-            recovery_code_saved: recovery_code_is_saved(),
+            recovery_code_saved,
             checkout_pending: checkout_is_pending(state),
-        };
+        });
     };
     let Some(device_public_key) = state.device_public_key.as_deref() else {
         return unavailable("The local supporter device identity is missing.".to_string());
@@ -641,7 +832,7 @@ fn status_from_state(state: &SupporterLocalState) -> SupporterStatus {
                 "The Android secure device credential is missing; restore with your recovery code."
                     .to_string(),
             ),
-            Err(error) => return unavailable(error),
+            Err(error) => return Err(error),
         };
         if public_key(&device_key) != device_public_key {
             return unavailable(
@@ -667,7 +858,7 @@ fn status_from_state(state: &SupporterLocalState) -> SupporterStatus {
                         .to_string(),
                 ),
             };
-            SupporterStatus {
+            Ok(SupporterStatus {
                 state: status,
                 ad_free,
                 message,
@@ -675,9 +866,9 @@ fn status_from_state(state: &SupporterLocalState) -> SupporterStatus {
                 terms_url,
                 expires_at: Some(claims.expires_at),
                 offline_until: Some(claims.offline_until),
-                recovery_code_saved: recovery_code_is_saved(),
+                recovery_code_saved,
                 checkout_pending: checkout_is_pending(state),
-            }
+            })
         }
         Err(error) => unavailable(error),
     }
@@ -685,11 +876,9 @@ fn status_from_state(state: &SupporterLocalState) -> SupporterStatus {
 
 #[tauri::command]
 pub async fn cmd_get_supporter_status(app: AppHandle) -> Result<SupporterStatus, String> {
-    let mut state = load_state(&app);
-    if state.checkout_claim_id.is_some() && !checkout_is_pending(&state) {
-        let _ = clear_pending_checkout(&app, &mut state);
-    }
-    Ok(status_from_state(&state))
+    let _operation = supporter_operation().await;
+    let state = load_state(&app)?;
+    status_from_state(&state)
 }
 
 #[tauri::command]
@@ -697,13 +886,30 @@ pub async fn cmd_begin_supporter_checkout(
     app: AppHandle,
     accepted_terms_version: String,
 ) -> Result<CheckoutStarted, String> {
+    let _operation = supporter_operation().await;
     let base_url = service_url().ok_or("Supporter activation is not configured in this build")?;
     if accepted_terms_version != TERMS_VERSION {
         return Err("Accept the current supporter terms before continuing".to_string());
     }
+    let mut state = load_state(&app)?;
+    let client = http_client()?;
+    if let Some(claim_id) = state.checkout_claim_id.as_deref() {
+        let checkout =
+            fetch_checkout(&client, base_url, claim_id, &load_checkout_secret()?).await?;
+        let approval_url = checkout.approval_url.filter(|url| valid_approval_url(url))
+            .ok_or("The existing payment is still being checked. Check payment status; do not pay again.")?;
+        return Ok(CheckoutStarted {
+            approval_url,
+            expires_at: checkout
+                .expires_at
+                .or(state.checkout_expires_at)
+                .unwrap_or(0),
+        });
+    }
+    ensure_new_checkout_allowed(&state, recovery_code_present()?)?;
     let key = signing_key()?;
     let device_public_key = public_key(&key);
-    let response = reqwest::Client::new()
+    let response = client
         .post(format!("{base_url}/v1/checkout"))
         .json(&serde_json::json!({
             "device_public_key": device_public_key,
@@ -723,7 +929,9 @@ pub async fn cmd_begin_supporter_checkout(
         .await
         .map_err(|error| format!("Supporter service returned an invalid checkout: {error}"))?;
     save_checkout_secret(&checkout.claim_secret)?;
-    let mut state = load_state(&app);
+    if !valid_approval_url(&checkout.approval_url) {
+        return Err("Supporter service returned an invalid PayPal approval link".into());
+    }
     state.device_public_key = Some(public_key(&key));
     state.checkout_claim_id = Some(checkout.claim_id);
     state.checkout_expires_at = Some(checkout.expires_at);
@@ -736,68 +944,50 @@ pub async fn cmd_begin_supporter_checkout(
 
 #[tauri::command]
 pub async fn cmd_poll_supporter_checkout(app: AppHandle) -> Result<CheckoutPollResult, String> {
+    let _operation = supporter_operation().await;
     let base_url = service_url().ok_or("Supporter activation is not configured in this build")?;
-    let mut state = load_state(&app);
-    if state.checkout_claim_id.is_some() && !checkout_is_pending(&state) {
-        clear_pending_checkout(&app, &mut state)?;
-        return Ok(CheckoutPollResult {
-            status: "expired".to_string(),
-            recovery_code: None,
-            message: "This checkout expired before payment was verified. Start a new checkout if no payment was completed.".to_string(),
-        });
-    }
+    let mut state = load_state(&app)?;
     let claim_id = state
         .checkout_claim_id
-        .as_deref()
+        .clone()
         .ok_or("No supporter checkout is waiting for verification")?;
     let claim_secret = load_checkout_secret()?;
-    let response = reqwest::Client::new()
-        .get(format!("{base_url}/v1/checkout/{claim_id}/status"))
-        .bearer_auth(&claim_secret)
-        .send()
-        .await
-        .map_err(|error| format!("Unable to check payment status: {error}"))?;
-    if !response.status().is_success() {
-        return Err(response_error(response).await);
-    }
-    let checkout = response
-        .json::<CheckoutStatusResponse>()
-        .await
-        .map_err(|error| format!("Supporter service returned an invalid status: {error}"))?;
+    let client = http_client()?;
+    let checkout = fetch_checkout(&client, base_url, &claim_id, &claim_secret).await?;
     if checkout.status == "completed" {
-        let token = checkout
-            .entitlement_token
-            .ok_or("Completed checkout did not include an entitlement")?;
-        let device_public_key = state
-            .device_public_key
-            .as_deref()
-            .ok_or("The local device identity is missing")?;
-        parse_and_verify_token(&token, device_public_key)?;
-        if let Some(code) = checkout.recovery_code.as_deref() {
-            save_recovery_code(code)?;
+        let (_, receipt_saved) = commit_completed_checkout(
+            &state,
+            &checkout,
+            |token, device| {
+                parse_and_verify_token(token, device).map(|claims| claims.entitlement_id)
+            },
+            save_recovery_code,
+            |next| save_state(&app, next),
+        )?;
+        if receipt_saved {
+            // New acknowledgement is optional for older Worker compatibility.
+            // Failure cannot roll back an already durable activation.
+            let _ = client
+                .post(checkout_url(base_url, &claim_id, "acknowledge")?)
+                .timeout(std::time::Duration::from_secs(3))
+                .bearer_auth(&claim_secret)
+                .send()
+                .await;
+            let _ = clear_checkout_secret();
         }
-        state.entitlement_token = Some(token);
-        state.revoked = false;
-        state.checkout_claim_id = None;
-        state.checkout_expires_at = None;
-        save_state(&app, &state)?;
-        let _ = clear_checkout_secret();
         return Ok(CheckoutPollResult {
-            status: "completed".to_string(),
-            recovery_code: checkout.recovery_code,
-            message: "Payment verified. Ad-free supporter access is active.".to_string(),
+            status: "completed".into(), recovery_code: checkout.recovery_code,
+            message: if receipt_saved { "Payment verified. Ad-free supporter access is active." }
+                else { "Ad-free access is active. Recovery information is still pending; keep this activation and do not pay again." }.into(),
         });
     }
-    if checkout.status == "failed" {
+    if confirmed_unpaid(&state, &checkout) {
         clear_pending_checkout(&app, &mut state)?;
+        return Ok(CheckoutPollResult { status: "expired".into(), recovery_code: None,
+            message: "PayPal confirmed that this order is closed without a payment. No supporter purchase was made.".into() });
     }
-    Ok(CheckoutPollResult {
-        status: checkout.status,
-        recovery_code: None,
-        message: checkout
-            .error_code
-            .unwrap_or_else(|| "Waiting for PayPal confirmation.".to_string()),
-    })
+    Ok(CheckoutPollResult { status: "pending".into(), recovery_code: None,
+        message: "The existing payment is still being verified. Retry verification or continue the same checkout; do not pay again.".into() })
 }
 
 #[tauri::command]
@@ -806,13 +996,15 @@ pub async fn cmd_activate_supporter(
     recovery_code: String,
     accepted_terms_version: String,
 ) -> Result<SupporterStatus, String> {
+    let _operation = supporter_operation().await;
     let base_url = service_url().ok_or("Supporter activation is not configured in this build")?;
     if accepted_terms_version != TERMS_VERSION {
         return Err("Accept the current supporter terms before continuing".to_string());
     }
+    let mut state = load_state(&app)?;
     let key = signing_key()?;
     let device_public_key = public_key(&key);
-    let response = reqwest::Client::new()
+    let response = http_client()?
         .post(format!("{base_url}/v1/activate"))
         .json(&serde_json::json!({
             "recovery_code": recovery_code,
@@ -833,21 +1025,23 @@ pub async fn cmd_activate_supporter(
         .entitlement_token;
     parse_and_verify_token(&token, &device_public_key)?;
     save_recovery_code(&recovery_code)?;
-    let mut state = load_state(&app);
     state.device_public_key = Some(device_public_key);
     state.entitlement_token = Some(token);
-    state.checkout_claim_id = None;
-    state.checkout_expires_at = None;
+    // Recovery remains available while an older payment is unresolved. Keep
+    // that claim and secret until its own verified outcome is safely saved.
     state.revoked = false;
     save_state(&app, &state)?;
-    let _ = clear_checkout_secret();
-    Ok(status_from_state(&state))
+    if !checkout_is_pending(&state) {
+        let _ = clear_checkout_secret();
+    }
+    status_from_state(&state)
 }
 
 #[tauri::command]
 pub async fn cmd_refresh_supporter(app: AppHandle) -> Result<SupporterStatus, String> {
+    let _operation = supporter_operation().await;
     let base_url = service_url().ok_or("Supporter activation is not configured in this build")?;
-    let mut state = load_state(&app);
+    let mut state = load_state(&app)?;
     let token = state
         .entitlement_token
         .clone()
@@ -856,7 +1050,7 @@ pub async fn cmd_refresh_supporter(app: AppHandle) -> Result<SupporterStatus, St
         .ok_or("The secure supporter device key is missing; use your recovery code")?;
     let device_public_key = public_key(&key);
     let claims = parse_and_verify_token(&token, &device_public_key)?;
-    let client = reqwest::Client::new();
+    let client = http_client()?;
     let challenge_response = client
         .post(format!("{base_url}/v1/challenge"))
         .bearer_auth(&token)
@@ -864,12 +1058,7 @@ pub async fn cmd_refresh_supporter(app: AppHandle) -> Result<SupporterStatus, St
         .await
         .map_err(|error| format!("Unable to request supporter verification: {error}"))?;
     if !challenge_response.status().is_success() {
-        if challenge_response.status() == StatusCode::FORBIDDEN {
-            state.entitlement_token = None;
-            state.revoked = true;
-            save_state(&app, &state)?;
-        }
-        return Err(response_error(challenge_response).await);
+        return Err(refresh_error(&app, &mut state, challenge_response).await);
     }
     let challenge = challenge_response
         .json::<ChallengeResponse>()
@@ -892,12 +1081,7 @@ pub async fn cmd_refresh_supporter(app: AppHandle) -> Result<SupporterStatus, St
         .await
         .map_err(|error| format!("Unable to refresh supporter verification: {error}"))?;
     if !response.status().is_success() {
-        if response.status() == StatusCode::FORBIDDEN {
-            state.entitlement_token = None;
-            state.revoked = true;
-            save_state(&app, &state)?;
-        }
-        return Err(response_error(response).await);
+        return Err(refresh_error(&app, &mut state, response).await);
     }
     let refreshed_token = response
         .json::<TokenResponse>()
@@ -912,7 +1096,7 @@ pub async fn cmd_refresh_supporter(app: AppHandle) -> Result<SupporterStatus, St
     }
     state.entitlement_token = Some(refreshed_token);
     save_state(&app, &state)?;
-    Ok(status_from_state(&state))
+    status_from_state(&state)
 }
 
 #[cfg(test)]
@@ -958,7 +1142,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_checkout_survives_restart_only_until_its_expiration() {
+    fn pending_checkout_survives_restart_and_local_expiration() {
         let mut state = SupporterLocalState {
             checkout_claim_id: Some("claim-1".to_string()),
             checkout_expires_at: Some(unix_time() + 60),
@@ -966,7 +1150,282 @@ mod tests {
         };
         assert!(checkout_is_pending(&state));
         state.checkout_expires_at = Some(unix_time() - 1);
-        assert!(!checkout_is_pending(&state));
+        assert!(checkout_is_pending(&state));
+        state.checkout_expires_at = None;
+        assert!(checkout_is_pending(&state));
+    }
+
+    fn pending_fixture() -> SupporterLocalState {
+        SupporterLocalState {
+            device_public_key: Some("device".into()),
+            checkout_claim_id: Some("paid-claim".into()),
+            checkout_expires_at: Some(1),
+            ..Default::default()
+        }
+    }
+
+    fn completed_fixture(code: Option<&str>) -> CheckoutStatusResponse {
+        serde_json::from_value(serde_json::json!({
+            "status": "completed", "entitlement_token": "signed-purchase",
+            "recovery_code": code, "claim_id": "paid-claim",
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn completed_receipt_is_committed_after_secure_code_and_only_then_releases_claim() {
+        let events = std::cell::RefCell::new(Vec::new());
+        let (next, saved) = commit_completed_checkout(
+            &pending_fixture(),
+            &completed_fixture(Some("recovery")),
+            |_, _| {
+                events.borrow_mut().push("verify");
+                Ok("purchase".into())
+            },
+            |_| {
+                events.borrow_mut().push("secure-code");
+                Ok(())
+            },
+            |state| {
+                events.borrow_mut().push("durable-state");
+                assert!(state.checkout_claim_id.is_none());
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(*events.borrow(), ["verify", "secure-code", "durable-state"]);
+        assert!(saved);
+        assert_eq!(next.entitlement_token.as_deref(), Some("signed-purchase"));
+    }
+
+    #[test]
+    fn failed_secure_code_write_does_not_commit_or_consume_the_paid_claim() {
+        let previous = pending_fixture();
+        let error = commit_completed_checkout(
+            &previous,
+            &completed_fixture(Some("recovery")),
+            |_, _| Ok("purchase".into()),
+            |_| Err("keychain locked".into()),
+            |_| panic!("must retain claim before secure receipt is saved"),
+        )
+        .unwrap_err();
+        assert_eq!(error, "keychain locked");
+        assert_eq!(previous.checkout_claim_id.as_deref(), Some("paid-claim"));
+    }
+
+    #[test]
+    fn failed_state_commit_preserves_original_claim_and_allows_idempotent_retry() {
+        let previous = pending_fixture();
+        assert!(commit_completed_checkout(
+            &previous,
+            &completed_fixture(Some("recovery")),
+            |_, _| Ok("purchase".into()),
+            |_| Ok(()),
+            |_| Err("disk full".into())
+        )
+        .is_err());
+        assert!(checkout_is_pending(&previous));
+        let (next, saved) = commit_completed_checkout(
+            &previous,
+            &completed_fixture(Some("recovery")),
+            |_, _| Ok("purchase".into()),
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert!(saved);
+        assert!(!checkout_is_pending(&next));
+    }
+
+    #[test]
+    fn legacy_missing_delivery_material_restores_license_and_preserves_remaining_claim() {
+        let (next, saved) = commit_completed_checkout(
+            &pending_fixture(),
+            &completed_fixture(None),
+            |_, _| Ok("purchase".into()),
+            |_| panic!("no code was received"),
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert!(!saved);
+        assert_eq!(next.entitlement_token.as_deref(), Some("signed-purchase"));
+        assert!(checkout_is_pending(&next));
+        assert!(ensure_new_checkout_allowed(&next, false).is_err());
+    }
+
+    #[test]
+    fn unrelated_saved_recovery_code_cannot_acknowledge_a_missing_checkout_receipt() {
+        // Recovery of A may save its code before a failed state write leaves B's
+        // original pending state on disk. That code is not a receipt for B.
+        let secure_code = std::cell::RefCell::new(Some("recovery-for-A".to_string()));
+        let persisted = std::cell::RefCell::new(pending_fixture());
+        let (next, receipt_saved) = commit_completed_checkout(
+            &pending_fixture(),
+            &completed_fixture(None),
+            |_, _| Ok("purchase-B".into()),
+            |code| {
+                secure_code.replace(Some(code.to_owned()));
+                Ok(())
+            },
+            |state| {
+                persisted.replace(state.clone());
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(!receipt_saved, "must not acknowledge the missing receipt");
+        assert_eq!(secure_code.borrow().as_deref(), Some("recovery-for-A"));
+        assert_eq!(next.entitlement_token.as_deref(), Some("signed-purchase"));
+        assert!(checkout_is_pending(&next));
+        assert!(checkout_is_pending(&persisted.borrow()));
+        assert!(ensure_new_checkout_allowed(&next, true).is_err());
+    }
+
+    #[test]
+    fn completing_a_different_pending_purchase_cannot_replace_a_restored_license() {
+        let mut previous = pending_fixture();
+        previous.entitlement_token = Some("restored-purchase".into());
+        let error = commit_completed_checkout(
+            &previous,
+            &completed_fixture(Some("receipt")),
+            |token, _| Ok(token.into()),
+            |_| panic!("must not replace restored recovery code"),
+            |_| panic!("must not replace restored license"),
+        )
+        .unwrap_err();
+        assert!(error.contains("different purchase"));
+        assert!(checkout_is_pending(&previous));
+        let (next, saved) = commit_completed_checkout(
+            &previous,
+            &completed_fixture(Some("receipt")),
+            |_, _| Ok("same-entitlement".into()),
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert!(saved);
+        assert!(!checkout_is_pending(&next));
+    }
+
+    #[test]
+    fn malformed_entitlement_cannot_store_or_release_a_receipt() {
+        assert!(commit_completed_checkout(
+            &pending_fixture(),
+            &completed_fixture(Some("recovery")),
+            |_, _| Err("invalid signature".into()),
+            |_| panic!("must verify first"),
+            |_| panic!("must verify first")
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn old_worker_expiration_never_proves_nonpayment() {
+        let previous = pending_fixture();
+        let mut response: CheckoutStatusResponse =
+            serde_json::from_value(serde_json::json!({"status":"expired"})).unwrap();
+        assert!(!confirmed_unpaid(&previous, &response));
+        response.unpaid_final = true;
+        response.claim_id = Some("other-claim".into());
+        assert!(!confirmed_unpaid(&previous, &response));
+        response.claim_id = previous.checkout_claim_id.clone();
+        assert!(confirmed_unpaid(&previous, &response));
+        response.status = "pending".into();
+        assert!(!confirmed_unpaid(&previous, &response));
+    }
+
+    #[test]
+    fn any_known_purchase_or_pending_claim_blocks_a_second_checkout() {
+        assert!(ensure_new_checkout_allowed(&SupporterLocalState::default(), false).is_ok());
+        assert!(ensure_new_checkout_allowed(&SupporterLocalState::default(), true).is_err());
+        assert!(ensure_new_checkout_allowed(&pending_fixture(), false).is_err());
+        assert!(ensure_new_checkout_allowed(
+            &SupporterLocalState {
+                entitlement_token: Some("expired-or-unreadable".into()),
+                ..Default::default()
+            },
+            false
+        )
+        .is_err());
+        assert!(ensure_new_checkout_allowed(
+            &SupporterLocalState {
+                revoked: true,
+                ..Default::default()
+            },
+            false
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn generic_forbidden_or_bad_device_proof_cannot_revoke_a_lifetime_purchase() {
+        assert!(!explicit_revocation(StatusCode::FORBIDDEN, None));
+        for code in ["DEVICE_PROOF_INVALID", "CHALLENGE_INVALID", "WAF_BLOCKED"] {
+            let body = ServiceErrorEnvelope {
+                error: Some(ServiceError {
+                    code: code.into(),
+                    message: "error".into(),
+                }),
+            };
+            assert!(!explicit_revocation(StatusCode::FORBIDDEN, Some(&body)));
+        }
+        for code in ["ENTITLEMENT_NOT_ACTIVE", "DEVICE_NOT_ACTIVE"] {
+            let body = ServiceErrorEnvelope {
+                error: Some(ServiceError {
+                    code: code.into(),
+                    message: "error".into(),
+                }),
+            };
+            assert!(explicit_revocation(StatusCode::FORBIDDEN, Some(&body)));
+            assert!(!explicit_revocation(StatusCode::BAD_GATEWAY, Some(&body)));
+        }
+    }
+
+    #[test]
+    fn unavailable_recovery_storage_does_not_prevent_verifying_a_known_signed_purchase() {
+        let known = SupporterLocalState {
+            entitlement_token: Some("existing-signed-token".into()),
+            ..Default::default()
+        };
+        assert!(!recovery_presence_for_status(&known, Err("keychain locked".into())).unwrap());
+        assert!(recovery_presence_for_status(
+            &SupporterLocalState::default(),
+            Err("keychain locked".into())
+        )
+        .is_err());
+        assert!(recovery_presence_for_status(&known, Ok(true)).unwrap());
+    }
+
+    #[test]
+    fn unreadable_existing_state_is_not_an_empty_purchase_record() {
+        let directory =
+            std::env::temp_dir().join(format!("supporter-preservation-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("supporter-entitlement-v1.json");
+        assert!(read_state_file(&path).unwrap().entitlement_token.is_none());
+        std::fs::write(&path, b"partial json").unwrap();
+        assert!(read_state_file(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"partial json");
+        assert!(read_state_file(&directory).is_err());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn supporter_operations_serialize_instead_of_overwriting_pending_state() {
+        let first = supporter_operation().await;
+        let mut second = tokio::spawn(async { supporter_operation().await });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), &mut second)
+                .await
+                .is_err()
+        );
+        drop(first);
+        drop(
+            tokio::time::timeout(std::time::Duration::from_secs(1), second)
+                .await
+                .unwrap()
+                .unwrap(),
+        );
     }
 
     #[test]

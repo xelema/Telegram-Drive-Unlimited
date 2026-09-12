@@ -55,13 +55,14 @@ export function DownloadQueue({ items, onClearFinished, onCancelAll, onCancelIte
                                 {item.status === 'pending' && <div className="w-4 h-4 rounded-full bg-yellow-500/20 flex items-center justify-center"><div className="w-2 h-2 bg-yellow-500 rounded-full" /></div>}
                                 {item.status === 'cooldown' && <div className="w-4 h-4 rounded-full bg-amber-500/20 flex items-center justify-center"><div className="w-2 h-2 bg-amber-500 animate-pulse rounded-full" /></div>}
                                 {item.status === 'downloading' && <div className="w-4 h-4 rounded-full border-2 border-telegram-secondary border-t-transparent animate-spin" />}
-                                {item.status === 'success' && <div className="w-4 h-4 rounded-full bg-green-500/20 flex items-center justify-center"><Check className="w-3 h-3 text-green-500" /></div>}
+                                {item.status === 'success' && item.downloadOutcome !== 'skipped' && <div className="w-4 h-4 rounded-full bg-green-500/20 flex items-center justify-center"><Check className="w-3 h-3 text-green-500" /></div>}
                                 {item.status === 'error' && <div className="w-4 h-4 rounded-full bg-red-500/20 flex items-center justify-center"><X className="w-3 h-3 text-red-500" /></div>}
                                 {item.status === 'cancelled' && <div className="w-4 h-4 rounded-full bg-gray-500/20 flex items-center justify-center"><X className="w-3 h-3 text-gray-400" /></div>}
                             </div>
                             <div className="flex-1 truncate text-telegram-subtext" title={item.filename}>
                                 {item.filename}
                             </div>
+                            {item.downloadOutcome === 'skipped' && <span className="text-xs text-telegram-subtext">{i18n.t('downloadCollision.skipped')}</span>}
                             {item.status === 'downloading' && (
                                 <button onClick={() => onCancelItem(item.id)} className="text-gray-400 hover:text-red-400 transition-colors flex-shrink-0" title={i18n.t("common.cancel")}>
                                     <X className="w-3.5 h-3.5" />

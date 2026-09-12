@@ -47,6 +47,7 @@ pub enum SyncOperation {
     DeleteRemote {
         relative_path: String,
         message_id: i32,
+        expected_remote_hash: String,
     },
     Conflict {
         relative_path: String,
@@ -68,7 +69,7 @@ impl SyncOperation {
         }
     }
 
-    fn is_delete(&self) -> bool {
+    pub fn is_delete(&self) -> bool {
         matches!(self, Self::DeleteLocal { .. } | Self::DeleteRemote { .. })
     }
 }
@@ -104,43 +105,108 @@ pub fn plan_for_direction(
     synced: &SyncedTree,
     direction: &str,
 ) -> Result<Vec<SyncOperation>, SyncError> {
-    let operations = plan_unchecked(local, remote, synced)
+    plan_for_policy(local, remote, synced, direction, true)
+}
+
+pub fn plan_for_policy(
+    local: &FileTree,
+    remote: &FileTree,
+    synced: &SyncedTree,
+    direction: &str,
+    propagate_deletions: bool,
+) -> Result<Vec<SyncOperation>, SyncError> {
+    enforce_mass_deletion(
+        operations_for_policy(local, remote, synced, direction, propagate_deletions),
+        synced,
+    )
+}
+
+/// The preview retains every proposed operation even when the deletion guard
+/// would prevent execution. No mutation is performed by planning.
+pub fn operations_for_policy(
+    local: &FileTree,
+    remote: &FileTree,
+    synced: &SyncedTree,
+    direction: &str,
+    propagate_deletions: bool,
+) -> Vec<SyncOperation> {
+    plan_unchecked(local, remote, synced)
         .into_iter()
-        .map(|operation| match (direction, operation) {
-            // If the remote copy was deleted in upload-only mode, restore it
-            // from local instead of deleting the source that owns this pair.
-            ("upload_only", SyncOperation::DeleteLocal { relative_path, .. }) => {
-                match local.get(&relative_path) {
-                    Some(local) => SyncOperation::Upload {
-                        relative_path,
-                        local: local.clone(),
-                    },
-                    None => SyncOperation::Skip { relative_path },
+        .map(|operation| {
+            // A user-selected conflict resolution is a single explicit action,
+            // even when it goes against the automatic direction of the pair.
+            if synced.get(operation.path()).is_some_and(|previous| {
+                matches!(
+                    previous.sync_status.as_str(),
+                    "keep_local" | "keep_remote" | "keep_both"
+                )
+            }) {
+                return operation;
+            }
+            match (direction, operation) {
+                // If the remote copy was deleted in upload-only mode, restore it
+                // from local instead of deleting the source that owns this pair.
+                ("upload_only", SyncOperation::DeleteLocal { relative_path, .. }) => {
+                    match local.get(&relative_path) {
+                        Some(local) => SyncOperation::Upload {
+                            relative_path,
+                            local: local.clone(),
+                        },
+                        None => SyncOperation::Skip { relative_path },
+                    }
                 }
-            }
-            ("upload_only", SyncOperation::Download { relative_path, .. }) => {
-                SyncOperation::Skip { relative_path }
-            }
-            // The mirror image applies in download-only mode: a local deletion
-            // restores from Telegram rather than deleting Telegram's source.
-            ("download_only", SyncOperation::DeleteRemote { relative_path, .. }) => {
-                match remote.get(&relative_path) {
-                    Some(remote) => SyncOperation::Download {
+                ("upload_only", SyncOperation::Download { relative_path, .. }) => {
+                    SyncOperation::Skip { relative_path }
+                }
+                ("upload_only", SyncOperation::Conflict { relative_path })
+                    if local.contains_key(&relative_path)
+                        && !remote.contains_key(&relative_path) =>
+                {
+                    SyncOperation::Upload {
+                        local: local[&relative_path].clone(),
                         relative_path,
-                        remote: remote.clone(),
+                    }
+                }
+                // The mirror image applies in download-only mode: a local deletion
+                // restores from Telegram rather than deleting Telegram's source.
+                ("download_only", SyncOperation::DeleteRemote { relative_path, .. }) => {
+                    match remote.get(&relative_path) {
+                        Some(remote) => SyncOperation::Download {
+                            relative_path,
+                            remote: remote.clone(),
+                            keep_both: false,
+                            expected_local_hash: None,
+                        },
+                        None => SyncOperation::Skip { relative_path },
+                    }
+                }
+                ("download_only", SyncOperation::Upload { relative_path, .. }) => {
+                    SyncOperation::Skip { relative_path }
+                }
+                ("download_only", SyncOperation::Conflict { relative_path })
+                    if remote.contains_key(&relative_path)
+                        && !local.contains_key(&relative_path) =>
+                {
+                    SyncOperation::Download {
+                        remote: remote[&relative_path].clone(),
+                        relative_path,
                         keep_both: false,
                         expected_local_hash: None,
-                    },
-                    None => SyncOperation::Skip { relative_path },
+                    }
                 }
+                (_, operation) => operation,
             }
-            ("download_only", SyncOperation::Upload { relative_path, .. }) => {
-                SyncOperation::Skip { relative_path }
-            }
-            (_, operation) => operation,
         })
-        .collect();
-    enforce_mass_deletion(operations, synced)
+        .map(|operation| {
+            if !propagate_deletions && operation.is_delete() {
+                SyncOperation::Skip {
+                    relative_path: operation.path().to_string(),
+                }
+            } else {
+                operation
+            }
+        })
+        .collect()
 }
 
 fn plan_unchecked(local: &FileTree, remote: &FileTree, synced: &SyncedTree) -> Vec<SyncOperation> {
@@ -156,6 +222,48 @@ fn plan_unchecked(local: &FileTree, remote: &FileTree, synced: &SyncedTree) -> V
         let local_entry = local.get(&relative_path);
         let remote_entry = remote.get(&relative_path);
         let synced_entry = synced.get(&relative_path);
+        if let Some(previous) = synced_entry {
+            let resolution = match previous.sync_status.as_str() {
+                "keep_local" => Some(local_entry.map(|local| SyncOperation::Upload {
+                    relative_path: relative_path.clone(),
+                    local: local.clone(),
+                })),
+                "keep_remote" => Some(remote_entry.map(|remote| SyncOperation::Download {
+                    relative_path: relative_path.clone(),
+                    remote: remote.clone(),
+                    keep_both: false,
+                    expected_local_hash: local_entry.map(|local| local.hash.clone()),
+                })),
+                "keep_both" => Some(match (local_entry, remote_entry) {
+                    (_, Some(remote)) => Some(SyncOperation::Download {
+                        relative_path: relative_path.clone(),
+                        remote: remote.clone(),
+                        keep_both: local_entry.is_some(),
+                        expected_local_hash: None,
+                    }),
+                    (Some(local), None) => Some(SyncOperation::Upload {
+                        relative_path: relative_path.clone(),
+                        local: local.clone(),
+                    }),
+                    (None, None) => None,
+                }),
+                _ => None,
+            };
+            if let Some(resolution) = resolution {
+                if local_entry.is_some() || remote_entry.is_some() {
+                    operations.push(resolution.unwrap_or_else(|| SyncOperation::Conflict {
+                        relative_path: relative_path.clone(),
+                    }));
+                }
+                continue;
+            }
+        }
+        if synced_entry.is_some_and(|previous| previous.sync_status == "conflict")
+            && (local_entry.is_some() || remote_entry.is_some())
+        {
+            operations.push(SyncOperation::Conflict { relative_path });
+            continue;
+        }
         let operation = match (local_entry, remote_entry, synced_entry) {
             (Some(local), None, None) => SyncOperation::Upload {
                 relative_path: relative_path.clone(),
@@ -187,6 +295,13 @@ fn plan_unchecked(local: &FileTree, remote: &FileTree, synced: &SyncedTree) -> V
                     }
                 }
             }
+            (Some(local), None, Some(previous))
+                if previous.local_hash.as_deref() != Some(local.hash.as_str()) =>
+            {
+                SyncOperation::Conflict {
+                    relative_path: relative_path.clone(),
+                }
+            }
             (Some(local), None, Some(_)) => SyncOperation::DeleteLocal {
                 relative_path: relative_path.clone(),
                 expected_local_hash: local.hash.clone(),
@@ -199,6 +314,13 @@ fn plan_unchecked(local: &FileTree, remote: &FileTree, synced: &SyncedTree) -> V
                     expected_local_hash: None,
                 }
             }
+            (None, Some(remote), Some(previous))
+                if previous.remote_hash.as_deref() != Some(remote.hash.as_str()) =>
+            {
+                SyncOperation::Conflict {
+                    relative_path: relative_path.clone(),
+                }
+            }
             (None, Some(remote), Some(_)) => remote.message_id.map_or_else(
                 || SyncOperation::Conflict {
                     relative_path: relative_path.clone(),
@@ -206,40 +328,10 @@ fn plan_unchecked(local: &FileTree, remote: &FileTree, synced: &SyncedTree) -> V
                 |message_id| SyncOperation::DeleteRemote {
                     relative_path: relative_path.clone(),
                     message_id,
+                    expected_remote_hash: remote.hash.clone(),
                 },
             ),
             (Some(local), Some(remote), Some(previous)) => {
-                if previous.sync_status == "conflict" {
-                    operations.push(SyncOperation::Conflict {
-                        relative_path: relative_path.clone(),
-                    });
-                    continue;
-                }
-                if previous.sync_status == "keep_local" {
-                    operations.push(SyncOperation::Upload {
-                        relative_path: relative_path.clone(),
-                        local: local.clone(),
-                    });
-                    continue;
-                }
-                if previous.sync_status == "keep_remote" {
-                    operations.push(SyncOperation::Download {
-                        relative_path: relative_path.clone(),
-                        remote: remote.clone(),
-                        keep_both: false,
-                        expected_local_hash: Some(local.hash.clone()),
-                    });
-                    continue;
-                }
-                if previous.sync_status == "keep_both" {
-                    operations.push(SyncOperation::Download {
-                        relative_path: relative_path.clone(),
-                        remote: remote.clone(),
-                        keep_both: true,
-                        expected_local_hash: None,
-                    });
-                    continue;
-                }
                 let local_changed = previous.local_hash.as_deref() != Some(local.hash.as_str());
                 let remote_changed = previous.remote_hash.as_deref() != Some(remote.hash.as_str());
                 match (local_changed, remote_changed) {
@@ -273,7 +365,7 @@ fn plan_unchecked(local: &FileTree, remote: &FileTree, synced: &SyncedTree) -> V
     operations
 }
 
-fn enforce_mass_deletion(
+pub fn enforce_mass_deletion(
     operations: Vec<SyncOperation>,
     synced: &SyncedTree,
 ) -> Result<Vec<SyncOperation>, SyncError> {
@@ -333,6 +425,80 @@ mod tests {
         let result = plan(&local, &remote, &old).unwrap();
         assert!(matches!(result[0], SyncOperation::Upload { .. }));
         assert!(matches!(result[1], SyncOperation::Download { .. }));
+    }
+
+    #[test]
+    fn edit_versus_delete_preserves_both_sides_for_resolution() {
+        let baseline = SyncedTree::from([
+            ("a".into(), synced("a", "old-local", "old-remote")),
+            ("b".into(), synced("b", "old-local", "old-remote")),
+        ]);
+        let local = FileTree::from([
+            ("a".into(), entry("a", "new-local")),
+            ("b".into(), entry("b", "old-local")),
+        ]);
+        let remote = FileTree::from([("b".into(), entry("b", "old-remote"))]);
+        assert!(matches!(
+            plan(&local, &remote, &baseline).unwrap()[0],
+            SyncOperation::Conflict { .. }
+        ));
+        let local = FileTree::from([("b".into(), entry("b", "old-local"))]);
+        let remote = FileTree::from([
+            ("a".into(), entry("a", "new-remote")),
+            ("b".into(), entry("b", "old-remote")),
+        ]);
+        assert!(matches!(
+            plan(&local, &remote, &baseline).unwrap()[0],
+            SyncOperation::Conflict { .. }
+        ));
+    }
+
+    #[test]
+    fn explicit_conflict_resolution_restores_an_edited_survivor_in_either_direction() {
+        let local = FileTree::from([("a".into(), entry("a", "new-local"))]);
+        let mut previous = synced("a", "old-local", "old-remote");
+        previous.sync_status = "keep_local".into();
+        let baseline = SyncedTree::from([("a".into(), previous.clone())]);
+        assert!(matches!(
+            plan_for_policy(&local, &FileTree::new(), &baseline, "download_only", false).unwrap()
+                [0],
+            SyncOperation::Upload { .. }
+        ));
+        previous.sync_status = "keep_remote".into();
+        let baseline = SyncedTree::from([("a".into(), previous)]);
+        assert!(matches!(
+            plan_for_policy(&FileTree::new(), &local, &baseline, "upload_only", false).unwrap()[0],
+            SyncOperation::Download { .. }
+        ));
+    }
+
+    #[test]
+    fn backup_policy_never_propagates_source_deletions_without_opt_in() {
+        let previous = SyncedTree::from([
+            ("a".into(), synced("a", "local", "remote")),
+            ("b".into(), synced("b", "local", "remote")),
+        ]);
+        let local = FileTree::from([("b".into(), entry("b", "local"))]);
+        let remote = FileTree::from([
+            ("a".into(), entry("a", "remote")),
+            ("b".into(), entry("b", "remote")),
+        ]);
+        assert!(
+            plan_for_policy(&local, &remote, &previous, "upload_only", false)
+                .unwrap()
+                .iter()
+                .all(|operation| !operation.is_delete())
+        );
+        assert!(matches!(
+            plan_for_policy(&local, &remote, &previous, "upload_only", true).unwrap()[0],
+            SyncOperation::DeleteRemote { .. }
+        ));
+        assert!(
+            plan_for_policy(&remote, &local, &previous, "download_only", false)
+                .unwrap()
+                .iter()
+                .all(|operation| !operation.is_delete())
+        );
     }
 
     #[test]

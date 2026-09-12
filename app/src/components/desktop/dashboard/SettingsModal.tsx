@@ -24,8 +24,10 @@ import { SyncSettingsPanel } from '../sync/SyncSettingsPanel';
 import { DesktopBehaviorSettings } from './settings/DesktopBehaviorSettings';
 import { userFacingError } from '../../../services/userFacingError';
 import { getInstallationInfo, RELEASES_URL, type InstallationInfo } from '../../../services/installationInfo';
+import { useActionScope } from '../../../hooks/useActionScope';
 
 interface SettingsModalProps {
+    ownerId: string | null;
     isOpen: boolean;
     onClose: () => void;
     initialTab?: SettingsTab;
@@ -56,7 +58,11 @@ interface WebDavTokenResponse {
 
 export type SettingsTab = 'general' | 'privacy' | 'advanced' | 'webdav' | 'themes' | 'proxy' | 'vpn' | 'encryption' | 'sharing' | 'sync' | 'about';
 
-export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: SettingsModalProps) {
+export function SettingsModal(props: SettingsModalProps) {
+    return <OwnedSettingsModal key={props.ownerId ?? 'signed-out'} {...props} />;
+}
+
+function OwnedSettingsModal({ ownerId, isOpen, onClose, initialTab = 'general' }: SettingsModalProps) {
     const { settings, updateSetting, updateSettings, resetSettings } = useSettings();
     const { confirm } = useConfirm();
     const { t } = useTranslation();
@@ -159,18 +165,23 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
     const [refreshing, setRefreshing] = useState(false);
     const [copiedId, setCopiedId] = useState<string | null>(null);
     const [globalDomain, setGlobalDomain] = useState('');
+    const captureShareScope = useActionScope(isOpen ? ownerId : null);
+    const shareRequest = useRef(0);
 
     const fetchShares = useCallback(async () => {
+        const isCurrent = captureShareScope();
+        if (!ownerId || !isCurrent()) return;
+        const request = ++shareRequest.current;
         setRefreshing(true);
         try {
-            const list = await invoke<ShareInfo[]>('cmd_list_shares');
-            setShares(list);
+            const list = await invoke<ShareInfo[]>('cmd_list_shares', { ownerId });
+            if (isCurrent() && request === shareRequest.current) setShares(list.filter(share => share.owner_id === ownerId));
         } catch (e) {
-            toast.error(t('settings.load_shares_failed', { error: e }));
+            if (isCurrent() && request === shareRequest.current) toast.error(t('settings.load_shares_failed', { error: e }));
         } finally {
-            setRefreshing(false);
+            if (isCurrent() && request === shareRequest.current) setRefreshing(false);
         }
-    }, [t]);
+    }, [captureShareScope, ownerId, t]);
 
     useEffect(() => {
         if (isOpen && activeTab === 'sharing') {
@@ -179,26 +190,30 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
     }, [isOpen, activeTab, fetchShares]);
 
     const handleRevokeShare = async (id: string) => {
+        const isCurrent = captureShareScope();
+        if (!ownerId || !isCurrent() || !shares.some(share => share.id === id && share.owner_id === ownerId)) return;
         const ok = await confirm({
             title: t('settings.revoke_link_title'),
             message: t('settings.revoke_link_desc'),
             confirmText: t('settings.revoke'),
             variant: 'danger',
         });
-        if (!ok) return;
+        if (!ok || !isCurrent()) return;
 
         try {
-            await invoke('cmd_revoke_share', { id });
+            await invoke('cmd_revoke_share', { id, ownerId });
+            if (!isCurrent()) return;
             toast.success(t('settings.link_revoked'));
             fetchShares();
         } catch (e) {
-            toast.error(t('settings.link_revoke_failed', { error: e }));
+            if (isCurrent()) toast.error(t('settings.link_revoke_failed', { error: e }));
         }
     };
 
     const handleCopyShare = (id: string) => {
-        const share = shares.find(s => s.id === id);
-        if (!share) return;
+        const isCurrent = captureShareScope();
+        const share = shares.find(s => s.id === id && s.owner_id === ownerId);
+        if (!share || !isCurrent()) return;
         
         let link = `http://127.0.0.1:14201/d/${share.id}`;
         if (globalDomain.trim()) {
@@ -207,7 +222,7 @@ export function SettingsModal({ isOpen, onClose, initialTab = 'general' }: Setti
         
         navigator.clipboard.writeText(link);
         setCopiedId(share.id);
-        setTimeout(() => setCopiedId(null), 2000);
+        setTimeout(() => { if (isCurrent()) setCopiedId(null); }, 2000);
     };
 
     // API settings state

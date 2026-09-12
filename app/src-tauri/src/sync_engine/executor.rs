@@ -38,6 +38,7 @@ pub struct ExecutionResult {
     pub success: bool,
     pub detail: Option<String>,
     pub message_id: Option<i32>,
+    pub local_hash: Option<String>,
 }
 
 fn safe_local_path(root: &Path, relative_path: &str) -> Result<PathBuf, String> {
@@ -160,14 +161,22 @@ fn flood_wait_seconds(error: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
-async fn with_flood_wait<F, Fut, T>(app: &tauri::AppHandle, mut operation: F) -> Result<T, String>
+async fn with_flood_wait<F, Fut, T>(
+    app: &tauri::AppHandle,
+    account: &crate::workspace::AccountGuard,
+    mut operation: F,
+) -> Result<T, String>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T, String>>,
 {
     let mut attempt = 0u32;
     loop {
-        match operation().await {
+        account.validate()?;
+        if *app.state::<SyncEngine>().subscribe_shutdown()?.borrow() {
+            return Err("Folder sync shutdown requested".into());
+        }
+        match crate::workspace::with_operation_account(account, operation()).await {
             Ok(value) => return Ok(value),
             Err(error) => {
                 if attempt >= 5 {
@@ -180,6 +189,9 @@ where
                 let wait = server_wait.max(exponential);
                 log::warn!("Folder sync hit FLOOD_WAIT; retrying in {wait}s");
                 let mut shutdown = app.state::<SyncEngine>().subscribe_shutdown()?;
+                if *shutdown.borrow() {
+                    return Err("Folder sync shutdown requested".into());
+                }
                 tokio::select! {
                     _ = tokio::time::sleep(Duration::from_secs(wait)) => {}
                     changed = shutdown.changed() => {
@@ -199,7 +211,38 @@ async fn upload(
     pair: &SyncPair,
     path: &Path,
     settings: &SyncSettings,
+    account: &crate::workspace::AccountGuard,
 ) -> Result<i32, String> {
+    let protection_mode = upload_protection_mode(app, settings)?;
+    let path = path.to_string_lossy().into_owned();
+    let message_id = with_flood_wait(app, account, || {
+        commands::fs::cmd_upload_file(
+            path.clone(),
+            Some(pair.channel_id),
+            Some(format!("sync-{}", uuid::Uuid::new_v4())),
+            protection_mode.clone(),
+            None,
+            Some(true),
+            Some("file".to_string()),
+            app.clone(),
+            app.state::<TelegramState>(),
+            app.state::<Arc<BandwidthManager>>(),
+            app.state::<Arc<NetworkConfig>>(),
+            app.state::<CryptoState>(),
+            app.state::<DbConnection>(),
+            Some(account.owner.to_string()),
+        )
+    })
+    .await?;
+    message_id
+        .parse::<i32>()
+        .map_err(|_| "Upload succeeded but Telegram did not return its message id".to_string())
+}
+
+pub(crate) fn upload_protection_mode(
+    app: &tauri::AppHandle,
+    settings: &SyncSettings,
+) -> Result<Option<String>, String> {
     let crypto = app.state::<CryptoState>();
     let protection_mode = match settings.encryption.as_str() {
         "always_vault" => Some("vault".to_string()),
@@ -220,28 +263,12 @@ async fn upload(
     {
         return Err("[KEY_REQUIRED] Background sync cannot prompt for a per-file passphrase; choose standard or vault encryption".to_string());
     }
-    let path = path.to_string_lossy().into_owned();
-    let message_id = with_flood_wait(app, || {
-        commands::fs::cmd_upload_file(
-            path.clone(),
-            Some(pair.channel_id),
-            Some(format!("sync-{}", uuid::Uuid::new_v4())),
-            protection_mode.clone(),
-            None,
-            Some(true),
-            Some("file".to_string()),
-            app.clone(),
-            app.state::<TelegramState>(),
-            app.state::<Arc<BandwidthManager>>(),
-            app.state::<Arc<NetworkConfig>>(),
-            app.state::<CryptoState>(),
-            app.state::<DbConnection>(),
-        )
-    })
-    .await?;
-    message_id
-        .parse::<i32>()
-        .map_err(|_| "Upload succeeded but Telegram did not return its message id".to_string())
+    if protection_mode.is_some() && !crypto.get_features().upload_enabled {
+        return Err(
+            "Encrypted uploads are unavailable in this build; this mapping is paused".into(),
+        );
+    }
+    Ok(protection_mode)
 }
 
 fn inherited_protection_mode(app: &tauri::AppHandle) -> Result<Option<String>, String> {
@@ -250,10 +277,17 @@ fn inherited_protection_mode(app: &tauri::AppHandle) -> Result<Option<String>, S
         .app_data_dir()
         .map_err(|error| error.to_string())?
         .join("settings.json");
-    let Ok(contents) = std::fs::read_to_string(settings_path) else {
-        return Ok(None);
+    let contents = match std::fs::read_to_string(settings_path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "Cannot read the inherited encryption preference: {error}"
+            ))
+        }
     };
-    let value: serde_json::Value = serde_json::from_str(&contents).unwrap_or_default();
+    let value: serde_json::Value = serde_json::from_str(&contents)
+        .map_err(|error| format!("Cannot read the inherited encryption preference: {error}"))?;
     let mode = value
         .pointer("/settings/encryptionDefaultMode")
         .or_else(|| value.get("encryptionDefaultMode"))
@@ -270,17 +304,53 @@ pub(crate) async fn delete_remote(
     app: &tauri::AppHandle,
     channel_id: i64,
     message_id: i32,
+    account: &crate::workspace::AccountGuard,
 ) -> Result<(), String> {
-    with_flood_wait(app, || {
+    with_flood_wait(app, account, || {
         commands::fs::cmd_delete_file(
             message_id,
             Some(channel_id),
             app.state::<TelegramState>(),
             app.state::<DbConnection>(),
+            app.clone(),
+            Some(account.owner.to_string()),
         )
     })
     .await
     .map(|_| ())
+}
+
+async fn verify_remote_precondition(
+    app: &tauri::AppHandle,
+    pair: &SyncPair,
+    message_id: i32,
+    expected_hash: &str,
+    account: &crate::workspace::AccountGuard,
+) -> Result<(), String> {
+    account.validate()?;
+    let telegram = app.state::<TelegramState>();
+    let client = telegram
+        .client
+        .lock()
+        .await
+        .clone()
+        .ok_or("Telegram is offline; remote deletion was cancelled")?;
+    account.validate_client(&client).await?;
+    let peer =
+        commands::utils::resolve_peer(&client, Some(pair.channel_id), &telegram.peer_cache).await?;
+    let message = client
+        .get_messages_by_id(&peer, &[message_id])
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .flatten()
+        .next()
+        .ok_or("The remote file disappeared after planning; deletion was cancelled")?;
+    let actual = super::message_fingerprint(&message)?;
+    if actual != expected_hash {
+        return Err("The remote file changed after planning; deletion was cancelled".into());
+    }
+    account.validate()
 }
 
 async fn download(
@@ -289,7 +359,9 @@ async fn download(
     message_id: i32,
     destination: &Path,
     expected_local_hash: Option<&str>,
-) -> Result<(), String> {
+    account: &crate::workspace::AccountGuard,
+) -> Result<String, String> {
+    account.validate()?;
     if let Some(parent) = destination.parent() {
         tokio::fs::create_dir_all(parent)
             .await
@@ -298,13 +370,16 @@ async fn download(
     let temporary = temporary_download_path(destination)?;
     reserve_temporary_download(&temporary).await?;
     let request = DownloadFileRequest {
+        owner_id: Some(account.owner.to_string()),
+        // This is our exclusively reserved internal staging file, never the user destination.
+        collision_policy: commands::download_destination::DownloadCollisionPolicy::Replace,
         message_id,
         save_path: temporary.to_string_lossy().into_owned(),
         folder_id: Some(pair.channel_id),
         transfer_id: Some(format!("sync-{}", uuid::Uuid::new_v4())),
         prompt_token: None,
     };
-    let result = with_flood_wait(app, || {
+    let result = with_flood_wait(app, account, || {
         commands::fs::cmd_download_file(
             DownloadFileRequest { ..request.clone() },
             app.clone(),
@@ -320,7 +395,19 @@ async fn download(
         let _ = tokio::fs::remove_file(&temporary).await;
         return Err(error);
     }
+    if let Err(error) = account.validate() {
+        let _ = tokio::fs::remove_file(&temporary).await;
+        return Err(error);
+    }
+    let temporary_for_hash = temporary.clone();
+    let published_hash = tokio::task::spawn_blocking(move || super::hash_file(&temporary_for_hash))
+        .await
+        .map_err(|error| error.to_string())??;
     if let Err(error) = verify_local_precondition(destination, expected_local_hash).await {
+        let _ = tokio::fs::remove_file(&temporary).await;
+        return Err(error);
+    }
+    if let Err(error) = account.validate() {
         let _ = tokio::fs::remove_file(&temporary).await;
         return Err(error);
     }
@@ -331,7 +418,8 @@ async fn download(
                 "Downloaded safely to {} but atomic rename failed: {error}",
                 temporary.display()
             )
-        })
+        })?;
+    Ok(published_hash)
 }
 
 async fn verify_local_precondition(path: &Path, expected_hash: Option<&str>) -> Result<(), String> {
@@ -417,6 +505,7 @@ pub async fn execute(
     pair: &SyncPair,
     settings: &SyncSettings,
     operations: Vec<SyncOperation>,
+    account: &crate::workspace::AccountGuard,
 ) -> Vec<ExecutionResult> {
     let root = Path::new(&pair.local_path);
     let mut results = Vec::with_capacity(operations.len());
@@ -435,100 +524,158 @@ pub async fn execute(
         }
         .to_string();
         let mut uploaded_message_id = None;
-        let outcome = match operation {
-            SyncOperation::Upload { local, .. } => match validate_upload_size(local.file_size) {
-                Err(error) => Err(error),
-                Ok(()) => match safe_local_path(root, &path) {
-                    Ok(local_path) if local_path.is_file() => {
-                        match tokio::fs::metadata(&local_path).await {
-                            Err(error) => Err(error.to_string()),
-                            Ok(metadata) => match validate_upload_size(metadata.len()) {
-                                Err(error) => Err(error),
-                                Ok(()) => match upload(app, pair, &local_path, settings).await {
-                                    Ok(message_id) => {
-                                        let verify_path = local_path.clone();
-                                        let current_hash = tokio::task::spawn_blocking(move || {
-                                            super::hash_file(&verify_path)
-                                        })
-                                        .await
-                                        .map_err(|error| error.to_string())
-                                        .and_then(|result| result);
-                                        match current_hash {
-                                            Err(error) => Err(error),
-                                            Ok(current_hash) if current_hash != local.hash => {
-                                                let _ =
-                                                    delete_remote(app, pair.channel_id, message_id)
-                                                        .await;
-                                                Err("Local file changed during upload; uploaded attempt was discarded and will be retried".to_string())
-                                            }
-                                            Ok(_) => {
-                                                uploaded_message_id = Some(message_id);
-                                                if settings.encryption != "always_vault" {
-                                                    let _ = commands::fs::cmd_rename_file(
+        let mut downloaded_hash = None;
+        let precondition = account.validate().and_then(|_| {
+            if *app.state::<SyncEngine>().subscribe_shutdown()?.borrow() {
+                Err("Folder sync paused after the current operation".to_string())
+            } else {
+                Ok(())
+            }
+        });
+        let outcome = match precondition {
+            Err(error) => Err(error),
+            Ok(()) => match operation {
+                SyncOperation::Upload { local, .. } => {
+                    match validate_upload_size(local.file_size) {
+                        Err(error) => Err(error),
+                        Ok(()) => match safe_local_path(root, &path) {
+                            Ok(local_path) if local_path.is_file() => {
+                                match tokio::fs::metadata(&local_path).await {
+                                    Err(error) => Err(error.to_string()),
+                                    Ok(metadata) => match validate_upload_size(metadata.len()) {
+                                        Err(error) => Err(error),
+                                        Ok(()) => {
+                                            match upload(app, pair, &local_path, settings, account)
+                                                .await
+                                            {
+                                                Ok(message_id) => {
+                                                    let verify_path = local_path.clone();
+                                                    let current_hash =
+                                                        tokio::task::spawn_blocking(move || {
+                                                            super::hash_file(&verify_path)
+                                                        })
+                                                        .await
+                                                        .map_err(|error| error.to_string())
+                                                        .and_then(|result| result);
+                                                    match current_hash {
+                                                        Err(error) => Err(error),
+                                                        Ok(current_hash)
+                                                            if current_hash != local.hash =>
+                                                        {
+                                                            let _ = delete_remote(
+                                                                app,
+                                                                pair.channel_id,
+                                                                message_id,
+                                                                account,
+                                                            )
+                                                            .await;
+                                                            Err("Local file changed during upload; uploaded attempt was discarded and will be retried".to_string())
+                                                        }
+                                                        Ok(_) => match account.validate() {
+                                                            Err(error) => Err(error),
+                                                            Ok(()) => {
+                                                                uploaded_message_id =
+                                                                    Some(message_id);
+                                                                if settings.encryption
+                                                                    != "always_vault"
+                                                                {
+                                                                    crate::workspace::with_operation_account(account, commands::fs::cmd_rename_file(
                                                         message_id,
                                                         Some(pair.channel_id),
                                                         path.clone(),
                                                         app.state::<TelegramState>(),
                                                         app.state::<DbConnection>(),
-                                                    )
-                                                    .await;
+                                                        app.clone(),
+                                                        Some(account.owner.to_string()),
+                                                    )).await.map(|_| ())
+                                                                } else {
+                                                                    Ok(())
+                                                                }
+                                                            }
+                                                        },
+                                                    }
                                                 }
-                                                Ok(())
+                                                Err(error) => Err(error),
                                             }
                                         }
+                                    },
+                                }
+                            }
+                            Ok(_) => Err("Local file disappeared before upload".to_string()),
+                            Err(error) => Err(error),
+                        },
+                    }
+                }
+                SyncOperation::Download {
+                    remote,
+                    keep_both,
+                    expected_local_hash,
+                    ..
+                } => match remote.message_id {
+                    None => Err("Remote file has no Telegram message id".to_string()),
+                    Some(message_id) => match safe_download_path(root, &path) {
+                        Ok(destination) => {
+                            let destination = if keep_both {
+                                conflict_path(&destination)
+                            } else {
+                                destination
+                            };
+                            let expected_hash = if keep_both {
+                                None
+                            } else {
+                                expected_local_hash.as_deref()
+                            };
+                            download(app, pair, message_id, &destination, expected_hash, account)
+                                .await
+                                .map(|hash| {
+                                    if !keep_both {
+                                        downloaded_hash = Some(hash);
                                     }
-                                    Err(error) => Err(error),
-                                },
+                                })
+                        }
+                        Err(error) => Err(error),
+                    },
+                },
+                SyncOperation::DeleteLocal {
+                    expected_local_hash,
+                    ..
+                } => match safe_local_path(root, &path) {
+                    Ok(local) => {
+                        match verify_local_precondition(&local, Some(&expected_local_hash)).await {
+                            Ok(()) => match account.validate() {
+                                Ok(()) => tokio::fs::remove_file(local)
+                                    .await
+                                    .map_err(|error| error.to_string()),
+                                Err(error) => Err(error),
                             },
+                            Err(error) => Err(error),
                         }
                     }
-                    Ok(_) => Err("Local file disappeared before upload".to_string()),
                     Err(error) => Err(error),
                 },
-            },
-            SyncOperation::Download {
-                remote,
-                keep_both,
-                expected_local_hash,
-                ..
-            } => match remote.message_id {
-                None => Err("Remote file has no Telegram message id".to_string()),
-                Some(message_id) => match safe_download_path(root, &path) {
-                    Ok(destination) => {
-                        let destination = if keep_both {
-                            conflict_path(&destination)
-                        } else {
-                            destination
-                        };
-                        let expected_hash = if keep_both {
-                            None
-                        } else {
-                            expected_local_hash.as_deref()
-                        };
-                        download(app, pair, message_id, &destination, expected_hash).await
-                    }
-                    Err(error) => Err(error),
-                },
-            },
-            SyncOperation::DeleteLocal {
-                expected_local_hash,
-                ..
-            } => match safe_local_path(root, &path) {
-                Ok(local) => {
-                    match verify_local_precondition(&local, Some(&expected_local_hash)).await {
-                        Ok(()) => tokio::fs::remove_file(local)
-                            .await
-                            .map_err(|error| error.to_string()),
+                SyncOperation::DeleteRemote {
+                    message_id,
+                    expected_remote_hash,
+                    ..
+                } => {
+                    match verify_remote_precondition(
+                        app,
+                        pair,
+                        message_id,
+                        &expected_remote_hash,
+                        account,
+                    )
+                    .await
+                    {
+                        Ok(()) => delete_remote(app, pair.channel_id, message_id, account).await,
                         Err(error) => Err(error),
                     }
                 }
-                Err(error) => Err(error),
+                SyncOperation::Conflict { .. } => {
+                    Err("Conflict requires user resolution".to_string())
+                }
+                SyncOperation::Skip { .. } => Ok(()),
             },
-            SyncOperation::DeleteRemote { message_id, .. } => {
-                delete_remote(app, pair.channel_id, message_id).await
-            }
-            SyncOperation::Conflict { .. } => Err("Conflict requires user resolution".to_string()),
-            SyncOperation::Skip { .. } => Ok(()),
         };
         let (success, detail) = match outcome {
             Ok(()) => (true, None),
@@ -548,6 +695,7 @@ pub async fn execute(
             success,
             detail,
             message_id: uploaded_message_id,
+            local_hash: downloaded_hash,
         };
         let _ = app.emit("sync-operation", &result);
         results.push(result);

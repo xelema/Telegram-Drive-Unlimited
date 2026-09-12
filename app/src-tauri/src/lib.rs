@@ -95,6 +95,7 @@ pub mod transcode;
 pub mod upload_service;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod webdav;
+pub mod workspace;
 
 /// Single source of truth for the Actix streaming server port.
 /// Referenced in lib.rs (server startup) and exposed to the frontend
@@ -156,6 +157,10 @@ pub async fn restart_api_server(app: &tauri::AppHandle) -> Result<(), String> {
         .clone();
     let db_pool = app.state::<db::DbConnection>().inner().clone();
     let api_port = settings.port;
+    let api_account_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
     let key_hash = settings.key_hash.clone();
     let lifecycle_for_thread = lifecycle.clone();
 
@@ -181,6 +186,7 @@ pub async fn restart_api_server(app: &tauri::AppHandle) -> Result<(), String> {
             let api_state_data = actix_web::web::Data::new(tg_state);
             let api_state = actix_web::web::Data::new(api_routes::ApiState { key_hash });
             let cache_dirs = actix_web::web::Data::new(api_routes::CacheDirs {
+                account_root: api_account_root,
                 thumbnail_dir,
                 preview_dir,
             });
@@ -313,6 +319,10 @@ pub async fn restart_webdav_server(app: &tauri::AppHandle) -> Result<(), String>
         .inner()
         .clone();
     let database = app.state::<db::DbConnection>().inner().clone();
+    let webdav_account_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
     let staging_dir = match app.path().app_cache_dir() {
         Ok(path) => path.join("webdav-staging"),
         Err(error) => {
@@ -358,6 +368,7 @@ pub async fn restart_webdav_server(app: &tauri::AppHandle) -> Result<(), String>
                 database,
                 write_enabled,
                 staging_dir,
+                webdav_account_root,
             );
             let (handler, auth) = webdav::build_handler(filesystem, token_hash);
             let handler = actix_web::web::Data::new(handler);
@@ -1181,6 +1192,7 @@ pub fn run() {
             let db_pool_for_server = db_pool.clone();
             let transcode_for_server = transcode_arc.clone();
             let crypto_for_server = app.state::<crypto::state::CryptoState>().inner().clone();
+            let share_account_root = app.path().app_data_dir()?;
             tauri::async_runtime::spawn(async move {
                 match server::start_server(
                     state,
@@ -1189,6 +1201,7 @@ pub fn run() {
                     db_pool_for_server,
                     transcode_for_server,
                     crypto_for_server,
+                    share_account_root,
                 )
                 .await
                 {
@@ -1258,9 +1271,32 @@ pub fn run() {
                 });
             }
 
+            workspace::start_background(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            workspace::storage::cmd_storage_read,
+            workspace::storage::cmd_storage_limits,
+            workspace::storage::cmd_storage_clear,
+            workspace::cmd_workspace_account,
+            workspace::cmd_workspace_read,
+            workspace::cmd_workspace_mutate,
+            workspace::cmd_workspace_index,
+            workspace::playback::cmd_playback_read,
+            workspace::playback::cmd_playback_mutate,
+            workspace::assets::cmd_workspace_asset,
+            workspace::assets::cmd_workspace_cancel_asset,
+            workspace::cleanup::cmd_cleanup_list,
+            workspace::cleanup::cmd_cleanup_schedule,
+            workspace::cleanup::cmd_cleanup_restore,
+            workspace::cleanup::cmd_cleanup_process,
+            workspace::packs::cmd_offline_packs_list,
+            workspace::packs::cmd_offline_pack_create,
+            workspace::packs::cmd_offline_pack_action,
+            workspace::packs::cmd_offline_pack_path,
+            commands::cmd_preview_sync_pair,
+            commands::cmd_update_sync_pair,
+            commands::cmd_set_sync_pair_active,
             commands::cmd_auth_request_code,
             commands::cmd_auth_resend_code,
             commands::cmd_auth_cancel_code,
@@ -1338,6 +1374,12 @@ pub fn run() {
             commands::cmd_get_thumbnail,
             commands::cmd_get_stream_info,
             commands::cmd_cancel_transfer,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            transfer_engine::cmd_transfer_activity,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            transfer_engine::cmd_transfer_adopt_legacy,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            transfer_engine::cmd_transfer_discard_legacy,
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             transfer_engine::cmd_transfer_enqueue,
             #[cfg(not(any(target_os = "android", target_os = "ios")))]

@@ -1,4 +1,9 @@
 use crate::bandwidth::{BandwidthManager, BandwidthReservation};
+#[cfg(test)]
+use crate::commands::download_destination::replace_download_file;
+use crate::commands::download_destination::{
+    publish_download_file, skip_existing_download, DownloadCollisionPolicy, DownloadOutcome,
+};
 use crate::commands::utils::{map_error, media_size, resolve_peer};
 use crate::crypto::envelope::encrypt_reader::{EncryptingReader, EncryptionSession};
 use crate::crypto::envelope::header::{EnvelopeHeader, KeySlotEntry};
@@ -24,7 +29,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
-use tauri::{Emitter, State};
+use tauri::{Emitter, Manager, State};
 use tokio::sync::oneshot;
 
 #[derive(Clone, Serialize)]
@@ -75,15 +80,6 @@ struct DecodedProtectedFileMetadata {
     schema_version: u16,
     original_name: String,
     mime_type: String,
-}
-
-struct EncryptedListInfo {
-    remote_name: String,
-    envelope_version: u16,
-    protection_mode: String,
-    metadata_protected: bool,
-    header_blob: Option<Vec<u8>>,
-    plaintext_size: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -281,32 +277,68 @@ fn registry_record_from_header(
 }
 
 async fn probe_tdenc2_header(
+    account: &crate::workspace::AccountGuard,
     client: &grammers_client::Client,
     media: &Media,
 ) -> Result<Vec<u8>, String> {
-    let mut download = client.iter_download(media);
-    let mut header_bytes = Vec::with_capacity(policy::CORE_HEADER_SIZE);
-    let mut expected_length: Option<usize> = None;
-
-    while expected_length.is_none_or(|length| header_bytes.len() < length) {
-        let Some(chunk) = download.next().await.transpose() else {
-            return Err("Encrypted envelope ended before its header was complete".to_string());
-        };
-        let bytes = chunk.map_err(|error| map_error(&error))?;
-        let target = expected_length.unwrap_or(policy::CORE_HEADER_SIZE);
-        let needed = target.saturating_sub(header_bytes.len());
-        header_bytes.extend_from_slice(&bytes[..bytes.len().min(needed)]);
-
-        if expected_length.is_none() && header_bytes.len() == policy::CORE_HEADER_SIZE {
-            let core = crate::crypto::envelope::header::CoreHeader::parse(&header_bytes)
-                .map_err(|error| error.to_string())?;
-            expected_length = Some(core.header_length as usize);
-            header_bytes.reserve(core.header_length as usize - policy::CORE_HEADER_SIZE);
+    let mut download = client
+        .iter_download(media)
+        .chunk_size(policy::MAX_HEADER_LENGTH as i32);
+    let mut probe = crate::workspace::envelope_cache::HeaderProbe::default();
+    loop {
+        account.validate()?;
+        let chunk = download
+            .next()
+            .await
+            .map_err(|e| map_error(&e))?
+            .ok_or_else(|| "Encrypted envelope ended before its header was complete".to_string())?;
+        account.validate()?;
+        if let Some(header) = probe.push(&chunk)? {
+            return Ok(header);
         }
     }
+}
 
-    EnvelopeHeader::parse(&header_bytes).map_err(|error| error.to_string())?;
-    Ok(header_bytes)
+/// Resolve only the current account's current Telegram document. Legacy registry
+/// rows have no owner/document identity and must never select cached metadata.
+pub(crate) async fn resolve_remote_envelope(
+    account: &crate::workspace::AccountGuard,
+    client: &grammers_client::Client,
+    folder_id: Option<i64>,
+    message_id: i32,
+    media: &Media,
+    caption: &str,
+) -> Result<Option<EncryptedFileRecord>, String> {
+    use crate::workspace::envelope_cache;
+    account.validate()?;
+    let Media::Document(document) = media else {
+        return Ok(None);
+    };
+    if !envelope_cache::suspected_envelope(document.name(), caption) {
+        return Ok(None);
+    }
+    let identity = envelope_cache::RemoteEnvelopeIdentity {
+        owner: account.owner,
+        folder: folder_id,
+        message: message_id,
+        document: document.id(),
+        ciphertext_size: media_size(media),
+    };
+    let header = envelope_cache::resolve(
+        account,
+        &identity,
+        probe_tdenc2_header(account, client, media),
+    )
+    .await?;
+    registry_record_from_header(
+        folder_id,
+        message_id,
+        document.name().to_string(),
+        identity.ciphertext_size,
+        header,
+        "owner_document_bound",
+    )
+    .map(Some)
 }
 
 fn inferred_mime_type(path: &str) -> &'static str {
@@ -1281,67 +1313,6 @@ fn download_partial_path(destination: &std::path::Path) -> Result<std::path::Pat
     )))
 }
 
-#[cfg(not(target_os = "windows"))]
-fn replace_download_file(
-    source: &std::path::Path,
-    destination: &std::path::Path,
-) -> std::io::Result<()> {
-    std::fs::rename(source, destination)?;
-    #[cfg(unix)]
-    if let Some(parent) = destination.parent() {
-        if let Err(error) = std::fs::File::open(parent).and_then(|directory| directory.sync_all()) {
-            // The atomic publish already succeeded. Do not report the transfer as failed (and
-            // release its quota) merely because this filesystem cannot fsync directories.
-            log::warn!(
-                "Downloaded file was published, but its parent directory could not be synced: {}",
-                error
-            );
-        }
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "windows")]
-fn replace_download_file(
-    source: &std::path::Path,
-    destination: &std::path::Path,
-) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-
-    fn wide(path: &std::path::Path) -> Vec<u16> {
-        path.as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect()
-    }
-
-    let source = wide(source);
-    let destination = wide(destination);
-    let result = unsafe {
-        windows_sys::Win32::Storage::FileSystem::MoveFileExW(
-            source.as_ptr(),
-            destination.as_ptr(),
-            windows_sys::Win32::Storage::FileSystem::MOVEFILE_REPLACE_EXISTING
-                | windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if result == 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
-async fn publish_download_file(
-    source: std::path::PathBuf,
-    destination: std::path::PathBuf,
-) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || replace_download_file(&source, &destination))
-        .await
-        .map_err(|error| format!("Download publish task failed: {error}"))?
-        .map_err(|error| format!("Failed to publish verified download: {error}"))
-}
-
 #[cfg(target_os = "android")]
 fn publish_verified_android_download(
     cache_path: &str,
@@ -1615,6 +1586,51 @@ mod dropped_path_tests {
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // Tauri injects the command state parameters individually.
 pub async fn cmd_upload_file(
+    path: String,
+    folder_id: Option<i64>,
+    transfer_id: Option<String>,
+    protection_mode: Option<String>,
+    prompt_token: Option<u64>,
+    protect_metadata: Option<bool>,
+    video_upload_mode: Option<String>,
+    app_handle: tauri::AppHandle,
+    state: State<'_, TelegramState>,
+    bw_state: State<'_, Arc<BandwidthManager>>,
+    net_config: State<'_, std::sync::Arc<NetworkConfig>>,
+    crypto_state: State<'_, crate::crypto::state::CryptoState>,
+    db_pool: State<'_, DbConnection>,
+    owner_id: Option<String>,
+) -> Result<String, String> {
+    let account = capture_transfer_account(
+        &app_handle,
+        transfer_id.as_deref().unwrap_or_default(),
+        owner_id.as_deref(),
+    )
+    .await?;
+    crate::workspace::with_operation_account(
+        &account,
+        cmd_upload_file_owned(
+            path,
+            folder_id,
+            transfer_id,
+            protection_mode,
+            prompt_token,
+            protect_metadata,
+            video_upload_mode,
+            app_handle,
+            state,
+            bw_state,
+            net_config,
+            crypto_state,
+            db_pool,
+        ),
+    )
+    .await
+}
+
+#[cfg_attr(not(target_os = "android"), allow(unused_mut))]
+#[allow(clippy::too_many_arguments)] // Mirrors the Tauri endpoint inside its captured account scope.
+async fn cmd_upload_file_owned(
     mut path: String,
     folder_id: Option<i64>,
     transfer_id: Option<String>,
@@ -1696,6 +1712,13 @@ async fn cmd_upload_file_inner(
     crypto_state: State<'_, crate::crypto::state::CryptoState>,
     db_pool: State<'_, DbConnection>,
 ) -> Result<String, String> {
+    let transfer_account = capture_transfer_account(
+        &app_handle,
+        transfer_id.as_deref().unwrap_or_default(),
+        None,
+    )
+    .await?;
+
     let plaintext_size = tokio::fs::metadata(&path)
         .await
         .map_err(|e| e.to_string())?
@@ -1712,6 +1735,7 @@ async fn cmd_upload_file_inner(
                     .to_string(),
             );
         }
+        transfer_account.validate()?;
         return cmd_upload_file_encrypted(
             path,
             folder_id,
@@ -1740,7 +1764,7 @@ async fn cmd_upload_file_inner(
     // cannot strand a bandwidth reservation.
     let video_metadata =
         prepare_video_upload_metadata(&path, &file_name, video_upload_mode).await?;
-    bw_state.try_reserve_up(size)?;
+    let mut upload_reservation = BandwidthReservation::upload(bw_state.inner().clone(), size)?;
 
     let tid = transfer_id.unwrap_or_default();
 
@@ -1748,13 +1772,10 @@ async fn cmd_upload_file_inner(
     #[cfg(debug_assertions)]
     if client_opt.is_none() {
         log::info!("[MOCK] Uploaded file {} to {:?}", path, folder_id);
-        bw_state.release_up(size);
         return Ok("Mock upload successful".to_string());
     }
-    let client = client_opt.ok_or_else(|| {
-        bw_state.release_up(size);
-        "Client not connected".to_string()
-    })?;
+    let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
+    transfer_account.validate_client(&client).await?;
 
     // Emit start progress
     if !tid.is_empty() {
@@ -1771,10 +1792,7 @@ async fn cmd_upload_file_inner(
     }
 
     // Create progress-tracking reader
-    let (mut reader, file_size, bytes_counter) =
-        ProgressReader::new(&path).await.inspect_err(|_| {
-            bw_state.release_up(size);
-        })?;
+    let (mut reader, file_size, bytes_counter) = ProgressReader::new(&path).await?;
     // Spawn a progress reporter task that emits events every 250ms
     let cancelled = state.cancelled_transfers.clone();
     let progress_tid = tid.clone();
@@ -1857,7 +1875,7 @@ async fn cmd_upload_file_inner(
                     get_upload_cancellations().lock().unwrap().remove(&tid);
                 }
                 res.map_err(|e| {
-                    bw_state.release_up(size);
+                    if let Some(task) = &progress_task { task.abort(); }
                     format!("Task join error: {}", e)
                 })?
             }
@@ -1866,8 +1884,7 @@ async fn cmd_upload_file_inner(
                 upload_task.abort();
                 state.cancelled_transfers.write().await.remove(&tid);
                 if let Some(t) = progress_task { t.abort(); }
-                bw_state.release_up(size);
-                return Err("Transfer cancelled".to_string());
+                        return Err("Transfer cancelled".to_string());
             }
         }
     };
@@ -1901,8 +1918,10 @@ async fn cmd_upload_file_inner(
     let mut last_err = String::new();
 
     for attempt in 0..=max_retries {
+        transfer_account.validate()?;
         match client.send_message(&peer, message.clone()).await {
             Ok(sent) => {
+                upload_reservation.commit();
                 if !tid.is_empty() {
                     let _ = app_handle.emit(
                         "upload-progress",
@@ -1968,6 +1987,13 @@ async fn cmd_upload_file_encrypted(
     prompt_token: Option<u64>,
     protect_metadata: bool,
 ) -> Result<String, String> {
+    let transfer_account = capture_transfer_account(
+        &app_handle,
+        transfer_id.as_deref().unwrap_or_default(),
+        None,
+    )
+    .await?;
+
     use crate::crypto::envelope::length::calculate_ciphertext_length;
 
     let vault_wrapping_key = if protection_mode.needs_vault() {
@@ -2128,6 +2154,7 @@ async fn cmd_upload_file_encrypted(
         return Ok("Mock encrypted upload successful".to_string());
     }
     let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
+    transfer_account.validate_client(&client).await?;
 
     // Emit start progress (based on plaintext size for user familiarity)
     if !tid.is_empty() {
@@ -2267,6 +2294,7 @@ async fn cmd_upload_file_encrypted(
     let mut last_err = String::new();
 
     for attempt in 0..=max_retries {
+        transfer_account.validate()?;
         match client.send_message(&peer, message.clone()).await {
             Ok(_sent) => {
                 bandwidth_reservation.commit();
@@ -2370,6 +2398,7 @@ pub async fn initiate_upload(
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
     crypto_state: State<'_, crate::crypto::state::CryptoState>,
     db_pool: State<'_, DbConnection>,
+    owner_id: Option<String>,
 ) -> Result<String, String> {
     crate::upload_service::start_foreground_service();
     cmd_upload_file(
@@ -2386,8 +2415,47 @@ pub async fn initiate_upload(
         net_config,
         crypto_state,
         db_pool,
+        owner_id,
     )
     .await
+}
+
+async fn capture_transfer_account(
+    app: &tauri::AppHandle,
+    transfer_id: &str,
+    expected: Option<&str>,
+) -> Result<crate::workspace::AccountGuard, String> {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let account = crate::transfer_engine::capture_job_account(app, transfer_id).await?;
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let account = {
+        let _ = transfer_id;
+        file_mutation_account(app, expected)?
+    };
+    if expected.is_some_and(|owner| owner != account.owner.to_string()) {
+        return Err("ACCOUNT_CHANGED: The transfer belongs to a different account".into());
+    }
+    account.validate()?;
+    Ok(account)
+}
+
+fn file_mutation_account(
+    app: &tauri::AppHandle,
+    expected: Option<&str>,
+) -> Result<crate::workspace::AccountGuard, String> {
+    if let Some(account) = crate::workspace::operation_account()? {
+        if expected.is_some_and(|owner| owner != account.owner.to_string()) {
+            return Err(
+                "ACCOUNT_CHANGED: The file operation belongs to a different account".into(),
+            );
+        }
+        return Ok(account);
+    }
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    crate::workspace::AccountGuard::open(&root, expected)
 }
 
 #[tauri::command]
@@ -2396,47 +2464,43 @@ pub async fn cmd_rename_file(
     folder_id: Option<i64>,
     new_name: String,
     state: State<'_, TelegramState>,
-    db_pool: State<'_, DbConnection>,
+    _db_pool: State<'_, DbConnection>,
+    app: tauri::AppHandle,
+    owner_id: Option<String>,
 ) -> Result<bool, String> {
-    let folder_key = folder_id
-        .map(|id| id.to_string())
-        .unwrap_or_else(|| "home".to_string());
-    let lookup_folder_key = folder_key.clone();
-    let encrypted = crate::db::with_connection(db_pool.inner().clone(), move |connection| {
-        let mut statement = connection
-            .prepare("SELECT 1 FROM encrypted_files WHERE folder_key = ? AND message_id = ? AND record_state = 'active'")
-            .map_err(|error| error.to_string())?;
-        statement.bind((1, lookup_folder_key.as_str())).map_err(|error| error.to_string())?;
-        statement.bind((2, i64::from(message_id))).map_err(|error| error.to_string())?;
-        Ok(matches!(statement.next(), Ok(sqlite::State::Row)))
-    }).await?;
-    if encrypted {
-        return Err("[ENCRYPTED_RENAME_UNAVAILABLE] Renaming encrypted files requires authenticated metadata rewrapping and is not yet available".to_string());
-    }
-    let client_opt = { state.client.lock().await.clone() };
-    #[cfg(debug_assertions)]
-    if client_opt.is_none() {
-        log::info!("[MOCK] Renamed message {} to {}", message_id, new_name);
-        return Ok(true);
-    }
-    let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
-
+    let account = file_mutation_account(&app, owner_id.as_deref())?;
+    let client = state
+        .client
+        .lock()
+        .await
+        .clone()
+        .ok_or("Client not connected")?;
+    account.validate_client(&client).await?;
     let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
-
-    // Verify the message exists before attempting to edit it.
-    // This avoids a cryptic MESSAGE_ID_INVALID RPC error when the message
-    // was moved (forwarded → new ID) or deleted since the file list was loaded.
+    account.validate()?;
     let messages = client
         .get_messages_by_id(&peer, &[message_id])
         .await
-        .map_err(|e| format!("Failed to fetch message for rename: {}", e))?;
-    if messages.iter().flatten().next().is_none() {
-        return Err(format!(
-            "Message {} not found in folder {:?}. The file may have been moved or deleted. Please refresh the folder.",
-            message_id, folder_id
-        ));
+        .map_err(|error| error.to_string())?;
+    let message = messages
+        .first()
+        .and_then(Option::as_ref)
+        .ok_or("The file was not found; refresh the folder")?;
+    if let Some(media) = message.media() {
+        if resolve_remote_envelope(
+            &account,
+            &client,
+            folder_id,
+            message_id,
+            &media,
+            message.text(),
+        )
+        .await?
+        .is_some()
+        {
+            return Err("[ENCRYPTED_RENAME_UNAVAILABLE] Renaming encrypted files requires authenticated metadata rewrapping and is not yet available".into());
+        }
     }
-
     let input_peer = match &peer {
         Peer::User(u) => {
             let (id, access_hash) = match &u.raw {
@@ -2455,6 +2519,7 @@ pub async fn cmd_rename_file(
         _ => return Err("Unsupported peer type".to_string()),
     };
 
+    account.validate()?;
     client
         .invoke(&tl::functions::messages::EditMessage {
             peer: input_peer,
@@ -2472,28 +2537,19 @@ pub async fn cmd_rename_file(
         .await
         .map_err(|e| format!("Failed to rename file: {}", e))?;
 
-    let inventory_name = new_name.clone();
-    if let Err(error) = crate::db::with_connection(db_pool.inner().clone(), move |connection| {
-        let mut inventory = connection
-            .prepare("UPDATE file_inventory SET file_name = ?, updated_at = ? WHERE folder_key = ? AND message_id = ?")
-            .map_err(|error| error.to_string())?;
-        inventory.bind((1, inventory_name.as_str())).map_err(|error| error.to_string())?;
-        inventory.bind((2, chrono::Utc::now().timestamp())).map_err(|error| error.to_string())?;
-        inventory.bind((3, folder_key.as_str())).map_err(|error| error.to_string())?;
-        inventory.bind((4, i64::from(message_id))).map_err(|error| error.to_string())?;
-        inventory.next().map_err(|error| error.to_string())?;
-        let mut activity = connection
-            .prepare("UPDATE file_activity SET file_name = ? WHERE folder_key = ? AND message_id = ?")
-            .map_err(|error| error.to_string())?;
-        activity.bind((1, inventory_name.as_str())).map_err(|error| error.to_string())?;
-        activity.bind((2, folder_key.as_str())).map_err(|error| error.to_string())?;
-        activity.bind((3, i64::from(message_id))).map_err(|error| error.to_string())?;
-        activity.next().map_err(|error| error.to_string())?;
-        Ok(())
-    }).await {
-        log::warn!("Remote rename succeeded but the local inventory update failed: {error}");
+    if let Err(error) = crate::workspace::remote_changes::record(
+        &account,
+        vec![crate::workspace::remote_changes::Change::Rename {
+            folder: folder_id,
+            message: message_id,
+            name: new_name,
+        }],
+    )
+    .await
+    {
+        log::warn!("Remote rename succeeded but its account cache could not be updated: {error}");
     }
-
+    account.validate()?;
     Ok(true)
 }
 
@@ -2502,86 +2558,53 @@ pub async fn cmd_delete_file(
     message_id: i32,
     folder_id: Option<i64>,
     state: State<'_, TelegramState>,
-    db_pool: State<'_, DbConnection>,
+    _db_pool: State<'_, DbConnection>,
+    app: tauri::AppHandle,
+    owner_id: Option<String>,
 ) -> Result<bool, String> {
-    let client_opt = { state.client.lock().await.clone() };
-    #[cfg(debug_assertions)]
-    if client_opt.is_none() {
-        log::info!(
-            "[MOCK] Deleted message {} from folder {:?}",
-            message_id,
-            folder_id
-        );
-        return Ok(true);
-    }
-    let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
-
+    let account = file_mutation_account(&app, owner_id.as_deref())?;
+    let client = state
+        .client
+        .lock()
+        .await
+        .clone()
+        .ok_or("Client not connected")?;
+    account.validate_client(&client).await?;
     let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
-
-    // Verify the message exists before attempting to delete it.
-    // This avoids a cryptic MESSAGE_ID_INVALID RPC error when the message
-    // was already moved or deleted since the file list was loaded.
+    account.validate()?;
     let messages = client
         .get_messages_by_id(&peer, &[message_id])
         .await
-        .map_err(|e| format!("Failed to fetch message for delete: {}", e))?;
+        .map_err(|error| error.to_string())?;
     if messages.iter().flatten().next().is_none() {
-        return Err(format!(
-            "Message {} not found in folder {:?}. The file may have already been moved or deleted. Please refresh the folder.",
-            message_id, folder_id
-        ));
+        return Err("The file was not found; refresh the folder".into());
     }
-
+    account.validate()?;
     client
         .delete_messages(&peer, &[message_id])
         .await
-        .map_err(|e| e.to_string())?;
-    let folder_key = folder_id
-        .map(|id| id.to_string())
-        .unwrap_or_else(|| "home".to_string());
-    let cleanup = crate::db::with_connection(db_pool.inner().clone(), move |connection| {
-        connection
-            .execute("BEGIN IMMEDIATE")
-            .map_err(|error| error.to_string())?;
-        let cleanup = (|| {
-            for table in ["encrypted_files", "file_inventory", "file_activity"] {
-                let mut statement = connection
-                    .prepare(format!(
-                        "DELETE FROM {table} WHERE folder_key = ? AND message_id = ?"
-                    ))
-                    .map_err(|error| error.to_string())?;
-                statement
-                    .bind((1, folder_key.as_str()))
-                    .map_err(|error| error.to_string())?;
-                statement
-                    .bind((2, i64::from(message_id)))
-                    .map_err(|error| error.to_string())?;
-                statement.next().map_err(|error| error.to_string())?;
-            }
-            Ok::<(), String>(())
-        })();
-        match cleanup {
-            Ok(()) => connection
-                .execute("COMMIT")
-                .map_err(|error| error.to_string()),
-            Err(error) => {
-                let _ = connection.execute("ROLLBACK");
-                Err(error)
-            }
-        }
-    })
-    .await;
-    if let Err(error) = cleanup {
-        log::error!(
-            "Remote delete succeeded but local metadata cleanup failed: {}",
-            error
-        );
+        .map_err(|error| error.to_string())?;
+    if let Err(error) = crate::workspace::remote_changes::record(
+        &account,
+        vec![crate::workspace::remote_changes::Change::Delete {
+            folder: folder_id,
+            message: message_id,
+        }],
+    )
+    .await
+    {
+        log::warn!("Remote delete succeeded but its account cache could not be updated: {error}");
     }
+    account.validate()?;
     Ok(true)
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct DownloadFileRequest {
+    #[serde(default)]
+    pub owner_id: Option<String>,
+    #[serde(default)]
+    pub collision_policy: DownloadCollisionPolicy,
     pub message_id: i32,
     pub save_path: String,
     pub folder_id: Option<i64>,
@@ -2599,11 +2622,51 @@ pub async fn cmd_download_file(
     crypto_state: State<'_, crate::crypto::state::CryptoState>,
     db_pool: State<'_, DbConnection>,
 ) -> Result<String, String> {
+    let account = capture_transfer_account(
+        &app_handle,
+        req.transfer_id.as_deref().unwrap_or_default(),
+        req.owner_id.as_deref(),
+    )
+    .await?;
+    crate::workspace::with_operation_account(
+        &account,
+        cmd_download_file_owned(
+            req,
+            app_handle,
+            state,
+            bw_state,
+            net_config,
+            crypto_state,
+            db_pool,
+        ),
+    )
+    .await
+}
+
+async fn cmd_download_file_owned(
+    req: DownloadFileRequest,
+    app_handle: tauri::AppHandle,
+    state: State<'_, TelegramState>,
+    bw_state: State<'_, Arc<BandwidthManager>>,
+    net_config: State<'_, std::sync::Arc<NetworkConfig>>,
+    crypto_state: State<'_, crate::crypto::state::CryptoState>,
+    db_pool: State<'_, DbConnection>,
+) -> Result<String, String> {
+    let transfer_account = capture_transfer_account(
+        &app_handle,
+        req.transfer_id.as_deref().unwrap_or_default(),
+        req.owner_id.as_deref(),
+    )
+    .await?;
+    let envelope_account = transfer_account.clone();
+    let publish_account = Some(transfer_account.clone());
+
     let tid = req.transfer_id.unwrap_or_default();
     let save_path = req.save_path;
     let folder_id = req.folder_id;
     let message_id = req.message_id;
     let prompt_token = req.prompt_token;
+    let collision_policy = req.collision_policy;
 
     #[cfg(target_os = "android")]
     let (actual_save_path, android_file_name) = {
@@ -2633,7 +2696,10 @@ pub async fn cmd_download_file(
         } else {
             clean_name
         };
-        let cache_path = cache_dir.join(&file_name).to_string_lossy().to_string();
+        let cache_path = cache_dir
+            .join(format!("{}.download", uuid::Uuid::new_v4()))
+            .to_string_lossy()
+            .to_string();
         log::info!(
             "Android download: save_path='{}', extracted filename='{}', cache='{}'",
             save_path,
@@ -2650,6 +2716,16 @@ pub async fn cmd_download_file(
     #[cfg(not(target_os = "android"))]
     let encrypted_android_file_name: Option<String> = None;
 
+    if let Some(skipped) = skip_existing_download(
+        std::path::PathBuf::from(&actual_save_path),
+        collision_policy,
+        publish_account.clone(),
+    )
+    .await?
+    {
+        return skipped.response();
+    }
+
     let client_opt = { state.client.lock().await.clone() };
     #[cfg(debug_assertions)]
     if client_opt.is_none() {
@@ -2659,52 +2735,50 @@ pub async fn cmd_download_file(
             folder_id,
             actual_save_path
         );
-        if let Err(e) = tokio::fs::write(&actual_save_path, b"Mock Content").await {
-            return Err(e.to_string());
+        let destination = std::path::PathBuf::from(&actual_save_path);
+        let partial = download_partial_path(&destination)?;
+        let mut file = create_private_partial_file(&partial)?;
+        let mut guard = PartialFileGuard::new(partial.clone());
+        std::io::Write::write_all(&mut file, b"Mock Content").map_err(|error| error.to_string())?;
+        file.sync_all().map_err(|error| error.to_string())?;
+        drop(file);
+        transfer_account.validate()?;
+        let publication =
+            publish_download_file(partial, destination, collision_policy, publish_account).await?;
+        if publication.outcome == DownloadOutcome::Saved {
+            guard.disarm();
         }
-        return Ok("Download successful".to_string());
+        return publication.response();
     }
     let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
+    transfer_account.validate_client(&client).await?;
 
-    // Check if this file is encrypted in the registry
-    let folder_key = folder_id
-        .map(|id| id.to_string())
-        .unwrap_or_else(|| "home".to_string());
-    let encrypted_mode = crate::db::with_connection(db_pool.inner().clone(), move |conn| {
-        let query = "SELECT protection_mode FROM encrypted_files WHERE folder_key = ? AND message_id = ? AND record_state = 'active'";
-        let mut stmt = conn.prepare(query).map_err(|e| e.to_string())?;
-        stmt.bind((1, folder_key.as_str())).map_err(|e| e.to_string())?;
-        stmt.bind((2, message_id as i64)).map_err(|e| e.to_string())?;
-        let mode = if matches!(stmt.next(), Ok(sqlite::State::Row)) {
-            Some(stmt.read::<String, _>(0).unwrap_or_else(|_| "vault".to_string()))
-        } else {
-            None
-        };
-        Ok(mode)
-    }).await?;
-
-    let appears_to_be_unindexed_encrypted = if encrypted_mode.is_none() {
-        let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
-        let messages = client
-            .get_messages_by_id(&peer, &[message_id])
-            .await
-            .map_err(|error| error.to_string())?;
-        messages
-            .into_iter()
-            .flatten()
-            .next()
-            .is_some_and(|message| {
-                let caption_matches = message.text() == "TDENC2";
-                let name_matches = matches!(
-                    message.media(),
-                    Some(Media::Document(document))
-                        if document.name().to_ascii_lowercase().ends_with(".tdenc")
-                );
-                caption_matches || name_matches
-            })
-    } else {
-        false
-    };
+    envelope_account.validate()?;
+    let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
+    envelope_account.validate()?;
+    let messages = client
+        .get_messages_by_id(&peer, &[message_id])
+        .await
+        .map_err(|e| e.to_string())?;
+    envelope_account.validate()?;
+    let msg = messages
+        .into_iter()
+        .flatten()
+        .next()
+        .ok_or_else(|| "Message not found".to_string())?;
+    let media = msg
+        .media()
+        .ok_or_else(|| "No media in message".to_string())?;
+    let encrypted_mode = resolve_remote_envelope(
+        &envelope_account,
+        &client,
+        folder_id,
+        message_id,
+        &media,
+        msg.text(),
+    )
+    .await?
+    .map(|record| record.protection_mode);
 
     if let Some(protection_mode) = encrypted_mode.as_deref() {
         if !crypto_state.get_features().read_enabled {
@@ -2716,6 +2790,7 @@ pub async fn cmd_download_file(
         if protection_mode == "vault" && crypto_state.is_locked() {
             return Err("[VAULT_LOCKED] Unlock the vault before downloading this file".to_string());
         }
+        transfer_account.validate()?;
         return cmd_download_encrypted_file(
             message_id,
             folder_id,
@@ -2730,49 +2805,10 @@ pub async fn cmd_download_file(
             client,
             prompt_token,
             encrypted_android_file_name,
+            collision_policy,
         )
         .await;
     }
-    if appears_to_be_unindexed_encrypted {
-        if !crypto_state.get_features().read_enabled {
-            return Err("[ENCRYPTION_BLOCKED] Encrypted reads are disabled".to_string());
-        }
-        return cmd_download_encrypted_file(
-            message_id,
-            folder_id,
-            actual_save_path,
-            tid,
-            app_handle,
-            state,
-            bw_state,
-            net_config,
-            crypto_state,
-            db_pool,
-            client,
-            prompt_token,
-            encrypted_android_file_name,
-        )
-        .await;
-    }
-
-    let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
-
-    // Use get_messages_by_id for efficient message lookup (same as server.rs)
-    let messages = client
-        .get_messages_by_id(&peer, &[message_id])
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let msg = messages
-        .into_iter()
-        .flatten()
-        .next()
-        .ok_or_else(|| "Message not found".to_string())?;
-
-    let media = msg
-        .media()
-        .ok_or_else(|| "No media in message".to_string())?;
-
     let declared_size = media_size(&media);
     let expected_file_size = (declared_size > 0).then_some(declared_size);
     let total_size = declared_size;
@@ -2926,8 +2962,17 @@ pub async fn cmd_download_file(
             ));
         }
     }
-    publish_download_file(partial_path.clone(), destination.clone()).await?;
-    partial_guard.disarm();
+    transfer_account.validate()?;
+    let publication = publish_download_file(
+        partial_path.clone(),
+        destination.clone(),
+        collision_policy,
+        publish_account,
+    )
+    .await?;
+    if publication.outcome == DownloadOutcome::Saved {
+        partial_guard.disarm();
+    }
     log::info!(
         "Download verified and published to {} ({} bytes)",
         actual_save_path,
@@ -2950,6 +2995,7 @@ pub async fn cmd_download_file(
 
     #[cfg(target_os = "android")]
     {
+        transfer_account.validate()?;
         // Copy from actual_save_path to public downloads via MediaStore JNI!
         // Use the already-decoded filename from the cache path computation above
         let file_name = &android_file_name;
@@ -3045,7 +3091,7 @@ pub async fn cmd_download_file(
 
     bandwidth_reservation.commit();
 
-    Ok("Download successful".to_string())
+    publication.response()
 }
 
 /// Download a TDENC2 file with bounded memory. Each record is authenticated
@@ -3065,7 +3111,12 @@ async fn cmd_download_encrypted_file(
     client: grammers_client::Client,
     prompt_token: Option<u64>,
     _android_file_name: Option<String>,
+    collision_policy: DownloadCollisionPolicy,
 ) -> Result<String, String> {
+    let transfer_account = capture_transfer_account(&app_handle, &tid, None).await?;
+    transfer_account.validate_client(&client).await?;
+    let publish_account = Some(transfer_account.clone());
+
     let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
     let messages = client
         .get_messages_by_id(&peer, &[message_id])
@@ -3138,7 +3189,7 @@ async fn cmd_download_encrypted_file(
         destination_name,
         random::random_u64()
     ));
-    let mut partial_guard = PartialFileGuard::new(part_path.clone());
+    let mut partial_guard: Option<PartialFileGuard> = None;
     let mut output_file: Option<tokio::fs::File> = None;
     let mut plaintext_written = 0u64;
     let mut decoded_metadata: Option<DecodedProtectedFileMetadata> = None;
@@ -3246,6 +3297,7 @@ async fn cmd_download_encrypted_file(
                             create_private_partial_file(&part_path).map_err(|error| {
                                 format!("Failed to create secure partial file: {}", error)
                             })?;
+                        partial_guard = Some(PartialFileGuard::new(part_path.clone()));
                         output_file = Some(tokio::fs::File::from_std(std_file));
                         decryptor = Some(reader);
                     }
@@ -3320,8 +3372,19 @@ async fn cmd_download_encrypted_file(
         .await
         .map_err(|error| format!("Failed to sync verified file: {}", error))?;
     drop(file);
-    publish_download_file(part_path.clone(), destination).await?;
-    partial_guard.disarm();
+    transfer_account.validate()?;
+    let publication = publish_download_file(
+        part_path.clone(),
+        destination,
+        collision_policy,
+        publish_account,
+    )
+    .await?;
+    if publication.outcome == DownloadOutcome::Saved {
+        if let Some(guard) = partial_guard.as_mut() {
+            guard.disarm();
+        }
+    }
     bandwidth_reservation.commit();
     if crypto_state.record_activity() {
         let _ = app_handle.emit("vault-locked", "auto_lock");
@@ -3346,6 +3409,7 @@ async fn cmd_download_encrypted_file(
         .unwrap_or("application/octet-stream");
     #[cfg(target_os = "android")]
     if let Some(file_name) = _android_file_name.as_deref() {
+        transfer_account.validate()?;
         let publish_name = decoded_metadata
             .as_ref()
             .map(|metadata| metadata.original_name.as_str())
@@ -3372,7 +3436,19 @@ async fn cmd_download_encrypted_file(
         plaintext_written,
         protected_mime
     );
-    Ok("Encrypted download successful".to_string())
+    publication.response()
+}
+
+/// A successful forward RPC can still contain failed individual messages.
+/// Source deletion is safe only after every requested copy has an identifier.
+pub(crate) fn verify_forwarded_messages<T>(
+    message_ids: &[i32],
+    forwarded: &[Option<T>],
+) -> Result<(), String> {
+    if forwarded.len() != message_ids.len() || forwarded.iter().any(Option::is_none) {
+        return Err("Some files were not copied; the originals were kept".to_string());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -3381,126 +3457,381 @@ pub async fn cmd_move_files(
     source_folder_id: Option<i64>,
     target_folder_id: Option<i64>,
     state: State<'_, TelegramState>,
-    db_pool: State<'_, DbConnection>,
+    _db_pool: State<'_, DbConnection>,
+    app: tauri::AppHandle,
+    owner_id: Option<String>,
 ) -> Result<bool, String> {
+    let account = file_mutation_account(&app, owner_id.as_deref())?;
     if source_folder_id == target_folder_id {
         return Ok(true);
     }
-    let client_opt = { state.client.lock().await.clone() };
-    #[cfg(debug_assertions)]
-    if client_opt.is_none() {
-        log::info!(
-            "[MOCK] Moved msgs {:?} from {:?} to {:?}",
-            message_ids,
-            source_folder_id,
-            target_folder_id
-        );
-        return Ok(true);
-    }
-    let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
-
+    let client = state
+        .client
+        .lock()
+        .await
+        .clone()
+        .ok_or("Client not connected")?;
+    account.validate_client(&client).await?;
     let source_peer = resolve_peer(&client, source_folder_id, &state.peer_cache).await?;
     let target_peer = resolve_peer(&client, target_folder_id, &state.peer_cache).await?;
-
-    let forwarded = match client
+    account.validate()?;
+    let forwarded = client
         .forward_messages(&target_peer, &message_ids, &source_peer)
         .await
-    {
-        Ok(messages) => messages,
-        Err(e) => return Err(format!("Forward failed: {}", e)),
-    };
-
-    match client.delete_messages(&source_peer, &message_ids).await {
-        Ok(_) => {}
-        Err(e) => return Err(format!("Delete original failed: {}", e)),
+        .map_err(|error| format!("Forward failed: {error}"))?;
+    verify_forwarded_messages(&message_ids, &forwarded)?;
+    // An account change after forwarding leaves the verified copies and original
+    // files intact. It can never authorize deletion through another session.
+    account.validate()?;
+    client
+        .delete_messages(&source_peer, &message_ids)
+        .await
+        .map_err(|error| format!("Delete original failed: {error}"))?;
+    let changes = message_ids
+        .iter()
+        .zip(forwarded.iter())
+        .filter_map(|(old, message)| {
+            message
+                .as_ref()
+                .map(|message| crate::workspace::remote_changes::Change::Move {
+                    source: source_folder_id,
+                    message: *old,
+                    target: target_folder_id,
+                    new_message: message.id(),
+                })
+        })
+        .collect();
+    if let Err(error) = crate::workspace::remote_changes::record(&account, changes).await {
+        log::warn!("Remote move succeeded but its account cache could not be updated: {error}");
     }
-
-    if forwarded.len() == message_ids.len() {
-        let source_key = source_folder_id
-            .map(|id| id.to_string())
-            .unwrap_or_else(|| "home".to_string());
-        let target_key = target_folder_id
-            .map(|id| id.to_string())
-            .unwrap_or_else(|| "home".to_string());
-        let relocations = message_ids
-            .iter()
-            .zip(forwarded.iter())
-            .map(|(old_id, new_message)| {
-                new_message.as_ref().map(|message| (*old_id, message.id()))
-            })
-            .collect::<Option<Vec<_>>>();
-        if let Some(relocations) = relocations {
-            let inventory_relocations = relocations.clone();
-            let registry_result = crate::db::with_connection(db_pool.inner().clone(), move |connection| {
-                connection.execute("BEGIN IMMEDIATE").map_err(|error| error.to_string())?;
-                let relocation = (|| {
-                for (old_id, new_message_id) in relocations {
-                    let update = connection
-                        .prepare("UPDATE encrypted_files SET folder_key = ?, message_id = ?, reconciliation_state = 'ok' WHERE folder_key = ? AND message_id = ?")
-                        .and_then(|mut statement| {
-                            statement.bind((1, target_key.as_str()))?;
-                            statement.bind((2, i64::from(new_message_id)))?;
-                            statement.bind((3, source_key.as_str()))?;
-                            statement.bind((4, i64::from(old_id)))?;
-                            statement.next().map(|_| ())
-                        });
-                    update.map_err(|error| error.to_string())?;
-                }
-                for (old_id, new_message_id) in inventory_relocations {
-                    let update = connection
-                        .prepare("UPDATE file_inventory SET folder_key = ?, folder_id = ?, message_id = ?, updated_at = ? WHERE folder_key = ? AND message_id = ?")
-                        .and_then(|mut statement| {
-                            statement.bind((1, target_key.as_str()))?;
-                            statement.bind((2, target_folder_id))?;
-                            statement.bind((3, i64::from(new_message_id)))?;
-                            statement.bind((4, chrono::Utc::now().timestamp()))?;
-                            statement.bind((5, source_key.as_str()))?;
-                            statement.bind((6, i64::from(old_id)))?;
-                            statement.next().map(|_| ())
-                        });
-                    update.map_err(|error| error.to_string())?;
-                }
-                Ok::<(), String>(())
-                })();
-                match relocation {
-                    Ok(()) => connection.execute("COMMIT").map_err(|error| error.to_string()),
-                    Err(error) => {
-                        let _ = connection.execute("ROLLBACK");
-                        Err(error)
-                    }
-                }
-            }).await;
-            if let Err(error) = registry_result {
-                log::error!(
-                    "Remote move succeeded but local metadata relocation failed: {}",
-                    error
-                );
-            }
-        } else {
-            log::error!(
-                "Remote move did not return a message identifier; registry reconciliation required"
-            );
-        }
-    } else {
-        log::error!(
-            "Remote move returned {} forwarded messages for {} source messages; registry reconciliation required",
-            forwarded.len(),
-            message_ids.len()
-        );
-    }
-
+    account.validate()?;
     Ok(true)
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderLoadResult {
+    pub owner_id: String,
+    pub folder_id: Option<i64>,
+    pub request_id: String,
+    pub complete: bool,
+    pub files: Vec<FileMetadata>,
+}
+
+impl FolderLoadResult {
+    fn incomplete(
+        account: &crate::workspace::AccountGuard,
+        folder_id: Option<i64>,
+        request_id: &str,
+    ) -> Self {
+        Self {
+            owner_id: account.owner.to_string(),
+            folder_id,
+            request_id: request_id.into(),
+            complete: false,
+            files: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FolderLoadPayload {
+    owner_id: String,
+    folder_id: Option<i64>,
+    request_id: String,
+    files: Vec<FileMetadata>,
+}
+
+async fn finalize_folder_scan(
+    account: &crate::workspace::AccountGuard,
+    folder_id: Option<i64>,
+    request_id: &str,
+    files: Vec<FileMetadata>,
+    complete: bool,
+    database: DbConnection,
+) -> Result<FolderLoadResult, String> {
+    account.validate()?;
+    if !complete {
+        return Ok(FolderLoadResult::incomplete(account, folder_id, request_id));
+    }
+    // A terminal success certifies both inventories. Never prune the account
+    // catalog after a failed legacy inventory transaction.
+    crate::commands::file_inventory::complete_inventory_scan(
+        database,
+        crate::commands::file_inventory::folder_key(folder_id),
+        request_id.into(),
+    )
+    .await?;
+    crate::workspace::complete_scan(account, folder_id, request_id).await?;
+    account.validate()?;
+    Ok(FolderLoadResult {
+        owner_id: account.owner.to_string(),
+        folder_id,
+        request_id: request_id.into(),
+        complete: true,
+        files,
+    })
+}
+
+async fn publish_folder_chunk(
+    app: &tauri::AppHandle,
+    account: &crate::workspace::AccountGuard,
+    peer: &Peer,
+    folder_id: Option<i64>,
+    request_id: &str,
+    files: Vec<FileMetadata>,
+    database: DbConnection,
+) -> Result<Vec<FileMetadata>, String> {
+    account.validate()?;
+    crate::workspace::record_chunk(account, &files, peer, request_id).await?;
+    crate::commands::file_inventory::upsert_inventory_chunk(
+        database,
+        crate::commands::file_inventory::folder_key(folder_id),
+        request_id.into(),
+        files.clone(),
+    )
+    .await?;
+    account.validate()?;
+    let _ = app.emit(
+        "folder-load-chunk",
+        FolderLoadPayload {
+            owner_id: account.owner.to_string(),
+            folder_id,
+            request_id: request_id.into(),
+            files: files.clone(),
+        },
+    );
+    Ok(files)
+}
+
+#[cfg(test)]
+mod folder_listing_tests {
+    use super::*;
+    use crate::workspace::{store::Store, AccountGuard};
+    use grammers_session::{storages::SqliteSession, types::PeerInfo, Session};
+    use std::path::PathBuf;
+
+    fn file(id: i64, folder_id: Option<i64>) -> FileMetadata {
+        FileMetadata {
+            id,
+            folder_id,
+            name: format!("File{id}.txt"),
+            size: 4,
+            mime_type: Some("text/plain".into()),
+            file_ext: Some("txt".into()),
+            created_at: "2026-09-10T00:00:00Z".into(),
+            icon_type: "file".into(),
+            encryption_state: "plain".into(),
+            is_favorite: false,
+            is_pinned: false,
+        }
+    }
+    struct Fixture {
+        root: PathBuf,
+        account: AccountGuard,
+        database: DbConnection,
+    }
+    impl Fixture {
+        fn new() -> Self {
+            let root =
+                std::env::temp_dir().join(format!("folder-refresh-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&root).unwrap();
+            let session = SqliteSession::open(root.join("telegram.session")).unwrap();
+            session.cache_peer(&PeerInfo::User {
+                id: 100,
+                auth: None,
+                bot: Some(false),
+                is_self: Some(true),
+            });
+            drop(session);
+            let store = Store::open(&root, 100).unwrap();
+            store
+                .remember_files(&[file(1, None), file(2, None)], "Saved Messages", "old")
+                .unwrap();
+            store
+                .remember_files(&[file(2, None)], "Saved Messages", "current")
+                .unwrap();
+            store
+                .remember_files(&[file(1, Some(9))], "Other folder", "old")
+                .unwrap();
+            Store::open(&root, 200)
+                .unwrap()
+                .remember_files(&[file(1, None)], "Other owner", "old")
+                .unwrap();
+            let connection = sqlite::open(":memory:").unwrap();
+            connection.execute("CREATE TABLE file_inventory (folder_key TEXT, message_id INTEGER, last_seen_scan TEXT);
+                CREATE TABLE file_inventory_state (folder_key TEXT PRIMARY KEY, completed_at INTEGER, file_count INTEGER);
+                INSERT INTO file_inventory VALUES ('home',1,'old'),('home',2,'current'),('9',1,'old');").unwrap();
+            Self {
+                account: AccountGuard::open(&root, Some("100")).unwrap(),
+                root,
+                database: Arc::new(Mutex::new(connection)),
+            }
+        }
+        fn ids(&self, owner: i64, folder: Option<i64>) -> Vec<i64> {
+            Store::open(&self.root, owner)
+                .unwrap()
+                .folder_files(folder)
+                .unwrap()
+                .into_iter()
+                .map(|file| file.id)
+                .collect()
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[tokio::test]
+    async fn complete_snapshot_prunes_absent_files_only_in_its_account_and_folder() {
+        let fixture = Fixture::new();
+        assert_eq!(fixture.ids(100, None), vec![2, 1]);
+        let response = finalize_folder_scan(
+            &fixture.account,
+            None,
+            "current",
+            vec![file(2, None)],
+            true,
+            fixture.database.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(response.complete);
+        assert_eq!(
+            response
+                .files
+                .iter()
+                .map(|file| file.id)
+                .collect::<Vec<_>>(),
+            vec![2]
+        );
+        let wire = serde_json::to_value(response).unwrap();
+        assert_eq!(wire["ownerId"], "100");
+        assert_eq!(wire["requestId"], "current");
+        assert!(wire["folderId"].is_null());
+        assert_eq!(fixture.ids(100, None), vec![2]);
+        assert_eq!(fixture.ids(100, Some(9)), vec![1]);
+        assert_eq!(fixture.ids(200, None), vec![1]);
+    }
+
+    #[tokio::test]
+    async fn capped_repeated_or_superseded_scans_cannot_certify_a_partial_snapshot() {
+        let fixture = Fixture::new();
+        for request in ["capped", "repeated", "superseded"] {
+            let response = finalize_folder_scan(
+                &fixture.account,
+                None,
+                request,
+                vec![file(2, None)],
+                false,
+                fixture.database.clone(),
+            )
+            .await
+            .unwrap();
+            assert!(!response.complete);
+            assert!(response.files.is_empty());
+            assert_eq!(fixture.ids(100, None), vec![2, 1]);
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_inventory_finalization_preserves_the_owned_cached_snapshot() {
+        let fixture = Fixture::new();
+        crate::db::with_connection(fixture.database.clone(), |connection| {
+            connection
+                .execute("DROP TABLE file_inventory_state")
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap();
+        assert!(finalize_folder_scan(
+            &fixture.account,
+            None,
+            "current",
+            vec![file(2, None)],
+            true,
+            fixture.database.clone()
+        )
+        .await
+        .is_err());
+        assert_eq!(fixture.ids(100, None), vec![2, 1]);
+        let count = crate::db::with_connection(fixture.database.clone(), |connection| {
+            let mut statement = connection
+                .prepare("SELECT COUNT(*) FROM file_inventory WHERE folder_key='home'")
+                .map_err(|e| e.to_string())?;
+            statement.next().map_err(|e| e.to_string())?;
+            statement.read::<i64, _>(0).map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
+    async fn failed_account_scan_marker_rolls_back_owned_pruning() {
+        let fixture = Fixture::new();
+        Store::open(&fixture.root, 100).unwrap().db.execute(
+            "CREATE TRIGGER fail_scan_marker BEFORE INSERT ON workspace_records BEGIN SELECT RAISE(FAIL,'disk unavailable'); END;"
+        ).unwrap();
+        assert!(finalize_folder_scan(
+            &fixture.account,
+            None,
+            "current",
+            vec![file(2, None)],
+            true,
+            fixture.database.clone()
+        )
+        .await
+        .is_err());
+        assert_eq!(fixture.ids(100, None), vec![2, 1]);
+    }
+
+    #[tokio::test]
+    async fn a_changed_account_cannot_finalize_an_old_scan() {
+        let fixture = Fixture::new();
+        std::fs::remove_file(fixture.root.join("telegram.session")).unwrap();
+        let session = SqliteSession::open(fixture.root.join("telegram.session")).unwrap();
+        session.cache_peer(&PeerInfo::User {
+            id: 200,
+            auth: None,
+            bot: Some(false),
+            is_self: Some(true),
+        });
+        drop(session);
+        assert!(finalize_folder_scan(
+            &fixture.account,
+            None,
+            "current",
+            vec![],
+            true,
+            fixture.database.clone()
+        )
+        .await
+        .unwrap_err()
+        .contains("ACCOUNT_CHANGED"));
+        assert_eq!(fixture.ids(100, None), vec![2, 1]);
+        assert_eq!(fixture.ids(200, None), vec![1]);
+    }
 }
 
 #[tauri::command]
 pub async fn cmd_get_files(
     folder_id: Option<i64>,
     request_id: Option<String>,
+    owner_id: Option<String>,
     app_handle: tauri::AppHandle,
     state: State<'_, TelegramState>,
     db_pool: State<'_, DbConnection>,
     crypto_state: State<'_, crate::crypto::state::CryptoState>,
-) -> Result<Vec<FileMetadata>, String> {
+) -> Result<FolderLoadResult, String> {
+    let root = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    let workspace_account = crate::workspace::AccountGuard::open(&root, owner_id.as_deref())?;
     let scan_started_at = std::time::Instant::now();
     let request_id = match request_id {
         Some(request_id) if !request_id.trim().is_empty() && request_id.len() <= 128 => request_id,
@@ -3511,451 +3842,375 @@ pub async fn cmd_get_files(
         ),
     };
     let inventory_key = crate::commands::file_inventory::folder_key(folder_id);
+    let registration_key = format!("{}:{inventory_key}", workspace_account.owner);
     let active_file_loads = state.active_file_loads.clone();
     active_file_loads
         .write()
         .await
-        .insert(inventory_key.clone(), request_id.clone());
+        .insert(registration_key.clone(), request_id.clone());
 
-    let client_opt = { state.client.lock().await.clone() };
-    #[cfg(debug_assertions)]
-    if client_opt.is_none() {
-        log::info!("[MOCK] Returning mock files for folder {:?}", folder_id);
-        let mut active = active_file_loads.write().await;
-        if active
-            .get(&inventory_key)
-            .is_some_and(|current| current == &request_id)
-        {
-            active.remove(&inventory_key);
-        }
-        return Ok(Vec::new()); // No mock files for now
-    }
-    let client = match client_opt {
-        Some(client) => client,
-        None => {
-            let mut active = active_file_loads.write().await;
-            if active
-                .get(&inventory_key)
-                .is_some_and(|current| current == &request_id)
-            {
-                active.remove(&inventory_key);
+    let result = async {
+        let client_opt = { state.client.lock().await.clone() };
+        workspace_account.validate()?;
+        let client = match client_opt {
+            Some(client) => client,
+            None => {
+                let mut active = active_file_loads.write().await;
+                if active
+                    .get(&registration_key)
+                    .is_some_and(|current| current == &request_id)
+                {
+                    active.remove(&registration_key);
+                }
+                return Err("Client not connected".to_string());
             }
-            return Err("Client not connected".to_string());
-        }
-    };
+        };
 
-    // Pre-load encrypted file registry for this folder
-    let folder_key = inventory_key.clone();
-    let local_metadata = crate::db::with_connection(db_pool.inner().clone(), move |conn| {
-        let mut encrypted_map = HashMap::new();
-        let query = "SELECT message_id, remote_name, envelope_version, protection_mode, metadata_protected, header_blob, plaintext_size FROM encrypted_files WHERE folder_key = ? AND record_state = 'active'";
-        if let Ok(mut stmt) = conn.prepare(query) {
-            let _ = stmt.bind((1, folder_key.as_str()));
-            while let Ok(sqlite::State::Row) = stmt.next() {
-                let msg_id: i64 = stmt.read::<i64, _>(0).unwrap_or(0);
-                let remote_name: String = stmt.read::<String, _>(1).unwrap_or_default();
-                let envelope_version = stmt.read::<i64, _>(2).unwrap_or(0) as u16;
-                let protection_mode = stmt.read::<String, _>(3).unwrap_or_else(|_| "vault".to_string());
-                let metadata_protected = stmt.read::<i64, _>(4).unwrap_or(1) != 0;
-                let header_blob = stmt.read::<Option<Vec<u8>>, _>(5).ok().flatten();
-                let plaintext_size = stmt
-                    .read::<Option<i64>, _>(6)
-                    .ok()
-                    .flatten()
-                    .and_then(|value| u64::try_from(value).ok());
-                encrypted_map.insert(msg_id as i32, EncryptedListInfo {
-                    remote_name,
-                    envelope_version,
-                    protection_mode,
-                    metadata_protected,
-                    header_blob,
-                    plaintext_size,
-                });
-            }
-        }
-        let mut activity_flags = HashMap::new();
-        if let Ok(mut statement) = conn.prepare(
-            "SELECT message_id, is_favorite, is_pinned FROM file_activity WHERE folder_key = ?",
-        ) {
-            let _ = statement.bind((1, folder_key.as_str()));
-            while let Ok(sqlite::State::Row) = statement.next() {
-                let message_id = statement.read::<i64, _>(0).unwrap_or(0) as i32;
-                let favorite = statement.read::<i64, _>(1).unwrap_or(0) != 0;
-                let pinned = statement.read::<i64, _>(2).unwrap_or(0) != 0;
-                activity_flags.insert(message_id, (favorite, pinned));
-            }
-        }
-        Ok((encrypted_map, activity_flags))
-    }).await;
-    let (encrypted_map, activity_flags): (
-        HashMap<i32, EncryptedListInfo>,
-        HashMap<i32, (bool, bool)>,
-    ) = match local_metadata {
-        Ok(metadata) => metadata,
-        Err(error) => {
-            let mut active = active_file_loads.write().await;
-            if active
-                .get(&inventory_key)
-                .is_some_and(|current| current == &request_id)
-            {
-                active.remove(&inventory_key);
-            }
-            return Err(error);
-        }
-    };
+        workspace_account.validate_client(&client).await?;
+        let activity_flags =
+            crate::commands::file_activity::folder_flags(&workspace_account, folder_id).await?;
 
-    let peer = match resolve_peer(&client, folder_id, &state.peer_cache).await {
-        Ok(peer) => peer,
-        Err(error) => {
-            let mut active = active_file_loads.write().await;
-            if active
-                .get(&inventory_key)
-                .is_some_and(|current| current == &request_id)
-            {
-                active.remove(&inventory_key);
-            }
-            return Err(error);
-        }
-    };
-    let vault_key = crypto_state.get_current_wrapping_key().ok();
-
-    let mut msgs = client.iter_messages(&peer);
-    let mut last_msg_id: Option<i32> = None;
-    let mut file_count = 0usize;
-    let mut scan_complete = true;
-    const MAX_FILES_LIMIT: usize = 50000; // Hard safety cap to prevent infinite loops (50,000 files)
-    const FILE_CHUNK_SIZE: usize = 50;
-    const FILE_CHUNK_MAX_LATENCY: std::time::Duration = std::time::Duration::from_millis(400);
-
-    let mut chunk = Vec::new();
-    let mut last_chunk_emitted = std::time::Instant::now();
-
-    loop {
-        let next_message = match msgs.next().await {
-            Ok(message) => message,
+        let peer = match resolve_peer(&client, folder_id, &state.peer_cache).await {
+            Ok(peer) => peer,
             Err(error) => {
                 let mut active = active_file_loads.write().await;
                 if active
-                    .get(&inventory_key)
+                    .get(&registration_key)
                     .is_some_and(|current| current == &request_id)
                 {
-                    active.remove(&inventory_key);
+                    active.remove(&registration_key);
                 }
-                return Err(error.to_string());
+                return Err(error);
             }
         };
-        let Some(msg) = next_message else {
-            break;
-        };
+        let vault_key = crypto_state.get_current_wrapping_key().ok();
+        workspace_account.validate()?;
 
-        if active_file_loads
-            .read()
-            .await
-            .get(&inventory_key)
-            .is_none_or(|current| current != &request_id)
-        {
-            log::info!(
-                "Cancelled stale file scan request {} for folder {} after {:?}",
-                request_id,
-                inventory_key,
-                scan_started_at.elapsed()
-            );
-            return Ok(Vec::new());
-        }
+        let mut msgs = client.iter_messages(&peer);
+        let mut last_msg_id: Option<i32> = None;
+        let mut file_count = 0usize;
+        let mut scan_complete = true;
+        const MAX_FILES_LIMIT: usize = 50000; // Hard safety cap to prevent infinite loops (50,000 files)
+        const FILE_CHUNK_SIZE: usize = 50;
+        const FILE_CHUNK_MAX_LATENCY: std::time::Duration = std::time::Duration::from_millis(400);
 
-        // Prevent infinite loop if API returns same message ID
-        let current_msg_id = msg.id();
-        if let Some(last_id) = last_msg_id {
-            if current_msg_id == last_id {
-                scan_complete = false;
+        let mut chunk = Vec::new();
+        let mut all_files = Vec::new();
+        let mut last_chunk_emitted = std::time::Instant::now();
+
+        loop {
+            let next_message = match msgs.next().await {
+                Ok(message) => message,
+                Err(error) => {
+                    let mut active = active_file_loads.write().await;
+                    if active
+                        .get(&registration_key)
+                        .is_some_and(|current| current == &request_id)
+                    {
+                        active.remove(&registration_key);
+                    }
+                    return Err(error.to_string());
+                }
+            };
+            let Some(msg) = next_message else {
                 break;
-            }
-        }
-        last_msg_id = Some(current_msg_id);
-
-        if let Some(doc) = msg.media() {
-            let declared_size = media_size(&doc);
-            let (mut name, mut size, mut mime, mut ext, remote_document_name) = match doc {
-                Media::Document(d) => {
-                    let doc_name = d.name().to_string();
-                    // Prefer the message caption (set by rename via EditMessage) over the
-                    // document's built-in filename attribute, so renames persist across refreshes.
-                    let caption = msg.text();
-                    let display_name = if caption.is_empty() {
-                        doc_name.clone()
-                    } else {
-                        caption.to_string()
-                    };
-                    let m = d.mime_type().map(|s| s.to_string());
-                    // Extension always from the original document name for correct file-type icon
-                    let e = std::path::Path::new(&doc_name)
-                        .extension()
-                        .map(|os| os.to_str().unwrap_or("").to_string());
-                    (display_name, declared_size, m, e, doc_name)
-                }
-                Media::Photo(_) => (
-                    "Photo.jpg".to_string(),
-                    declared_size,
-                    Some("image/jpeg".into()),
-                    Some("jpg".into()),
-                    "Photo.jpg".to_string(),
-                ),
-                _ => ("Unknown".to_string(), 0, None, None, "Unknown".to_string()),
             };
-            let file_id_i64 = msg.id() as i64;
-            let msg_id_i32 = msg.id();
-            let suspected_tdenc2 = name == "TDENC2"
-                || remote_document_name
-                    .to_ascii_lowercase()
-                    .ends_with(".tdenc");
-            let mut reconciled_info: Option<EncryptedListInfo> = None;
-            let mut probe_failed = false;
-            if !encrypted_map.contains_key(&msg_id_i32) && suspected_tdenc2 {
-                if let Some(media) = msg.media() {
-                    match probe_tdenc2_header(&client, &media)
-                        .await
-                        .and_then(|header_bytes| {
-                            registry_record_from_header(
-                                folder_id,
-                                msg_id_i32,
-                                remote_document_name.clone(),
-                                size,
-                                header_bytes,
-                                "probed_unverified",
-                            )
-                        }) {
-                        Ok(record) => {
-                            let info = EncryptedListInfo {
-                                remote_name: record.remote_name.clone(),
-                                envelope_version: record.envelope_version,
-                                protection_mode: record.protection_mode.clone(),
-                                metadata_protected: record.metadata_protected,
-                                header_blob: record.header_blob.clone(),
-                                plaintext_size: record.plaintext_size,
-                            };
-                            let registry_result = crate::db::with_connection(
-                                db_pool.inner().clone(),
-                                move |connection| {
-                                    upsert_encrypted_file(connection, &record)
-                                        .map_err(|error| error.to_string())
-                                },
-                            )
-                            .await;
-                            if let Err(error) = registry_result {
-                                log::error!(
-                                    "Failed to index probed encrypted file {}: {}",
-                                    msg_id_i32,
-                                    error
-                                );
-                                probe_failed = true;
-                            } else {
-                                reconciled_info = Some(info);
-                            }
-                        }
-                        Err(error) => {
-                            log::warn!("TDENC2 probe failed for message {}: {}", msg_id_i32, error);
-                            probe_failed = true;
-                        }
-                    }
-                }
-            }
-            let encrypted_info = encrypted_map.get(&msg_id_i32).or(reconciled_info.as_ref());
-            let enc_state = if let Some(info) = encrypted_info {
-                if info.envelope_version != policy::FORMAT_VERSION {
-                    "encrypted_unsupported_version"
-                } else if vault_key.is_some()
-                    && matches!(
-                        info.protection_mode.as_str(),
-                        "vault" | "vault_and_passphrase"
-                    )
-                {
-                    "encrypted_unlocked"
-                } else {
-                    "encrypted_locked"
-                }
-            } else if probe_failed && name == "TDENC2" {
-                "encrypted_corrupt"
-            } else if suspected_tdenc2 {
-                "encrypted_key_missing"
-            } else {
-                "plain"
-            };
-            if let Some(info) = encrypted_info {
-                if let Some(plaintext_size) = info.plaintext_size {
-                    size = plaintext_size;
-                }
-                if info.metadata_protected {
-                    name = "Encrypted file".to_string();
-                    mime = Some("application/octet-stream".to_string());
-                    ext = None;
-                    if let Some(header) = info.header_blob.as_deref() {
-                        if let Ok(reader) =
-                            initialize_tdenc2_decryptor(header, vault_key.as_ref(), None)
-                        {
-                            if let Ok(metadata) =
-                                serde_json::from_slice::<DecodedProtectedFileMetadata>(
-                                    reader.metadata_plaintext(),
-                                )
-                            {
-                                if metadata.schema_version == 1
-                                    && !metadata.original_name.is_empty()
-                                {
-                                    name = metadata.original_name;
-                                    mime = Some(metadata.mime_type);
-                                    ext = std::path::Path::new(&name)
-                                        .extension()
-                                        .and_then(|value| value.to_str())
-                                        .map(str::to_string);
-                                }
-                            }
-                        }
-                    }
-                } else if !info.remote_name.is_empty() && name == "TDENC2" {
-                    name = info.remote_name.clone();
-                }
-            } else if suspected_tdenc2 {
-                name = "Encrypted file".to_string();
-                mime = Some("application/octet-stream".to_string());
-                ext = None;
-            }
-            let (is_favorite, is_pinned) = activity_flags
-                .get(&msg_id_i32)
-                .copied()
-                .unwrap_or((false, false));
-            chunk.push(FileMetadata {
-                id: file_id_i64,
-                folder_id,
-                name,
-                size,
-                mime_type: mime,
-                file_ext: ext,
-                created_at: msg.date().to_string(),
-                icon_type: "file".into(),
-                encryption_state: enc_state.to_string(),
-                is_favorite,
-                is_pinned,
-            });
-            file_count += 1;
+            workspace_account.validate()?;
 
-            if chunk.len() >= FILE_CHUNK_SIZE
-                || last_chunk_emitted.elapsed() >= FILE_CHUNK_MAX_LATENCY
-            {
-                let active = active_file_loads.read().await;
-                if active
-                    .get(&inventory_key)
-                    .is_none_or(|current| current != &request_id)
-                {
-                    return Ok(Vec::new());
-                }
-                #[derive(Clone, serde::Serialize)]
-                #[serde(rename_all = "camelCase")]
-                struct FolderLoadPayload {
-                    folder_id: Option<i64>,
-                    request_id: String,
-                    files: Vec<FileMetadata>,
-                }
-                let emitted_files = std::mem::take(&mut chunk);
-                let _ = app_handle.emit(
-                    "folder-load-chunk",
-                    FolderLoadPayload {
-                        folder_id,
-                        request_id: request_id.clone(),
-                        files: emitted_files.clone(),
-                    },
-                );
-                if let Err(error) = crate::commands::file_inventory::upsert_inventory_chunk(
-                    db_pool.inner().clone(),
-                    inventory_key.clone(),
-                    request_id.clone(),
-                    emitted_files,
-                )
+            if active_file_loads
+                .read()
                 .await
-                {
-                    log::warn!("Unable to update the local file inventory: {error}");
-                }
-                drop(active);
-                last_chunk_emitted = std::time::Instant::now();
+                .get(&registration_key)
+                .is_none_or(|current| current != &request_id)
+            {
+                log::info!(
+                    "Cancelled stale file scan request {} for folder {} after {:?}",
+                    request_id,
+                    inventory_key,
+                    scan_started_at.elapsed()
+                );
+                return Ok(FolderLoadResult::incomplete(
+                    &workspace_account,
+                    folder_id,
+                    &request_id,
+                ));
+            }
 
-                if file_count >= MAX_FILES_LIMIT {
+            // Prevent infinite loop if API returns same message ID
+            let current_msg_id = msg.id();
+            if let Some(last_id) = last_msg_id {
+                if current_msg_id == last_id {
                     scan_complete = false;
                     break;
                 }
             }
-        }
-    }
+            last_msg_id = Some(current_msg_id);
 
-    if !chunk.is_empty() {
-        let active = active_file_loads.read().await;
-        if active
-            .get(&inventory_key)
-            .is_none_or(|current| current != &request_id)
-        {
-            return Ok(Vec::new());
+            if let Some(doc) = msg.media() {
+                let declared_size = media_size(&doc);
+                let (mut name, mut size, mut mime, mut ext, remote_document_name) = match &doc {
+                    Media::Document(d) => {
+                        let doc_name = d.name().to_string();
+                        // Prefer the message caption (set by rename via EditMessage) over the
+                        // document's built-in filename attribute, so renames persist across refreshes.
+                        let caption = msg.text();
+                        let display_name = if caption.is_empty() {
+                            doc_name.clone()
+                        } else {
+                            caption.to_string()
+                        };
+                        let m = d.mime_type().map(|s| s.to_string());
+                        // Extension always from the original document name for correct file-type icon
+                        let e = std::path::Path::new(&doc_name)
+                            .extension()
+                            .map(|os| os.to_str().unwrap_or("").to_string());
+                        (display_name, declared_size, m, e, doc_name)
+                    }
+                    Media::Photo(_) => (
+                        "Photo.jpg".to_string(),
+                        declared_size,
+                        Some("image/jpeg".into()),
+                        Some("jpg".into()),
+                        "Photo.jpg".to_string(),
+                    ),
+                    _ => ("Unknown".to_string(), 0, None, None, "Unknown".to_string()),
+                };
+                let file_id_i64 = msg.id() as i64;
+                let msg_id_i32 = msg.id();
+                let suspected_tdenc2 = name == "TDENC2"
+                    || remote_document_name
+                        .to_ascii_lowercase()
+                        .ends_with(".tdenc");
+                let mut probe_failed = false;
+                let encrypted_record = match resolve_remote_envelope(
+                    &workspace_account,
+                    &client,
+                    folder_id,
+                    msg_id_i32,
+                    &doc,
+                    msg.text(),
+                )
+                .await
+                {
+                    Ok(record) => record,
+                    Err(error) => {
+                        workspace_account.validate()?;
+                        log::warn!("TDENC2 probe failed for message {}: {}", msg_id_i32, error);
+                        probe_failed = true;
+                        None
+                    }
+                };
+                let encrypted_info = encrypted_record.as_ref();
+                let enc_state = if let Some(info) = encrypted_info {
+                    if info.envelope_version != policy::FORMAT_VERSION {
+                        "encrypted_unsupported_version"
+                    } else if vault_key.is_some()
+                        && matches!(
+                            info.protection_mode.as_str(),
+                            "vault" | "vault_and_passphrase"
+                        )
+                    {
+                        "encrypted_unlocked"
+                    } else {
+                        "encrypted_locked"
+                    }
+                } else if probe_failed && name == "TDENC2" {
+                    "encrypted_corrupt"
+                } else if suspected_tdenc2 {
+                    "encrypted_key_missing"
+                } else {
+                    "plain"
+                };
+                if let Some(info) = encrypted_info {
+                    if let Some(plaintext_size) = info.plaintext_size {
+                        size = plaintext_size;
+                    }
+                    if info.metadata_protected {
+                        name = "Encrypted file".to_string();
+                        mime = Some("application/octet-stream".to_string());
+                        ext = None;
+                        if let Some(header) = info.header_blob.as_deref() {
+                            if let Ok(reader) =
+                                initialize_tdenc2_decryptor(header, vault_key.as_ref(), None)
+                            {
+                                if let Ok(metadata) =
+                                    serde_json::from_slice::<DecodedProtectedFileMetadata>(
+                                        reader.metadata_plaintext(),
+                                    )
+                                {
+                                    if metadata.schema_version == 1
+                                        && !metadata.original_name.is_empty()
+                                    {
+                                        name = metadata.original_name;
+                                        mime = Some(metadata.mime_type);
+                                        ext = std::path::Path::new(&name)
+                                            .extension()
+                                            .and_then(|value| value.to_str())
+                                            .map(str::to_string);
+                                    }
+                                }
+                            }
+                        }
+                    } else if !info.remote_name.is_empty() && name == "TDENC2" {
+                        name = info.remote_name.clone();
+                    }
+                } else if suspected_tdenc2 {
+                    name = "Encrypted file".to_string();
+                    mime = Some("application/octet-stream".to_string());
+                    ext = None;
+                }
+                let (is_favorite, is_pinned) = activity_flags
+                    .get(&msg_id_i32)
+                    .copied()
+                    .unwrap_or((false, false));
+                chunk.push(FileMetadata {
+                    id: file_id_i64,
+                    folder_id,
+                    name,
+                    size,
+                    mime_type: mime,
+                    file_ext: ext,
+                    created_at: msg.date().to_string(),
+                    icon_type: "file".into(),
+                    encryption_state: enc_state.to_string(),
+                    is_favorite,
+                    is_pinned,
+                });
+                file_count += 1;
+
+                if chunk.len() >= FILE_CHUNK_SIZE
+                    || last_chunk_emitted.elapsed() >= FILE_CHUNK_MAX_LATENCY
+                {
+                    let active = active_file_loads.read().await;
+                    if active
+                        .get(&registration_key)
+                        .is_none_or(|current| current != &request_id)
+                    {
+                        return Ok(FolderLoadResult::incomplete(
+                            &workspace_account,
+                            folder_id,
+                            &request_id,
+                        ));
+                    }
+                    all_files.extend(
+                        publish_folder_chunk(
+                            &app_handle,
+                            &workspace_account,
+                            &peer,
+                            folder_id,
+                            &request_id,
+                            std::mem::take(&mut chunk),
+                            db_pool.inner().clone(),
+                        )
+                        .await?,
+                    );
+                    drop(active);
+                    last_chunk_emitted = std::time::Instant::now();
+
+                    if file_count >= MAX_FILES_LIMIT {
+                        scan_complete = false;
+                        break;
+                    }
+                }
+            }
         }
-        #[derive(Clone, serde::Serialize)]
-        #[serde(rename_all = "camelCase")]
-        struct FolderLoadPayload {
-            folder_id: Option<i64>,
-            request_id: String,
-            files: Vec<FileMetadata>,
+
+        if !chunk.is_empty() {
+            let active = active_file_loads.read().await;
+            if active
+                .get(&registration_key)
+                .is_none_or(|current| current != &request_id)
+            {
+                return Ok(FolderLoadResult::incomplete(
+                    &workspace_account,
+                    folder_id,
+                    &request_id,
+                ));
+            }
+            all_files.extend(
+                publish_folder_chunk(
+                    &app_handle,
+                    &workspace_account,
+                    &peer,
+                    folder_id,
+                    &request_id,
+                    std::mem::take(&mut chunk),
+                    db_pool.inner().clone(),
+                )
+                .await?,
+            );
+            drop(active);
         }
-        let emitted_files = std::mem::take(&mut chunk);
-        let _ = app_handle.emit(
-            "folder-load-chunk",
-            FolderLoadPayload {
-                folder_id,
-                request_id: request_id.clone(),
-                files: emitted_files.clone(),
-            },
-        );
-        if let Err(error) = crate::commands::file_inventory::upsert_inventory_chunk(
+
+        // Hold the generation write lock across finalization. A newer request can
+        // neither register nor persist its first chunk while this scan prunes rows.
+        let active = active_file_loads.write().await;
+        let request_is_current = active
+            .get(&registration_key)
+            .is_some_and(|current| current == &request_id);
+        let response = finalize_folder_scan(
+            &workspace_account,
+            folder_id,
+            &request_id,
+            all_files,
+            request_is_current && scan_complete,
             db_pool.inner().clone(),
-            inventory_key.clone(),
-            request_id.clone(),
-            emitted_files,
         )
-        .await
-        {
-            log::warn!("Unable to update the local file inventory: {error}");
-        }
+        .await?;
         drop(active);
-    }
+        log::info!(
+            "File scan request {} for folder {} completed with {} files in {:?} (complete={})",
+            request_id,
+            inventory_key,
+            file_count,
+            scan_started_at.elapsed(),
+            scan_complete
+        );
 
-    // Hold the generation write lock across finalization. A newer request can
-    // neither register nor persist its first chunk while this scan prunes rows.
+        Ok(response)
+    }
+    .await;
+    // Every exit (including a persistence error) retires only this request.
     let mut active = active_file_loads.write().await;
-    let request_is_current = active
-        .get(&inventory_key)
-        .is_some_and(|current| current == &request_id);
-    if request_is_current && scan_complete {
-        if let Err(error) = crate::commands::file_inventory::complete_inventory_scan(
-            db_pool.inner().clone(),
-            inventory_key.clone(),
-            request_id.clone(),
-        )
-        .await
-        {
-            log::warn!("Unable to finalize the local file inventory: {error}");
-        }
+    if active
+        .get(&registration_key)
+        .is_some_and(|current| current == &request_id)
+    {
+        active.remove(&registration_key);
     }
-    if request_is_current {
-        active.remove(&inventory_key);
-    }
-    drop(active);
-    log::info!(
-        "File scan request {} for folder {} completed with {} files in {:?} (complete={})",
-        request_id,
-        inventory_key,
-        file_count,
-        scan_started_at.elapsed(),
-        scan_complete
-    );
-
-    Ok(Vec::new())
+    result
 }
 
 /// Extract FileMetadata entries from a list of Telegram messages returned by SearchGlobal.
-fn extract_search_files(msgs: &[tl::enums::Message]) -> Vec<FileMetadata> {
+fn search_created_at(timestamp: i32) -> String {
+    // Telegram's raw search response contains Unix seconds, whereas file lists
+    // expose a date string that JavaScript can parse consistently on all hosts.
+    chrono::DateTime::<chrono::Utc>::from_timestamp(i64::from(timestamp), 0)
+        .unwrap_or_default()
+        .to_rfc3339()
+}
+
+fn search_source_folder(peer: &tl::enums::Peer, owner: i64) -> Option<i64> {
+    match peer {
+        tl::enums::Peer::Channel(channel) => Some(channel.channel_id),
+        tl::enums::Peer::User(user) if user.user_id == owner => None,
+        tl::enums::Peer::User(user) => Some(user.user_id),
+        tl::enums::Peer::Chat(chat) => Some(chat.chat_id),
+    }
+}
+
+fn validate_search_client(
+    account: &crate::workspace::AccountGuard,
+    client_owner: i64,
+) -> Result<(), String> {
+    account.validate()?;
+    if account.owner != client_owner {
+        return Err("ACCOUNT_CHANGED: Search client belongs to another account".into());
+    }
+    Ok(())
+}
+
+fn extract_search_files(msgs: &[tl::enums::Message], owner: i64) -> Vec<FileMetadata> {
     let mut files = Vec::new();
     for msg in msgs {
         if let tl::enums::Message::Message(m) = msg {
@@ -3980,11 +4235,7 @@ fn extract_search_files(msgs: &[tl::enums::Message]) -> Vec<FileMetadata> {
                     let ext = std::path::Path::new(&doc_name)
                         .extension()
                         .map(|os| os.to_str().unwrap_or("").to_string());
-                    let folder_id = match &m.peer_id {
-                        tl::enums::Peer::Channel(c) => Some(c.channel_id),
-                        tl::enums::Peer::User(u) => Some(u.user_id),
-                        tl::enums::Peer::Chat(c) => Some(c.chat_id),
-                    };
+                    let folder_id = search_source_folder(&m.peer_id, owner);
                     files.push(FileMetadata {
                         id: m.id as i64,
                         folder_id,
@@ -3992,7 +4243,7 @@ fn extract_search_files(msgs: &[tl::enums::Message]) -> Vec<FileMetadata> {
                         size,
                         mime_type: Some(mime),
                         file_ext: ext,
-                        created_at: m.date.to_string(),
+                        created_at: search_created_at(m.date),
                         icon_type: "file".into(),
                         encryption_state: "plain".to_string(),
                         is_favorite: false,
@@ -4008,16 +4259,29 @@ fn extract_search_files(msgs: &[tl::enums::Message]) -> Vec<FileMetadata> {
 #[tauri::command]
 pub async fn cmd_search_global(
     query: String,
+    owner_id: Option<String>,
+    app_handle: tauri::AppHandle,
     state: State<'_, TelegramState>,
 ) -> Result<Vec<FileMetadata>, String> {
+    // Capture ownership before the first await, including legacy callers that
+    // omit ownerId. The client and every response must match this same session.
+    let root = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let account = crate::workspace::AccountGuard::open(&root, owner_id.as_deref())?;
     let client_opt = { state.client.lock().await.clone() };
+    account.validate()?;
     #[cfg(debug_assertions)]
     if client_opt.is_none() {
         return Ok(Vec::new());
     }
     let client = client_opt.ok_or_else(|| "Client not connected".to_string())?;
 
-    log::info!("Searching global for: {}", query);
+    let me = client.get_me().await;
+    account.validate()?;
+    let client_owner = me.map_err(map_error)?.bare_id();
+    validate_search_client(&account, client_owner)?;
 
     let result = client
         .invoke(&tl::functions::messages::SearchGlobal {
@@ -4034,15 +4298,21 @@ pub async fn cmd_search_global(
             groups_only: false,
             users_only: false,
         })
-        .await
-        .map_err(map_error)?;
+        .await;
+    account.validate()?;
+    let result = result.map_err(map_error)?;
 
     let files = match result {
-        tl::enums::messages::Messages::Messages(msgs) => extract_search_files(&msgs.messages),
-        tl::enums::messages::Messages::Slice(msgs) => extract_search_files(&msgs.messages),
+        tl::enums::messages::Messages::Messages(msgs) => {
+            extract_search_files(&msgs.messages, account.owner)
+        }
+        tl::enums::messages::Messages::Slice(msgs) => {
+            extract_search_files(&msgs.messages, account.owner)
+        }
         _ => Vec::new(),
     };
 
+    account.validate()?;
     Ok(files)
 }
 
@@ -4933,7 +5203,49 @@ pub async fn cmd_upload_from_url(
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
     crypto_state: State<'_, crate::crypto::state::CryptoState>,
     db_pool: State<'_, DbConnection>,
+    owner_id: Option<String>,
 ) -> Result<String, String> {
+    let account = capture_transfer_account(&app_handle, &transfer_id, owner_id.as_deref()).await?;
+    crate::workspace::with_operation_account(
+        &account,
+        cmd_upload_from_url_owned(
+            url,
+            folder_id,
+            transfer_id,
+            protection_mode,
+            prompt_token,
+            protect_metadata,
+            video_upload_mode,
+            app_handle,
+            state,
+            bw_state,
+            net_config,
+            crypto_state,
+            db_pool,
+        ),
+    )
+    .await
+}
+
+#[cfg_attr(not(target_os = "android"), allow(unused_mut))]
+#[allow(clippy::too_many_arguments)] // Mirrors the Tauri endpoint inside its captured account scope.
+async fn cmd_upload_from_url_owned(
+    url: String,
+    folder_id: Option<i64>,
+    transfer_id: String,
+    protection_mode: Option<String>,
+    prompt_token: Option<u64>,
+    protect_metadata: Option<bool>,
+    video_upload_mode: Option<String>,
+    app_handle: tauri::AppHandle,
+    state: State<'_, TelegramState>,
+    bw_state: State<'_, Arc<BandwidthManager>>,
+    net_config: State<'_, std::sync::Arc<NetworkConfig>>,
+    crypto_state: State<'_, crate::crypto::state::CryptoState>,
+    db_pool: State<'_, DbConnection>,
+) -> Result<String, String> {
+    let transfer_account = capture_transfer_account(&app_handle, &transfer_id, None).await?;
+
     let initial_url =
         reqwest::Url::parse(&url).map_err(|error| format!("Invalid upload URL: {error}"))?;
     validate_remote_url_syntax(&initial_url)?;
@@ -5278,6 +5590,9 @@ pub async fn cmd_upload_from_url(
         bw_state.release_up(sz);
     }
 
+    // Keep cleanup active across account-switch failures and publication errors.
+    let _downloaded_temp_guard = PartialFileGuard::new(temp_file_path.clone());
+
     // Determine actual file size from disk (authoritative, works even without Content-Length)
     let actual_size = tokio::fs::metadata(&temp_file_path)
         .await
@@ -5395,20 +5710,18 @@ pub async fn cmd_upload_from_url(
     };
 
     // Reserve upload bandwidth based on the real file size (handles both known and unknown upfront)
-    if let Err(e) = bw_state.try_reserve_up(actual_size) {
-        let _ = tokio::fs::remove_file(&temp_file_path).await;
-        return Err(e);
-    }
+    let mut upload_reservation =
+        BandwidthReservation::upload(bw_state.inner().clone(), actual_size)?;
 
     let client_opt = { state.client.lock().await.clone() };
     let client = match client_opt {
         Some(c) => c,
         None => {
-            bw_state.release_up(actual_size);
             let _ = tokio::fs::remove_file(&temp_file_path).await;
             return Err("Client not connected".to_string());
         }
     };
+    transfer_account.validate_client(&client).await?;
 
     let _ = app_handle.emit(
         "remote-upload-progress",
@@ -5425,7 +5738,6 @@ pub async fn cmd_upload_from_url(
     let (mut reader, file_size, bytes_counter) = match ProgressReader::new(&temp_file_str).await {
         Ok(res) => res,
         Err(e) => {
-            bw_state.release_up(actual_size);
             let _ = tokio::fs::remove_file(&temp_file_path).await;
             return Err(e);
         }
@@ -5486,7 +5798,6 @@ pub async fn cmd_upload_from_url(
     {
         state.cancelled_transfers.write().await.remove(&transfer_id);
         progress_task.abort();
-        bw_state.release_up(actual_size);
         let _ = tokio::fs::remove_file(&temp_file_path).await;
         return Err("Transfer cancelled".to_string());
     }
@@ -5511,13 +5822,11 @@ pub async fn cmd_upload_from_url(
                 match res {
                     Ok(Ok(file)) => file,
                     Ok(Err(e)) => {
-                        bw_state.release_up(actual_size);
                         progress_task.abort();
                         let _ = tokio::fs::remove_file(&temp_file_path).await;
                         return Err(map_error(e));
                     }
                     Err(e) => {
-                        bw_state.release_up(actual_size);
                         progress_task.abort();
                         let _ = tokio::fs::remove_file(&temp_file_path).await;
                         return Err(format!("Task join error: {}", e));
@@ -5529,7 +5838,6 @@ pub async fn cmd_upload_from_url(
                 upload_task.abort();
                 state.cancelled_transfers.write().await.remove(&transfer_id);
                 progress_task.abort();
-                bw_state.release_up(actual_size);
                 let _ = tokio::fs::remove_file(&temp_file_path).await;
                 return Err("Transfer cancelled".to_string());
             }
@@ -5556,7 +5864,6 @@ pub async fn cmd_upload_from_url(
     let peer = match resolve_peer(&client, folder_id, &state.peer_cache).await {
         Ok(p) => p,
         Err(e) => {
-            bw_state.release_up(actual_size);
             let _ = tokio::fs::remove_file(&temp_file_path).await;
             return Err(e);
         }
@@ -5570,6 +5877,7 @@ pub async fn cmd_upload_from_url(
     let mut send_success = false;
 
     for attempt in 0..=max_retries {
+        transfer_account.validate()?;
         match client.send_message(&peer, message.clone()).await {
             Ok(_) => {
                 send_success = true;
@@ -5605,6 +5913,7 @@ pub async fn cmd_upload_from_url(
     let _ = tokio::fs::remove_file(&temp_file_path).await;
 
     if send_success {
+        upload_reservation.commit();
         let _ = app_handle.emit(
             "remote-upload-progress",
             RemoteProgressPayload {
@@ -5618,7 +5927,6 @@ pub async fn cmd_upload_from_url(
         );
         Ok("File uploaded successfully".to_string())
     } else {
-        bw_state.release_up(actual_size);
         Err(format!(
             "Upload failed after {} attempts: {}",
             max_retries + 1,
@@ -5630,6 +5938,25 @@ pub async fn cmd_upload_from_url(
 #[cfg(test)]
 mod hardening_tests {
     use super::*;
+
+    #[test]
+    fn moves_require_every_forwarded_copy_before_source_deletion() {
+        assert!(verify_forwarded_messages(&[1, 2], &[Some(11), Some(12)]).is_ok());
+        assert!(verify_forwarded_messages(&[1, 2], &[Some(11), None]).is_err());
+        assert!(verify_forwarded_messages(&[1, 2], &[Some(11)]).is_err());
+        assert!(verify_forwarded_messages(&[1], &[Some(11), Some(12)]).is_err());
+        assert!(verify_forwarded_messages::<i32>(&[1], &[None]).is_err());
+    }
+
+    #[test]
+    fn global_search_dates_are_rfc3339_at_unix_and_telegram_boundaries() {
+        assert_eq!(search_created_at(0), "1970-01-01T00:00:00+00:00");
+        for timestamp in [i32::MIN, 1_700_000_000, i32::MAX] {
+            let parsed =
+                chrono::DateTime::parse_from_rfc3339(&search_created_at(timestamp)).unwrap();
+            assert_eq!(parsed.timestamp(), i64::from(timestamp));
+        }
+    }
 
     #[test]
     fn video_upload_mode_is_explicit_and_file_is_the_compatible_default() {
@@ -5730,3 +6057,7 @@ mod hardening_tests {
         let _ = std::fs::remove_dir(&directory);
     }
 }
+
+#[cfg(test)]
+#[path = "search_scope_tests.rs"]
+mod search_scope_tests;

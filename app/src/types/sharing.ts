@@ -1,5 +1,6 @@
 export interface ShareInfo {
   id: string;
+  owner_id: string;
   folder_id: number | null;
   message_id: number;
   file_name: string;

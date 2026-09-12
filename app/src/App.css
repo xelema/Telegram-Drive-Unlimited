@@ -198,6 +198,18 @@ textarea:disabled {
   box-shadow: var(--shadow-raised);
 }
 
+/* Shared desktop header rows keep dividers continuous across both columns. */
+.desktop-chrome-row {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  height: var(--metric-toolbar-desktop);
+  min-height: var(--metric-toolbar-desktop);
+  padding-inline: var(--space-3);
+  border-bottom: 1px solid var(--color-app-border-subtle);
+}
+
 .quiet-toolbar {
   background: color-mix(in srgb, var(--color-app-surface) 88%, transparent);
   border-color: var(--color-app-border-subtle);

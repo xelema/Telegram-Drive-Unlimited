@@ -3,9 +3,10 @@
   "maxJavaScriptChunkBytes": 550000,
   "maxTotalJavaScriptBytes": 3300000,
   "maxTotalCssBytes": 140000,
+  "maxTotalLocaleDataBytes": 1600000,
+  "maxLocaleDataBytes": 120000,
   "routeJavaScriptBudgets": {
-    "src/components/desktop/DesktopDashboard.tsx": 310000,
-    "src/components/mobile/MobileDashboard.tsx": 200000
+    "src/components/desktop/DesktopDashboard.tsx": 310000
   },
   "featureChunkBudgets": {
     "src/components/desktop/dashboard/SettingsModal.tsx": 160000,

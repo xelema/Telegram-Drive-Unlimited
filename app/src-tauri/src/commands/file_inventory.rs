@@ -1,6 +1,6 @@
 use crate::db::{self, DbConnection};
 use crate::models::FileMetadata;
-use tauri::State;
+use tauri::Manager;
 
 pub fn folder_key(folder_id: Option<i64>) -> String {
     folder_id
@@ -173,11 +173,22 @@ pub async fn complete_inventory_scan(
 #[tauri::command]
 pub async fn cmd_get_cached_files(
     folder_id: Option<i64>,
-    db_pool: State<'_, DbConnection>,
+    owner_id: Option<String>,
+    app: tauri::AppHandle,
 ) -> Result<Vec<FileMetadata>, String> {
-    get_cached_files(db_pool.inner().clone(), folder_id).await
+    let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || {
+        let account = crate::workspace::AccountGuard::open(&root, owner_id.as_deref())?;
+        let files =
+            crate::workspace::store::Store::open(&root, account.owner)?.folder_files(folder_id)?;
+        account.validate()?;
+        Ok(files)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
+#[cfg(test)]
 pub async fn get_cached_files(
     database: DbConnection,
     folder_id: Option<i64>,

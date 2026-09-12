@@ -201,16 +201,22 @@ mod tests {
 
     fn job(status: TransferStatus) -> TransferJob {
         TransferJob {
+            owner_id: Some("100".into()),
+            error_category: None,
+            persistence_pending: false,
             id: "id".to_string(),
             direction: TransferDirection::Upload,
             kind: TransferKind::LocalUpload,
             status,
+            download_outcome: None,
             path: None,
             url: None,
             folder_id: None,
             message_id: None,
             filename: "file".to_string(),
             save_path: None,
+            collision_policy:
+                crate::commands::download_destination::DownloadCollisionPolicy::KeepBoth,
             protection_mode: None,
             protect_metadata: None,
             video_upload_mode: None,

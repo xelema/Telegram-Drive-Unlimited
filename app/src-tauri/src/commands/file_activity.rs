@@ -1,34 +1,158 @@
-use serde::Serialize;
-use tauri::State;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use tauri::Manager;
 
-use crate::db::DbConnection;
+use crate::models::FileMetadata;
+use crate::workspace::{
+    store::{file_key, Store},
+    AccountGuard,
+};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct LocalFileActivity {
-    pub id: i64,
-    pub folder_id: Option<i64>,
-    pub name: String,
-    pub size: u64,
-    pub mime_type: Option<String>,
-    pub file_ext: Option<String>,
-    pub created_at: String,
-    pub icon_type: String,
-    pub encryption_state: String,
-    pub is_favorite: bool,
-    pub is_pinned: bool,
+    #[serde(flatten)]
+    pub file: FileMetadata,
     pub last_opened_at: i64,
 }
 
-fn folder_key(folder_id: Option<i64>) -> String {
-    folder_id
-        .map(|id| id.to_string())
-        .unwrap_or_else(|| "home".to_string())
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct OpenedFile {
+    folder_id: Option<i64>,
+    message_id: i64,
+    last_opened_at: i64,
+    open_count: u64,
+}
+
+#[derive(Clone, Copy)]
+enum ActivityChange<'a> {
+    Open,
+    Flag(&'a str, bool),
+}
+
+fn change_activity(
+    store: &Store,
+    file: &FileMetadata,
+    change: ActivityChange<'_>,
+) -> Result<(), String> {
+    if file.id <= 0 {
+        return Err("Invalid message identifier".into());
+    }
+    let key = file_key(file.folder_id, file.id);
+    store.transaction(|| {
+        // Incoming metadata belongs to the explicitly verified account/source.
+        // Never copy a name or flag from the unowned legacy file_activity table.
+        store.remember_local_file(file)?;
+        match change {
+            ActivityChange::Open => {
+                let mut opened = store
+                    .record::<OpenedFile>("opened", &key)?
+                    .unwrap_or_default();
+                opened.folder_id = file.folder_id;
+                opened.message_id = file.id;
+                opened.last_opened_at = chrono::Utc::now().timestamp();
+                opened.open_count = opened.open_count.saturating_add(1);
+                store.put_record("opened", &key, &opened)
+            }
+            ActivityChange::Flag("favorite", value) => store.put_record("favorite", &key, &value),
+            ActivityChange::Flag("pinned", value) => store.put_record("pin", &key, &value),
+            ActivityChange::Flag(_, _) => Err("Unknown file activity flag".into()),
+        }
+    })
+}
+
+pub(crate) fn read_activity(
+    store: &Store,
+    view: &str,
+    limit: Option<i64>,
+) -> Result<Vec<LocalFileActivity>, String> {
+    if !matches!(view, "favorites" | "pinned" | "recents") {
+        return Err("Unknown smart view".into());
+    }
+    let opened: HashMap<_, _> = store
+        .records::<OpenedFile>("opened")?
+        .into_iter()
+        .map(|value| (file_key(value.folder_id, value.message_id), value))
+        .collect();
+    let mut files = Vec::new();
+    for entry in store.files()? {
+        let activity = opened.get(&entry.key);
+        let include = match view {
+            "favorites" => entry.file.is_favorite,
+            "pinned" => entry.file.is_pinned,
+            _ => activity.is_some_and(|value| value.open_count > 0),
+        };
+        if include {
+            files.push(LocalFileActivity {
+                file: entry.file,
+                last_opened_at: activity.map_or(0, |value| value.last_opened_at),
+            });
+        }
+    }
+    files.sort_by_key(|entry| {
+        (
+            std::cmp::Reverse(entry.last_opened_at),
+            entry.file.folder_id,
+            entry.file.id,
+        )
+    });
+    files.truncate(limit.unwrap_or(200).clamp(1, 1_000) as usize);
+    Ok(files)
+}
+
+pub(crate) async fn folder_flags(
+    account: &AccountGuard,
+    folder_id: Option<i64>,
+) -> Result<HashMap<i32, (bool, bool)>, String> {
+    let account = account.clone();
+    tokio::task::spawn_blocking(move || {
+        account.validate()?;
+        let files = Store::open(&account.root, account.owner)?.folder_files(folder_id)?;
+        let flags = files
+            .into_iter()
+            .filter_map(|file| {
+                i32::try_from(file.id)
+                    .ok()
+                    .map(|id| (id, (file.is_favorite, file.is_pinned)))
+            })
+            .collect();
+        account.validate()?;
+        Ok(flags)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[allow(clippy::too_many_arguments)]
+fn metadata(
+    folder_id: Option<i64>,
+    message_id: i64,
+    file_name: String,
+    file_size: u64,
+    mime_type: Option<String>,
+    file_ext: Option<String>,
+    created_at: Option<String>,
+    encryption_state: Option<String>,
+) -> FileMetadata {
+    FileMetadata {
+        id: message_id,
+        folder_id,
+        name: file_name,
+        size: file_size,
+        mime_type,
+        file_ext,
+        created_at: created_at.unwrap_or_default(),
+        encryption_state: encryption_state.unwrap_or_else(|| "plain".into()),
+        icon_type: "file".into(),
+        is_favorite: false,
+        is_pinned: false,
+    }
 }
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn cmd_record_file_opened(
-    db_pool: State<'_, DbConnection>,
+    app: tauri::AppHandle,
+    owner_id: Option<String>,
     folder_id: Option<i64>,
     message_id: i64,
     file_name: String,
@@ -38,68 +162,33 @@ pub async fn cmd_record_file_opened(
     created_at: Option<String>,
     encryption_state: Option<String>,
 ) -> Result<(), String> {
-    let database = db_pool.inner().clone();
-    crate::db::with_connection(database, move |connection| {
-        let now = chrono::Utc::now().timestamp();
-        let key = folder_key(folder_id);
-        let mut statement = connection
-            .prepare(
-                "INSERT INTO file_activity (
-            folder_key, folder_id, message_id, file_name, file_size, mime_type,
-            file_ext, created_at, encryption_state, last_opened_at, open_count
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-         ON CONFLICT(folder_key, message_id) DO UPDATE SET
-            folder_id = excluded.folder_id,
-            file_name = excluded.file_name,
-            file_size = excluded.file_size,
-            mime_type = excluded.mime_type,
-            file_ext = excluded.file_ext,
-            created_at = excluded.created_at,
-            encryption_state = excluded.encryption_state,
-            last_opened_at = excluded.last_opened_at,
-            open_count = file_activity.open_count + 1",
-            )
-            .map_err(|error| error.to_string())?;
-        statement
-            .bind((1, key.as_str()))
-            .map_err(|error| error.to_string())?;
-        statement
-            .bind((2, folder_id))
-            .map_err(|error| error.to_string())?;
-        statement
-            .bind((3, message_id))
-            .map_err(|error| error.to_string())?;
-        statement
-            .bind((4, file_name.as_str()))
-            .map_err(|error| error.to_string())?;
-        statement
-            .bind((5, i64::try_from(file_size).unwrap_or(i64::MAX)))
-            .map_err(|error| error.to_string())?;
-        statement
-            .bind((6, mime_type.as_deref()))
-            .map_err(|error| error.to_string())?;
-        statement
-            .bind((7, file_ext.as_deref()))
-            .map_err(|error| error.to_string())?;
-        statement
-            .bind((8, created_at.as_deref().unwrap_or("")))
-            .map_err(|error| error.to_string())?;
-        statement
-            .bind((9, encryption_state.as_deref().unwrap_or("plain")))
-            .map_err(|error| error.to_string())?;
-        statement
-            .bind((10, now))
-            .map_err(|error| error.to_string())?;
-        statement.next().map_err(|error| error.to_string())?;
-        Ok(())
+    let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let account = AccountGuard::open(&root, owner_id.as_deref())?;
+    let file = metadata(
+        folder_id,
+        message_id,
+        file_name,
+        file_size,
+        mime_type,
+        file_ext,
+        created_at,
+        encryption_state,
+    );
+    tokio::task::spawn_blocking(move || {
+        account.validate()?;
+        let store = Store::open(&account.root, account.owner)?;
+        change_activity(&store, &file, ActivityChange::Open)?;
+        account.validate()
     })
     .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn cmd_set_file_activity_flag(
-    db_pool: State<'_, DbConnection>,
+    app: tauri::AppHandle,
+    owner_id: Option<String>,
     folder_id: Option<i64>,
     message_id: i64,
     file_name: String,
@@ -111,135 +200,128 @@ pub async fn cmd_set_file_activity_flag(
     flag: String,
     value: bool,
 ) -> Result<(), String> {
-    let column = match flag.as_str() {
-        "favorite" => "is_favorite",
-        "pinned" => "is_pinned",
-        _ => return Err("Unknown file activity flag".to_string()),
-    };
-    let database = db_pool.inner().clone();
-    crate::db::with_connection(database, move |connection| {
-        let now = chrono::Utc::now().timestamp();
-        let key = folder_key(folder_id);
-        let sql = format!(
-            "INSERT INTO file_activity (
-            folder_key, folder_id, message_id, file_name, file_size, mime_type,
-            file_ext, created_at, encryption_state, last_opened_at, open_count, {column}
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
-         ON CONFLICT(folder_key, message_id) DO UPDATE SET
-            folder_id = excluded.folder_id,
-            file_name = excluded.file_name,
-            file_size = excluded.file_size,
-            mime_type = excluded.mime_type,
-            file_ext = excluded.file_ext,
-            created_at = excluded.created_at,
-            encryption_state = excluded.encryption_state,
-            {column} = excluded.{column}"
-        );
-        let mut statement = connection.prepare(sql).map_err(|error| error.to_string())?;
-        statement
-            .bind((1, key.as_str()))
-            .map_err(|error| error.to_string())?;
-        statement
-            .bind((2, folder_id))
-            .map_err(|error| error.to_string())?;
-        statement
-            .bind((3, message_id))
-            .map_err(|error| error.to_string())?;
-        statement
-            .bind((4, file_name.as_str()))
-            .map_err(|error| error.to_string())?;
-        statement
-            .bind((5, i64::try_from(file_size).unwrap_or(i64::MAX)))
-            .map_err(|error| error.to_string())?;
-        statement
-            .bind((6, mime_type.as_deref()))
-            .map_err(|error| error.to_string())?;
-        statement
-            .bind((7, file_ext.as_deref()))
-            .map_err(|error| error.to_string())?;
-        statement
-            .bind((8, created_at.as_deref().unwrap_or("")))
-            .map_err(|error| error.to_string())?;
-        statement
-            .bind((9, encryption_state.as_deref().unwrap_or("plain")))
-            .map_err(|error| error.to_string())?;
-        statement
-            .bind((10, now))
-            .map_err(|error| error.to_string())?;
-        statement
-            .bind((11, if value { 1 } else { 0 }))
-            .map_err(|error| error.to_string())?;
-        statement.next().map_err(|error| error.to_string())?;
-        Ok(())
+    let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let account = AccountGuard::open(&root, owner_id.as_deref())?;
+    let file = metadata(
+        folder_id,
+        message_id,
+        file_name,
+        file_size,
+        mime_type,
+        file_ext,
+        created_at,
+        encryption_state,
+    );
+    tokio::task::spawn_blocking(move || {
+        account.validate()?;
+        let store = Store::open(&account.root, account.owner)?;
+        change_activity(&store, &file, ActivityChange::Flag(&flag, value))?;
+        account.validate()
     })
     .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub async fn cmd_get_file_activity(
-    db_pool: State<'_, DbConnection>,
+    app: tauri::AppHandle,
+    owner_id: Option<String>,
     view: String,
     limit: Option<i64>,
 ) -> Result<Vec<LocalFileActivity>, String> {
-    let predicate = match view.as_str() {
-        "favorites" => "is_favorite = 1",
-        "pinned" => "is_pinned = 1",
-        "recents" => "open_count > 0",
-        _ => return Err("Unknown smart view".to_string()),
-    };
-    let order = if view == "pinned" {
-        "is_pinned DESC, last_opened_at DESC"
-    } else {
-        "last_opened_at DESC"
-    };
-    let sql = format!(
-        "SELECT message_id, folder_id, file_name, file_size, mime_type, file_ext,
-                created_at, encryption_state, is_favorite, is_pinned, last_opened_at
-         FROM file_activity WHERE {predicate} ORDER BY {order} LIMIT ?"
-    );
-    let database = db_pool.inner().clone();
-    crate::db::with_connection(database, move |connection| {
-        let mut statement = connection.prepare(sql).map_err(|error| error.to_string())?;
-        statement
-            .bind((1, limit.unwrap_or(200).clamp(1, 1_000)))
-            .map_err(|error| error.to_string())?;
-        let mut rows = Vec::new();
-        while let sqlite::State::Row = statement.next().map_err(|error| error.to_string())? {
-            rows.push(LocalFileActivity {
-                id: statement
-                    .read::<i64, _>(0)
-                    .map_err(|error| error.to_string())?,
-                folder_id: statement
-                    .read::<Option<i64>, _>(1)
-                    .map_err(|error| error.to_string())?,
-                name: statement
-                    .read::<String, _>(2)
-                    .map_err(|error| error.to_string())?,
-                size: statement.read::<i64, _>(3).unwrap_or(0).max(0) as u64,
-                mime_type: statement.read::<Option<String>, _>(4).ok().flatten(),
-                file_ext: statement.read::<Option<String>, _>(5).ok().flatten(),
-                created_at: statement.read::<String, _>(6).unwrap_or_default(),
-                icon_type: "file".to_string(),
-                encryption_state: statement
-                    .read::<String, _>(7)
-                    .unwrap_or_else(|_| "plain".to_string()),
-                is_favorite: statement.read::<i64, _>(8).unwrap_or(0) != 0,
-                is_pinned: statement.read::<i64, _>(9).unwrap_or(0) != 0,
-                last_opened_at: statement.read::<i64, _>(10).unwrap_or(0),
-            });
-        }
-        Ok(rows)
+    let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let account = AccountGuard::open(&root, owner_id.as_deref())?;
+    tokio::task::spawn_blocking(move || {
+        account.validate()?;
+        let files = read_activity(&Store::open(&account.root, account.owner)?, &view, limit)?;
+        account.validate()?;
+        Ok(files)
     })
     .await
+    .map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]
 mod tests {
-    use super::folder_key;
+    use super::*;
+
+    fn file(folder: Option<i64>, name: &str) -> FileMetadata {
+        metadata(
+            folder,
+            42,
+            name.into(),
+            100,
+            Some("text/plain".into()),
+            Some("txt".into()),
+            None,
+            None,
+        )
+    }
 
     #[test]
-    fn saved_messages_uses_stable_folder_key() {
-        assert_eq!(folder_key(None), "home");
-        assert_eq!(folder_key(Some(42)), "42");
+    fn personal_views_are_scoped_by_account_and_saved_messages_identity() {
+        let root = std::env::temp_dir().join(format!("file-activity-{}", uuid::Uuid::new_v4()));
+        let a = Store::open(&root, 100).unwrap();
+        let b = Store::open(&root, 200).unwrap();
+        let saved = file(None, "A saved.txt");
+        let channel = file(Some(9), "A channel.txt");
+        let other = file(None, "B saved.txt");
+        change_activity(&a, &saved, ActivityChange::Open).unwrap();
+        change_activity(&a, &saved, ActivityChange::Flag("favorite", true)).unwrap();
+        change_activity(&a, &channel, ActivityChange::Flag("pinned", true)).unwrap();
+        change_activity(&b, &other, ActivityChange::Open).unwrap();
+        assert_eq!(
+            read_activity(&a, "favorites", None).unwrap()[0].file.name,
+            "A saved.txt"
+        );
+        assert_eq!(
+            read_activity(&a, "pinned", None).unwrap()[0].file.name,
+            "A channel.txt"
+        );
+        assert_eq!(
+            read_activity(&b, "recents", None).unwrap()[0].file.name,
+            "B saved.txt"
+        );
+        assert!(read_activity(&b, "favorites", None).unwrap().is_empty());
+        assert!(read_activity(&b, "pinned", None).unwrap().is_empty());
+        change_activity(&a, &saved, ActivityChange::Flag("favorite", false)).unwrap();
+        assert!(read_activity(&a, "favorites", None).unwrap().is_empty());
+        assert!(a.folder_files(Some(9)).unwrap()[0].is_pinned);
+        drop(a);
+        drop(b);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn protected_names_are_redacted_and_activity_does_not_change_a_scan_generation() {
+        let root = std::env::temp_dir().join(format!("file-activity-{}", uuid::Uuid::new_v4()));
+        let store = Store::open(&root, 100).unwrap();
+        let mut protected = file(None, "Secret filename.txt");
+        protected.encryption_state = "encrypted_unlocked".into();
+        store
+            .remember_files(&[protected.clone()], "Saved Messages", "active-scan")
+            .unwrap();
+        change_activity(&store, &protected, ActivityChange::Open).unwrap();
+        change_activity(&store, &protected, ActivityChange::Flag("favorite", true)).unwrap();
+        store.complete_scan(None, "active-scan").unwrap();
+        let records = read_activity(&store, "recents", None).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].file.name, "Protected file");
+        assert_eq!(records[0].file.encryption_state, "encrypted_locked");
+        assert!(records[0].file.is_favorite);
+        let wire = serde_json::to_string(&records).unwrap();
+        assert!(!wire.contains("Secret filename"));
+        assert!(change_activity(
+            &store,
+            &file(None, "Rejected.txt"),
+            ActivityChange::Flag("unknown", true)
+        )
+        .is_err());
+        assert_eq!(
+            store.file("saved:42").unwrap().unwrap().file.name,
+            "Protected file"
+        );
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
