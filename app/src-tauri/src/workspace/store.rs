@@ -542,6 +542,7 @@ mod tests {
             .is_empty());
         search.folder_key = Some("0".into());
         assert!(store.save_search(&search).is_err());
+        drop(store);
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -591,6 +592,7 @@ mod tests {
             .unwrap()
             .iter()
             .all(|f| f.collection_ids.is_empty()));
+        drop(store);
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -606,6 +608,7 @@ mod tests {
         assert_eq!(store.files().unwrap().len(), 2);
         store.complete_scan(None, "b").unwrap();
         assert_eq!(store.files().unwrap().len(), 1);
+        drop(store);
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -619,6 +622,7 @@ mod tests {
         let saved = store.files().unwrap().remove(0);
         assert_eq!(saved.file.name, "Protected file");
         assert_eq!(saved.file.encryption_state, "encrypted_locked");
+        drop(store);
         std::fs::remove_dir_all(root).unwrap();
     }
 }

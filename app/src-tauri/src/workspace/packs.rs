@@ -1004,12 +1004,17 @@ mod tests {
     fn sign_in(root: &Path, owner: i64) {
         use grammers_session::{storages::SqliteSession, types::PeerInfo, Session};
         let session = SqliteSession::open(root.join("telegram.session")).unwrap();
+        sqlite::open(root.join("telegram.session"))
+            .unwrap()
+            .execute("DELETE FROM peer_info")
+            .unwrap();
         session.cache_peer(&PeerInfo::User {
             id: owner,
             auth: None,
             bot: Some(false),
             is_self: Some(true),
         });
+        assert_eq!(crate::workspace::current_owner(root).unwrap(), owner);
     }
     fn setup() -> (PathBuf, Store) {
         let root = std::env::temp_dir().join(format!("trip-pack-{}", uuid::Uuid::new_v4()));
@@ -1098,6 +1103,7 @@ mod tests {
         assert!(existing_path(&root, 13, &fixed, &fixed.files[0]).is_err());
         std::fs::write(&path, b"bad").unwrap();
         assert_eq!(maintain(&root, 12).unwrap()[0].files[0].status, "pending");
+        drop(store);
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -1117,6 +1123,7 @@ mod tests {
         assert_eq!(maintain(&root, 12).unwrap()[0].status, "expired");
         assert!(!path.exists());
         assert_eq!(std::fs::read(&sibling).unwrap(), b"kept");
+        drop(store);
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -1158,6 +1165,7 @@ mod tests {
         assert_eq!(restored.files[0].downloaded_bytes, 4);
         assert!(!restored.auto_resume);
         assert!(restored.active_run.is_none());
+        drop(store);
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -1178,6 +1186,7 @@ mod tests {
             .is_some());
         std::fs::remove_file(&directory).unwrap();
         assert_eq!(maintain(&root, 12).unwrap()[0].status, "expired");
+        drop(store);
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -1216,10 +1225,10 @@ mod tests {
             "pending"
         );
         // Changing the authenticated self peer also invalidates an active guard.
-        std::fs::remove_file(root.join("telegram.session")).unwrap();
         sign_in(&root, 13);
         assert!(account.validate().is_err());
         assert!(file_cancelled(&account, &pack.id, "current", 1));
+        drop(store);
         std::fs::remove_dir_all(root).unwrap();
     }
 }

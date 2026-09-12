@@ -57,6 +57,19 @@ test('new regional language strings fit the narrow locale fixture', async ({ pag
 });
 
 test('desktop sponsor card renders without external creative dependencies', async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.assign(window, {
+      __TAURI_INTERNALS__: {
+        invoke: async (command: string) => {
+          if (command === 'cmd_get_supporter_status') return {
+            state: 'inactive', ad_free: false, message: '', terms_version: '2026-08-11',
+            terms_url: null, expires_at: null, offline_until: null, recovery_code_saved: false,
+          };
+          throw new Error(`Unexpected native command: ${command}`);
+        },
+      },
+    });
+  });
   await page.goto('/?design-gallery&sponsor-preview');
   await expect(page.getByRole('heading', { name: 'Sponsor placement preview' })).toBeVisible();
 

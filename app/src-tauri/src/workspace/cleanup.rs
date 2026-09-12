@@ -389,6 +389,7 @@ mod tests {
         .unwrap();
         assert_eq!(value.status, "deleted");
         assert!(restore(&reopened, &value.key).is_err());
+        drop(reopened);
         std::fs::remove_dir_all(root).unwrap();
     }
     #[tokio::test]
@@ -420,6 +421,7 @@ mod tests {
         )
         .await
         .is_err());
+        drop(store);
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -437,6 +439,7 @@ mod tests {
         let value = restore(&store, "saved:1").unwrap();
         assert!(!is_due(&value, i64::MAX));
         assert_eq!(list(&Store::open(&root, 2).unwrap()).unwrap().len(), 0);
+        drop(store);
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -450,6 +453,7 @@ mod tests {
         value.status = "deleted".into();
         store.put_record("removal", &value.key, &value).unwrap();
         assert!(restore(&store, &value.key).is_err());
+        drop(store);
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -460,6 +464,7 @@ mod tests {
         let second = schedule(&store, file(), "new".into(), 1, 1000).unwrap();
         assert_eq!(first.delete_after, second.delete_after);
         assert_eq!(second.fingerprint, "original");
+        drop(store);
         std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -452,6 +452,7 @@ mod tests {
         let replay = snapshot(&store).unwrap().items.remove(0);
         assert!(!replay.completed);
         assert_eq!(replay.position_ms, 100);
+        drop(store);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -481,6 +482,7 @@ mod tests {
         assert_eq!(queue[1].folder_id, Some(9));
         mutate(&store, PlaybackMutation::RemoveQueue { file: file(None) }).unwrap();
         assert_eq!(snapshot(&store).unwrap().queue[0].folder_id, Some(9));
+        drop(store);
         std::fs::remove_dir_all(root).unwrap();
     }
 }

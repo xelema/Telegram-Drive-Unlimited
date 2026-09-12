@@ -182,20 +182,20 @@ pub(crate) mod test_support {
     };
 
     pub fn sign_in(root: &Path, owner: i64) {
-        for name in [
-            "telegram.session",
-            "telegram.session-wal",
-            "telegram.session-shm",
-        ] {
-            let _ = std::fs::remove_file(root.join(name));
-        }
         let session = SqliteSession::open(root.join("telegram.session")).unwrap();
+        // The fixture client keeps SQLite open, so replace the self peer in
+        // place instead of relying on unlinking an open database on Windows.
+        sqlite::open(root.join("telegram.session"))
+            .unwrap()
+            .execute("DELETE FROM peer_info")
+            .unwrap();
         session.cache_peer(&PeerInfo::User {
             id: owner,
             auth: None,
             bot: Some(false),
             is_self: Some(true),
         });
+        assert_eq!(crate::workspace::current_owner(root).unwrap(), owner);
     }
     pub struct Fixture {
         pub root: PathBuf,
