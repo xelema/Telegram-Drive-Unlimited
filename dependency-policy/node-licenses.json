@@ -38,6 +38,30 @@
       "scope": "Optional image tooling dependency of the Worker development toolchain; not shipped in the application.",
       "owner": "repository maintainer",
       "expires": "2027-08-29"
+    },
+    "@img/sharp-libvips-darwin-x64@1.3.3": {
+      "license": "LGPL-3.0-or-later",
+      "scope": "Optional platform binary used by Worker development tooling; not linked into the application. Patched toolchain version; license and development-only scope are unchanged.",
+      "owner": "repository maintainer",
+      "expires": "2027-08-29"
+    },
+    "@img/sharp-libvips-linux-x64@1.3.3": {
+      "license": "LGPL-3.0-or-later",
+      "scope": "Optional platform binary used by Worker development tooling; not linked into the application. Patched toolchain version; license and development-only scope are unchanged.",
+      "owner": "repository maintainer",
+      "expires": "2027-08-29"
+    },
+    "@img/sharp-libvips-linuxmusl-x64@1.3.3": {
+      "license": "LGPL-3.0-or-later",
+      "scope": "Optional platform binary used by Worker development tooling; not linked into the application. Patched toolchain version; license and development-only scope are unchanged.",
+      "owner": "repository maintainer",
+      "expires": "2027-08-29"
+    },
+    "@img/sharp-wasm32@0.35.4": {
+      "license": "Apache-2.0 AND LGPL-3.0-or-later AND MIT",
+      "scope": "Optional image tooling dependency of the Worker development toolchain; not shipped in the application. Patched toolchain version; license and development-only scope are unchanged.",
+      "owner": "repository maintainer",
+      "expires": "2027-08-29"
     }
   },
   "policy": "Every installed npm package must declare an approved SPDX license. Exceptions require a package version, rationale, owner, and expiry date."
