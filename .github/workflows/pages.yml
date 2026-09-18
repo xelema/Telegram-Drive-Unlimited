@@ -31,6 +31,7 @@ jobs:
         run: |
           mkdir -p _site
           cp Docs/Telegram-Drive.html _site/index.html
+          cp Docs/robots.txt Docs/sitemap.xml _site/
           cp -R Docs/assets _site/assets
           touch _site/.nojekyll
 

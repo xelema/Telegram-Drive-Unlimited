@@ -3,19 +3,30 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Telegram-Drive — A local-first file workspace for Telegram</title>
-  <meta name="description" content="Organize, preview, sync, stream, and share files stored in your own Telegram account. Open source for Windows, macOS, Linux, and Android.">
+  <title>Telegram-Drive — Free Telegram File Manager &amp; Sync</title>
+  <meta name="description" content="Organize, sync, stream, and share your Telegram files with Telegram-Drive, a free, open-source file manager for Windows, macOS, Linux, and Android.">
+  <meta name="robots" content="index, follow, max-image-preview:large">
   <meta name="theme-color" id="themeColor" content="#0b0d12">
   <meta name="color-scheme" content="dark light">
   <meta name="referrer" content="strict-origin-when-cross-origin">
-  <link rel="canonical" href="https://caamer20.github.io/Telegram-Drive/">
+  <link rel="canonical" href="https://telegram-drive.com/">
   <link rel="icon" type="image/svg+xml" href="assets/logo.svg">
   <meta property="og:type" content="website">
-  <meta property="og:title" content="Telegram-Drive — Your Telegram files, organized">
-  <meta property="og:description" content="A local-first, open-source file workspace with opt-in desktop folder sync and support for 24 languages.">
-  <meta property="og:url" content="https://caamer20.github.io/Telegram-Drive/">
-  <meta property="og:image" content="https://caamer20.github.io/Telegram-Drive/assets/dashboard.webp">
+  <meta property="og:site_name" content="Telegram-Drive">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:title" content="Telegram-Drive — Free Telegram File Manager &amp; Sync">
+  <meta property="og:description" content="Organize, sync, stream, and share your Telegram files with Telegram-Drive, a free, open-source file manager for Windows, macOS, Linux, and Android.">
+  <meta property="og:url" content="https://telegram-drive.com/">
+  <meta property="og:image" content="https://telegram-drive.com/assets/dashboard.webp">
+  <meta property="og:image:type" content="image/webp">
+  <meta property="og:image:width" content="1800">
+  <meta property="og:image:height" content="1099">
+  <meta property="og:image:alt" content="Telegram-Drive desktop file manager showing Telegram folders and files">
   <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Telegram-Drive — Free Telegram File Manager &amp; Sync">
+  <meta name="twitter:description" content="Organize, sync, stream, and share your Telegram files with Telegram-Drive, a free, open-source file manager for Windows, macOS, Linux, and Android.">
+  <meta name="twitter:image" content="https://telegram-drive.com/assets/dashboard.webp">
+  <meta name="twitter:image:alt" content="Telegram-Drive desktop file manager showing Telegram folders and files">
   <script>
     document.documentElement.classList.add('js');
     try {
@@ -201,7 +212,7 @@
     .section-head.center { margin-inline: auto; text-align: center; }
     .section h2 { margin: 0; font-size: clamp(2.2rem, 5vw, 4.25rem); font-weight: 690; letter-spacing: -.052em; line-height: 1.04; text-wrap: balance; }
     .section-lede { margin: 1.35rem 0 0; color: var(--muted); font-size: clamp(1rem, 1.5vw, 1.15rem); line-height: 1.7; }
-    .statement { max-width: 980px; margin: 0; font-size: clamp(2rem, 5vw, 4rem); font-weight: 620; letter-spacing: -.05em; line-height: 1.12; }
+    .section h2.statement { max-width: 980px; margin: 0; font-size: clamp(2rem, 5vw, 4rem); font-weight: 620; letter-spacing: -.05em; line-height: 1.12; text-wrap: wrap; }
     .statement span { color: var(--muted); }
 
     .story { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(280px, .85fr); gap: clamp(3rem, 8vw, 7rem); align-items: center; margin-top: clamp(5rem, 10vw, 9rem); }
@@ -389,7 +400,42 @@
     }
   </style>
   <script type="application/ld+json">
-    {"@context":"https://schema.org","@type":"SoftwareApplication","name":"Telegram-Drive","applicationCategory":"UtilitiesApplication","operatingSystem":"Windows, macOS, Linux, Android","description":"A local-first, open-source file workspace with opt-in desktop folder sync for files stored in your Telegram account.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"url":"https://caamer20.github.io/Telegram-Drive/","downloadUrl":"https://github.com/caamer20/Telegram-Drive/releases","author":{"@type":"Person","name":"Cameron Amer"}}
+    {
+      "@context": "https://schema.org",
+      "@graph": [
+        {
+          "@type": "WebSite",
+          "@id": "https://telegram-drive.com/#website",
+          "name": "Telegram-Drive",
+          "alternateName": "Telegram Drive",
+          "url": "https://telegram-drive.com/",
+          "inLanguage": "en"
+        },
+        {
+          "@type": "SoftwareApplication",
+          "@id": "https://telegram-drive.com/#app",
+          "name": "Telegram-Drive",
+          "applicationCategory": "UtilitiesApplication",
+          "operatingSystem": "Windows, macOS, Linux, Android",
+          "description": "Organize, sync, stream, and share your Telegram files with Telegram-Drive, a free, open-source file manager for Windows, macOS, Linux, and Android.",
+          "isAccessibleForFree": true,
+          "offers": {
+            "@type": "Offer",
+            "price": "0",
+            "priceCurrency": "USD",
+            "url": "https://telegram-drive.com/#download"
+          },
+          "url": "https://telegram-drive.com/",
+          "downloadUrl": "https://github.com/caamer20/Telegram-Drive/releases",
+          "screenshot": "https://telegram-drive.com/assets/dashboard.webp",
+          "author": {
+            "@type": "Person",
+            "name": "Cameron Amer",
+            "url": "https://www.cameronamer.com/"
+          }
+        }
+      ]
+    }
   </script>
 </head>
 <body>
@@ -426,7 +472,7 @@
       <div class="shell">
         <p class="eyebrow">Open source · Local first · Cross-platform</p>
         <h1>Your Telegram files, <span>organized.</span></h1>
-        <p class="hero-copy">Telegram-Drive gives Saved Messages and your channels a focused file workspace—complete with uploads, previews, desktop folder sync, streaming, search, and sharing.</p>
+        <p class="hero-copy">Telegram-Drive is a free, open-source Telegram file manager for Saved Messages and your channels, with uploads, previews, desktop folder sync, streaming, search, and sharing.</p>
         <div class="hero-actions">
           <a class="button primary" id="heroDownload" href="https://github.com/caamer20/Telegram-Drive/releases" target="_blank" rel="noopener noreferrer">Download latest release</a>
           <a class="button" href="https://github.com/caamer20/Telegram-Drive" target="_blank" rel="noopener noreferrer">Explore the source <span aria-hidden="true">↗</span></a>
@@ -448,7 +494,7 @@
 
     <section class="section section-rule" id="product">
       <div class="shell">
-        <p class="statement">Telegram already holds the files. <span>Telegram-Drive adds the workspace around them.</span></p>
+        <h2 class="statement">Telegram already holds the files. <span>Telegram-Drive adds the workspace around them.</span></h2>
 
         <article class="story">
           <div class="story-media"><img src="assets/folders.webp" width="1500" height="916" loading="lazy" alt="Telegram-Drive folder list view" data-lightbox></div>

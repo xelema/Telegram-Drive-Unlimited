@@ -16,7 +16,7 @@ Organize, transfer, preview, stream, sync, and share the files you keep in Saved
 [![oosmetrics](https://api.oosmetrics.com/api/v1/badge/achievement/029fb97b-a54a-4566-a1eb-aa1a5039065d.svg)](https://oosmetrics.com/repo/caamer20/Telegram-Drive)
 [![oosmetrics](https://api.oosmetrics.com/api/v1/badge/achievement/2aa6f3f9-fd8a-4523-bd73-6625ee6a948a.svg)](https://oosmetrics.com/repo/caamer20/Telegram-Drive)
 
-[Download for desktop](https://github.com/caamer20/Telegram-Drive/releases/latest) · [Find the latest Android preview](https://github.com/caamer20/Telegram-Drive/releases) · [Product website](https://caamer20.github.io/Telegram-Drive/) · [Changelog](CHANGELOG.md)
+[Download for desktop](https://github.com/caamer20/Telegram-Drive/releases/latest) · [Find the latest Android preview](https://github.com/caamer20/Telegram-Drive/releases) · [Product website](https://telegram-drive.com/) · [Changelog](CHANGELOG.md)
 
 </div>
 
