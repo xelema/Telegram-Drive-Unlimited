@@ -328,22 +328,22 @@ mod desktop_session_reads {
     }
 
     #[test]
-    fn owner_lookup_waits_for_a_brief_telegram_writer_without_changing_the_session() {
+    fn an_uncommitted_telegram_writer_does_not_change_the_visible_owner_or_session() {
         let fixture = Fixture::new(101);
+        let account = fixture.guard();
         let path = fixture.0.join("telegram.session");
         let before = std::fs::read(&path).unwrap();
-        let writer_path = path.clone();
-        let (ready, acquired) = std::sync::mpsc::channel();
-        let writer = std::thread::spawn(move || {
-            let connection = sqlite::open(writer_path).unwrap();
-            connection.execute("BEGIN EXCLUSIVE").unwrap();
-            ready.send(()).unwrap();
-            std::thread::sleep(Duration::from_millis(60));
-            connection.execute("ROLLBACK").unwrap();
-        });
-        acquired.recv().unwrap();
+        let connection = sqlite::open(&path).unwrap();
+        // A reserved writer lock permits readers, which must still see the
+        // committed owner. Keep the transaction open until both reads finish.
+        connection
+            .execute("BEGIN IMMEDIATE; UPDATE peer_info SET peer_id=202 WHERE subtype=1")
+            .unwrap();
         assert_eq!(current_owner(&fixture.0).unwrap(), 101);
-        writer.join().unwrap();
+        account.validate().unwrap();
+        connection.execute("ROLLBACK").unwrap();
+        assert_eq!(current_owner(&fixture.0).unwrap(), 101);
+        account.validate().unwrap();
         assert_eq!(std::fs::read(path).unwrap(), before);
     }
 
@@ -361,27 +361,26 @@ mod desktop_session_reads {
     }
 
     #[test]
-    fn an_account_change_committed_during_contention_invalidates_the_old_guard() {
+    fn an_account_change_committed_after_contention_invalidates_the_old_guard() {
         let fixture = Fixture::new(101);
         let account = fixture.guard();
-        let path = fixture.0.join("telegram.session");
-        let (ready, acquired) = std::sync::mpsc::channel();
-        let writer = std::thread::spawn(move || {
-            let connection = sqlite::open(path).unwrap();
-            connection
-                .execute("BEGIN EXCLUSIVE; UPDATE peer_info SET peer_id=202 WHERE subtype=1")
-                .unwrap();
-            ready.send(()).unwrap();
-            std::thread::sleep(Duration::from_millis(60));
-            connection.execute("COMMIT").unwrap();
-        });
-        acquired.recv().unwrap();
-        assert!(account
-            .validate()
-            .unwrap_err()
-            .starts_with("ACCOUNT_CHANGED:"));
-        writer.join().unwrap();
+        let connection = sqlite::open(fixture.0.join("telegram.session")).unwrap();
+        connection
+            .execute("BEGIN EXCLUSIVE; UPDATE peer_info SET peer_id=202 WHERE subtype=1")
+            .unwrap();
+        // While the writer prevents identity reads, validation must fail closed.
+        // Commit only after that read finishes: a sleeping writer thread can be
+        // delayed beyond the reader's busy timeout on a loaded CI runner.
+        let error = account.validate().unwrap_err();
+        assert!(error.starts_with("ACCOUNT_UNAVAILABLE:"), "{error}");
+        connection.execute("COMMIT").unwrap();
+
+        // Once committed, the previous guard must report an account change,
+        // not remain unavailable or adopt the new owner.
+        let error = account.validate().unwrap_err();
+        assert!(error.starts_with("ACCOUNT_CHANGED:"), "{error}");
         assert_eq!(current_owner(&fixture.0).unwrap(), 202);
+        fixture.guard().validate().unwrap();
     }
 
     #[test]
