@@ -2,7 +2,9 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use grammers_client::Client;
 use grammers_mtsender::SenderPool;
 use grammers_session::storages::SqliteSession;
-use grammers_session::types::{PeerAuth, PeerInfo, UpdateState, UpdatesState};
+#[cfg(any(target_os = "android", target_os = "ios"))]
+use grammers_session::types::UpdateState;
+use grammers_session::types::{PeerAuth, PeerInfo, UpdatesState};
 use grammers_session::Session;
 use grammers_tl_types as tl;
 use std::path::{Path, PathBuf};
@@ -20,6 +22,17 @@ use crate::models::{AuthCodeDelivery, AuthCodeRequestResult, AuthCodeRequestStat
 use crate::TelegramState;
 use grammers_client::types::PasswordToken;
 use grammers_mtsender::InvocationError;
+
+fn open_client_session(root: &std::path::Path) -> sqlite::Result<Arc<SqliteSession>> {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        crate::workspace::open_session(root)
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        SqliteSession::open(root.join("telegram.session")).map(Arc::new)
+    }
+}
 
 fn session_sidecar_path(session_path: &Path, suffix: &str) -> PathBuf {
     let mut value = session_path.as_os_str().to_os_string();
@@ -138,10 +151,9 @@ pub async fn ensure_client_initialized(
     }
 
     let session_path = app_data_dir.join("telegram.session");
-    let session_path_str = session_path.to_string_lossy().to_string();
     log::info!("Opening the local Telegram session database");
 
-    let mut session_open_result = SqliteSession::open(&session_path_str);
+    let mut session_open_result = open_client_session(&app_data_dir);
 
     // Retry opening the session database up to 5 times (every 100ms)
     // in case the database is temporarily locked by the old shutting down runner.
@@ -149,7 +161,7 @@ pub async fn ensure_client_initialized(
         for attempt in 1..=5 {
             log::warn!("Failed to open session on attempt {} (database may be locked). Retrying in 100ms...", attempt);
             tokio::time::sleep(Duration::from_millis(100)).await;
-            session_open_result = SqliteSession::open(&session_path_str);
+            session_open_result = open_client_session(&app_data_dir);
             if session_open_result.is_ok() {
                 break;
             }
@@ -167,10 +179,13 @@ pub async fn ensure_client_initialized(
                 quarantine_id
             );
 
-            SqliteSession::open(&session_path_str)
+            open_client_session(&app_data_dir)
                 .map_err(|err| format!("Failed to open session after recreation: {}", err))?
         }
     };
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    crate::workspace::register_session(&app_data_dir, &session)?;
 
     let net_config = app_handle.state::<Arc<crate::vpn_optimizer::NetworkConfig>>();
     let preferred_dc = {
@@ -201,7 +216,6 @@ pub async fn ensure_client_initialized(
         connection_params.proxy_url = Some(proxy_url);
     }
 
-    let session = Arc::new(session);
     *state.session.lock().await = Some(session.clone());
     let pool = SenderPool::with_configuration(session, api_id, connection_params);
     let client = Client::new(&pool);
@@ -565,6 +579,44 @@ async fn current_client(state: &TelegramState) -> Result<Client, String> {
         .ok_or_else(|| "Telegram client is not initialized.".to_string())
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+type CapturedAuthentication = crate::workspace::AuthenticationSession;
+#[cfg(any(target_os = "android", target_os = "ios"))]
+struct CapturedAuthentication;
+
+async fn authentication_client(
+    state: &TelegramState,
+) -> Result<(Client, CapturedAuthentication), String> {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        // Client initialization holds this lock while installing its session.
+        // Capture the matching pair before sending any authentication request.
+        let clients = state.client.lock().await;
+        let client = clients
+            .as_ref()
+            .cloned()
+            .ok_or("Telegram client is not initialized.")?;
+        let sessions = state.session.lock().await;
+        let session = sessions
+            .as_ref()
+            .ok_or("Telegram session is not initialized.")?;
+        Ok((client, CapturedAuthentication::capture(session)?))
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        Ok((current_client(state).await?, CapturedAuthentication))
+    }
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn authenticated_peer(user: &grammers_client::types::User) -> PeerInfo {
+    let mut peer = PeerInfo::from(user);
+    if let PeerInfo::User { is_self, .. } = &mut peer {
+        *is_self = Some(true);
+    }
+    peer
+}
+
 async fn invoke_send_code(
     client: &Client,
     state: &TelegramState,
@@ -615,7 +667,13 @@ async fn complete_raw_login(
     client: &Client,
     state: &TelegramState,
     authorization: tl::types::auth::Authorization,
+    captured: &CapturedAuthentication,
 ) -> Result<(), String> {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let _ = state;
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let _ = captured;
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     let session = state
         .session
         .lock()
@@ -624,42 +682,48 @@ async fn complete_raw_login(
         .cloned()
         .ok_or_else(|| "Telegram session is not initialized.".to_string())?;
 
-    match &authorization.user {
-        tl::enums::User::User(user) => {
-            session.cache_peer(&PeerInfo::User {
-                id: user.id,
-                auth: Some(
-                    user.access_hash
-                        .map(PeerAuth::from_hash)
-                        .unwrap_or_default(),
-                ),
-                bot: Some(user.bot),
-                is_self: Some(true),
-            });
-        }
-        tl::enums::User::Empty(user) => {
-            session.cache_peer(&PeerInfo::User {
-                id: user.id,
-                auth: Some(PeerAuth::default()),
-                bot: Some(false),
-                is_self: Some(true),
-            });
-        }
-    }
+    let peer = match &authorization.user {
+        tl::enums::User::User(user) => PeerInfo::User {
+            id: user.id,
+            auth: Some(
+                user.access_hash
+                    .map(PeerAuth::from_hash)
+                    .unwrap_or_default(),
+            ),
+            bot: Some(user.bot),
+            is_self: Some(true),
+        },
+        tl::enums::User::Empty(user) => PeerInfo::User {
+            id: user.id,
+            auth: Some(PeerAuth::default()),
+            bot: Some(false),
+            is_self: Some(true),
+        },
+    };
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    session.cache_peer(&peer);
 
-    if let Ok(Ok(tl::enums::updates::State::State(update))) = timeout(
+    let updates = if let Ok(Ok(tl::enums::updates::State::State(update))) = timeout(
         Duration::from_secs(15),
         client.invoke(&tl::functions::updates::GetState {}),
     )
     .await
     {
-        session.set_update_state(UpdateState::All(UpdatesState {
+        Some(UpdatesState {
             pts: update.pts,
             qts: update.qts,
             date: update.date,
             seq: update.seq,
             channels: Vec::new(),
-        }));
+        })
+    } else {
+        None
+    };
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    captured.complete_verified(&peer, updates)?;
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    if let Some(updates) = updates {
+        session.set_update_state(UpdateState::All(updates));
     }
 
     Ok(())
@@ -671,6 +735,7 @@ async fn store_sent_code(
     attempt_id: u64,
     phone: String,
     sent_code: tl::enums::auth::SentCode,
+    captured: &CapturedAuthentication,
 ) -> Result<AuthCodeRequestResult, String> {
     if state.auth_attempt_counter.load(Ordering::SeqCst) != attempt_id {
         return Err("This login request was replaced by a newer attempt.".to_string());
@@ -692,8 +757,8 @@ async fn store_sent_code(
         }
         tl::enums::auth::SentCode::Success(success) => match success.authorization {
             tl::enums::auth::Authorization::Authorization(authorization) => {
-                complete_raw_login(client, state, authorization).await?;
                 *state.phone_login.lock().await = None;
+                complete_raw_login(client, state, authorization, captured).await?;
                 Ok(AuthCodeRequestResult {
                     status: AuthCodeRequestStatus::Authorized,
                     delivery: AuthCodeDelivery::TelegramApp,
@@ -746,7 +811,8 @@ pub async fn cmd_auth_request_code(
     // Store API ID
     *state.api_id.lock().await = Some(api_id);
 
-    let client_handle = ensure_client_initialized(&app_handle, &state, api_id).await?;
+    ensure_client_initialized(&app_handle, &state, api_id).await?;
+    let (client_handle, captured) = authentication_client(&state).await?;
 
     log::info!("Requesting login code for {}", redact_phone_number(&phone));
 
@@ -769,14 +835,22 @@ pub async fn cmd_auth_request_code(
     };
 
     let sent_code = invoke_send_code(&client_handle, &state, &request).await?;
-    store_sent_code(&client_handle, &state, attempt_id, phone, sent_code).await
+    store_sent_code(
+        &client_handle,
+        &state,
+        attempt_id,
+        phone,
+        sent_code,
+        &captured,
+    )
+    .await
 }
 
 #[tauri::command]
 pub async fn cmd_auth_resend_code(
     state: State<'_, TelegramState>,
 ) -> Result<AuthCodeRequestResult, String> {
-    let client = current_client(&state).await?;
+    let (client, captured) = authentication_client(&state).await?;
     let login = {
         let mut guard = state.phone_login.lock().await;
         let login = guard
@@ -829,7 +903,15 @@ pub async fn cmd_auth_resend_code(
         }
     };
 
-    store_sent_code(&client, &state, login.attempt_id, login.phone, sent_code).await
+    store_sent_code(
+        &client,
+        &state,
+        login.attempt_id,
+        login.phone,
+        sent_code,
+        &captured,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -873,7 +955,7 @@ pub async fn cmd_auth_sign_in(
         return Err("Enter the authentication code you received.".to_string());
     }
 
-    let client = current_client(&state).await?;
+    let (client, captured) = authentication_client(&state).await?;
     let login = state
         .phone_login
         .lock()
@@ -891,8 +973,8 @@ pub async fn cmd_auth_sign_in(
     match timeout(Duration::from_secs(30), client.invoke(&request)).await {
         Err(_) => Err("Telegram did not respond while verifying the code. Please try again.".to_string()),
         Ok(Ok(tl::enums::auth::Authorization::Authorization(auth))) => {
-            complete_raw_login(&client, &state, auth).await?;
             *state.phone_login.lock().await = None;
+            complete_raw_login(&client, &state, auth, &captured).await?;
             log::info!("Successfully logged in with a phone code.");
             Ok(AuthResult {
                 success: true,
@@ -938,18 +1020,19 @@ pub async fn cmd_auth_check_password(
     password: String,
     state: State<'_, TelegramState>,
 ) -> Result<AuthResult, String> {
-    let client = {
-        let guard = state.client.lock().await;
-        guard.as_ref().ok_or("Client not initialized")?.clone()
-    };
+    let (client, captured) = authentication_client(&state).await?;
 
     let mut pw_guard = state.password_token.lock().await;
     let pw_token = pw_guard.take().ok_or("No password session found")?;
 
     match client.check_password(pw_token, password.as_str()).await {
-        Ok(_user) => {
+        Ok(user) => {
             log::info!("2FA Success.");
             *state.phone_login.lock().await = None;
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            captured.complete_verified(&authenticated_peer(&user), None)?;
+            #[cfg(any(target_os = "android", target_os = "ios"))]
+            let _ = (&captured, user);
             Ok(AuthResult {
                 success: true,
                 next_step: Some("dashboard".to_string()),
@@ -976,7 +1059,8 @@ pub async fn cmd_auth_qr_login(
     // Store API ID
     *state.api_id.lock().await = Some(api_id);
 
-    let client = ensure_client_initialized(&app_handle, &state, api_id).await?;
+    ensure_client_initialized(&app_handle, &state, api_id).await?;
+    let (client, captured) = authentication_client(&state).await?;
 
     // Switching authentication methods invalidates any outstanding phone-code flow.
     state.auth_attempt_counter.fetch_add(1, Ordering::SeqCst);
@@ -1008,7 +1092,16 @@ pub async fn cmd_auth_qr_login(
             log::info!("QR login URL generated, expires at {}", t.expires);
             Ok(url)
         }
-        tl::enums::auth::LoginToken::Success(_s) => {
+        tl::enums::auth::LoginToken::Success(success) => {
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            match success.authorization {
+                tl::enums::auth::Authorization::Authorization(authorization) => {
+                    complete_raw_login(&client, &state, authorization, &captured).await?;
+                }
+                _ => return Err("Telegram did not confirm an existing account".into()),
+            }
+            #[cfg(any(target_os = "android", target_os = "ios"))]
+            let _ = (&captured, success);
             // Already authorized (e.g. from a previous session)
             log::info!("QR login: already authorized");
             Ok("__authorized__".to_string())
@@ -1032,16 +1125,19 @@ pub async fn cmd_auth_qr_login(
 /// accepts the token via auth.acceptLoginToken.
 #[tauri::command]
 pub async fn cmd_auth_qr_poll(state: State<'_, TelegramState>) -> Result<AuthResult, String> {
-    let client = {
-        let guard = state.client.lock().await;
-        guard.as_ref().ok_or("Client not initialized")?.clone()
-    };
+    let (client, captured) = authentication_client(&state).await?;
 
     // Check if the session is now authorized (user scanned QR on phone)
     match client.is_authorized().await {
         Ok(true) => {
             log::info!("QR login: session authorized!");
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            let user = client.get_me().await.map_err(map_auth_error)?;
             *state.phone_login.lock().await = None;
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            captured.complete_verified(&authenticated_peer(&user), None)?;
+            #[cfg(any(target_os = "android", target_os = "ios"))]
+            let _ = &captured;
             Ok(AuthResult {
                 success: true,
                 next_step: Some("dashboard".to_string()),

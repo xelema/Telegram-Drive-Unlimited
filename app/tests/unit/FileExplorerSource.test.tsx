@@ -32,6 +32,27 @@ describe('source identity in actual FileExplorer thumbnails', () => {
   });
   afterEach(() => vi.unstubAllGlobals());
 
+  it('keeps an uncached folder loading until its remote scan settles, then distinguishes empty and failed results', () => {
+    const props = {
+      files: [], loading: false, error: null, viewMode: 'grid' as const, selectedIds: [], activeFolderId: 9,
+      onFileClick: vi.fn(), onDelete: vi.fn(), onDownload: vi.fn(), onPreview: vi.fn(),
+      onManualUpload: vi.fn(), onFolderUpload: vi.fn(), showFolderUpload: false, onToggleSelection: vi.fn(),
+      cardScale: 1, sortField: 'name' as const, sortDirection: 'asc' as const, onSortChange: vi.fn(),
+    };
+    const view = render(<FileExplorer {...props} syncProgress={{ active: true, count: 0 }} />);
+    expect(screen.getByLabelText('Loading...')).toBeTruthy();
+    expect(screen.queryByText('This folder is empty')).toBeNull();
+    view.rerender(<FileExplorer {...props} syncProgress={{ active: false, count: 0 }} />);
+    expect(screen.getByText('This folder is empty')).toBeTruthy();
+    expect(screen.queryByLabelText('Loading...')).toBeNull();
+    view.rerender(<FileExplorer {...props} error={new Error('Remote scan failed')} syncProgress={{ active: false, count: 0 }} />);
+    expect(screen.getByText('Error loading files')).toBeTruthy();
+    expect(screen.queryByText('This folder is empty')).toBeNull();
+    view.rerender(<FileExplorer {...props} files={[saved]} syncProgress={{ active: true, count: 1 }} />);
+    expect(screen.queryByLabelText('Loading...')).toBeNull();
+    expect(screen.getByText('Saved.jpg')).toBeTruthy();
+  });
+
   it('loads and evicts Saved Messages separately from a colliding channel message', async () => {
     render(<FileExplorer files={[saved,{...saved,folder_id:9,name:'Channel.jpg'}]} loading={false} error={null}
       viewMode="grid" selectedIds={[]} activeFolderId={9} onFileClick={vi.fn()} onDelete={vi.fn()} onDownload={vi.fn()}

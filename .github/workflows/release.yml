@@ -487,5 +487,6 @@ jobs:
               repo: context.repo.repo,
               release_id: process.env.release_id,
               draft: false,
-              prerelease: false
+              prerelease: false,
+              make_latest: 'true'
             })

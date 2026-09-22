@@ -8,7 +8,11 @@ export function triggerHaptic(tone: HapticTone = 'selection') {
     warning: [18, 40, 18],
     error: [24, 35, 24, 35, 24],
   };
-  navigator.vibrate(pattern[tone]);
+  try {
+    navigator.vibrate(pattern[tone]);
+  } catch {
+    // Optional device feedback must never prevent the requested action.
+  }
 }
 
 export function animateThemeChange() {

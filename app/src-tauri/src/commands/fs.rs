@@ -309,6 +309,25 @@ pub(crate) async fn resolve_remote_envelope(
     media: &Media,
     caption: &str,
 ) -> Result<Option<EncryptedFileRecord>, String> {
+    resolve_remote_envelope_with_probe(
+        account,
+        folder_id,
+        message_id,
+        media,
+        caption,
+        probe_tdenc2_header(account, client, media),
+    )
+    .await
+}
+
+async fn resolve_remote_envelope_with_probe(
+    account: &crate::workspace::AccountGuard,
+    folder_id: Option<i64>,
+    message_id: i32,
+    media: &Media,
+    caption: &str,
+    probe: impl std::future::Future<Output = Result<Vec<u8>, String>>,
+) -> Result<Option<EncryptedFileRecord>, String> {
     use crate::workspace::envelope_cache;
     account.validate()?;
     let Media::Document(document) = media else {
@@ -324,12 +343,7 @@ pub(crate) async fn resolve_remote_envelope(
         document: document.id(),
         ciphertext_size: media_size(media),
     };
-    let header = envelope_cache::resolve(
-        account,
-        &identity,
-        probe_tdenc2_header(account, client, media),
-    )
-    .await?;
+    let header = envelope_cache::resolve(account, &identity, probe).await?;
     registry_record_from_header(
         folder_id,
         message_id,
@@ -339,6 +353,46 @@ pub(crate) async fn resolve_remote_envelope(
         "owner_document_bound",
     )
     .map(Some)
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+const LISTING_HEADER_DEFERRED: &str =
+    "Encrypted metadata is temporarily unavailable; open the file or refresh to retry";
+
+/// A first scan after upgrading must not wait forever for an encrypted file's
+/// media datacenter. Limit both one probe and the total network wait per scan.
+/// The owned cache is checked before this future is polled, so cached headers
+/// remain usable even after the network budget has been spent.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+struct ListingHeaderBudget {
+    remaining: std::time::Duration,
+    per_file: std::time::Duration,
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+impl Default for ListingHeaderBudget {
+    fn default() -> Self {
+        Self {
+            remaining: std::time::Duration::from_secs(15),
+            per_file: std::time::Duration::from_secs(5),
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+impl ListingHeaderBudget {
+    async fn probe(
+        &mut self,
+        fetch: impl std::future::Future<Output = Result<Vec<u8>, String>>,
+    ) -> Result<Vec<u8>, String> {
+        if self.remaining.is_zero() {
+            return Err(LISTING_HEADER_DEFERRED.into());
+        }
+        let started = tokio::time::Instant::now();
+        let result = tokio::time::timeout(self.per_file.min(self.remaining), fetch).await;
+        self.remaining = self.remaining.saturating_sub(started.elapsed());
+        result.map_err(|_| LISTING_HEADER_DEFERRED.to_string())?
+    }
 }
 
 fn inferred_mime_type(path: &str) -> &'static str {
@@ -3685,6 +3739,226 @@ mod folder_listing_tests {
         }
     }
 
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    #[tokio::test]
+    async fn cold_upgrade_listing_defers_stalled_headers_without_adopting_legacy_data() {
+        use crate::workspace::envelope_cache::test_support::{media, vault_header, Fixture};
+        let fixture = Fixture::new(22);
+        let (header, size, _) = vault_header("existing.mp4", 7);
+        let legacy = sqlite::open(fixture.root.join("shares.db")).unwrap();
+        legacy.execute("CREATE TABLE encrypted_files (folder_key TEXT,message_id INTEGER,header_blob BLOB)").unwrap();
+        let mut insert = legacy
+            .prepare("INSERT INTO encrypted_files VALUES('home',42,?)")
+            .unwrap();
+        insert.bind((1, header.as_slice())).unwrap();
+        insert.next().unwrap();
+        drop(insert);
+        let media = media("existing.mp4.tdenc", 100, size);
+        // This is a real grammers request whose sender remains alive without
+        // replying, like a stalled media datacenter during the first rescan.
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(30),
+            resolve_remote_envelope(
+                &fixture.account,
+                &fixture.client,
+                None,
+                42,
+                &media,
+                "TDENC2"
+            ),
+        )
+        .await
+        .is_err());
+
+        let mut budget = ListingHeaderBudget {
+            remaining: std::time::Duration::from_millis(20),
+            per_file: std::time::Duration::from_millis(20),
+        };
+        let result = resolve_remote_envelope_with_probe(
+            &fixture.account,
+            None,
+            42,
+            &media,
+            "TDENC2",
+            budget.probe(probe_tdenc2_header(
+                &fixture.account,
+                &fixture.client,
+                &media,
+            )),
+        )
+        .await;
+        assert!(matches!(result, Err(ref error) if error == LISTING_HEADER_DEFERRED));
+        assert!(budget.remaining.is_zero());
+        let mut row = legacy
+            .prepare("SELECT header_blob FROM encrypted_files")
+            .unwrap();
+        assert_eq!(row.next().unwrap(), sqlite::State::Row);
+        assert_eq!(row.read::<Vec<u8>, _>(0).unwrap(), header);
+        assert!(Store::open(&fixture.root, 22)
+            .unwrap()
+            .records::<serde_json::Value>("envelope-v1")
+            .unwrap()
+            .is_empty());
+        // Exhausting the scan budget never starts another network request.
+        assert_eq!(
+            budget
+                .probe(async { panic!("spent budget polled the network") })
+                .await
+                .unwrap_err(),
+            LISTING_HEADER_DEFERRED
+        );
+    }
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    #[tokio::test]
+    async fn listing_reads_owned_headers_after_budget_exhaustion_and_rejects_replacements() {
+        use crate::workspace::envelope_cache::{
+            self,
+            test_support::{media, vault_header, Fixture},
+            RemoteEnvelopeIdentity,
+        };
+        let fixture = Fixture::new(22);
+        let (header, size, key) = vault_header("existing.mp4", 7);
+        let identity = RemoteEnvelopeIdentity {
+            owner: 22,
+            folder: None,
+            message: 42,
+            document: 100,
+            ciphertext_size: size,
+        };
+        let store = Store::open(&fixture.root, 22).unwrap();
+        envelope_cache::write(&store, &identity, &header).unwrap();
+        let mut budget = ListingHeaderBudget {
+            remaining: std::time::Duration::ZERO,
+            ..Default::default()
+        };
+        let cached = resolve_remote_envelope_with_probe(
+            &fixture.account,
+            None,
+            42,
+            &media("existing.mp4.tdenc", 100, size),
+            "TDENC2",
+            budget.probe(async { panic!("cached header fetched from the network") }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let reader =
+            initialize_tdenc2_decryptor(cached.header_blob.as_deref().unwrap(), Some(&key), None)
+                .unwrap();
+        assert!(String::from_utf8_lossy(reader.metadata_plaintext()).contains("existing.mp4"));
+        let replacement = resolve_remote_envelope_with_probe(
+            &fixture.account,
+            None,
+            42,
+            &media("replacement.mp4.tdenc", 101, size),
+            "TDENC2",
+            budget.probe(async { panic!("spent budget fetched a replacement") }),
+        )
+        .await;
+        assert!(matches!(replacement, Err(ref error) if error == LISTING_HEADER_DEFERRED));
+        assert_eq!(
+            envelope_cache::read(&store, &identity).unwrap(),
+            Some(header)
+        );
+        assert!(resolve_remote_envelope_with_probe(
+            &fixture.account,
+            None,
+            43,
+            &media("plain.mp4", 102, size),
+            "",
+            budget.probe(async { panic!("plaintext file probed as encrypted") }),
+        )
+        .await
+        .unwrap()
+        .is_none());
+    }
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    #[tokio::test]
+    async fn listing_header_budget_cannot_publish_after_an_account_change() {
+        use crate::workspace::envelope_cache::{
+            self,
+            test_support::{media, sign_in, vault_header, Fixture},
+        };
+        let fixture = Fixture::new(22);
+        let (header, size, _) = vault_header("existing.mp4", 7);
+        let mut budget = ListingHeaderBudget::default();
+        let result = resolve_remote_envelope_with_probe(
+            &fixture.account,
+            None,
+            42,
+            &media("existing.mp4.tdenc", 100, size),
+            "TDENC2",
+            budget.probe(async {
+                sign_in(&fixture.root, 33);
+                Ok(header)
+            }),
+        )
+        .await;
+        assert!(matches!(result, Err(ref error) if error.contains("ACCOUNT_CHANGED")));
+        assert!(
+            envelope_cache::inventory(&Store::open(&fixture.root, 22).unwrap())
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    #[tokio::test]
+    async fn malformed_cached_metadata_and_flags_do_not_block_folder_refresh() {
+        let fixture = Fixture::new();
+        let store = Store::open(&fixture.root, 100).unwrap();
+        store
+            .db
+            .execute("UPDATE workspace_files SET metadata='{}' WHERE key='saved:1'; UPDATE workspace_files SET metadata='{malformed' WHERE key='saved:2'")
+            .unwrap();
+        let mut valid = file(3, None);
+        valid.is_favorite = true;
+        valid.is_pinned = true;
+        store
+            .remember_files(&[valid], "Saved Messages", "old")
+            .unwrap();
+        store.put_record("favorite", "saved:1", &true).unwrap();
+        store
+            .put_record("pin", "saved:1", &"malformed boolean")
+            .unwrap();
+        store.put_record("pin", "saved:2", &true).unwrap();
+        // An unrelated folder's flag must not bleed into a colliding message ID.
+        store.put_record("pin", "9:1", &true).unwrap();
+        assert!(store.folder_files(None).is_err());
+        let flags = crate::commands::file_activity::folder_flags(&fixture.account, None)
+            .await
+            .unwrap();
+        assert_eq!(flags.get(&1), Some(&(true, false)));
+        assert_eq!(flags.get(&2), Some(&(false, true)));
+        assert_eq!(flags.get(&3), Some(&(true, true)));
+        let other = crate::commands::file_activity::folder_flags(&fixture.account, Some(9))
+            .await
+            .unwrap();
+        assert_eq!(other.get(&1), Some(&(false, true)));
+        let mut row = store
+            .db
+            .prepare("SELECT metadata FROM workspace_files WHERE key='saved:1'")
+            .unwrap();
+        row.next().unwrap();
+        assert_eq!(row.read::<String, _>(0).unwrap(), "{}");
+        drop(row);
+        assert_eq!(
+            store.record::<String>("pin", "saved:1").unwrap().unwrap(),
+            "malformed boolean"
+        );
+        // A subsequent network scan can now overwrite its damaged metadata.
+        store
+            .remember_files(&[file(1, None)], "Saved Messages", "repaired")
+            .unwrap();
+        assert!(
+            crate::commands::file_activity::folder_flags(&fixture.account, None)
+                .await
+                .is_ok()
+        );
+    }
+
     #[tokio::test]
     async fn complete_snapshot_prunes_absent_files_only_in_its_account_and_folder() {
         let fixture = Fixture::new();
@@ -3897,6 +4171,8 @@ pub async fn cmd_get_files(
         let mut chunk = Vec::new();
         let mut all_files = Vec::new();
         let mut last_chunk_emitted = std::time::Instant::now();
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        let mut header_budget = ListingHeaderBudget::default();
 
         loop {
             let next_message = match msgs.next().await {
@@ -3982,7 +4258,12 @@ pub async fn cmd_get_files(
                         .to_ascii_lowercase()
                         .ends_with(".tdenc");
                 let mut probe_failed = false;
-                let encrypted_record = match resolve_remote_envelope(
+                #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                let mut probe_deferred = false;
+                #[cfg(any(target_os = "android", target_os = "ios"))]
+                let probe_deferred = false;
+                #[cfg(any(target_os = "android", target_os = "ios"))]
+                let envelope_result = resolve_remote_envelope(
                     &workspace_account,
                     &client,
                     folder_id,
@@ -3990,12 +4271,26 @@ pub async fn cmd_get_files(
                     &doc,
                     msg.text(),
                 )
-                .await
-                {
+                .await;
+                #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                let envelope_result = resolve_remote_envelope_with_probe(
+                    &workspace_account,
+                    folder_id,
+                    msg_id_i32,
+                    &doc,
+                    msg.text(),
+                    header_budget.probe(probe_tdenc2_header(&workspace_account, &client, &doc)),
+                )
+                .await;
+                let encrypted_record = match envelope_result {
                     Ok(record) => record,
                     Err(error) => {
                         workspace_account.validate()?;
                         log::warn!("TDENC2 probe failed for message {}: {}", msg_id_i32, error);
+                        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                        {
+                            probe_deferred = error == LISTING_HEADER_DEFERRED;
+                        }
                         probe_failed = true;
                         None
                     }
@@ -4014,6 +4309,10 @@ pub async fn cmd_get_files(
                     } else {
                         "encrypted_locked"
                     }
+                } else if probe_deferred {
+                    // Lack of a network response is not an integrity failure.
+                    // Keep it protected; opening it can retry independently.
+                    "encrypted_locked"
                 } else if probe_failed && name == "TDENC2" {
                     "encrypted_corrupt"
                 } else if suspected_tdenc2 {

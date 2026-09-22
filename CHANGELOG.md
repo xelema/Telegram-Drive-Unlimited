@@ -1,3 +1,25 @@
+## [3.9.5] - 2026-09-22
+
+### Desktop reliability
+
+- Fixed session database contention that could interrupt streaming or leave file loading unavailable after upgrading.
+- Restored workspace access after signing out and signing back in without restarting, including QR, phone-code, and two-step authentication.
+- Added bounded retries for temporary account lookup failures and made manual sync retry account verification.
+- Prevented stalled encrypted metadata requests from blocking an entire folder. Deferred files remain protected until their metadata can be retrieved.
+- Allowed folder refresh to recover from malformed optional cached metadata while preserving account isolation and stored records.
+- Kept the loading indicator visible while an uncached folder is being scanned instead of prematurely displaying an empty folder.
+- Improved sign-out progress, failure reporting, duplicate-attempt handling, and legacy local credential cleanup. Optional haptic feedback can no longer block confirmation.
+
+### Themes
+
+- Added AMOLED, Ocean, Forest, Plum, Paper, Rose, Mint, and Sky presets while preserving existing themes.
+
+### Compatibility
+
+- Preserved Telegram sessions, existing data, account isolation, and the $5.00 USD one-time lifetime ad-free license, recovery codes, and three-device allowance.
+- This desktop release remains compatible with the database format introduced in 3.9.0. Older 3.8.x applications cannot open that newer format; downgrading the executable does not downgrade saved data.
+- Added regression coverage for concurrent session activity, fresh sign-in, stale authentication replies, folder recovery, sign-out confirmation, and theme contrast.
+
 ## [3.9.0] - 2026-09-12
 
 ### Workspace and media

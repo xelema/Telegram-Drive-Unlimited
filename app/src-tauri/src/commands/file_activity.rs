@@ -106,7 +106,11 @@ pub(crate) async fn folder_flags(
     let account = account.clone();
     tokio::task::spawn_blocking(move || {
         account.validate()?;
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        let flags = read_folder_flags(&Store::open(&account.root, account.owner)?, folder_id)?;
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         let files = Store::open(&account.root, account.owner)?.folder_files(folder_id)?;
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         let flags = files
             .into_iter()
             .filter_map(|file| {
@@ -120,6 +124,58 @@ pub(crate) async fn folder_flags(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Flags are optional local decoration for a remote listing. A damaged cached
+/// filename or flag must not prevent that listing from repairing its metadata.
+/// Preserve the original rows and recover every valid flag independently.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn read_folder_flags(
+    store: &Store,
+    folder_id: Option<i64>,
+) -> Result<HashMap<i32, (bool, bool)>, String> {
+    let folder = folder_id
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "saved".into());
+    let prefix = format!("{folder}:");
+    let mut statement = store
+        .db
+        .prepare(
+            "SELECT f.key,f.metadata,r.value,p.value FROM workspace_files f
+         LEFT JOIN workspace_records r ON r.kind='favorite' AND r.id=f.key
+         LEFT JOIN workspace_records p ON p.kind='pin' AND p.id=f.key
+         WHERE f.folder=?",
+        )
+        .map_err(|e| e.to_string())?;
+    statement
+        .bind((1, folder.as_str()))
+        .map_err(|e| e.to_string())?;
+    let mut flags = HashMap::new();
+    while statement.next().map_err(|e| e.to_string())? == sqlite::State::Row {
+        let key = statement.read::<String, _>(0).map_err(|e| e.to_string())?;
+        let Some(message) = key
+            .strip_prefix(&prefix)
+            .and_then(|id| id.parse::<i32>().ok())
+            .filter(|id| *id > 0)
+        else {
+            continue;
+        };
+        let metadata = statement.read::<String, _>(1).map_err(|e| e.to_string())?;
+        let file = serde_json::from_str::<FileMetadata>(&metadata)
+            .ok()
+            .filter(|file| file.id == i64::from(message) && file.folder_id == folder_id);
+        let favorite = file.as_ref().is_some_and(|file| file.is_favorite);
+        let pinned = file.as_ref().is_some_and(|file| file.is_pinned);
+        let read_flag = |column, fallback| -> Result<bool, String> {
+            Ok(statement
+                .read::<Option<String>, _>(column)
+                .map_err(|e| e.to_string())?
+                .and_then(|value| serde_json::from_str::<bool>(&value).ok())
+                .unwrap_or(fallback))
+        };
+        flags.insert(message, (read_flag(2, favorite)?, read_flag(3, pinned)?));
+    }
+    Ok(flags)
 }
 
 #[allow(clippy::too_many_arguments)]
