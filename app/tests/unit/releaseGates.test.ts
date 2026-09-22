@@ -26,7 +26,9 @@ describe('release safety gates', () => {
     );
     expect(release).toContain('run: cargo test --lib');
     expect(release).toContain('npx wrangler deploy --dry-run');
-    expect(createReleaseJob).toContain('needs: verify-release');
+    expect(createReleaseJob).toContain('needs: [verify-release, dependency-assurance]');
+    expect(release).toContain('uses: ./.github/workflows/dependency-assurance.yml');
+    expect(workflow('dependency-assurance.yml')).toContain('  workflow_call:');
   });
 
   it('keeps release manifests and the first changelog heading on one version', () => {

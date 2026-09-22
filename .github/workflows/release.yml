@@ -6,6 +6,12 @@ on:
       - 'v*'  # Trigger on version tags like v1.0.0, v1.0.1
 
 jobs:
+  dependency-assurance:
+    name: Verify dependency security policy
+    uses: ./.github/workflows/dependency-assurance.yml
+    permissions:
+      contents: read
+
   verify-release:
     name: Verify release invariants
     runs-on: ubuntu-22.04
@@ -78,7 +84,7 @@ jobs:
           npx wrangler deploy --dry-run
 
   create-release:
-    needs: verify-release
+    needs: [verify-release, dependency-assurance]
     runs-on: ubuntu-latest
     outputs:
       release_id: ${{ steps.create-release.outputs.result }}

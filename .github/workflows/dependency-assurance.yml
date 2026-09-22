@@ -1,6 +1,7 @@
 name: Dependency assurance
 
 on:
+  workflow_call:
   pull_request:
     paths:
       - 'app/package.json'
