@@ -106,7 +106,7 @@ native-e2e = []
 
 [[bin]]
 name = "native-e2e-driver"
-path = "tests/driver/main.rs"
+path = "test-support/native_e2e_driver.rs"
 required-features = ["native-e2e"]
 test = false
 
