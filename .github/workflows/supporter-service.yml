@@ -34,7 +34,7 @@ jobs:
           cache-dependency-path: supporter-service/package-lock.json
       - run: npm ci
       - run: npm run check
-      - run: npm run test:coverage
+      - run: npm run test:e2e
       - run: npx wrangler deploy --dry-run
 
   deploy:

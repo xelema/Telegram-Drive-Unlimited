@@ -1,3 +1,18 @@
+## [3.9.8] - 2026-09-29
+
+### Desktop reliability
+
+- Share update checks and installation progress between Settings and the update banner, with recovery from unavailable local release-note storage.
+- Correct proxy/VPN settings requests and preserve saved settings when startup reads fail.
+- Improve search-filter presentation, supporter license explanations, and translated desktop messaging.
+- Correct local streaming/share route coexistence and remove unused internal code while preserving account, encryption, transfer, and lifetime supporter compatibility.
+
+### Release verification
+
+- Replace retired unit runners with browser, native process/HTTP/storage, Worker HTTP/local-D1, and release-tool E2E journeys.
+- Retain dependency assurance, security/configuration checks, formatting, localization, bundle budgets, and platform build gates.
+- External Telegram/PayPal boundaries use controlled fixtures in automated suites; these do not replace live-service or installed-device acceptance.
+
 ## [3.9.5] - 2026-09-22
 
 ### Desktop reliability

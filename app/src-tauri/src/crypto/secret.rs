@@ -77,34 +77,3 @@ impl From<[u8; 32]> for SecretKey {
         Self(key)
     }
 }
-
-/// Zeroizing buffer for plaintext operations.
-pub struct ZeroizingBuffer(Vec<u8>);
-
-impl ZeroizingBuffer {
-    pub fn new(capacity: usize) -> Self {
-        Self(vec![0u8; capacity])
-    }
-
-    pub fn with_data(data: Vec<u8>) -> Self {
-        Self(data)
-    }
-
-    pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        &mut self.0
-    }
-
-    pub fn as_slice(&self) -> &[u8] {
-        &self.0
-    }
-
-    pub fn into_vec(mut self) -> Vec<u8> {
-        std::mem::take(&mut self.0)
-    }
-}
-
-impl Drop for ZeroizingBuffer {
-    fn drop(&mut self) {
-        self.0.zeroize();
-    }
-}

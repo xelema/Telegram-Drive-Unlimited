@@ -16,6 +16,7 @@ import {
 
 import { useTranslation } from "react-i18next";
 import i18n from '../../i18n';
+import '../../i18n/supporterTranslations';
 
 function AuthThemeToggle() {
     const { theme, toggleTheme } = useTheme();
@@ -620,27 +621,27 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
                         >
                             <div className="relative mb-5 flex items-center justify-center">
                                 <h2 className="text-center text-app-title font-semibold text-app-text">
-                                    Support the Project
+                                    {t('supporter_license.auth_title')}
                                 </h2>
-                                <button onClick={() => setShowDonate(false)} className="quiet-control absolute end-0 flex h-8 w-8 items-center justify-center text-app-text-secondary hover:text-app-text" aria-label="Close donation options">
+                                <button onClick={() => setShowDonate(false)} className="quiet-control absolute end-0 flex h-8 w-8 items-center justify-center text-app-text-secondary hover:text-app-text" aria-label={t('supporter_license.auth_close')}>
                                     <X className="h-4 w-4" />
                                 </button>
                             </div>
 
                             <div className="space-y-4 text-center">
                                 <p className="mb-5 text-ui leading-relaxed text-app-text-secondary">
-                                    If you find Telegram Drive useful, the optional $5 USD Lifetime Ad-Free Supporter License is available after sign-in in Settings → Privacy. It removes sponsor placements on up to three supported devices total without locking any features behind payment. Only that verified in-app PayPal checkout activates ad-free access.
+                                    {t('supporter_license.auth_description')}
                                 </p>
 
                                 <div className="space-y-4">
                                     <a href="#" onClick={(e) => { e.preventDefault(); open('https://link.trustwallet.com/send?address=ltc1q6wkr5ac4u0pxx4hx7xgwn0gsaku25ws0df73rp&asset=c2'); }} className="block hover:opacity-80 transition-opacity">
-                                        <img src="https://img.shields.io/badge/Donate-LTC-345D9D?style=for-the-badge&logo=litecoin&logoColor=white" alt="Donate LTC" className="mx-auto h-[28px]" />
+                                        <img src="https://img.shields.io/badge/Donate-LTC-345D9D?style=for-the-badge&logo=litecoin&logoColor=white" alt={t('supporter_license.donate_ltc')} className="mx-auto h-[28px]" />
                                     </a>
 
                                     <a href="#" onClick={(e) => { e.preventDefault(); open('https://link.trustwallet.com/send?asset=c0&address=bc1q5pt7m2fk6w0dzsnf6vvd5k6nw5k44785286ujy'); }} className="block hover:opacity-80 transition-opacity">
-                                        <img src="https://img.shields.io/badge/Donate-BTC-F7931A?style=for-the-badge&logo=bitcoin&logoColor=white" alt="Donate BTC" className="mx-auto h-[28px]" />
+                                        <img src="https://img.shields.io/badge/Donate-BTC-F7931A?style=for-the-badge&logo=bitcoin&logoColor=white" alt={t('supporter_license.donate_btc')} className="mx-auto h-[28px]" />
                                     </a>
-                                    <p className="text-metadata leading-5 text-app-text-tertiary">Cryptocurrency tips are optional donations and do not activate ad-free access. Refund availability depends on the payment method and applicable law.</p>
+                                    <p className="text-metadata leading-5 text-app-text-tertiary">{t('supporter_license.auth_crypto_note')}</p>
                                 </div>
                             </div>
                         </motion.div>

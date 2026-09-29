@@ -183,24 +183,3 @@ pub async fn cmd_regenerate_webdav_token(app: AppHandle) -> Result<WebDavTokenRe
         token,
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{verify_token, WebDavSettingsFile, DEFAULT_WEBDAV_PORT};
-
-    #[test]
-    fn defaults_are_disabled_and_read_only() {
-        let settings = WebDavSettingsFile::default();
-        assert!(!settings.enabled);
-        assert!(!settings.write_enabled);
-        assert_eq!(settings.port, DEFAULT_WEBDAV_PORT);
-        assert!(settings.token_hash.is_none());
-    }
-
-    #[test]
-    fn token_verification_is_exact() {
-        let expected = "97019edd94f27971f9253dce908be0578253e4bec41bf26344a558ea35e74666";
-        assert!(verify_token("telegram-drive-webdav", expected));
-        assert!(!verify_token("telegram-drive-webdaV", expected));
-    }
-}

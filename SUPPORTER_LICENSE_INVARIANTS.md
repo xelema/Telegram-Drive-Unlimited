@@ -29,15 +29,17 @@ At minimum, run these checks whenever a change can affect this contract:
 ```bash
 cd supporter-service
 npm run check
-npm test
+npm run test:e2e
 npx wrangler deploy --dry-run
 
 cd ../app
-npm test -- --run tests/unit/SupporterContext.test.tsx tests/unit/SupporterSettingsSection.test.tsx tests/unit/MobileSupporterCard.test.tsx tests/unit/supporterVisibility.test.ts tests/unit/sponsorLinks.test.ts
+npm run test:e2e
 
 cd src-tauri
-cargo test supporter --lib
+cargo test --locked --features native-e2e --test native_e2e
 ```
+
+These are application-boundary E2E checks; the retired unit suites are not release prerequisites. The Worker suite uses real local HTTP/workerd/D1 and a simulated external PayPal transport. Browser fixtures control the native boundary. See [TESTING.md](TESTING.md) for their limits; the installed-app, secure-storage, update-persistence, and PayPal sandbox acceptance below remains required where applicable.
 
 Before a supported desktop or Android release, also verify:
 

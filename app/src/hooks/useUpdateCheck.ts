@@ -1,10 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
-import { check, Update } from '@tauri-apps/plugin-updater';
-import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
-import { type as osType } from '@tauri-apps/plugin-os';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import type { Update } from '@tauri-apps/plugin-updater';
+import type { UpdateInstallPhase } from '../services/updateReliability';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import { installVerifiedUpdate, type UpdateInstallPhase } from '../services/updateReliability';
 import { getInstallationInfo, RELEASES_URL } from '../services/installationInfo';
 
 interface UpdateState {
@@ -18,20 +15,13 @@ interface UpdateState {
     managedByPackageManager: boolean;
 }
 
-interface AndroidUpdateManifest {
-    version: string;
-    versionCode: number;
+interface UpdateCheckResult {
+    version: string | null;
+    error: string | null;
 }
 
-interface AndroidUpdateProgress {
-    downloadedBytes: number;
-    totalBytes?: number;
-    percent?: number;
-}
-
-interface AndroidInstallResult {
-    installerLaunched: boolean;
-    unknownSourcesSettingsOpened: boolean;
+interface UpdateInstallResult {
+    error: string | null;
 }
 
 export function useUpdateCheck() {
@@ -46,115 +36,96 @@ export function useUpdateCheck() {
         managedByPackageManager: false,
     });
     const [update, setUpdate] = useState<Update | null>(null);
-    const [androidUpdate, setAndroidUpdate] = useState<AndroidUpdateManifest | null>(null);
-    const isAndroid = (() => {
-        try { return osType() === 'android'; } catch { return false; }
-    })();
+    const checkPromise = useRef<Promise<UpdateCheckResult> | null>(null);
+    const installPromise = useRef<Promise<UpdateInstallResult> | null>(null);
+    const currentVersion = useRef<string | null>(null);
+    const checkGeneration = useRef(0);
 
-    const checkForUpdates = useCallback(async () => {
-        setState(s => ({ ...s, checking: true, error: null }));
-        try {
-            if (isAndroid) {
-                const updateInfo = await invoke<AndroidUpdateManifest | null>('cmd_check_android_update');
-                setAndroidUpdate(updateInfo);
+    const checkForUpdates = useCallback((): Promise<UpdateCheckResult> => {
+        if (checkPromise.current) return checkPromise.current;
+        if (installPromise.current) return Promise.resolve({ version: currentVersion.current, error: null });
+
+        const generation = ++checkGeneration.current;
+        const superseded = () => generation !== checkGeneration.current;
+        const operation = (async (): Promise<UpdateCheckResult> => {
+            setState(s => ({ ...s, checking: true, error: null }));
+            try {
+                const installation = await getInstallationInfo();
+                const { check } = await import('@tauri-apps/plugin-updater');
+                if (superseded()) return { version: currentVersion.current, error: null };
+                const updateInfo = await check();
+                if (superseded()) return { version: currentVersion.current, error: null };
+                setUpdate(updateInfo);
+                currentVersion.current = updateInfo?.version ?? null;
                 setState(s => ({
                     ...s,
                     checking: false,
                     available: updateInfo !== null,
                     version: updateInfo?.version ?? null,
-                }));
-                return;
-            }
-            const installation = await getInstallationInfo();
-            const updateInfo = await check();
-            if (updateInfo) {
-                setUpdate(updateInfo);
-                setState(s => ({
-                    ...s,
-                    checking: false,
-                    available: true,
-                    version: updateInfo.version,
                     managedByPackageManager: installation.managedByPackageManager,
                 }));
-            } else {
-                setState(s => ({
-                    ...s,
-                    checking: false,
-                    available: false,
-                    managedByPackageManager: installation.managedByPackageManager,
-                }));
-            }
-        } catch (err: unknown) {
-            const message = err instanceof Error ? err.message : 'Failed to check for updates';
-            setState(s => ({
-                ...s,
-                checking: false,
-                error: message,
-            }));
-        }
-    }, [isAndroid]);
-
-    const downloadAndInstall = useCallback(async () => {
-        if (!update && !androidUpdate) return;
-
-        if (state.managedByPackageManager) {
-            try {
-                await openUrl(RELEASES_URL);
+                return { version: updateInfo?.version ?? null, error: null };
             } catch (err: unknown) {
-                const message = err instanceof Error ? err.message : 'Failed to open the release page';
-                setState(s => ({ ...s, error: message }));
+                if (superseded()) return { version: currentVersion.current, error: null };
+                const message = err instanceof Error ? err.message : String(err);
+                setState(s => ({ ...s, checking: false, error: message }));
+                return { version: null, error: message };
             }
-            return;
-        }
+        })();
+        checkPromise.current = operation;
+        void operation.then(() => {
+            if (checkPromise.current === operation) checkPromise.current = null;
+        });
+        return operation;
+    }, []);
 
-        setState(s => ({ ...s, downloading: true, progress: 0, phase: 'downloading', error: null }));
-        try {
-            if (isAndroid) {
-                const unlisten = await listen<AndroidUpdateProgress>('android-update-progress', (event) => {
-                    const progress = event.payload.percent;
-                    if (progress !== undefined) {
-                        setState(s => ({
-                            ...s,
-                            progress,
-                            phase: progress >= 100 ? 'installing' : 'downloading',
-                        }));
-                    }
-                });
+    const downloadAndInstall = useCallback((): Promise<UpdateInstallResult> => {
+        if (installPromise.current) return installPromise.current;
+        if (!update) return Promise.resolve({ error: null });
+
+        // An earlier check must not replace or hide the candidate being installed.
+        ++checkGeneration.current;
+        checkPromise.current = null;
+        const operation = (async (): Promise<UpdateInstallResult> => {
+            setState(s => ({ ...s, checking: false }));
+            if (state.managedByPackageManager) {
                 try {
-                    const result = await invoke<AndroidInstallResult>('cmd_download_and_install_android_update');
-                    if (result.unknownSourcesSettingsOpened) {
-                        setState(s => ({
-                            ...s,
-                            downloading: false,
-                            phase: null,
-                            error: 'Allow Telegram Drive to install updates, then choose Update Now again.',
-                        }));
-                    }
-                } finally {
-                    unlisten();
+                    await openUrl(RELEASES_URL);
+                    return { error: null };
+                } catch (err: unknown) {
+                    const message = err instanceof Error ? err.message : String(err);
+                    setState(s => ({ ...s, error: message }));
+                    return { error: message };
                 }
-                return;
             }
-            await installVerifiedUpdate(
-                update!,
-                (nextProgress) => setState(s => ({ ...s, progress: nextProgress })),
-                (phase) => setState(s => ({ ...s, phase })),
-            );
-        } catch (err: unknown) {
-            const message = err instanceof Error ? err.message : 'Failed to install update';
-            setState(s => ({
-                ...s,
-                downloading: false,
-                phase: null,
-                error: message,
-            }));
-        }
-    }, [androidUpdate, isAndroid, state.managedByPackageManager, update]);
+
+            setState(s => ({ ...s, downloading: true, progress: 0, phase: 'downloading', error: null }));
+            try {
+                const { installVerifiedUpdate } = await import('../services/updateInstall');
+                await installVerifiedUpdate(
+                    update!,
+                    (nextProgress) => setState(s => ({ ...s, progress: nextProgress })),
+                    (phase) => setState(s => ({ ...s, phase })),
+                );
+                return { error: null };
+            } catch (err: unknown) {
+                const message = err instanceof Error ? err.message : String(err);
+                setState(s => ({ ...s, downloading: false, phase: null, error: message }));
+                return { error: message };
+            }
+        })();
+        installPromise.current = operation;
+        void operation.then(() => { installPromise.current = null; });
+        return operation;
+    }, [state.managedByPackageManager, update]);
 
     const dismissUpdate = useCallback(() => {
-        setState(s => ({ ...s, available: false, phase: null }));
+        if (installPromise.current) return;
+        ++checkGeneration.current;
+        checkPromise.current = null;
+        currentVersion.current = null;
+        setState(s => ({ ...s, checking: false, available: false, version: null, phase: null }));
         setUpdate(null);
-        setAndroidUpdate(null);
     }, []);
 
     useEffect(() => {

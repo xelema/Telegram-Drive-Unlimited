@@ -14,20 +14,6 @@ pub struct VideoMetadata {
     pub height: Option<u32>,
 }
 
-#[derive(serde::Deserialize)]
-pub struct BatchMetadataRequest {
-    pub message_id: i32,
-    pub file_name: String,
-}
-
-#[derive(serde::Serialize)]
-pub struct BatchMetadataEntry {
-    pub message_id: i32,
-    pub duration_secs: Option<f64>,
-    pub width: Option<u32>,
-    pub height: Option<u32>,
-}
-
 #[tauri::command]
 pub async fn cmd_get_video_metadata(
     message_id: i32,
@@ -51,36 +37,6 @@ pub async fn cmd_get_video_metadata(
     })
 }
 
-#[tauri::command]
-pub async fn cmd_get_video_metadata_batch(
-    requests: Vec<BatchMetadataRequest>,
-    folder_id: Option<i64>,
-    state: State<'_, TelegramState>,
-) -> Result<Vec<BatchMetadataEntry>, String> {
-    let client = { state.client.lock().await.clone() };
-    let client = client.ok_or_else(|| "Not connected to Telegram".to_string())?;
-    let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
-
-    let mut results: Vec<BatchMetadataEntry> = Vec::with_capacity(requests.len());
-
-    for req in &requests {
-        if !req.file_name.to_lowercase().ends_with(".mp4") {
-            continue;
-        }
-        match download_and_process(&client, &peer, req).await {
-            Ok(e) => results.push(e),
-            Err(_) => results.push(BatchMetadataEntry {
-                message_id: req.message_id,
-                duration_secs: None,
-                width: None,
-                height: None,
-            }),
-        }
-    }
-
-    Ok(results)
-}
-
 // ── Internal helpers ─────────────────────────────────────────────────
 
 struct ParsedMetadata {
@@ -88,40 +44,6 @@ struct ParsedMetadata {
     video_codec: Option<String>,
     has_audio: bool,
     track_count: usize,
-}
-
-/// Download the first 2 MB of a file and parse metadata + scan tkhd.
-async fn download_and_process(
-    client: &grammers_client::Client,
-    peer: &grammers_client::types::Peer,
-    req: &BatchMetadataRequest,
-) -> Result<BatchMetadataEntry, String> {
-    let messages = client
-        .get_messages_by_id(peer, &[req.message_id])
-        .await
-        .map_err(|e| e.to_string())?;
-    let msg = messages
-        .into_iter()
-        .flatten()
-        .next()
-        .ok_or_else(|| format!("Message {} not found", req.message_id))?;
-    let media = msg.media().ok_or_else(|| "No media".to_string())?;
-
-    let size = match &media {
-        Media::Document(d) => d.size() as u64,
-        _ => return Err("Not a document".to_string()),
-    };
-
-    let buffer = download_bytes(client, &media, size).await?;
-    let meta = parse_mp4_metadata(&buffer)?;
-    let (width, height) = mp4_utils::scan_video_tkhd_dimensions(&buffer);
-
-    Ok(BatchMetadataEntry {
-        message_id: req.message_id,
-        duration_secs: meta.duration_secs,
-        width,
-        height,
-    })
 }
 
 async fn download_moov_chunk(

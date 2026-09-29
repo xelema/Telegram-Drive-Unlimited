@@ -71,6 +71,7 @@ export function FileListItem({
             style={{ opacity: isDragging ? 0.45 : undefined }}
             {...(!isFolder ? attributes : {})}
             {...(!isFolder ? listeners : {})}
+            aria-disabled={undefined}
             className={`group grid h-10 cursor-pointer grid-cols-[1.75rem_minmax(0,1fr)_2rem] items-center gap-3 border-b border-app-border-subtle px-3 transition-colors hover:bg-app-hover sm:grid-cols-[1.75rem_minmax(0,2fr)_6rem_8rem_2rem]
                 ${selectedIds.includes(file.id) ? 'bg-app-selected' : ''}
                 ${isFileDragOver ? 'bg-app-selected ring-2 ring-inset ring-app-accent' : ''}

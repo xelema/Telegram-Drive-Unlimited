@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - "app/**"
+      - "scripts/check-test-policy.cjs"
+      - "scripts/check-app-security.cjs"
       - ".github/workflows/android.yml"
       - ".github/workflows/desktop-sync-ci.yml"
       - ".github/workflows/release.yml"
@@ -11,6 +13,8 @@ on:
     branches: [main, develop]
     paths:
       - "app/**"
+      - "scripts/check-test-policy.cjs"
+      - "scripts/check-app-security.cjs"
       - ".github/workflows/android.yml"
       - ".github/workflows/desktop-sync-ci.yml"
       - ".github/workflows/release.yml"
@@ -54,9 +58,10 @@ jobs:
         working-directory: app
         run: npm ci
 
-      - name: Test frontend behavior and architecture invariants
-        working-directory: app
-        run: npm test
+      - name: Validate E2E-only testing policy and app security configuration
+        run: |
+          node scripts/check-test-policy.cjs
+          node scripts/check-app-security.cjs
 
       - name: Validate localization resources
         if: runner.os == 'Linux'
@@ -67,9 +72,9 @@ jobs:
         working-directory: app
         run: npm run build:verify
 
-      - name: Test Rust library and sync invariants
+      - name: Run native process and HTTP end-to-end journeys
         working-directory: app/src-tauri
-        run: cargo test --lib
+        run: cargo test --locked --features native-e2e --test native_e2e
 
       - name: Verify Rust formatting
         if: runner.os == 'Linux'
@@ -78,7 +83,7 @@ jobs:
 
       - name: Lint native targets without warnings
         working-directory: app/src-tauri
-        run: cargo clippy --lib --all-targets -- -D warnings
+        run: cargo clippy --locked --features native-e2e --lib --all-targets -- -D warnings
 
       - name: Build the native Tauri application without installers
         working-directory: app
@@ -103,7 +108,7 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Run desktop UI end-to-end and visual regression tests
         working-directory: app
-        run: npm run visual:test
+        run: npm run test:e2e
       - name: Upload failure artifacts
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

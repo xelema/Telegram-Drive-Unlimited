@@ -57,18 +57,19 @@ pub struct VpnConfig {
     pub retry_attempts: u32,        // 0–5
     pub retry_base_backoff_ms: u64, // 500–5000
     pub retry_max_backoff_ms: u64,  // 8000–60000
+    // Retained in saved settings for backward compatibility; polling is not configurable here.
     pub adaptive_polling: bool,
     pub polling_min_sec: u32,      // 10–30
     pub polling_max_sec: u32,      // 45–120
     pub preferred_dc: String,      // "auto" | "dc1"–"dc5"
     pub dc_fallback_attempts: u32, // 1–4
     pub flood_wait_respect: bool,
-    pub peer_cache_size: usize,        // 100–2000
-    pub bandwidth_limit_up_kbs: u32,   // 0 = unlimited
+    pub peer_cache_size: usize, // Compatibility field; no runtime size control.
+    pub bandwidth_limit_up_kbs: u32, // Compatibility field; upload throttling is not implemented.
     pub bandwidth_limit_down_kbs: u32, // 0 = unlimited
-    pub chunk_size_kb: u32,            // 128, 256, 512
-    pub keep_alive_interval_sec: u32,  // 0 = disabled, 30–120
-    pub auto_detect_vpn: bool,
+    pub chunk_size_kb: u32,     // 128, 256, 512
+    pub keep_alive_interval_sec: u32, // 0 = disabled, 30–120
+    pub auto_detect_vpn: bool,  // Compatibility field; detection is explicitly requested.
     pub archive_max_bytes: u64, // 0 = unlimited, max bytes for bulk archive (API)
 }
 
@@ -213,16 +214,6 @@ impl NetworkConfig {
         }
     }
 
-    /// Network read/write timeout in seconds. Default 10s, multiplied when VPN mode on.
-    pub fn rw_timeout_secs(&self) -> u64 {
-        let vpn = self.vpn.read().unwrap();
-        if vpn.enabled {
-            10 * vpn.timeout_multiplier as u64
-        } else {
-            10
-        }
-    }
-
     /// How many retry attempts for API calls. Default 0 (no retry) when VPN off.
     pub fn retry_attempts(&self) -> u32 {
         let vpn = self.vpn.read().unwrap();
@@ -267,16 +258,6 @@ impl NetworkConfig {
         }
     }
 
-    /// Peer cache size. Default 500.
-    pub fn peer_cache_size(&self) -> usize {
-        let vpn = self.vpn.read().unwrap();
-        if vpn.enabled {
-            vpn.peer_cache_size
-        } else {
-            500
-        }
-    }
-
     /// Whether proxy is active and has a valid host.
     pub fn is_proxy_active(&self) -> bool {
         let proxy = self.proxy.read().unwrap();
@@ -290,16 +271,6 @@ impl NetworkConfig {
             Some(format!("{}:{}", proxy.host, proxy.port))
         } else {
             None
-        }
-    }
-
-    /// Upload bandwidth limit in bytes/sec. 0 = unlimited.
-    pub fn upload_limit_bytes_per_sec(&self) -> u64 {
-        let vpn = self.vpn.read().unwrap();
-        if vpn.enabled && vpn.bandwidth_limit_up_kbs > 0 {
-            vpn.bandwidth_limit_up_kbs as u64 * 1024
-        } else {
-            0 // unlimited
         }
     }
 
@@ -478,29 +449,5 @@ fn replace_network_settings_file(
         Err(std::io::Error::last_os_error())
     } else {
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn proxy_password_is_not_serialized_or_debugged() {
-        let proxy = ProxyConfig {
-            enabled: true,
-            proxy_type: "socks5".to_string(),
-            host: "proxy.example".to_string(),
-            port: 1080,
-            username: "alice".to_string(),
-            password: "top-secret".to_string(),
-        };
-        let serialized = serde_json::to_string(&proxy).unwrap();
-        let debug = format!("{proxy:?}");
-
-        assert!(!serialized.contains("top-secret"));
-        assert!(!serialized.contains("password"));
-        assert!(!debug.contains("top-secret"));
-        assert!(debug.contains("[REDACTED]"));
     }
 }

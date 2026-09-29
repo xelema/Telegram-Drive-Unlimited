@@ -115,6 +115,7 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
             style={{ opacity: isDragging ? 0.45 : undefined }}
             {...(!isFolder ? attributes : {})}
             {...(!isFolder ? listeners : {})}
+            aria-disabled={undefined}
             role="group"
             aria-label={file.name}
             onContextMenu={onContextMenu}

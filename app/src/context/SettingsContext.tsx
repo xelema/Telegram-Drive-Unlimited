@@ -29,19 +29,38 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     const latestSettingsRef = useRef<Settings>(DEFAULT_SETTINGS);
     const persistenceQueueRef = useRef<Promise<void>>(Promise.resolve());
     const persistenceRevisionRef = useRef(0);
+    const retryOperationRef = useRef<'load' | 'save'>('load');
+    const loadingPromiseRef = useRef<Promise<void> | null>(null);
 
-    useEffect(() => {
-        const loadSettings = async () => {
+    const loadSettings = useCallback((): Promise<void> => {
+        if (loadingPromiseRef.current) return loadingPromiseRef.current;
+        const revision = ++persistenceRevisionRef.current;
+        retryOperationRef.current = 'load';
+        setPersistenceStatus('loading');
+        const operation = (async () => {
             let loadFailed = false;
             const loaded = await readPersistedSettings(DEFAULT_SETTINGS, undefined, () => {
                 loadFailed = true;
             });
-            if (loaded.proxyPassword) {
+            const readFailed = loadFailed;
+            if (revision !== persistenceRevisionRef.current) {
+                setIsLoaded(true);
+                return;
+            }
+            if (!readFailed && loaded.proxyPassword) {
                 try {
                     await invoke('cmd_migrate_proxy_secret', { password: loaded.proxyPassword });
+                    if (revision !== persistenceRevisionRef.current) {
+                        setIsLoaded(true);
+                        return;
+                    }
                     markProxySecretMigrated();
                     loaded.proxyPassword = '';
-                    await writePersistedSettings(loaded);
+                    const scrub = persistenceQueueRef.current.then(() => {
+                        if (revision === persistenceRevisionRef.current) return writePersistedSettings(loaded);
+                    });
+                    persistenceQueueRef.current = scrub.catch(() => undefined);
+                    await scrub;
                 } catch (error) {
                     // Keep the legacy value intact until secure storage becomes
                     // available. Never include the credential in diagnostic logs.
@@ -49,17 +68,33 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
                     loadFailed = true;
                 }
             }
-            setSettings(loaded);
-            latestSettingsRef.current = loaded;
             setIsLoaded(true);
+            if (revision !== persistenceRevisionRef.current) return;
+            if (!readFailed) {
+                setSettings(loaded);
+                latestSettingsRef.current = loaded;
+            }
             setPersistenceStatus(loadFailed ? 'error' : 'saved');
-        };
-        void loadSettings();
+            if (loadFailed) throw new Error('Settings loading failed');
+            retryOperationRef.current = 'save';
+        })();
+        loadingPromiseRef.current = operation;
+        void operation.then(
+            () => { loadingPromiseRef.current = null; },
+            () => { loadingPromiseRef.current = null; },
+        );
+        return operation;
     }, []);
+
+    useEffect(() => {
+        void loadSettings().catch(() => undefined);
+    }, [loadSettings]);
 
     const persistSettings = useCallback((next: Settings): Promise<void> => {
         latestSettingsRef.current = next;
         const revision = ++persistenceRevisionRef.current;
+        // An explicit edit/reset is now the state to retry, even after a failed read.
+        retryOperationRef.current = 'save';
         setPersistenceStatus('saving');
         const operation = persistenceQueueRef.current.then(() => writePersistedSettings(next));
         persistenceQueueRef.current = operation.catch(() => undefined);
@@ -100,8 +135,8 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     }, [persistSettings]);
 
     const retryPersistence = useCallback(
-        () => persistSettings(latestSettingsRef.current),
-        [persistSettings],
+        () => retryOperationRef.current === 'load' ? loadSettings() : persistSettings(latestSettingsRef.current),
+        [loadSettings, persistSettings],
     );
 
     return (

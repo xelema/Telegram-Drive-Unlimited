@@ -61,13 +61,3 @@ impl DesktopPowerMonitor {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ordinary_background_heartbeat_is_not_a_suspend_gap() {
-        assert!(HEARTBEAT_INTERVAL < SUSPEND_GAP);
-    }
-}

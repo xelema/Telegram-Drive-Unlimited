@@ -1,7 +1,7 @@
 //! Tauri commands for applying proxy and VPN optimizer settings.
 //! These are called from the frontend when the user changes network configuration.
 
-use crate::vpn_optimizer::{NetworkConfig, NetworkConfigSnapshot, ProxyConfig, VpnConfig};
+use crate::vpn_optimizer::{NetworkConfig, ProxyConfig, VpnConfig};
 use tauri::State;
 
 #[derive(Debug, serde::Deserialize)]
@@ -176,12 +176,4 @@ pub async fn cmd_apply_vpn_settings(
     }
 
     Ok("VPN settings applied".into())
-}
-
-/// Get current network configuration snapshot (called on startup / settings load).
-#[tauri::command]
-pub async fn cmd_get_network_config(
-    net_config: State<'_, std::sync::Arc<NetworkConfig>>,
-) -> Result<NetworkConfigSnapshot, String> {
-    Ok(net_config.snapshot())
 }

@@ -88,10 +88,6 @@ impl DesktopLifecycleState {
         self.explicit_exit_requested.store(true, Ordering::Release);
     }
 
-    pub fn is_explicit_exit_requested(&self) -> bool {
-        self.explicit_exit_requested.load(Ordering::Acquire)
-    }
-
     pub fn mark_frontend_ready(&self, app: &AppHandle) {
         self.frontend_ready.store(true, Ordering::Release);
         let pending = self
@@ -161,58 +157,4 @@ pub fn cmd_desktop_frontend_ready(app: AppHandle, lifecycle: State<'_, DesktopLi
 #[tauri::command]
 pub fn cmd_desktop_frontend_unready(lifecycle: State<'_, DesktopLifecycleState>) {
     lifecycle.mark_frontend_unready();
-}
-
-#[tauri::command]
-pub fn cmd_show_main_window(
-    target: Option<DesktopNavigationTarget>,
-    transfer_id: Option<String>,
-    app: AppHandle,
-) -> Result<(), String> {
-    show_main_window(
-        &app,
-        DesktopNavigationRequest {
-            target: target.unwrap_or(DesktopNavigationTarget::Home),
-            transfer_id,
-        },
-    )
-}
-
-#[tauri::command]
-pub fn cmd_quit_application(app: AppHandle) {
-    request_graceful_quit(&app, 0);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::desktop_preferences::DesktopPreferences;
-    use std::path::PathBuf;
-    use std::sync::RwLock;
-
-    fn preference_state(value: DesktopPreferences) -> DesktopPreferencesState {
-        DesktopPreferencesState::from_test_parts(PathBuf::new(), RwLock::new(value))
-    }
-
-    #[test]
-    fn close_hides_only_with_a_ready_tray_and_background_policy() {
-        let lifecycle = DesktopLifecycleState::default();
-        let preferences = preference_state(DesktopPreferences::default());
-        assert!(!lifecycle.should_hide_on_close(&preferences));
-        lifecycle.set_tray_ready(true);
-        assert!(lifecycle.should_hide_on_close(&preferences));
-        lifecycle.mark_explicit_exit();
-        assert!(!lifecycle.should_hide_on_close(&preferences));
-    }
-
-    #[test]
-    fn quit_close_policy_never_hides() {
-        let lifecycle = DesktopLifecycleState::default();
-        lifecycle.set_tray_ready(true);
-        let value = DesktopPreferences {
-            close_behavior: CloseBehavior::Quit,
-            ..DesktopPreferences::default()
-        };
-        assert!(!lifecycle.should_hide_on_close(&preference_state(value)));
-    }
 }

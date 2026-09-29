@@ -1,4 +1,3 @@
-use crate::crypto::error::CryptoError;
 use crate::crypto::state::{CryptoState, UnlockSessionId};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
@@ -29,8 +28,8 @@ pub struct CryptoCapabilitiesResponse {
     pub writable_formats: Vec<u16>,
     pub features: CryptoFeatureAvailability,
 
-    // Legacy fields remain during the frontend contract migration. They are
-    // deliberately false while TDENC1 is quarantined.
+    // Retained frontend contract fields mirror the current TDENC2 features.
+    // Readable/writable format lists independently keep TDENC1 quarantined.
     pub core_available: bool,
     pub mode_alpha: bool,
     pub upload_enabled: bool,
@@ -510,71 +509,4 @@ fn encryption_info_from_current_record(
             ciphertext_size: None,
         },
     }
-}
-
-#[cfg(test)]
-mod encryption_info_tests {
-    use super::*;
-    use crate::crypto::registry::{EncryptedFileRecord, EncryptedFileState};
-
-    fn current_record(mode: &str) -> EncryptedFileRecord {
-        EncryptedFileRecord {
-            folder_key: "home".into(),
-            message_id: 42,
-            file_uuid: vec![7; 16],
-            envelope_version: crate::crypto::policy::FORMAT_VERSION,
-            cipher_suite: 1,
-            ciphertext_size: 512,
-            plaintext_size: Some(123),
-            remote_name: "private.tdenc".into(),
-            key_profile_id: Some(mode.into()),
-            protection_mode: mode.into(),
-            metadata_protected: true,
-            header_blob: None,
-            header_sha256: None,
-            record_state: EncryptedFileState::Active,
-            reconciliation_state: "owner_document_bound".into(),
-            created_at: 0,
-            last_verified_at: None,
-        }
-    }
-
-    #[test]
-    fn current_header_keeps_passphrase_prompt_and_vault_unlock_contract() {
-        let passphrase =
-            encryption_info_from_current_record(Some(current_record("passphrase")), true);
-        assert_eq!(passphrase.state, "encrypted_locked");
-        assert_eq!(passphrase.protection_mode.as_deref(), Some("passphrase"));
-        assert_eq!(passphrase.profile_id.as_deref(), Some("passphrase"));
-        assert_eq!(
-            encryption_info_from_current_record(Some(current_record("vault_and_passphrase")), true)
-                .state,
-            "encrypted_unlocked"
-        );
-        assert_eq!(
-            encryption_info_from_current_record(
-                Some(current_record("vault_and_passphrase")),
-                false
-            )
-            .state,
-            "encrypted_locked"
-        );
-        let plain = encryption_info_from_current_record(None, true);
-        assert_eq!(plain.state, "plain");
-        assert!(plain.protection_mode.is_none());
-        assert!(plain.ciphertext_size.is_none());
-    }
-}
-
-/// Verify an encrypted file's integrity.
-#[tauri::command]
-pub async fn cmd_verify_encrypted_file(
-    _message_id: i32,
-    _folder_id: Option<i64>,
-    crypto_state: State<'_, CryptoState>,
-) -> Result<String, String> {
-    if crypto_state.is_locked() {
-        return Err(CryptoError::vault_locked().to_string());
-    }
-    Err("[VERIFICATION_REQUIRES_DOWNLOAD] Full verification requires streaming and authenticating the complete remote envelope".to_string())
 }

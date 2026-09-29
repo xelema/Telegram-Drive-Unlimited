@@ -26,9 +26,9 @@ import {
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../../../context/ThemeContext';
 import { useSettings } from '../../../context/SettingsContext';
-import { Button, IconButton, MenuItem, MenuPanel, SearchField } from '../../ui';
+import { Button, IconButton, MenuItem, MenuPanel, SearchField, Select } from '../../ui';
 import type { SortDirection, SortField } from './FileExplorer';
-import type { FileSearchFilters } from '../../../services/fileSearch';
+import { DEFAULT_SEARCH_FILTERS, type FileSearchFilters } from '../../../services/fileSearch';
 import { useTopBarController } from './useTopBarController';
 import i18n from '../../../i18n';
 
@@ -98,17 +98,25 @@ export function TopBar({
         moreRef,
         viewRef,
         filterRef,
+        filterButtonRef,
+        closeSearchFilters,
+        onFilterKeyDown,
         toggleSearchFilters,
         toggleViewOptions,
         toggleMore,
         runMoreAction,
     } = useTopBarController(settings.proxyEnabled, settings.proxyLiveStateEnabled);
+    const hasSearchFilters = Object.entries(searchFilters).some(([key, value]) => value !== DEFAULT_SEARCH_FILTERS[key as keyof FileSearchFilters]);
     const hasSelection = selectedIds.length > 0;
 
     return (
         <header
             className="desktop-chrome-row quiet-toolbar sticky top-0 z-20 gap-2.5"
             onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => {
+                // Native toolbar controls own their keys; keep file-list shortcuts out.
+                if ((event.target as HTMLElement).closest('button, select') && !event.metaKey && !event.ctrlKey && !event.altKey) event.stopPropagation();
+            }}
         >
             {hasSelection ? (
                 <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -133,13 +141,13 @@ export function TopBar({
                 </div>
             ) : (
                 <>
-                    <div className="min-w-[8rem] flex-1">
+                    <div className="min-w-0 flex-[1_1_8rem]">
                         <h1 className="truncate text-app-title font-semibold tracking-[-0.01em] text-app-text" title={currentFolderName}>
                             {currentFolderName}
                         </h1>
                     </div>
 
-                    <div ref={filterRef} className="relative flex w-full max-w-[25rem] items-center gap-1">
+                    <div className="flex min-w-0 max-w-[25rem] flex-[1_1_25rem] items-center gap-1.5">
                         <SearchField
                             data-file-search
                             containerClassName="min-w-0 flex-1"
@@ -147,45 +155,58 @@ export function TopBar({
                             value={searchTerm}
                             onChange={(event) => onSearchChange(event.target.value)}
                         />
-                        <IconButton
-                            label="Search filters"
-                            onClick={toggleSearchFilters}
-                            aria-expanded={showSearchFilters}
-                            className={showSearchFilters || searchFilters.type !== 'all' || searchFilters.size !== 'any' || searchFilters.date !== 'any' ? 'bg-app-selected text-app-accent' : ''}
-                        >
-                            <Filter className="h-3.5 w-3.5" />
-                        </IconButton>
-                        {showSearchFilters && (
-                            <MenuPanel className="absolute end-0 top-9 z-50 w-72 space-y-3 p-3">
-                                <label className="block text-xs font-medium text-app-text-secondary">Search scope
-                                    <select value={searchFilters.scope} onChange={(event) => onSearchFiltersChange({ ...searchFilters, scope: event.target.value as FileSearchFilters['scope'] })} className="quiet-control mt-1 h-8 w-full border border-app-border bg-app-surface-sunken px-2 text-sm text-app-text">
-                                        <option value="folder">Current folder / view</option>
-                                        <option value="all">All Telegram Drive folders</option>
-                                    </select>
-                                </label>
-                                <label className="block text-xs font-medium text-app-text-secondary">File type
-                                    <select value={searchFilters.type} onChange={(event) => onSearchFiltersChange({ ...searchFilters, type: event.target.value as FileSearchFilters['type'] })} className="quiet-control mt-1 h-8 w-full border border-app-border bg-app-surface-sunken px-2 text-sm text-app-text">
-                                        <option value="all">All types</option><option value="image">Images</option><option value="video">Videos</option><option value="audio">Audio</option><option value="document">Documents</option><option value="archive">Archives</option><option value="other">Other</option>
-                                    </select>
-                                </label>
-                                <div className="grid grid-cols-2 gap-2">
-                                    <label className="block text-xs font-medium text-app-text-secondary">{i18n.t("common.size")}
-                                        <select value={searchFilters.size} onChange={(event) => onSearchFiltersChange({ ...searchFilters, size: event.target.value as FileSearchFilters['size'] })} className="quiet-control mt-1 h-8 w-full border border-app-border bg-app-surface-sunken px-2 text-sm text-app-text">
-                                            <option value="any">Any</option><option value="small">Under 10 MB</option><option value="medium">10–100 MB</option><option value="large">100 MB+</option>
-                                        </select>
-                                    </label>
-                                    <label className="block text-xs font-medium text-app-text-secondary">{i18n.t("common.date")}
-                                        <select value={searchFilters.date} onChange={(event) => onSearchFiltersChange({ ...searchFilters, date: event.target.value as FileSearchFilters['date'] })} className="quiet-control mt-1 h-8 w-full border border-app-border bg-app-surface-sunken px-2 text-sm text-app-text">
-                                            <option value="any">Any</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option><option value="1y">Last year</option>
-                                        </select>
-                                    </label>
+                        <div ref={filterRef} className="relative shrink-0" onKeyDown={onFilterKeyDown}>
+                            <IconButton
+                                ref={filterButtonRef}
+                                label="Search filters"
+                                size="lg"
+                                aria-haspopup="dialog"
+                                aria-controls={showSearchFilters ? 'search-filter-panel' : undefined}
+                                data-active={hasSearchFilters}
+                                onClick={toggleSearchFilters}
+                                aria-expanded={showSearchFilters}
+                                className="search-filter-trigger"
+                            >
+                                <Filter className="h-3.5 w-3.5" />
+                            </IconButton>
+                            {showSearchFilters && (
+                                <div id="search-filter-panel" role="dialog" aria-label={t('common.search_filters')} className="quiet-menu search-filter-panel absolute end-0 top-full z-50 mt-2">
+                                    <div className="flex items-center justify-between border-b border-app-border-subtle px-4 py-2">
+                                        <span className="text-ui font-semibold text-app-text">{t('common.search_filters')}</span>
+                                        <IconButton size="xs" label={t('common.close')} onClick={closeSearchFilters}><X className="h-3.5 w-3.5" /></IconButton>
+                                    </div>
+                                    <div className="grid gap-3 p-4">
+                                        <label className="search-filter-field text-xs font-medium text-app-text-secondary">Search scope
+                                            <Select value={searchFilters.scope} onChange={(event) => onSearchFiltersChange({ ...searchFilters, scope: event.target.value as FileSearchFilters['scope'] })} className="search-filter-select">
+                                                <option value="folder">Current folder / view</option>
+                                                <option value="all">All Telegram Drive folders</option>
+                                            </Select>
+                                        </label>
+                                        <label className="search-filter-field text-xs font-medium text-app-text-secondary">{t('workspace.file_type')}
+                                            <Select value={searchFilters.type} onChange={(event) => onSearchFiltersChange({ ...searchFilters, type: event.target.value as FileSearchFilters['type'] })} className="search-filter-select">
+                                                <option value="all">All types</option><option value="image">Images</option><option value="video">Videos</option><option value="audio">Audio</option><option value="document">Documents</option><option value="archive">Archives</option><option value="other">Other</option>
+                                            </Select>
+                                        </label>
+                                        <label className="search-filter-field text-xs font-medium text-app-text-secondary">{i18n.t("common.size")}
+                                            <Select value={searchFilters.size} onChange={(event) => onSearchFiltersChange({ ...searchFilters, size: event.target.value as FileSearchFilters['size'] })} className="search-filter-select">
+                                                <option value="any">Any</option><option value="small">Under 10 MB</option><option value="medium">10–100 MB</option><option value="large">100 MB+</option>
+                                            </Select>
+                                        </label>
+                                        <label className="search-filter-field text-xs font-medium text-app-text-secondary">{i18n.t("common.date")}
+                                            <Select value={searchFilters.date} onChange={(event) => onSearchFiltersChange({ ...searchFilters, date: event.target.value as FileSearchFilters['date'] })} className="search-filter-select">
+                                                <option value="any">Any</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option><option value="1y">Last year</option>
+                                            </Select>
+                                        </label>
+                                    </div>
+                                    <div className="border-t border-app-border-subtle p-3">
+                                        <Button className="w-full" onClick={() => onSearchFiltersChange(DEFAULT_SEARCH_FILTERS)}>Reset filters</Button>
+                                    </div>
                                 </div>
-                                <button type="button" onClick={() => onSearchFiltersChange({ scope: 'folder', type: 'all', size: 'any', date: 'any' })} className="quiet-control w-full px-3 py-2 text-xs font-medium text-app-text-secondary hover:text-app-text">Reset filters</button>
-                            </MenuPanel>
-                        )}
+                            )}
+                        </div>
                     </div>
 
-                    <div className="flex flex-1 items-center justify-end gap-1.5">
+                    <div className="flex shrink-0 items-center justify-end gap-1.5">
                         {settings.proxyEnabled && settings.proxyLiveStateEnabled && (
                             <div
                                 className="quiet-control flex h-7 items-center gap-1.5 px-2 text-badge text-app-text-secondary"

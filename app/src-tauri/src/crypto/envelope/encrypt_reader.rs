@@ -2,7 +2,7 @@ use crate::crypto::envelope::header::{EnvelopeHeader, KeySlotEntry};
 use crate::crypto::envelope::length::{calculate_chunk_count, calculate_ciphertext_length};
 use crate::crypto::error::CryptoResult;
 use crate::crypto::secret::SecretKey;
-use crate::crypto::{kdf, policy, random};
+use crate::crypto::{kdf, policy};
 use chacha20poly1305::{
     aead::{Aead, KeyInit, Payload},
     XChaCha20Poly1305, XNonce,
@@ -69,21 +69,6 @@ impl EncryptionSession {
             header_bytes,
             total_ciphertext_length,
         })
-    }
-
-    pub fn new_for_test(
-        plaintext_length: u64,
-        key_slots: Vec<KeySlotEntry>,
-        metadata_plaintext: Vec<u8>,
-    ) -> CryptoResult<Self> {
-        Self::new_with_keys(
-            plaintext_length,
-            key_slots,
-            metadata_plaintext,
-            SecretKey::new(random::random_key()),
-            random::random_uuid(),
-            random::random_nonce_prefix(),
-        )
     }
 
     fn nonce(&self, index: u64) -> [u8; 24] {

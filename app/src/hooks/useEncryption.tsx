@@ -10,7 +10,6 @@ import type {
     EncryptionSettings,
     VaultStatus,
     FileEncryptionInfo,
-    EncryptionState,
     CryptoInventory,
 } from '../types';
 
@@ -257,18 +256,4 @@ export function useEncryption() {
         throw new Error('useEncryption must be used within an EncryptionProvider');
     }
     return ctx;
-}
-
-export function resolveEncryptionState(
-    info: FileEncryptionInfo | undefined,
-    vaultUnlocked: boolean,
-): EncryptionState {
-    if (!info || info.state === 'plain') return 'plain';
-    if (info.state === 'encrypted_verifying') return 'encrypted_verifying';
-    if (info.state === 'encrypted_corrupt') return 'encrypted_corrupt';
-    if (info.state === 'encrypted_unsupported_version') return 'encrypted_unsupported_version';
-    if (info.state === 'encrypted_key_missing') return 'encrypted_key_missing';
-
-    if (vaultUnlocked) return 'encrypted_unlocked';
-    return 'encrypted_locked';
 }

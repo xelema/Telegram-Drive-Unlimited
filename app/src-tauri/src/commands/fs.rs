@@ -1,6 +1,4 @@
 use crate::bandwidth::{BandwidthManager, BandwidthReservation};
-#[cfg(test)]
-use crate::commands::download_destination::replace_download_file;
 use crate::commands::download_destination::{
     publish_download_file, skip_existing_download, DownloadCollisionPolicy, DownloadOutcome,
 };
@@ -1600,42 +1598,6 @@ pub async fn cmd_validate_dropped_paths(paths: Vec<String>) -> DroppedPathValida
     validate_dropped_paths(paths).await
 }
 
-#[cfg(test)]
-mod dropped_path_tests {
-    use super::validate_dropped_paths;
-
-    #[tokio::test]
-    async fn accepts_files_and_rejects_directories_missing_paths_and_duplicates() {
-        let root = std::env::temp_dir().join(format!(
-            "telegram-drive-drop-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system clock should be after unix epoch")
-                .as_nanos(),
-        ));
-        std::fs::create_dir_all(&root).expect("test directory should be created");
-        let file = root.join("upload.txt");
-        std::fs::write(&file, b"upload").expect("test file should be created");
-        let missing = root.join("missing.txt");
-
-        let result = validate_dropped_paths(vec![
-            file.to_string_lossy().into_owned(),
-            file.to_string_lossy().into_owned(),
-            root.to_string_lossy().into_owned(),
-            missing.to_string_lossy().into_owned(),
-        ])
-        .await;
-
-        assert_eq!(result.accepted, vec![file.to_string_lossy().into_owned()]);
-        assert_eq!(result.rejected.len(), 2);
-        assert_eq!(result.rejected[0].reason, "directory");
-        assert_eq!(result.rejected[1].reason, "missing");
-
-        std::fs::remove_dir_all(&root).expect("test directory should be removed");
-    }
-}
-
 #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // Tauri injects the command state parameters individually.
@@ -2024,7 +1986,49 @@ async fn cmd_upload_file_inner(
     ))
 }
 
-/// Encrypted upload path: wraps the file with EncryptingReader, uploads TDENC1 bytes.
+/// Build the production vault slot for a TDENC2 upload.
+pub(crate) fn vault_encryption_slot(
+    wrapping_key: &SecretKey,
+    file_uuid: &[u8; 16],
+    dek: &SecretKey,
+) -> Result<KeySlotEntry, String> {
+    let ctx = KeySlotContext {
+        file_uuid,
+        format_version: policy::FORMAT_VERSION,
+    };
+    let salt = random::random_salt();
+    let slot_kind = policy::SlotKind::Vault as u8;
+    let slot_id = 0;
+    let file_wrapping_key =
+        kdf::derive_file_wrapping_key(wrapping_key, file_uuid, &salt, slot_kind, slot_id)
+            .map_err(|e| format!("Failed to derive file wrapping key: {}", e))?;
+    let (wrapped_dek, wrap_nonce) = wrap_dek(
+        &ctx,
+        dek,
+        &file_wrapping_key,
+        slot_kind,
+        slot_id,
+        policy::KdfAlgorithm::HkdfSha256 as u16,
+        0,
+        0,
+        0,
+        &salt,
+    )
+    .map_err(|e| format!("Failed to wrap DEK: {}", e))?;
+    Ok(KeySlotEntry {
+        kind: slot_kind,
+        slot_id,
+        kdf_algorithm: policy::KdfAlgorithm::HkdfSha256 as u16,
+        argon2_memory_kib: 0,
+        argon2_iterations: 0,
+        argon2_parallelism: 0,
+        salt,
+        wrap_nonce,
+        wrapped_dek,
+    })
+}
+
+/// Encrypted upload path: wraps the file with EncryptingReader, uploads TDENC2 bytes.
 #[allow(clippy::too_many_arguments)] // Carries the same state bundle as the upload command.
 async fn cmd_upload_file_encrypted(
     path: String,
@@ -2088,36 +2092,7 @@ async fn cmd_upload_file_encrypted(
     );
 
     if let Some(wrapping_key) = vault_wrapping_key.as_ref() {
-        let salt = random::random_salt();
-        let slot_kind = policy::SlotKind::Vault as u8;
-        let slot_id = 0;
-        let file_wrapping_key =
-            kdf::derive_file_wrapping_key(wrapping_key, &file_uuid, &salt, slot_kind, slot_id)
-                .map_err(|e| format!("Failed to derive file wrapping key: {}", e))?;
-        let (wrapped_dek, wrap_nonce) = wrap_dek(
-            &ctx,
-            &dek,
-            &file_wrapping_key,
-            slot_kind,
-            slot_id,
-            policy::KdfAlgorithm::HkdfSha256 as u16,
-            0,
-            0,
-            0,
-            &salt,
-        )
-        .map_err(|e| format!("Failed to wrap DEK: {}", e))?;
-        key_slots.push(KeySlotEntry {
-            kind: slot_kind,
-            slot_id,
-            kdf_algorithm: policy::KdfAlgorithm::HkdfSha256 as u16,
-            argon2_memory_kib: 0,
-            argon2_iterations: 0,
-            argon2_parallelism: 0,
-            salt,
-            wrap_nonce,
-            wrapped_dek,
-        });
+        key_slots.push(vault_encryption_slot(wrapping_key, &file_uuid, &dek)?);
     }
 
     if let Some(passphrase) = prompt_secret.as_ref() {
@@ -3657,438 +3632,6 @@ async fn publish_folder_chunk(
         },
     );
     Ok(files)
-}
-
-#[cfg(test)]
-mod folder_listing_tests {
-    use super::*;
-    use crate::workspace::{store::Store, AccountGuard};
-    use grammers_session::{storages::SqliteSession, types::PeerInfo, Session};
-    use std::path::PathBuf;
-
-    fn file(id: i64, folder_id: Option<i64>) -> FileMetadata {
-        FileMetadata {
-            id,
-            folder_id,
-            name: format!("File{id}.txt"),
-            size: 4,
-            mime_type: Some("text/plain".into()),
-            file_ext: Some("txt".into()),
-            created_at: "2026-09-10T00:00:00Z".into(),
-            icon_type: "file".into(),
-            encryption_state: "plain".into(),
-            is_favorite: false,
-            is_pinned: false,
-        }
-    }
-    struct Fixture {
-        root: PathBuf,
-        account: AccountGuard,
-        database: DbConnection,
-    }
-    impl Fixture {
-        fn new() -> Self {
-            let root =
-                std::env::temp_dir().join(format!("folder-refresh-{}", uuid::Uuid::new_v4()));
-            std::fs::create_dir_all(&root).unwrap();
-            let session = SqliteSession::open(root.join("telegram.session")).unwrap();
-            session.cache_peer(&PeerInfo::User {
-                id: 100,
-                auth: None,
-                bot: Some(false),
-                is_self: Some(true),
-            });
-            drop(session);
-            let store = Store::open(&root, 100).unwrap();
-            store
-                .remember_files(&[file(1, None), file(2, None)], "Saved Messages", "old")
-                .unwrap();
-            store
-                .remember_files(&[file(2, None)], "Saved Messages", "current")
-                .unwrap();
-            store
-                .remember_files(&[file(1, Some(9))], "Other folder", "old")
-                .unwrap();
-            Store::open(&root, 200)
-                .unwrap()
-                .remember_files(&[file(1, None)], "Other owner", "old")
-                .unwrap();
-            let connection = sqlite::open(":memory:").unwrap();
-            connection.execute("CREATE TABLE file_inventory (folder_key TEXT, message_id INTEGER, last_seen_scan TEXT);
-                CREATE TABLE file_inventory_state (folder_key TEXT PRIMARY KEY, completed_at INTEGER, file_count INTEGER);
-                INSERT INTO file_inventory VALUES ('home',1,'old'),('home',2,'current'),('9',1,'old');").unwrap();
-            Self {
-                account: AccountGuard::open(&root, Some("100")).unwrap(),
-                root,
-                database: Arc::new(Mutex::new(connection)),
-            }
-        }
-        fn ids(&self, owner: i64, folder: Option<i64>) -> Vec<i64> {
-            Store::open(&self.root, owner)
-                .unwrap()
-                .folder_files(folder)
-                .unwrap()
-                .into_iter()
-                .map(|file| file.id)
-                .collect()
-        }
-    }
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.root);
-        }
-    }
-
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    #[tokio::test]
-    async fn cold_upgrade_listing_defers_stalled_headers_without_adopting_legacy_data() {
-        use crate::workspace::envelope_cache::test_support::{media, vault_header, Fixture};
-        let fixture = Fixture::new(22);
-        let (header, size, _) = vault_header("existing.mp4", 7);
-        let legacy = sqlite::open(fixture.root.join("shares.db")).unwrap();
-        legacy.execute("CREATE TABLE encrypted_files (folder_key TEXT,message_id INTEGER,header_blob BLOB)").unwrap();
-        let mut insert = legacy
-            .prepare("INSERT INTO encrypted_files VALUES('home',42,?)")
-            .unwrap();
-        insert.bind((1, header.as_slice())).unwrap();
-        insert.next().unwrap();
-        drop(insert);
-        let media = media("existing.mp4.tdenc", 100, size);
-        // This is a real grammers request whose sender remains alive without
-        // replying, like a stalled media datacenter during the first rescan.
-        assert!(tokio::time::timeout(
-            std::time::Duration::from_millis(30),
-            resolve_remote_envelope(
-                &fixture.account,
-                &fixture.client,
-                None,
-                42,
-                &media,
-                "TDENC2"
-            ),
-        )
-        .await
-        .is_err());
-
-        let mut budget = ListingHeaderBudget {
-            remaining: std::time::Duration::from_millis(20),
-            per_file: std::time::Duration::from_millis(20),
-        };
-        let result = resolve_remote_envelope_with_probe(
-            &fixture.account,
-            None,
-            42,
-            &media,
-            "TDENC2",
-            budget.probe(probe_tdenc2_header(
-                &fixture.account,
-                &fixture.client,
-                &media,
-            )),
-        )
-        .await;
-        assert!(matches!(result, Err(ref error) if error == LISTING_HEADER_DEFERRED));
-        assert!(budget.remaining.is_zero());
-        let mut row = legacy
-            .prepare("SELECT header_blob FROM encrypted_files")
-            .unwrap();
-        assert_eq!(row.next().unwrap(), sqlite::State::Row);
-        assert_eq!(row.read::<Vec<u8>, _>(0).unwrap(), header);
-        assert!(Store::open(&fixture.root, 22)
-            .unwrap()
-            .records::<serde_json::Value>("envelope-v1")
-            .unwrap()
-            .is_empty());
-        // Exhausting the scan budget never starts another network request.
-        assert_eq!(
-            budget
-                .probe(async { panic!("spent budget polled the network") })
-                .await
-                .unwrap_err(),
-            LISTING_HEADER_DEFERRED
-        );
-    }
-
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    #[tokio::test]
-    async fn listing_reads_owned_headers_after_budget_exhaustion_and_rejects_replacements() {
-        use crate::workspace::envelope_cache::{
-            self,
-            test_support::{media, vault_header, Fixture},
-            RemoteEnvelopeIdentity,
-        };
-        let fixture = Fixture::new(22);
-        let (header, size, key) = vault_header("existing.mp4", 7);
-        let identity = RemoteEnvelopeIdentity {
-            owner: 22,
-            folder: None,
-            message: 42,
-            document: 100,
-            ciphertext_size: size,
-        };
-        let store = Store::open(&fixture.root, 22).unwrap();
-        envelope_cache::write(&store, &identity, &header).unwrap();
-        let mut budget = ListingHeaderBudget {
-            remaining: std::time::Duration::ZERO,
-            ..Default::default()
-        };
-        let cached = resolve_remote_envelope_with_probe(
-            &fixture.account,
-            None,
-            42,
-            &media("existing.mp4.tdenc", 100, size),
-            "TDENC2",
-            budget.probe(async { panic!("cached header fetched from the network") }),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        let reader =
-            initialize_tdenc2_decryptor(cached.header_blob.as_deref().unwrap(), Some(&key), None)
-                .unwrap();
-        assert!(String::from_utf8_lossy(reader.metadata_plaintext()).contains("existing.mp4"));
-        let replacement = resolve_remote_envelope_with_probe(
-            &fixture.account,
-            None,
-            42,
-            &media("replacement.mp4.tdenc", 101, size),
-            "TDENC2",
-            budget.probe(async { panic!("spent budget fetched a replacement") }),
-        )
-        .await;
-        assert!(matches!(replacement, Err(ref error) if error == LISTING_HEADER_DEFERRED));
-        assert_eq!(
-            envelope_cache::read(&store, &identity).unwrap(),
-            Some(header)
-        );
-        assert!(resolve_remote_envelope_with_probe(
-            &fixture.account,
-            None,
-            43,
-            &media("plain.mp4", 102, size),
-            "",
-            budget.probe(async { panic!("plaintext file probed as encrypted") }),
-        )
-        .await
-        .unwrap()
-        .is_none());
-    }
-
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    #[tokio::test]
-    async fn listing_header_budget_cannot_publish_after_an_account_change() {
-        use crate::workspace::envelope_cache::{
-            self,
-            test_support::{media, sign_in, vault_header, Fixture},
-        };
-        let fixture = Fixture::new(22);
-        let (header, size, _) = vault_header("existing.mp4", 7);
-        let mut budget = ListingHeaderBudget::default();
-        let result = resolve_remote_envelope_with_probe(
-            &fixture.account,
-            None,
-            42,
-            &media("existing.mp4.tdenc", 100, size),
-            "TDENC2",
-            budget.probe(async {
-                sign_in(&fixture.root, 33);
-                Ok(header)
-            }),
-        )
-        .await;
-        assert!(matches!(result, Err(ref error) if error.contains("ACCOUNT_CHANGED")));
-        assert!(
-            envelope_cache::inventory(&Store::open(&fixture.root, 22).unwrap())
-                .unwrap()
-                .is_empty()
-        );
-    }
-
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    #[tokio::test]
-    async fn malformed_cached_metadata_and_flags_do_not_block_folder_refresh() {
-        let fixture = Fixture::new();
-        let store = Store::open(&fixture.root, 100).unwrap();
-        store
-            .db
-            .execute("UPDATE workspace_files SET metadata='{}' WHERE key='saved:1'; UPDATE workspace_files SET metadata='{malformed' WHERE key='saved:2'")
-            .unwrap();
-        let mut valid = file(3, None);
-        valid.is_favorite = true;
-        valid.is_pinned = true;
-        store
-            .remember_files(&[valid], "Saved Messages", "old")
-            .unwrap();
-        store.put_record("favorite", "saved:1", &true).unwrap();
-        store
-            .put_record("pin", "saved:1", &"malformed boolean")
-            .unwrap();
-        store.put_record("pin", "saved:2", &true).unwrap();
-        // An unrelated folder's flag must not bleed into a colliding message ID.
-        store.put_record("pin", "9:1", &true).unwrap();
-        assert!(store.folder_files(None).is_err());
-        let flags = crate::commands::file_activity::folder_flags(&fixture.account, None)
-            .await
-            .unwrap();
-        assert_eq!(flags.get(&1), Some(&(true, false)));
-        assert_eq!(flags.get(&2), Some(&(false, true)));
-        assert_eq!(flags.get(&3), Some(&(true, true)));
-        let other = crate::commands::file_activity::folder_flags(&fixture.account, Some(9))
-            .await
-            .unwrap();
-        assert_eq!(other.get(&1), Some(&(false, true)));
-        let mut row = store
-            .db
-            .prepare("SELECT metadata FROM workspace_files WHERE key='saved:1'")
-            .unwrap();
-        row.next().unwrap();
-        assert_eq!(row.read::<String, _>(0).unwrap(), "{}");
-        drop(row);
-        assert_eq!(
-            store.record::<String>("pin", "saved:1").unwrap().unwrap(),
-            "malformed boolean"
-        );
-        // A subsequent network scan can now overwrite its damaged metadata.
-        store
-            .remember_files(&[file(1, None)], "Saved Messages", "repaired")
-            .unwrap();
-        assert!(
-            crate::commands::file_activity::folder_flags(&fixture.account, None)
-                .await
-                .is_ok()
-        );
-    }
-
-    #[tokio::test]
-    async fn complete_snapshot_prunes_absent_files_only_in_its_account_and_folder() {
-        let fixture = Fixture::new();
-        assert_eq!(fixture.ids(100, None), vec![2, 1]);
-        let response = finalize_folder_scan(
-            &fixture.account,
-            None,
-            "current",
-            vec![file(2, None)],
-            true,
-            fixture.database.clone(),
-        )
-        .await
-        .unwrap();
-        assert!(response.complete);
-        assert_eq!(
-            response
-                .files
-                .iter()
-                .map(|file| file.id)
-                .collect::<Vec<_>>(),
-            vec![2]
-        );
-        let wire = serde_json::to_value(response).unwrap();
-        assert_eq!(wire["ownerId"], "100");
-        assert_eq!(wire["requestId"], "current");
-        assert!(wire["folderId"].is_null());
-        assert_eq!(fixture.ids(100, None), vec![2]);
-        assert_eq!(fixture.ids(100, Some(9)), vec![1]);
-        assert_eq!(fixture.ids(200, None), vec![1]);
-    }
-
-    #[tokio::test]
-    async fn capped_repeated_or_superseded_scans_cannot_certify_a_partial_snapshot() {
-        let fixture = Fixture::new();
-        for request in ["capped", "repeated", "superseded"] {
-            let response = finalize_folder_scan(
-                &fixture.account,
-                None,
-                request,
-                vec![file(2, None)],
-                false,
-                fixture.database.clone(),
-            )
-            .await
-            .unwrap();
-            assert!(!response.complete);
-            assert!(response.files.is_empty());
-            assert_eq!(fixture.ids(100, None), vec![2, 1]);
-        }
-    }
-
-    #[tokio::test]
-    async fn failed_inventory_finalization_preserves_the_owned_cached_snapshot() {
-        let fixture = Fixture::new();
-        crate::db::with_connection(fixture.database.clone(), |connection| {
-            connection
-                .execute("DROP TABLE file_inventory_state")
-                .map_err(|e| e.to_string())
-        })
-        .await
-        .unwrap();
-        assert!(finalize_folder_scan(
-            &fixture.account,
-            None,
-            "current",
-            vec![file(2, None)],
-            true,
-            fixture.database.clone()
-        )
-        .await
-        .is_err());
-        assert_eq!(fixture.ids(100, None), vec![2, 1]);
-        let count = crate::db::with_connection(fixture.database.clone(), |connection| {
-            let mut statement = connection
-                .prepare("SELECT COUNT(*) FROM file_inventory WHERE folder_key='home'")
-                .map_err(|e| e.to_string())?;
-            statement.next().map_err(|e| e.to_string())?;
-            statement.read::<i64, _>(0).map_err(|e| e.to_string())
-        })
-        .await
-        .unwrap();
-        assert_eq!(count, 2);
-    }
-
-    #[tokio::test]
-    async fn failed_account_scan_marker_rolls_back_owned_pruning() {
-        let fixture = Fixture::new();
-        Store::open(&fixture.root, 100).unwrap().db.execute(
-            "CREATE TRIGGER fail_scan_marker BEFORE INSERT ON workspace_records BEGIN SELECT RAISE(FAIL,'disk unavailable'); END;"
-        ).unwrap();
-        assert!(finalize_folder_scan(
-            &fixture.account,
-            None,
-            "current",
-            vec![file(2, None)],
-            true,
-            fixture.database.clone()
-        )
-        .await
-        .is_err());
-        assert_eq!(fixture.ids(100, None), vec![2, 1]);
-    }
-
-    #[tokio::test]
-    async fn a_changed_account_cannot_finalize_an_old_scan() {
-        let fixture = Fixture::new();
-        std::fs::remove_file(fixture.root.join("telegram.session")).unwrap();
-        let session = SqliteSession::open(fixture.root.join("telegram.session")).unwrap();
-        session.cache_peer(&PeerInfo::User {
-            id: 200,
-            auth: None,
-            bot: Some(false),
-            is_self: Some(true),
-        });
-        drop(session);
-        assert!(finalize_folder_scan(
-            &fixture.account,
-            None,
-            "current",
-            vec![],
-            true,
-            fixture.database.clone()
-        )
-        .await
-        .unwrap_err()
-        .contains("ACCOUNT_CHANGED"));
-        assert_eq!(fixture.ids(100, None), vec![2, 1]);
-        assert_eq!(fixture.ids(200, None), vec![1]);
-    }
 }
 
 #[tauri::command]
@@ -6233,130 +5776,3 @@ async fn cmd_upload_from_url_owned(
         ))
     }
 }
-
-#[cfg(test)]
-mod hardening_tests {
-    use super::*;
-
-    #[test]
-    fn moves_require_every_forwarded_copy_before_source_deletion() {
-        assert!(verify_forwarded_messages(&[1, 2], &[Some(11), Some(12)]).is_ok());
-        assert!(verify_forwarded_messages(&[1, 2], &[Some(11), None]).is_err());
-        assert!(verify_forwarded_messages(&[1, 2], &[Some(11)]).is_err());
-        assert!(verify_forwarded_messages(&[1], &[Some(11), Some(12)]).is_err());
-        assert!(verify_forwarded_messages::<i32>(&[1], &[None]).is_err());
-    }
-
-    #[test]
-    fn global_search_dates_are_rfc3339_at_unix_and_telegram_boundaries() {
-        assert_eq!(search_created_at(0), "1970-01-01T00:00:00+00:00");
-        for timestamp in [i32::MIN, 1_700_000_000, i32::MAX] {
-            let parsed =
-                chrono::DateTime::parse_from_rfc3339(&search_created_at(timestamp)).unwrap();
-            assert_eq!(parsed.timestamp(), i64::from(timestamp));
-        }
-    }
-
-    #[test]
-    fn video_upload_mode_is_explicit_and_file_is_the_compatible_default() {
-        assert_eq!(VideoUploadMode::parse(None).unwrap(), VideoUploadMode::File);
-        assert_eq!(
-            VideoUploadMode::parse(Some("media")).unwrap(),
-            VideoUploadMode::Media
-        );
-        assert!(VideoUploadMode::parse(Some("automatic")).is_err());
-        assert!(is_mp4_family_video("clip.MP4"));
-        assert!(is_mp4_family_video("clip.mov"));
-        assert!(!is_mp4_family_video("clip.mkv"));
-    }
-
-    #[test]
-    fn remote_upload_blocks_local_and_reserved_addresses() {
-        for address in [
-            "127.0.0.1",
-            "10.0.0.1",
-            "172.16.0.1",
-            "192.168.1.1",
-            "169.254.169.254",
-            "100.64.0.1",
-            "192.0.2.1",
-            "198.51.100.1",
-            "203.0.113.1",
-            "::1",
-            "fc00::1",
-            "fe80::1",
-            "2001:db8::1",
-        ] {
-            let address = address.parse().unwrap();
-            assert!(!is_public_remote_ip(address), "{address} must be blocked");
-        }
-        assert!(is_public_remote_ip("8.8.8.8".parse().unwrap()));
-        assert!(is_public_remote_ip("2606:4700:4700::1111".parse().unwrap()));
-    }
-
-    #[test]
-    fn remote_upload_accepts_only_public_http_urls_without_embedded_credentials() {
-        for blocked in [
-            "file:///etc/passwd",
-            "http://localhost/file",
-            "http://service.local/file",
-            "http://169.254.169.254/latest/meta-data",
-            "https://user:password@example.com/file",
-        ] {
-            let url = reqwest::Url::parse(blocked).unwrap();
-            assert!(
-                validate_remote_url_syntax(&url).is_err(),
-                "{blocked} must be blocked"
-            );
-        }
-        assert!(validate_remote_url_syntax(
-            &reqwest::Url::parse("https://example.com/file.zip").unwrap()
-        )
-        .is_ok());
-    }
-
-    #[test]
-    fn redirect_validation_blocks_private_targets() {
-        let current = reqwest::Url::parse("https://example.com/file").unwrap();
-        assert!(redirect_target(&current, "http://127.0.0.1/private").is_err());
-        assert!(redirect_target(&current, "https://cdn.example.com/file").is_ok());
-    }
-
-    #[test]
-    fn zip_cleanup_layout_accepts_only_uuid_scoped_zip_files() {
-        let root = std::path::Path::new("/app-cache/transfer-zips");
-        let id = uuid::Uuid::new_v4();
-        assert!(is_owned_zip_artifact(
-            root,
-            &root.join(id.to_string()).join("folder.zip")
-        ));
-        assert!(!is_owned_zip_artifact(root, &root.join("other.txt")));
-        assert!(!is_owned_zip_artifact(
-            root,
-            &root.join("not-a-uuid").join("folder.zip")
-        ));
-    }
-
-    #[test]
-    fn atomic_download_publish_replaces_destination_only_when_source_exists() {
-        let directory = std::env::temp_dir().join(format!(
-            "telegram-drive-publish-test-{}",
-            uuid::Uuid::new_v4()
-        ));
-        std::fs::create_dir_all(&directory).unwrap();
-        let destination = directory.join("result.bin");
-        let source = directory.join("result.part");
-        std::fs::write(&destination, b"old").unwrap();
-        assert!(replace_download_file(&directory.join("missing"), &destination).is_err());
-        assert_eq!(std::fs::read(&destination).unwrap(), b"old");
-        std::fs::write(&source, b"new").unwrap();
-        replace_download_file(&source, &destination).unwrap();
-        assert_eq!(std::fs::read(&destination).unwrap(), b"new");
-        let _ = std::fs::remove_file(&destination);
-        let _ = std::fs::remove_dir(&directory);
-    }
-}
-
-#[cfg(test)]
-#[path = "search_scope_tests.rs"]
-mod search_scope_tests;

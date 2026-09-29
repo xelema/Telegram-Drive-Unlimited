@@ -12,17 +12,3 @@ export const quietMetrics = {
   dialogWidth: { compact: 440, standard: 720, settings: 920 },
   motionMs: { fast: 120, standard: 160, slow: 220 },
 } as const;
-
-export const quietType = {
-  title: { size: 15, lineHeight: 20 },
-  interface: { size: 13, lineHeight: 18 },
-  metadata: { size: 12, lineHeight: 16 },
-  badge: { size: 11, lineHeight: 14 },
-} as const;
-
-export const quietElevation = {
-  flat: 'none',
-  raised: 'var(--shadow-raised)',
-  floating: 'var(--shadow-floating)',
-  modal: 'var(--shadow-floating)',
-} as const;

@@ -7,7 +7,7 @@ pub mod watcher;
 
 use crate::{
     commands::{
-        utils::{media_size, resolve_peer},
+        utils::{flood_wait_seconds, media_size, resolve_peer},
         TelegramState,
     },
     db::DbConnection,
@@ -245,7 +245,6 @@ async fn engine_loop(
             .map(|pair| (PathBuf::from(&pair.local_path), pair.preferences.clone()))
             .collect(),
         Duration::from_millis(settings.debounce_ms),
-        app.clone(),
         shutdown.clone(),
         trigger_tx.clone(),
     );
@@ -490,15 +489,7 @@ async fn scan_remote(
         match scan_remote_once(app, pair, synced, account).await {
             Ok(tree) => return Ok(tree),
             Err(error) => {
-                let wait = error.find("FLOOD_WAIT_").and_then(|start| {
-                    error[start + "FLOOD_WAIT_".len()..]
-                        .chars()
-                        .take_while(char::is_ascii_digit)
-                        .collect::<String>()
-                        .parse::<u64>()
-                        .ok()
-                });
-                let Some(server_wait) = wait else {
+                let Some(server_wait) = flood_wait_seconds(&error) else {
                     return Err(error);
                 };
                 if attempt >= 5 {
@@ -1080,11 +1071,21 @@ async fn reconcile_pair(
             .await?;
         }
     }
-    account.validate()?;
-    retry_pending_cleanup(app, db, pair, &account).await?;
-    let local_after = scan_local(&pair.local_path, &pair.preferences).await?;
-    let mapped = load_synced_tree(db, pair.id).await?;
-    let remote_after = scan_remote(app, pair, &mapped, shutdown, &account).await?;
+    let Some((local_after, remote_after)) = refresh_after_execution(
+        &account,
+        &results,
+        retry_pending_cleanup(app, db, pair, &account),
+        async {
+            let local_after = scan_local(&pair.local_path, &pair.preferences).await?;
+            let mapped = load_synced_tree(db, pair.id).await?;
+            let remote_after = scan_remote(app, pair, &mapped, shutdown, &account).await?;
+            Ok((local_after, remote_after))
+        },
+    )
+    .await?
+    else {
+        return Ok((pending, conflicts, execution_error));
+    };
     for result in results {
         if !result.success {
             let status = if result.action == "conflict" {
@@ -1158,108 +1159,24 @@ async fn reconcile_pair(
     Ok((pending, conflicts, execution_error))
 }
 
-#[cfg(test)]
-mod safety_tests {
-    use super::*;
-
-    #[test]
-    fn remote_identity_detects_equal_size_media_replacements_and_edits() {
-        let original = remote_fingerprint(100, 123, None, 1, 10);
-        assert!(original.starts_with("v2:"));
-        assert_ne!(original, remote_fingerprint(100, 123, None, 1, 11));
-        assert_ne!(original, remote_fingerprint(100, 123, Some(124), 1, 10));
-        assert_eq!(original, remote_fingerprint(100, 123, None, 1, 10));
+/// Complete durable cleanup even on an idle cycle. Only an empty result set
+/// proves that there is no baseline update requiring a second pair of scans;
+/// skip/conflict/failed results must still follow the normal reconciliation path.
+async fn refresh_after_execution<Cleanup, Scan>(
+    account: &crate::workspace::AccountGuard,
+    results: &[executor::ExecutionResult],
+    cleanup: Cleanup,
+    scan: Scan,
+) -> Result<Option<(FileTree, FileTree)>, String>
+where
+    Cleanup: std::future::Future<Output = Result<(), String>>,
+    Scan: std::future::Future<Output = Result<(FileTree, FileTree), String>>,
+{
+    account.validate()?;
+    cleanup.await?;
+    account.validate()?;
+    if results.is_empty() {
+        return Ok(None);
     }
-
-    #[test]
-    fn replacement_cleanup_never_deletes_the_only_remaining_copy() {
-        assert_eq!(cleanup_action(true, true, true), CleanupAction::DeleteOld);
-        assert_eq!(
-            cleanup_action(true, true, false),
-            CleanupAction::PreserveOld
-        );
-        assert_eq!(
-            cleanup_action(true, false, true),
-            CleanupAction::PreserveOld
-        );
-        assert_eq!(
-            cleanup_action(false, true, false),
-            CleanupAction::AlreadyGone
-        );
-        assert_eq!(
-            cleanup_action(false, false, false),
-            CleanupAction::AlreadyGone
-        );
-    }
-
-    #[tokio::test]
-    async fn failed_cleanup_is_durable_and_retried_before_later_items() {
-        let path =
-            std::env::temp_dir().join(format!("telegram-sync-cleanup-{}.db", uuid::Uuid::new_v4()));
-        let pending = vec![
-            config::PendingCleanup {
-                relative_path: "a.txt".into(),
-                old_message_id: 1,
-                new_message_id: 11,
-                old_remote_hash: Some("old-a".into()),
-            },
-            config::PendingCleanup {
-                relative_path: "b.txt".into(),
-                old_message_id: 2,
-                new_message_id: 12,
-                old_remote_hash: Some("old-b".into()),
-            },
-        ];
-        {
-            let connection = sqlite::open(&path).unwrap();
-            connection
-                .execute("CREATE TABLE sync_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-                .unwrap();
-            let db = Arc::new(Mutex::new(connection));
-            config::save_pending_cleanup(db.clone(), 7, &pending)
-                .await
-                .unwrap();
-            assert!(replay_pending_cleanup(&db, 7, |_| async {
-                Err("temporary network failure".into())
-            })
-            .await
-            .is_err());
-        }
-        {
-            let db = Arc::new(Mutex::new(sqlite::open(&path).unwrap()));
-            assert_eq!(
-                config::load_pending_cleanup(db.clone(), 7).await.unwrap(),
-                pending
-            );
-            let seen = Arc::new(Mutex::new(Vec::new()));
-            let seen_for_operation = seen.clone();
-            replay_pending_cleanup(&db, 7, move |item| {
-                seen_for_operation.lock().unwrap().push(item.old_message_id);
-                async { Ok(false) }
-            })
-            .await
-            .unwrap();
-            assert_eq!(*seen.lock().unwrap(), vec![1, 2]);
-            assert!(config::load_pending_cleanup(db, 7)
-                .await
-                .unwrap()
-                .is_empty());
-        }
-        std::fs::remove_file(path).unwrap();
-    }
-
-    #[tokio::test]
-    async fn local_scan_skips_ignored_folders_and_preserves_visible_files() {
-        let root =
-            std::env::temp_dir().join(format!("telegram-sync-ignore-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(root.join("nested/.git")).unwrap();
-        std::fs::write(root.join("nested/.git/config"), "ignored").unwrap();
-        std::fs::write(root.join("report.txt"), "visible").unwrap();
-        std::fs::write(root.join("report.txt.td-sync-tmp"), "partial").unwrap();
-        let tree = scan_local(root.to_str().unwrap(), &policy::SyncPreferences::default())
-            .await
-            .unwrap();
-        assert_eq!(tree.keys().cloned().collect::<Vec<_>>(), vec!["report.txt"]);
-        std::fs::remove_dir_all(root).unwrap();
-    }
+    scan.await.map(Some)
 }

@@ -1,3 +1,4 @@
+import { SupporterBrowserFixture } from './SupporterBrowserFixture';
 import { useEffect, useState } from 'react';
 import { AuthWizard } from '../shared/AuthWizard';
 import { FileExplorer } from '../desktop/dashboard/FileExplorer';
@@ -42,6 +43,8 @@ export default function AccessibilityFixtures() {
       delete document.documentElement.dataset.a11yFixtureReady;
     };
   }, [fixture]);
+
+  if (fixture === 'supporter') return <SupporterBrowserFixture />;
 
   if (fixture === 'auth') {
     // AuthWizard intentionally shows a browser-only notice outside Tauri. This

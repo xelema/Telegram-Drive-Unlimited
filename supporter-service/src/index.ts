@@ -1,10 +1,10 @@
 import {
+  acknowledgeCheckoutReceipt,
   activateDevice,
   beginCheckoutCompletion,
   cleanupExpiredRecords,
   completeCheckout,
   consumeChallenge,
-  countActiveDevices,
   createChallenge,
   discardWebhook,
   findEntitlementByRecoveryHash,
@@ -17,7 +17,6 @@ import {
   markCheckoutCancelled,
   markCheckoutFailed,
   markCheckoutPending,
-  markRecoveryDelivered,
   recordWebhook,
   releaseCheckoutCompletion,
   revokeEntitlementByCapture,
@@ -183,8 +182,10 @@ function normalizedRecoveryCode(value: string): string {
 async function finalizePaidOrder(env: Env, claim: CheckoutClaimRow, order: PayPalOrder): Promise<CheckoutClaimRow> {
   const current = await getCheckoutClaim(env, claim.id);
   if (current?.status === 'completed') return current;
+  if (!claim.paypal_order_id || order.id !== claim.paypal_order_id) throw new Error('ORDER_MISMATCH');
+  const capture = validateCompletedOrder(env, order, claim.id);
   const startedAt = nowSeconds();
-  if (!await beginCheckoutCompletion(env, claim.id, startedAt)) {
+  if (!await beginCheckoutCompletion(env, claim.id, startedAt, true)) {
     const latest = await getCheckoutClaim(env, claim.id);
     if (latest?.status === 'completed') return latest;
     throw new Error('CHECKOUT_FINALIZATION_IN_PROGRESS');
@@ -192,7 +193,6 @@ async function finalizePaidOrder(env: Env, claim: CheckoutClaimRow, order: PayPa
   try {
     const processingClaim = await getCheckoutClaim(env, claim.id);
     if (!processingClaim) throw new Error('CHECKOUT_NOT_FOUND');
-    const capture = validateCompletedOrder(env, order, claim.id);
     const code = recoveryCode();
     const normalizedCode = normalizedRecoveryCode(code);
     const encrypted = await encryptRecoveryCode(env, code);
@@ -256,19 +256,80 @@ async function beginCheckout(request: Request, env: Env): Promise<Response> {
 }
 
 async function checkoutStatus(request: Request, env: Env, claimId: string): Promise<Response> {
-  const claim = await getCheckoutClaim(env, claimId);
+  let claim = await getCheckoutClaim(env, claimId);
   if (!claim || !await authorizeClaim(request, claim)) return errorResponse('CLAIM_NOT_FOUND', 404, 'Checkout not found.');
+  let approvalUrl: string | undefined;
+  if (claim.status !== 'completed' && claim.paypal_order_id) {
+    // Recover a completed original order even when a webhook/return arrived
+    // late. Polling reads its outcome and never captures or creates a charge.
+    try {
+      const order = await getPayPalOrder(env, claim.paypal_order_id);
+      if (order.id !== claim.paypal_order_id) throw new Error('ORDER_MISMATCH');
+      if (order.status === 'COMPLETED') claim = await finalizePaidOrder(env, claim, order);
+      else if (verifiedUnpaidOrder(env, claim, order)) {
+        return json({ status: 'expired', claim_id: claim.id, unpaid_final: true });
+      } else {
+        approvalUrl = resumableApprovalUrl(env, claim, order);
+      }
+    } catch {
+      // A missing/temporarily unavailable provider response is unresolved.
+      return json({ status: 'pending', claim_id: claim.id, unpaid_final: false, error_code: 'PAYMENT_VERIFICATION_PENDING', expires_at: claim.expires_at });
+    }
+  }
   if (claim.status !== 'completed' || !claim.entitlement_id) {
-    return json({ status: claim.status, error_code: claim.error_code, expires_at: claim.expires_at });
+    return json({ status: 'pending', claim_id: claim.id, unpaid_final: false, error_code: claim.error_code, expires_at: claim.expires_at, approval_url: approvalUrl });
   }
 
   const token = await issueActiveToken(env, claim.entitlement_id, claim.device_key_hash);
   let code: string | undefined;
   if (claim.recovery_ciphertext && claim.recovery_nonce) {
     code = await decryptRecoveryCode(env, claim.recovery_ciphertext, claim.recovery_nonce);
-    await markRecoveryDelivered(env, claim.id, nowSeconds());
   }
-  return json({ status: 'completed', entitlement_token: token, recovery_code: code });
+  return json({ status: 'completed', claim_id: claim.id, entitlement_token: token, recovery_code: code });
+}
+
+function safeApprovalUrl(value: string): boolean {
+  try { const url = new URL(value); return url.protocol === 'https:' && (url.hostname === 'paypal.com' || url.hostname.endsWith('.paypal.com')) && !url.username && !url.password; }
+  catch { return false; }
+}
+
+/** Provider identity and empty payment history are required before offering
+ * another approval action or treating an original order as definitively unpaid.
+ * An application timeout and a matching order ID alone are insufficient. */
+function matchesOriginalUnpaidOrder(env: Env, claim: CheckoutClaimRow, order: PayPalOrder): boolean {
+  if (order.id !== claim.paypal_order_id || !Array.isArray(order.purchase_units) || order.purchase_units.length !== 1) return false;
+  const unit = order.purchase_units[0];
+  if (!unit) return false;
+  // The full Orders representation makes payment collections optional.
+  // Malformed collections or any reported history are never treated as empty.
+  const payments: unknown = unit.payments;
+  if (payments !== undefined && (!payments || typeof payments !== 'object' || Array.isArray(payments))) return false;
+  if (payments) {
+    for (const kind of ['captures', 'refunds', 'authorizations']) {
+      const history = (payments as Record<string, unknown>)[kind];
+      if (history !== undefined && (!Array.isArray(history) || history.length !== 0)) return false;
+    }
+  }
+  return unit.custom_id === claim.id && unit.payee?.merchant_id === env.PAYPAL_MERCHANT_ID
+    && unit.amount?.currency_code === env.SUPPORTER_CURRENCY && unit.amount.value === env.SUPPORTER_PRICE;
+}
+
+export function verifiedUnpaidOrder(env: Env, claim: CheckoutClaimRow, order: PayPalOrder): boolean {
+  return order.status === 'VOIDED' && matchesOriginalUnpaidOrder(env, claim, order);
+}
+
+function resumableApprovalUrl(env: Env, claim: CheckoutClaimRow, order: PayPalOrder): string | undefined {
+  if (!['CREATED', 'APPROVED', 'PAYER_ACTION_REQUIRED'].includes(order.status)
+    || !matchesOriginalUnpaidOrder(env, claim, order) || !Array.isArray(order.links)) return undefined;
+  return order.links.find(link => link && ['approve', 'payer-action'].includes(link.rel) && safeApprovalUrl(link.href))?.href;
+}
+
+async function acknowledgeCheckout(request: Request, env: Env, claimId: string): Promise<Response> {
+  const claim = await getCheckoutClaim(env, claimId);
+  if (!claim || !await authorizeClaim(request, claim)) return errorResponse('CLAIM_NOT_FOUND', 404, 'Checkout not found.');
+  if (claim.status !== 'completed' || !claim.entitlement_id) return errorResponse('CHECKOUT_UNRESOLVED', 409, 'Payment verification has not completed.');
+  await acknowledgeCheckoutReceipt(env, claimId, nowSeconds());
+  return json({ status: 'acknowledged' });
 }
 
 async function handleCheckoutReturn(url: URL, env: Env): Promise<Response> {
@@ -289,10 +350,6 @@ async function handleCheckoutReturn(url: URL, env: Env): Promise<Response> {
   }
 }
 
-async function captureOrReadOrder(env: Env, orderId: string): Promise<PayPalOrder> {
-  return captureAndGetPayPalOrder(env, orderId);
-}
-
 async function activateWithRecovery(request: Request, env: Env): Promise<Response> {
   const body = await readJson<ActivationRequest>(request);
   if (typeof body.recovery_code !== 'string' || !validDevicePublicKey(body.device_public_key)) {
@@ -306,13 +363,13 @@ async function activateWithRecovery(request: Request, env: Env): Promise<Respons
   if (!entitlement || entitlement.status !== 'active') return errorResponse('RECOVERY_CODE_INVALID', 404, 'Recovery code is invalid or the entitlement is no longer active.');
 
   const deviceKeyHash = await sha256(body.device_public_key);
-  const existingDevice = await getDevice(env, entitlement.id, deviceKeyHash);
-  if (!existingDevice || existingDevice.revoked_at !== null) {
-    if (await countActiveDevices(env, entitlement.id) >= Number.parseInt(env.MAX_ACTIVE_DEVICES, 10)) {
-      return errorResponse('DEVICE_LIMIT_REACHED', 409, `This purchase is already active on ${env.MAX_ACTIVE_DEVICES} devices.`);
-    }
+  const admission = await activateDevice(env, entitlement.id, deviceKeyHash, body.device_public_key, nowSeconds());
+  if (admission === 'entitlement_inactive') {
+    return errorResponse('RECOVERY_CODE_INVALID', 404, 'Recovery code is invalid or the entitlement is no longer active.');
   }
-  await activateDevice(env, entitlement.id, deviceKeyHash, body.device_public_key, nowSeconds());
+  if (admission === 'limit_reached') {
+    return errorResponse('DEVICE_LIMIT_REACHED', 409, `This purchase is already active on ${env.MAX_ACTIVE_DEVICES} devices.`);
+  }
   return json({ entitlement_token: await issueActiveToken(env, entitlement.id, deviceKeyHash) });
 }
 
@@ -405,7 +462,7 @@ async function processWebhook(request: Request, env: Env): Promise<Response> {
       const orderId = typeof event.resource?.id === 'string' ? event.resource.id : undefined;
       const claim = orderId ? await getCheckoutByOrder(env, orderId) : null;
       if (claim && claim.status !== 'completed') {
-        await finalizePaidOrder(env, claim, await captureOrReadOrder(env, orderId!));
+        await finalizePaidOrder(env, claim, await captureAndGetPayPalOrder(env, orderId!));
         result = 'activated';
       }
     } else if (event.event_type === 'PAYMENT.CAPTURE.COMPLETED') {
@@ -451,6 +508,8 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (request.method === 'POST' && url.pathname === '/v1/checkout') return beginCheckout(request, env);
   const statusMatch = request.method === 'GET' ? url.pathname.match(/^\/v1\/checkout\/([0-9a-f-]+)\/status$/i) : null;
   if (statusMatch?.[1]) return checkoutStatus(request, env, statusMatch[1]);
+  const acknowledgeMatch = request.method === 'POST' ? url.pathname.match(/^\/v1\/checkout\/([0-9a-f-]+)\/acknowledge$/i) : null;
+  if (acknowledgeMatch?.[1]) return acknowledgeCheckout(request, env, acknowledgeMatch[1]);
   if (request.method === 'GET' && url.pathname === '/checkout/return') return handleCheckoutReturn(url, env);
   if (request.method === 'GET' && url.pathname === '/checkout/cancel') {
     const claimId = url.searchParams.get('claim');
@@ -471,6 +530,7 @@ export default {
     } catch (error) {
       const code = error instanceof Error ? error.message : 'UNKNOWN_ERROR';
       if (code === 'CONTENT_TYPE_REQUIRED') return errorResponse(code, 415, 'Content-Type must be application/json.');
+      if (code === 'ENTITLEMENT_NOT_ACTIVE') return errorResponse(code, 403, 'This entitlement or device is no longer active.');
       if (error instanceof SyntaxError) return errorResponse('INVALID_JSON', 400, 'Request body is not valid JSON.');
       console.error('Unhandled supporter service error', error);
       return errorResponse('INTERNAL_ERROR', 500, 'The supporter service could not complete the request.');

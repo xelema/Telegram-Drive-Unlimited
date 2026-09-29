@@ -1,3 +1,4 @@
+import '../../../i18n/supporterTranslations';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Heart, X } from 'lucide-react';
 import { useSupporter } from '../../../context/SupporterContext';
@@ -202,9 +203,9 @@ export function DesktopAdBanner({ suppressed = false, onSupport, onManualDismiss
       </div>
 
       {onSupport && (
-        <button type="button" onClick={onSupport} className="flex w-full items-center justify-center gap-2 border-t border-app-border-subtle bg-app-selected/40 px-3 py-2.5 text-xs font-semibold text-app-accent hover:bg-app-selected" aria-label="Remove ads forever for $5 once">
+        <button type="button" onClick={onSupport} className="flex w-full items-center justify-center gap-2 border-t border-app-border-subtle bg-app-selected/40 px-3 py-2.5 text-xs font-semibold text-app-accent hover:bg-app-selected" aria-label={i18n.t("supporter_license.purchase_action")}>
           <Heart className="h-3.5 w-3.5" aria-hidden="true" />
-          Remove ads forever · $5 once
+          {i18n.t("supporter_license.purchase_action")}
         </button>
       )}
 

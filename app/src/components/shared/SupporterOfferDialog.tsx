@@ -1,3 +1,4 @@
+import '../../i18n/supporterTranslations';
 import { useRef } from 'react';
 import { ArrowRight, CheckCircle2, Heart, MegaphoneOff, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -21,6 +22,37 @@ export function SupporterOfferDialog({
   const panelRef = useRef<HTMLDivElement>(null);
   useModalFocus(panelRef, onClose);
 
+  if (trigger === 'weekly') {
+    return (
+      <div
+        className="fixed inset-0 z-[260] flex items-center justify-center bg-black/20 p-4"
+        onClick={event => { if (event.target === event.currentTarget) onClose(); }}
+      >
+        <div
+          ref={panelRef}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="supporter-offer-title"
+          aria-describedby="supporter-offer-description"
+          tabIndex={-1}
+          className="quiet-raised relative max-h-[calc(100dvh-2rem)] w-full max-w-sm overflow-y-auto p-6"
+        >
+          <button type="button" onClick={onClose} className="quiet-control absolute end-2 top-2 p-3 text-app-text-secondary" aria-label={t('supporter_offer.close_label')}>
+            <X className="h-4 w-4" />
+          </button>
+          <Heart className="h-7 w-7 text-app-accent" aria-hidden="true" />
+          <h2 id="supporter-offer-title" className="mt-4 pe-3 text-lg font-semibold text-app-text">{t('supporter_offer.weekly_title')}</h2>
+          <p id="supporter-offer-description" className="mt-3 text-sm leading-6 text-app-text-secondary">{t('supporter_offer.weekly_description')}</p>
+          <p className="mt-3 text-xs leading-5 text-app-text-secondary">{t('supporter_offer.weekly_note')}</p>
+          <div className="mt-5 flex flex-wrap gap-2">
+            <button type="button" data-modal-autofocus onClick={onClose} className="quiet-control min-h-11 px-4 py-2 text-sm text-app-text-secondary">{t('supporter_offer.secondary_action')}</button>
+            <button type="button" onClick={onOpenSupporter} className="quiet-control min-h-11 bg-app-accent px-4 py-2 text-sm font-semibold text-app-accent-contrast">{t('supporter_offer.primary_action')}</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const isBottomSheet = presentation === 'bottom-sheet';
   const titleKey = trigger === 'ad_dismissed'
     ? 'supporter_offer.ad_dismissed_title'
@@ -36,7 +68,7 @@ export function SupporterOfferDialog({
         aria-modal="true"
         aria-labelledby="supporter-offer-title"
         tabIndex={-1}
-        className={`quiet-raised w-[min(560px,calc(100vw-2rem))] overflow-hidden motion-safe:animate-in motion-safe:fade-in motion-safe:duration-200 ${isBottomSheet ? 'rounded-b-none sm:rounded-container' : ''}`}
+        className={`quiet-raised max-h-[calc(100dvh-2rem)] w-[min(560px,calc(100vw-2rem))] overflow-y-auto motion-safe:animate-in motion-safe:fade-in motion-safe:duration-200 ${isBottomSheet ? 'rounded-b-none sm:rounded-container' : ''}`}
       >
         <header className="flex items-center justify-between border-b border-app-border-subtle px-5 py-4">
           <span className="text-xs font-semibold uppercase tracking-wider text-app-accent">

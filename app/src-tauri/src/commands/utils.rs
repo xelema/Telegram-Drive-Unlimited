@@ -64,11 +64,6 @@ pub async fn clear_peer_cache(peer_cache: &Arc<RwLock<HashMap<i64, Peer>>>) {
 }
 
 #[tauri::command]
-pub fn cmd_log(message: String) {
-    log::info!("[FRONTEND] {}", message);
-}
-
-#[tauri::command]
 pub fn cmd_get_bandwidth(
     bw_state: State<'_, Arc<BandwidthManager>>,
 ) -> crate::bandwidth::BandwidthStats {
@@ -93,6 +88,18 @@ pub fn map_error(e: impl std::fmt::Display) -> String {
     err_str
 }
 
+/// Parse the numeric part of Telegram's normalized FLOOD_WAIT marker.
+/// Callers retain their own case normalization, delay bounds, and retry policy.
+pub(crate) fn flood_wait_seconds(error: &str) -> Option<u64> {
+    const MARKER: &str = "FLOOD_WAIT_";
+    let start = error.find(MARKER)? + MARKER.len();
+    let digits: String = error[start..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().ok()
+}
+
 /// Return Telegram's declared byte size for downloadable media.
 ///
 /// Photos do not expose a document-level size. Grammers derives their size
@@ -110,47 +117,4 @@ pub fn media_size(media: &Media) -> u64 {
 
 fn nonnegative_size(size: i64) -> u64 {
     u64::try_from(size).unwrap_or(0)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{media_size, nonnegative_size};
-    use grammers_client::types::{Media, Photo};
-    use grammers_tl_types as tl;
-
-    #[test]
-    fn telegram_sizes_are_safely_normalized() {
-        assert_eq!(nonnegative_size(-1), 0);
-        assert_eq!(nonnegative_size(0), 0);
-        assert_eq!(nonnegative_size(1_572_864), 1_572_864);
-    }
-
-    #[test]
-    fn photo_size_uses_the_largest_available_representation() {
-        let photo = Photo::from_raw(tl::enums::Photo::Photo(tl::types::Photo {
-            has_stickers: false,
-            id: 1,
-            access_hash: 2,
-            file_reference: Vec::new(),
-            date: 0,
-            sizes: vec![
-                tl::enums::PhotoSize::Size(tl::types::PhotoSize {
-                    r#type: "m".to_string(),
-                    w: 320,
-                    h: 240,
-                    size: 42_000,
-                }),
-                tl::enums::PhotoSize::Size(tl::types::PhotoSize {
-                    r#type: "y".to_string(),
-                    w: 2560,
-                    h: 1920,
-                    size: 1_572_864,
-                }),
-            ],
-            video_sizes: None,
-            dc_id: 1,
-        }));
-
-        assert_eq!(media_size(&Media::Photo(photo)), 1_572_864);
-    }
 }

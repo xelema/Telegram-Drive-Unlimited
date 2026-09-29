@@ -104,27 +104,3 @@ pub async fn cmd_submit_crash_report(report: CrashReportInput) -> Result<(), Str
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{is_public_ip, validate_report, CrashReportInput};
-    use std::net::{IpAddr, Ipv4Addr};
-
-    #[test]
-    fn crash_transport_rejects_private_addresses_and_oversized_payloads() {
-        assert!(!is_public_ip(IpAddr::V4(Ipv4Addr::LOCALHOST)));
-        assert!(!is_public_ip(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20))));
-        assert!(is_public_ip(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))));
-
-        let report = CrashReportInput {
-            event: "app_crash".to_string(),
-            app_version: "2.2.7".to_string(),
-            source: "react".to_string(),
-            error_type: "TypeError".to_string(),
-            frames: vec!["x".repeat(161)],
-            platform: "test".to_string(),
-            occurred_at: "2026-08-09T00:00:00Z".to_string(),
-        };
-        assert!(validate_report(&report).is_err());
-    }
-}

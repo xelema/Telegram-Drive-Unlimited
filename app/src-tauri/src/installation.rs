@@ -30,39 +30,3 @@ pub fn current_installation_info() -> InstallationInfo {
 pub fn cmd_get_installation_info() -> InstallationInfo {
     current_installation_info()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn recognizes_only_the_packaged_pacman_launcher() {
-        assert_eq!(
-            installation_info(Some(OsStr::new("pacman"))),
-            InstallationInfo {
-                managed_by_package_manager: true,
-                package_manager: Some("pacman".to_string()),
-            }
-        );
-        assert_eq!(
-            installation_info(Some(OsStr::new("PACMAN"))),
-            InstallationInfo {
-                managed_by_package_manager: true,
-                package_manager: Some("pacman".to_string()),
-            }
-        );
-    }
-
-    #[test]
-    fn leaves_other_installations_self_managed() {
-        for value in [None, Some(OsStr::new("")), Some(OsStr::new("unknown"))] {
-            assert_eq!(
-                installation_info(value),
-                InstallationInfo {
-                    managed_by_package_manager: false,
-                    package_manager: None,
-                }
-            );
-        }
-    }
-}

@@ -11,7 +11,6 @@ export function scheduleRemoval(ownerId: string, keys: string[], retentionDays: 
     return invoke('cmd_cleanup_schedule', { ownerId, keys, retentionDays });
 }
 export function restoreRemoval(ownerId: string, key: string): Promise<Removal> { return invoke('cmd_cleanup_restore', { ownerId, key }); }
-export function processRemovals(ownerId: string): Promise<Removal[]> { return invoke('cmd_cleanup_process', { ownerId }); }
 export type CleanupView = 'duplicates' | 'large' | 'old';
 export function cleanupCandidates(files: WorkspaceFile[], view: CleanupView, now = Date.now()): WorkspaceFile[] {
     if (view === 'large') return files.filter(file => file.size >= 100 * 1024 * 1024).sort((a, b) => b.size - a.size);

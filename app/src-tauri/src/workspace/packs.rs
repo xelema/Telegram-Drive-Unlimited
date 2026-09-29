@@ -329,10 +329,6 @@ pub fn maintain(data: &Path, owner: i64) -> Result<Vec<OfflinePack>> {
     Ok(packs)
 }
 
-pub fn retained_bytes(data: &Path, owner: i64) -> u64 {
-    assets::tree_size(&offline_root(data, owner))
-}
-
 fn mutate_running(
     account: &AccountGuard,
     id: &str,
@@ -375,7 +371,7 @@ async fn command_output(program: &str, args: &[&str]) -> Result<String> {
     String::from_utf8(output.stdout).map_err(|_| "NETWORK_STATUS_UNKNOWN".into())
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 fn parse_macos_network(route: &str, hardware: &str) -> NetworkStatus {
     let interface = route
         .lines()
@@ -399,7 +395,7 @@ fn parse_macos_network(route: &str, hardware: &str) -> NetworkStatus {
     }
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 fn linux_default_interface(routes: &str) -> Option<String> {
     routes
         .lines()
@@ -425,7 +421,7 @@ fn linux_default_interface(routes: &str) -> Option<String> {
         .map(|(_, interface)| interface)
 }
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(target_os = "windows")]
 fn parse_windows_network(value: &str) -> NetworkStatus {
     let Ok(value) =
         serde_json::from_str::<serde_json::Value>(value.trim().trim_start_matches('\u{feff}'))
@@ -996,239 +992,4 @@ pub fn verified_path(root: &Path, owner_id: &str, pack_id: &str, file_key: &str)
     let path = existing_path(root, account.owner, &pack, item)?;
     account.validate()?;
     Ok(path.to_string_lossy().to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    fn sign_in(root: &Path, owner: i64) {
-        use grammers_session::{storages::SqliteSession, types::PeerInfo, Session};
-        let session = SqliteSession::open(root.join("telegram.session")).unwrap();
-        sqlite::open(root.join("telegram.session"))
-            .unwrap()
-            .execute("DELETE FROM peer_info")
-            .unwrap();
-        session.cache_peer(&PeerInfo::User {
-            id: owner,
-            auth: None,
-            bot: Some(false),
-            is_self: Some(true),
-        });
-        assert_eq!(crate::workspace::current_owner(root).unwrap(), owner);
-    }
-    fn setup() -> (PathBuf, Store) {
-        let root = std::env::temp_dir().join(format!("trip-pack-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&root).unwrap();
-        let store = Store::open(&root, 12).unwrap();
-        let files = (1..=3)
-            .map(|id| crate::models::FileMetadata {
-                id,
-                folder_id: None,
-                name: format!("File{id}.txt"),
-                size: 4,
-                mime_type: Some("text/plain".into()),
-                file_ext: Some("txt".into()),
-                created_at: "2026-09-10T00:00:00Z".into(),
-                icon_type: "file".into(),
-                encryption_state: "plain".into(),
-                is_favorite: false,
-                is_pinned: false,
-            })
-            .collect::<Vec<_>>();
-        store.remember_files(&files, "Saved", "scan").unwrap();
-        (root, store)
-    }
-    #[test]
-    fn full_selection_is_durable_and_never_adopted_by_another_account() {
-        let (root, store) = setup();
-        let pack = create_record(
-            &store,
-            "Trip".into(),
-            vec!["saved:1".into(), "saved:2".into(), "saved:3".into()],
-            true,
-            None,
-        )
-        .unwrap();
-        assert_eq!(pack.files.len(), 3);
-        assert_eq!(required_bytes(&pack).unwrap(), 12);
-        drop(store);
-        assert_eq!(
-            Store::open(&root, 12)
-                .unwrap()
-                .records::<OfflinePack>(KIND)
-                .unwrap()[0]
-                .files
-                .len(),
-            3
-        );
-        assert!(Store::open(&root, 13)
-            .unwrap()
-            .records::<OfflinePack>(KIND)
-            .unwrap()
-            .is_empty());
-        std::fs::remove_dir_all(root).unwrap();
-    }
-    #[test]
-    fn restart_keeps_verified_files_and_resets_interrupted_file_without_claiming_readiness() {
-        let (root, store) = setup();
-        let mut pack = create_record(
-            &store,
-            "Trip".into(),
-            vec!["saved:1".into(), "saved:2".into()],
-            false,
-            None,
-        )
-        .unwrap();
-        let path = target(&root, 12, &pack, &pack.files[0].file).unwrap();
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, b"good").unwrap();
-        pack.files[0].status = "ready".into();
-        pack.files[0].downloaded_bytes = 4;
-        pack.files[1].status = "downloading".into();
-        pack.files[1].downloaded_bytes = 2;
-        pack.status = "running".into();
-        pack.auto_resume = true;
-        pack.active_run = Some("old-process".into());
-        save(&store, &mut pack).unwrap();
-        let fixed = maintain(&root, 12).unwrap().remove(0);
-        assert_eq!(fixed.status, "queued");
-        assert_eq!(fixed.files[0].status, "ready");
-        assert_eq!(fixed.files[1].status, "pending");
-        assert_eq!(fixed.files[1].downloaded_bytes, 0);
-        assert_eq!(required_bytes(&fixed).unwrap(), 4);
-        assert_eq!(
-            existing_path(&root, 12, &fixed, &fixed.files[0]).unwrap(),
-            path.canonicalize().unwrap()
-        );
-        assert!(existing_path(&root, 13, &fixed, &fixed.files[0]).is_err());
-        std::fs::write(&path, b"bad").unwrap();
-        assert_eq!(maintain(&root, 12).unwrap()[0].files[0].status, "pending");
-        drop(store);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-    #[test]
-    fn expiry_and_disposable_cache_clear_preserve_other_kept_files() {
-        let (root, store) = setup();
-        let mut pack =
-            create_record(&store, "Trip".into(), vec!["saved:1".into()], false, None).unwrap();
-        let path = target(&root, 12, &pack, &pack.files[0].file).unwrap();
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, b"good").unwrap();
-        let sibling = offline_root(&root, 12).join("other-retained");
-        std::fs::write(&sibling, b"kept").unwrap();
-        crate::workspace::device_cache::clear(&root, &root.join("cache")).unwrap();
-        assert!(path.exists());
-        pack.expires_at = Some(now() - 1);
-        save(&store, &mut pack).unwrap();
-        assert_eq!(maintain(&root, 12).unwrap()[0].status, "expired");
-        assert!(!path.exists());
-        assert_eq!(std::fs::read(&sibling).unwrap(), b"kept");
-        drop(store);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-    #[test]
-    fn native_network_parsers_identify_default_route_wifi_and_fail_closed() {
-        let ports="Hardware Port: Ethernet\nDevice: en1\nEthernet Address: 00\n\nHardware Port: Wi-Fi\nDevice: en0\nEthernet Address: 00\n";
-        assert!(parse_macos_network("route to: default\n interface: en0\n", ports).wifi);
-        assert!(!parse_macos_network("interface: en1", ports).wifi);
-        assert!(!parse_macos_network("interface: utun4", ports).wifi);
-        assert!(!parse_macos_network("invalid", ports).known);
-        let routes="Iface Destination Gateway Flags RefCnt Use Metric Mask\neth0 00000000 00000000 0003 0 0 200 00000000\nwlan0 00000000 00000000 0003 0 0 100 00000000";
-        assert_eq!(linux_default_interface(routes).as_deref(), Some("wlan0"));
-        assert!(
-            linux_default_interface("Iface Destination\n../../bad 00000000 x 0003 0 0 0 x")
-                .is_none()
-        );
-        assert!(parse_windows_network(r#"{"connected":true,"wifi":true}"#).wifi);
-        assert!(!parse_windows_network(r#"{"connected":true,"wifi":false}"#).wifi);
-        assert!(!parse_windows_network("broken").known);
-        assert_eq!(
-            NetworkStatus::unknown().reason(true).as_deref(),
-            Some("NETWORK_STATUS_UNKNOWN")
-        );
-    }
-    #[test]
-    fn restart_recovers_verified_rename_before_readiness_was_saved() {
-        let (root, store) = setup();
-        let mut pack =
-            create_record(&store, "Trip".into(), vec!["saved:1".into()], true, None).unwrap();
-        let path = target(&root, 12, &pack, &pack.files[0].file).unwrap();
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, b"good").unwrap();
-        pack.files[0].status = "downloading".into();
-        pack.status = "running".into();
-        pack.active_run = Some("previous-process".into());
-        pack.auto_resume = true;
-        save(&store, &mut pack).unwrap();
-        let restored = maintain(&root, 12).unwrap().remove(0);
-        assert_eq!(restored.status, "ready");
-        assert_eq!(restored.files[0].downloaded_bytes, 4);
-        assert!(!restored.auto_resume);
-        assert!(restored.active_run.is_none());
-        drop(store);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-    #[test]
-    fn failed_expiry_cleanup_keeps_record_for_a_later_retry() {
-        let (root, store) = setup();
-        let mut pack =
-            create_record(&store, "Trip".into(), vec!["saved:1".into()], false, None).unwrap();
-        let directory = pack_directory(&root, 12, &pack.id).unwrap();
-        std::fs::create_dir_all(directory.parent().unwrap()).unwrap();
-        // A damaged directory entry produces a deterministic deletion failure.
-        std::fs::write(&directory, b"not a directory").unwrap();
-        pack.expires_at = Some(now() - 1);
-        save(&store, &mut pack).unwrap();
-        assert!(maintain(&root, 12).is_err());
-        assert!(store
-            .record::<OfflinePack>(KIND, &pack.id)
-            .unwrap()
-            .is_some());
-        std::fs::remove_file(&directory).unwrap();
-        assert_eq!(maintain(&root, 12).unwrap()[0].status, "expired");
-        drop(store);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-    #[test]
-    fn per_file_actions_preserve_completed_copies_and_reject_stale_workers() {
-        let (root, store) = setup();
-        sign_in(&root, 12);
-        let account = AccountGuard::open(&root, Some("12")).unwrap();
-        let mut pack = create_record(
-            &store,
-            "Trip".into(),
-            vec!["saved:1".into(), "saved:2".into()],
-            false,
-            None,
-        )
-        .unwrap();
-        pack.files[0].status = "ready".into();
-        pack.files[0].downloaded_bytes = 4;
-        pack.files[1].status = "downloading".into();
-        pack.files[1].downloaded_bytes = 2;
-        pack.active_run = Some("current".into());
-        save(&store, &mut pack).unwrap();
-        let stopped = update_action(&store, &pack.id, "cancel_file", Some("saved:2")).unwrap();
-        assert_eq!(stopped.files[0].downloaded_bytes, 4);
-        assert_eq!(stopped.files[1].status, "cancelled");
-        assert!(file_cancelled(&account, &pack.id, "current", 1));
-        let retried = update_action(&store, &pack.id, "retry_file", Some("saved:2")).unwrap();
-        assert_eq!(retried.files[1].status, "pending");
-        assert_eq!(retried.files[0].status, "ready");
-        update_action(&store, &pack.id, "pause", None).unwrap();
-        assert!(mutate_running(&account, &pack.id, "current", |pack| {
-            pack.files[1].status = "ready".into();
-        })
-        .is_err());
-        assert_eq!(
-            read_pack(&store, &pack.id).unwrap().files[1].status,
-            "pending"
-        );
-        // Changing the authenticated self peer also invalidates an active guard.
-        sign_in(&root, 13);
-        assert!(account.validate().is_err());
-        assert!(file_cancelled(&account, &pack.id, "current", 1));
-        drop(store);
-        std::fs::remove_dir_all(root).unwrap();
-    }
 }

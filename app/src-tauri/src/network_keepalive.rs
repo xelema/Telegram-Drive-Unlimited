@@ -16,18 +16,3 @@ pub async fn probe_telegram() -> bool {
         Ok(Ok(_))
     )
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn keep_alive_uses_a_hostname_instead_of_a_fixed_datacenter_ip() {
-        assert_eq!(TELEGRAM_KEEP_ALIVE_HOST, "api.telegram.org");
-        assert!(TELEGRAM_KEEP_ALIVE_HOST
-            .parse::<std::net::IpAddr>()
-            .is_err());
-        assert_eq!(TELEGRAM_KEEP_ALIVE_PORT, 443);
-        assert!(TELEGRAM_KEEP_ALIVE_TIMEOUT <= Duration::from_secs(5));
-    }
-}

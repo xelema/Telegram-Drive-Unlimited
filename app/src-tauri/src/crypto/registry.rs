@@ -34,47 +34,6 @@ pub enum EncryptedFileState {
     Orphaned,
 }
 
-/// Encryption profile descriptor (no secrets).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EncryptionProfile {
-    pub id: String,
-    pub label: String,
-    pub kind: ProfileKind,
-    pub vault_locator: Option<String>,
-    pub created_at: i64,
-    pub updated_at: i64,
-    pub is_deleted: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProfileKind {
-    Vault,
-    FilePassphrase,
-    RecoveryKey,
-}
-
-/// Lookup result for an encrypted file.
-#[derive(Debug, Clone)]
-// The record is intentionally inline: lookup results are short-lived and boxing every encrypted
-// hit adds allocation churn to the hot listing path.
-#[allow(clippy::large_enum_variant)]
-pub enum FileLookupResult {
-    /// File is plaintext (not encrypted).
-    Plaintext,
-    /// File is encrypted and recognized.
-    Encrypted(EncryptedFileRecord),
-    /// File appears to be encrypted but no registry entry exists.
-    UnknownEncrypted,
-}
-
-impl EncryptedFileRecord {
-    /// Check if the header blob is cached locally.
-    pub fn has_header_cache(&self) -> bool {
-        self.header_blob.as_ref().is_some_and(|b| !b.is_empty())
-    }
-}
-
 impl EncryptedFileState {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -159,29 +118,6 @@ pub fn upsert_encrypted_file(
         .map_err(|error| CryptoError::internal(error.to_string()))?;
     statement
         .bind((17, record.last_verified_at))
-        .map_err(|error| CryptoError::internal(error.to_string()))?;
-    statement
-        .next()
-        .map_err(|error| CryptoError::internal(error.to_string()))?;
-    Ok(())
-}
-
-pub fn mark_reconciliation_required(
-    connection: &sqlite::Connection,
-    folder_key: &str,
-    message_id: i32,
-) -> CryptoResult<()> {
-    let mut statement = connection
-        .prepare(
-            "UPDATE encrypted_files SET reconciliation_state = 'required' \
-             WHERE folder_key = ? AND message_id = ?",
-        )
-        .map_err(|error| CryptoError::internal(error.to_string()))?;
-    statement
-        .bind((1, folder_key))
-        .map_err(|error| CryptoError::internal(error.to_string()))?;
-    statement
-        .bind((2, i64::from(message_id)))
         .map_err(|error| CryptoError::internal(error.to_string()))?;
     statement
         .next()

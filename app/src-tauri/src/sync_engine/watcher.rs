@@ -7,16 +7,7 @@ use notify_debouncer_full::{
     },
     DebounceEventResult,
 };
-use serde::Serialize;
 use std::{path::PathBuf, time::Duration};
-use tauri::Emitter;
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LocalFsEvent {
-    pub action: String,
-    pub path: String,
-}
 
 pub struct LocalWatcher;
 
@@ -24,7 +15,6 @@ impl LocalWatcher {
     pub fn spawn(
         paths: Vec<(PathBuf, SyncPreferences)>,
         debounce: Duration,
-        app: tauri::AppHandle,
         mut shutdown: tokio::sync::watch::Receiver<bool>,
         trigger: tokio::sync::mpsc::Sender<()>,
     ) -> tokio::task::JoinHandle<()> {
@@ -57,20 +47,17 @@ impl LocalWatcher {
                             Ok(events) => {
                                 let mut should_reconcile = false;
                                 for debounced in events {
-                                    let action = match debounced.event.kind {
-                                        EventKind::Create(CreateKind::File) | EventKind::Create(CreateKind::Any) => "upload",
-                                        EventKind::Modify(ModifyKind::Data(_)) | EventKind::Modify(ModifyKind::Any) => "hash_upload",
-                                        EventKind::Remove(RemoveKind::File) | EventKind::Remove(RemoveKind::Any) => "delete",
-                                        EventKind::Create(CreateKind::Folder) | EventKind::Remove(RemoveKind::Folder) | EventKind::Modify(ModifyKind::Name(_)) => "rescan",
-                                        _ => continue,
-                                    };
+                                    if !matches!(debounced.event.kind,
+                                        EventKind::Create(CreateKind::File | CreateKind::Any | CreateKind::Folder)
+                                        | EventKind::Modify(ModifyKind::Data(_) | ModifyKind::Any | ModifyKind::Name(_))
+                                        | EventKind::Remove(RemoveKind::File | RemoveKind::Any | RemoveKind::Folder)
+                                    ) { continue; }
                                     for path in debounced.event.paths {
                                         if path.to_string_lossy().ends_with(".td-sync-tmp") { continue; }
                                         if paths.iter().any(|(root, preferences)| path.strip_prefix(root).ok().is_some_and(|relative| {
                                             let relative = relative.components().map(|part| part.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
                                             preferences.ignores(&relative) || (path.is_dir() && preferences.ignores(&format!("{relative}/")))
                                         })) { continue; }
-                                        let _ = app.emit("sync-fs-event", LocalFsEvent { action: action.into(), path: path.to_string_lossy().into_owned() });
                                         should_reconcile = true;
                                     }
                                 }

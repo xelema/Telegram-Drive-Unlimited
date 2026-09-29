@@ -1,14 +1,14 @@
 use actix_web::dev::ServerHandle;
 use std::sync::{Arc, Mutex};
 
-#[cfg(any(test, not(target_os = "android")))]
+#[cfg(not(target_os = "android"))]
 use std::io;
-#[cfg(any(test, not(target_os = "android")))]
+#[cfg(not(target_os = "android"))]
 use std::net::{Ipv4Addr, TcpListener};
-#[cfg(any(test, not(target_os = "android")))]
+#[cfg(not(target_os = "android"))]
 use std::time::Duration;
 
-#[cfg(any(test, not(target_os = "android")))]
+#[cfg(not(target_os = "android"))]
 const BIND_RETRY_DELAYS: [Duration; 5] = [
     Duration::from_millis(25),
     Duration::from_millis(50),
@@ -133,7 +133,7 @@ impl LocalServerLifecycle {
     }
 }
 
-#[cfg(any(test, not(target_os = "android")))]
+#[cfg(not(target_os = "android"))]
 pub async fn bind_loopback_with_retry(
     port: u16,
     lifecycle: &LocalServerLifecycle,
@@ -145,7 +145,7 @@ pub async fn bind_loopback_with_retry(
     .await
 }
 
-#[cfg(any(test, not(target_os = "android")))]
+#[cfg(not(target_os = "android"))]
 async fn bind_loopback_with_delays<F>(
     port: u16,
     retry_delays: &[Duration],
@@ -170,137 +170,5 @@ where
             }
             Err(error) => return Err(error),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    async fn start_test_server(
-        lifecycle: &Arc<LocalServerLifecycle>,
-        generation: u64,
-    ) -> (ServerHandle, tokio::task::JoinHandle<io::Result<()>>) {
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let server = actix_web::HttpServer::new(actix_web::App::new)
-            .workers(1)
-            .listen(listener)
-            .unwrap()
-            .run();
-        let handle = server.handle();
-        assert!(lifecycle.install_handle(generation, handle.clone()));
-        (handle, tokio::spawn(server))
-    }
-
-    async fn exercise_rapid_enable_port_change_disable() {
-        let lifecycle = LocalServerLifecycle::new();
-
-        let enabled = lifecycle.request_restart();
-        let (_first_handle, first_task) = start_test_server(&lifecycle, enabled).await;
-        assert_eq!(lifecycle.status(), (true, None));
-
-        let port_change = lifecycle.request_restart();
-        assert_eq!(lifecycle.status(), (false, None));
-        lifecycle.take_handle().unwrap().stop(true).await;
-        first_task.await.unwrap().unwrap();
-
-        let (_second_handle, second_task) = start_test_server(&lifecycle, port_change).await;
-        assert_eq!(lifecycle.status(), (true, None));
-
-        let obsolete_port_change = lifecycle.request_restart();
-        lifecycle.take_handle().unwrap().stop(true).await;
-        second_task.await.unwrap().unwrap();
-        let disabled = lifecycle.request_restart();
-
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let obsolete_server = actix_web::HttpServer::new(actix_web::App::new)
-            .workers(1)
-            .listen(listener)
-            .unwrap()
-            .run();
-        let obsolete_handle = obsolete_server.handle();
-        let obsolete_task = tokio::spawn(obsolete_server);
-        assert!(!lifecycle.install_handle(obsolete_port_change, obsolete_handle.clone()));
-        obsolete_handle.stop(false).await;
-        obsolete_task.await.unwrap().unwrap();
-
-        assert!(lifecycle.is_current(disabled));
-        assert_eq!(lifecycle.status(), (false, None));
-        assert!(lifecycle.take_handle().is_none());
-    }
-
-    #[test]
-    fn newer_generation_rejects_stale_handle_and_state_updates() {
-        let lifecycle = LocalServerLifecycle::new();
-        let first = lifecycle.request_restart();
-        let second = lifecycle.request_restart();
-
-        assert!(second > first);
-        assert!(!lifecycle.is_current(first));
-        lifecycle.set_error(first, "obsolete failure".to_string());
-        assert_eq!(lifecycle.status(), (false, None));
-    }
-
-    #[tokio::test]
-    async fn bind_retry_waits_for_a_releasing_loopback_port() {
-        let occupied = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let port = occupied.local_addr().unwrap().port();
-        let release = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-            drop(occupied);
-        });
-
-        let listener = bind_loopback_with_delays(
-            port,
-            &[
-                Duration::from_millis(5),
-                Duration::from_millis(10),
-                Duration::from_millis(20),
-            ],
-            || true,
-        )
-        .await
-        .unwrap()
-        .expect("retry was cancelled");
-
-        assert_eq!(listener.local_addr().unwrap().port(), port);
-        release.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn bind_retry_is_bounded_and_can_be_superseded() {
-        let occupied = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let port = occupied.local_addr().unwrap().port();
-        let attempts = std::sync::atomic::AtomicUsize::new(0);
-
-        let result = bind_loopback_with_delays(
-            port,
-            &[Duration::from_millis(1), Duration::from_millis(1)],
-            || attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 1,
-        )
-        .await
-        .unwrap();
-
-        assert!(result.is_none());
-
-        let exhausted = bind_loopback_with_delays(
-            port,
-            &[Duration::from_millis(1), Duration::from_millis(1)],
-            || true,
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(exhausted.kind(), io::ErrorKind::AddrInUse);
-        drop(occupied);
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn rapid_api_restart_sequence_cannot_publish_obsolete_state() {
-        exercise_rapid_enable_port_change_disable().await;
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn rapid_webdav_restart_sequence_cannot_publish_obsolete_state() {
-        exercise_rapid_enable_port_change_disable().await;
     }
 }

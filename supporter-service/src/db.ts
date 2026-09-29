@@ -43,14 +43,15 @@ export async function markCheckoutCancelled(env: Env, claimId: string): Promise<
   `).bind(claimId).run();
 }
 
-export async function beginCheckoutCompletion(env: Env, claimId: string, now: number): Promise<boolean> {
+export async function beginCheckoutCompletion(env: Env, claimId: string, now: number, verifiedCompletedCapture = false): Promise<boolean> {
   const result = await env.DB.prepare(`
     UPDATE checkout_claims SET status = 'processing', processing_started_at = ?
     WHERE id = ? AND (
       status IN ('creating', 'pending')
       OR (status = 'processing' AND processing_started_at < ?)
+      OR (? = 1 AND status IN ('expired', 'cancelled', 'failed'))
     )
-  `).bind(now, claimId, now - 60).run();
+  `).bind(now, claimId, now - 60, verifiedCompletedCapture ? 1 : 0).run();
   return (result.meta.changes ?? 0) === 1;
 }
 
@@ -61,11 +62,14 @@ export async function releaseCheckoutCompletion(env: Env, claimId: string): Prom
   `).bind(claimId).run();
 }
 
-export async function markRecoveryDelivered(env: Env, claimId: string, deliveredAt: number): Promise<void> {
+/** Explicit durable-client acknowledgement; a status GET is never proof of storage. */
+export async function acknowledgeCheckoutReceipt(env: Env, claimId: string, acknowledgedAt: number): Promise<void> {
   await env.DB.prepare(`
-    UPDATE checkout_claims SET recovery_delivered_at = ?
-    WHERE id = ? AND status = 'completed' AND recovery_delivered_at IS NULL
-  `).bind(deliveredAt, claimId).run();
+    UPDATE checkout_claims
+    SET recovery_delivered_at = COALESCE(recovery_delivered_at, ?),
+        recovery_ciphertext = NULL, recovery_nonce = NULL
+    WHERE id = ? AND status = 'completed' AND entitlement_id IS NOT NULL
+  `).bind(acknowledgedAt, claimId).run();
 }
 
 export async function getCheckoutClaim(env: Env, claimId: string): Promise<CheckoutClaimRow | null> {
@@ -74,14 +78,6 @@ export async function getCheckoutClaim(env: Env, claimId: string): Promise<Check
 
 export async function getCheckoutByOrder(env: Env, orderId: string): Promise<CheckoutClaimRow | null> {
   return env.DB.prepare('SELECT * FROM checkout_claims WHERE paypal_order_id = ?').bind(orderId).first<CheckoutClaimRow>();
-}
-
-export async function findPendingCheckoutForDevice(env: Env, deviceKeyHash: string, now: number): Promise<CheckoutClaimRow | null> {
-  return env.DB.prepare(`
-    SELECT * FROM checkout_claims
-    WHERE device_key_hash = ? AND status = 'pending' AND expires_at > ?
-    ORDER BY created_at DESC LIMIT 1
-  `).bind(deviceKeyHash, now).first<CheckoutClaimRow>();
 }
 
 export async function completeCheckout(
@@ -148,14 +144,6 @@ export async function getEntitlement(env: Env, entitlementId: string): Promise<E
   return env.DB.prepare('SELECT * FROM entitlements WHERE id = ?').bind(entitlementId).first<EntitlementRow>();
 }
 
-export async function getEntitlementByCapture(env: Env, captureId: string): Promise<EntitlementRow | null> {
-  return env.DB.prepare('SELECT * FROM entitlements WHERE paypal_capture_id = ?').bind(captureId).first<EntitlementRow>();
-}
-
-export async function getEntitlementByOrder(env: Env, orderId: string): Promise<EntitlementRow | null> {
-  return env.DB.prepare('SELECT * FROM entitlements WHERE paypal_order_id = ?').bind(orderId).first<EntitlementRow>();
-}
-
 export async function findEntitlementByRecoveryHash(env: Env, recoveryHash: string): Promise<EntitlementRow | null> {
   return env.DB.prepare('SELECT * FROM entitlements WHERE recovery_lookup_hash = ?').bind(recoveryHash).first<EntitlementRow>();
 }
@@ -166,24 +154,41 @@ export async function getDevice(env: Env, entitlementId: string, deviceKeyHash: 
   `).bind(entitlementId, deviceKeyHash).first<DeviceRow>();
 }
 
-export async function countActiveDevices(env: Env, entitlementId: string): Promise<number> {
-  const row = await env.DB.prepare(`
-    SELECT COUNT(*) AS count FROM entitlement_devices
-    WHERE entitlement_id = ? AND revoked_at IS NULL
-  `).bind(entitlementId).first<{ count: number }>();
-  return row?.count ?? 0;
-}
+export type DeviceAdmission = 'admitted' | 'limit_reached' | 'entitlement_inactive';
 
-export async function activateDevice(env: Env, entitlementId: string, deviceKeyHash: string, devicePublicKey: string, now: number): Promise<void> {
-  await env.DB.prepare(`
-    INSERT INTO entitlement_devices (
-      entitlement_id, device_key_hash, device_public_key, activated_at, last_refreshed_at, revoked_at
-    ) VALUES (?, ?, ?, ?, ?, NULL)
-    ON CONFLICT(entitlement_id, device_key_hash) DO UPDATE SET
-      device_public_key = excluded.device_public_key,
-      last_refreshed_at = excluded.last_refreshed_at,
-      revoked_at = NULL
-  `).bind(entitlementId, deviceKeyHash, devicePublicKey, now, now).run();
+export async function activateDevice(env: Env, entitlementId: string, deviceKeyHash: string, devicePublicKey: string, now: number): Promise<DeviceAdmission> {
+  // SQLite serializes this write: the allowance check and admission cannot
+  // race another request. Existing active devices remain valid even if an
+  // older Worker admitted too many; this repair never removes their access.
+  const [admission, entitlement] = await env.DB.batch<{ status: EntitlementRow['status'] }>([
+    env.DB.prepare(`
+      INSERT INTO entitlement_devices (
+        entitlement_id, device_key_hash, device_public_key, activated_at, last_refreshed_at, revoked_at
+      )
+      SELECT ?1, ?2, ?3, ?4, ?4, NULL
+      WHERE EXISTS (
+        SELECT 1 FROM entitlements WHERE id = ?1 AND status = 'active'
+      ) AND (
+        EXISTS (
+          SELECT 1 FROM entitlement_devices
+          WHERE entitlement_id = ?1 AND device_key_hash = ?2 AND revoked_at IS NULL
+        ) OR (
+          SELECT COUNT(*) FROM entitlement_devices
+          WHERE entitlement_id = ?1 AND revoked_at IS NULL
+        ) < ?5
+      )
+      ON CONFLICT(entitlement_id, device_key_hash) DO UPDATE SET
+        device_public_key = excluded.device_public_key,
+        last_refreshed_at = excluded.last_refreshed_at,
+        revoked_at = NULL
+    `).bind(entitlementId, deviceKeyHash, devicePublicKey, now, Number.parseInt(env.MAX_ACTIVE_DEVICES, 10)),
+    // Classify a denied write in the same transaction. This read does not
+    // decide admission and cannot reopen the count/write race.
+    env.DB.prepare('SELECT status FROM entitlements WHERE id = ?').bind(entitlementId),
+  ]);
+  if (!admission || !entitlement) throw new Error('Device admission result is incomplete');
+  if ((admission.meta.changes ?? 0) === 1) return 'admitted';
+  return entitlement.results[0]?.status === 'active' ? 'limit_reached' : 'entitlement_inactive';
 }
 
 export async function touchDevice(env: Env, entitlementId: string, deviceKeyHash: string, now: number): Promise<void> {
@@ -265,10 +270,8 @@ export async function cleanupExpiredRecords(env: Env, now: number): Promise<void
       UPDATE checkout_claims SET status = 'expired', approval_url = NULL
       WHERE status IN ('creating', 'pending') AND expires_at < ?
     `).bind(now),
-    env.DB.prepare(`
-      UPDATE checkout_claims SET recovery_ciphertext = NULL, recovery_nonce = NULL
-      WHERE status = 'completed' AND recovery_delivered_at IS NOT NULL AND recovery_delivered_at < ?
-    `).bind(now - 86_400),
+    // Old recovery_delivered_at values only prove that an HTTP response was
+    // sent. Keep encrypted delivery material until explicit durable receipt.
     env.DB.prepare(`
       UPDATE checkout_claims SET status = 'pending', processing_started_at = NULL
       WHERE status = 'processing' AND processing_started_at < ?

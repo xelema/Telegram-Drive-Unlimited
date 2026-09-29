@@ -1,3 +1,4 @@
+import '../../i18n/supporterTranslations';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { usePlatform } from '../../hooks/usePlatform';
 import { load } from '@tauri-apps/plugin-store';
@@ -106,10 +107,10 @@ export default function AdsterraBanner({ visible, onSupport, onManualDismiss }: 
         <button
           type="button"
           onClick={(event) => { event.preventDefault(); event.stopPropagation(); onSupport(); }}
-          className="quiet-control me-9 shrink-0 border-s border-app-border-subtle px-3 py-2 text-[10px] font-semibold text-app-accent hover:bg-app-selected"
-          aria-label="Remove ads forever for $5 once"
+          className="quiet-control me-9 max-w-[50%] shrink-0 border-s border-app-border-subtle px-3 py-2 text-[10px] font-semibold text-app-accent hover:bg-app-selected"
+          aria-label={i18n.t("supporter_license.purchase_action")}
         >
-          Ad-free · $5 once
+          <span className="line-clamp-2">{i18n.t("supporter_license.supporter_tier")}</span>
         </button>
       )}
       <button

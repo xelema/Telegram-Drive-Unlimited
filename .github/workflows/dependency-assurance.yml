@@ -45,15 +45,15 @@ jobs:
       - run: node scripts/check-npm-audit.cjs ${{ matrix.project }}
       - run: node scripts/check-node-licenses.cjs ${{ matrix.project }}
 
-  assurance-script-contracts:
-    name: Release assurance script contracts
+  assurance-cli-e2e:
+    name: Release assurance CLI end-to-end
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
-      - run: node scripts/test-assurance-scripts.cjs
+      - run: node scripts/e2e/assurance.e2e.cjs
 
   rust-assurance:
     name: Rust advisories, licenses, bans, and sources

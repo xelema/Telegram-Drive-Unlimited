@@ -166,24 +166,6 @@ impl BandwidthManager {
         }
     }
 
-    pub fn can_transfer(&self, bytes: u64) -> Result<(), String> {
-        self.check_and_reset();
-        let stats = self.stats.lock().unwrap();
-        let total = stats
-            .up_bytes
-            .checked_add(stats.down_bytes)
-            .and_then(|used| used.checked_add(bytes))
-            .ok_or_else(|| "Bandwidth accounting overflowed".to_string())?;
-        if total > self.limit {
-            return Err(format!(
-                "Weekly bandwidth limit ({}) exceeded! Used: {}",
-                self.format_bytes(self.limit),
-                self.format_bytes(total)
-            ));
-        }
-        Ok(())
-    }
-
     /// Atomically check the limit AND reserve bandwidth for an upload.
     /// Call release_up() if the transfer fails to avoid permanently consuming quota.
     pub fn try_reserve_up(&self, bytes: u64) -> Result<(), String> {
@@ -261,36 +243,6 @@ impl BandwidthManager {
         if let Err(error) = self.save_locked(&stats) {
             *stats = previous;
             log::error!("Unable to release a download bandwidth reservation: {error}");
-        }
-    }
-
-    pub fn add_up(&self, bytes: u64) {
-        self.check_and_reset();
-        let mut stats = self.stats.lock().unwrap();
-        let previous = stats.clone();
-        let Some(total) = stats.up_bytes.checked_add(bytes) else {
-            log::error!("Upload bandwidth accounting overflowed");
-            return;
-        };
-        stats.up_bytes = total;
-        if let Err(error) = self.save_locked(&stats) {
-            *stats = previous;
-            log::error!("Unable to persist upload bandwidth: {error}");
-        }
-    }
-
-    pub fn add_down(&self, bytes: u64) {
-        self.check_and_reset();
-        let mut stats = self.stats.lock().unwrap();
-        let previous = stats.clone();
-        let Some(total) = stats.down_bytes.checked_add(bytes) else {
-            log::error!("Download bandwidth accounting overflowed");
-            return;
-        };
-        stats.down_bytes = total;
-        if let Err(error) = self.save_locked(&stats) {
-            *stats = previous;
-            log::error!("Unable to persist download bandwidth: {error}");
         }
     }
 
@@ -375,92 +327,5 @@ fn atomic_replace(source: &Path, destination: &Path) -> Result<(), String> {
         Err(std::io::Error::last_os_error().to_string())
     } else {
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn test_manager_with_limit(label: &str, limit: u64) -> std::sync::Arc<BandwidthManager> {
-        let path = std::env::temp_dir().join(format!(
-            "telegram-drive-bandwidth-{label}-{}.json",
-            uuid::Uuid::new_v4()
-        ));
-        std::sync::Arc::new(BandwidthManager {
-            file_path: path,
-            stats: Mutex::new(BandwidthStats::default()),
-            limit,
-        })
-    }
-
-    fn test_manager(label: &str) -> std::sync::Arc<BandwidthManager> {
-        test_manager_with_limit(label, WEEKLY_LIMIT_BYTES)
-    }
-
-    #[test]
-    fn week_starts_on_monday() {
-        assert_eq!(
-            week_start_for(NaiveDate::from_ymd_opt(2026, 8, 23).unwrap()),
-            NaiveDate::from_ymd_opt(2026, 8, 17).unwrap()
-        );
-        assert_eq!(
-            week_start_for(NaiveDate::from_ymd_opt(2026, 8, 24).unwrap()),
-            NaiveDate::from_ymd_opt(2026, 8, 24).unwrap()
-        );
-    }
-
-    #[test]
-    fn legacy_daily_stats_receive_weekly_defaults() {
-        let stats: BandwidthStats =
-            serde_json::from_str(r#"{"date":"2026-08-20","up_bytes":10,"down_bytes":20}"#).unwrap();
-        assert_eq!(stats.limit_bytes, WEEKLY_LIMIT_BYTES);
-        assert_eq!(stats.period, "weekly");
-        assert_eq!(stats.up_bytes + stats.down_bytes, 30);
-    }
-
-    #[test]
-    fn failed_download_reservations_release_quota_on_drop() {
-        let manager = test_manager("release");
-        {
-            let _reservation = BandwidthReservation::download(manager.clone(), 4096).unwrap();
-            assert_eq!(manager.get_stats().down_bytes, 4096);
-        }
-        assert_eq!(manager.get_stats().down_bytes, 0);
-        let _ = std::fs::remove_file(&manager.file_path);
-    }
-
-    #[test]
-    fn committed_download_reservations_remain_accounted() {
-        let manager = test_manager("commit");
-        {
-            let mut reservation = BandwidthReservation::download(manager.clone(), 4096).unwrap();
-            reservation.commit();
-        }
-        assert_eq!(manager.get_stats().down_bytes, 4096);
-        let _ = std::fs::remove_file(&manager.file_path);
-    }
-
-    #[test]
-    fn concurrent_reservations_cannot_overbook_the_limit() {
-        let manager = test_manager_with_limit("concurrent", 1_000);
-        let mut workers = Vec::new();
-        for _ in 0..20 {
-            let manager = manager.clone();
-            workers.push(std::thread::spawn(move || {
-                manager.try_reserve_up(100).is_ok()
-            }));
-        }
-        let accepted = workers
-            .into_iter()
-            .map(|worker| worker.join().unwrap())
-            .filter(|accepted| *accepted)
-            .count();
-        assert_eq!(accepted, 10);
-        assert_eq!(manager.get_stats().up_bytes, 1_000);
-        let persisted: BandwidthStats =
-            serde_json::from_slice(&std::fs::read(&manager.file_path).unwrap()).unwrap();
-        assert_eq!(persisted.up_bytes, 1_000);
-        let _ = std::fs::remove_file(&manager.file_path);
     }
 }

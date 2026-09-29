@@ -36,11 +36,24 @@ export function readThemePreference(storage?: Storage): ThemePreference {
   return legacyTheme === 'light' || legacyTheme === 'dark' ? legacyTheme : 'default';
 }
 
+function isCustomTheme(value: unknown): value is CustomTheme {
+  if (!value || typeof value !== 'object') return false;
+  const theme = value as Partial<CustomTheme>;
+  if (typeof theme.id !== 'string' || typeof theme.name !== 'string' || typeof theme.isDark !== 'boolean') {
+    return false;
+  }
+  const palette = theme.palette;
+  if (!palette || typeof palette !== 'object') return false;
+  return (['bg', 'surface', 'primary', 'secondary', 'text', 'subtext', 'border', 'hover'] as const)
+    .every(key => typeof palette[key] === 'string');
+}
+
 export function readUserThemes(storage?: Storage): CustomTheme[] {
   const raw = readStorageValue(USER_THEMES_KEY, storage);
   if (!raw) return [];
   try {
-    return JSON.parse(raw) as CustomTheme[];
+    const themes: unknown = JSON.parse(raw);
+    return Array.isArray(themes) ? themes.filter(isCustomTheme) : [];
   } catch {
     return [];
   }

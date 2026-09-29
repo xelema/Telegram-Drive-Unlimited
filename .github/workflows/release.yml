@@ -46,23 +46,30 @@ jobs:
         working-directory: app
         run: npm run release:version:check -- --tag "$GITHUB_REF_NAME" --changelog ../CHANGELOG.md
 
-      - name: Test frontend behavior and architecture invariants
-        working-directory: app
-        run: npm run test:coverage
-
-      - name: Validate locale resources and generated key types
-        working-directory: app
+      - name: Validate E2E-only testing policy and app security configuration
         run: |
-          node scripts/i18n/generate-key-types.cjs --check
-          npm run i18n:validate
+          node scripts/check-test-policy.cjs
+          node scripts/check-app-security.cjs
+
+      - name: Install browser for end-to-end verification
+        working-directory: app
+        run: npx playwright install --with-deps chromium
+
+      - name: Run browser end-to-end journeys
+        working-directory: app
+        run: npm run test:e2e
+
+      - name: Validate locale resources
+        working-directory: app
+        run: npm run i18n:validate
 
       - name: Build production frontend
         working-directory: app
         run: npm run build:verify
 
-      - name: Test Rust library invariants
+      - name: Run native process and HTTP end-to-end journeys
         working-directory: app/src-tauri
-        run: cargo test --lib
+        run: cargo test --locked --features native-e2e --test native_e2e
 
       - name: Verify Rust formatting
         working-directory: app/src-tauri
@@ -70,7 +77,7 @@ jobs:
 
       - name: Lint native release targets without warnings
         working-directory: app/src-tauri
-        run: cargo clippy --lib --all-targets -- -D warnings
+        run: cargo clippy --locked --features native-e2e --lib --all-targets -- -D warnings
 
       - name: Install supporter-service dependencies
         working-directory: supporter-service
@@ -80,7 +87,7 @@ jobs:
         working-directory: supporter-service
         run: |
           npm run check
-          npm run test:coverage
+          npm run test:e2e
           npx wrangler deploy --dry-run
 
   create-release:

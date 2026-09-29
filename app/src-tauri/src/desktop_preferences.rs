@@ -102,11 +102,6 @@ impl DesktopPreferencesState {
             log::warn!("Could not persist the background-mode education state: {error}");
         }
     }
-
-    #[cfg(test)]
-    pub(crate) fn from_test_parts(path: PathBuf, value: RwLock<DesktopPreferences>) -> Self {
-        Self { path, value }
-    }
 }
 
 fn load_preferences(path: &Path) -> DesktopPreferences {
@@ -221,42 +216,4 @@ pub fn cmd_set_desktop_lock_on_sleep(
     let mut preferences = state.get();
     preferences.lock_on_sleep = enabled;
     state.update(preferences).map(|_| ())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn defaults_are_private_and_background_capable() {
-        let value = DesktopPreferences::default();
-        assert!(value.background_mode_enabled);
-        assert_eq!(value.close_behavior, CloseBehavior::Background);
-        assert!(!value.notifications_enabled);
-        assert!(!value.show_filenames_in_notifications);
-        assert!(!value.notify_while_visible);
-    }
-
-    #[test]
-    fn corrupt_preferences_fail_closed_to_safe_defaults() {
-        let root = std::env::temp_dir().join(format!("desktop-prefs-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&root).unwrap();
-        let path = root.join(PREFERENCES_FILE);
-        fs::write(&path, b"not-json").unwrap();
-        assert_eq!(load_preferences(&path), DesktopPreferences::default());
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn preferences_round_trip_atomically() {
-        let root = std::env::temp_dir().join(format!("desktop-prefs-{}", uuid::Uuid::new_v4()));
-        let path = root.join(PREFERENCES_FILE);
-        let value = DesktopPreferences {
-            notifications_enabled: true,
-            ..DesktopPreferences::default()
-        };
-        persist_preferences(&path, &value).unwrap();
-        assert_eq!(load_preferences(&path), value);
-        fs::remove_dir_all(root).unwrap();
-    }
 }

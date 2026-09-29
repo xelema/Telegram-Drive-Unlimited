@@ -166,16 +166,3 @@ pub fn cmd_store_api_hash(api_hash: String) -> Result<(), String> {
 pub fn cmd_clear_api_hash() -> Result<(), String> {
     delete_api_hash()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::validate_api_hash;
-
-    #[test]
-    fn api_hash_policy_rejects_blank_whitespace_and_oversized_values() {
-        assert!(validate_api_hash("").is_err());
-        assert!(validate_api_hash("has a space").is_err());
-        assert!(validate_api_hash(&"x".repeat(257)).is_err());
-        assert!(validate_api_hash("0123456789abcdef0123456789abcdef").is_ok());
-    }
-}

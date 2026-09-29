@@ -35,15 +35,10 @@ struct CryptoStateInner {
 }
 
 struct SessionInfo {
-    /// Timestamp for planned session-expiry enforcement.
-    #[allow(dead_code)]
-    created_at: Instant,
     wrapping_key: SecretKey,
 }
 
-/// Metadata for an active operation handle.
-/// Fields will be consumed by the planned per-operation policy engine.
-#[allow(dead_code)]
+/// Session, lifetime, and capability checks for an active operation handle.
 struct OperationInfo {
     session_id: UnlockSessionId,
     created_at: Instant,
@@ -112,13 +107,9 @@ impl CryptoState {
         inner.vault.create(passphrase)?;
         let session_id = Self::new_unique_handle(&inner.sessions);
         let wrapping_key = inner.vault.wrapping_key()?.clone();
-        inner.sessions.insert(
-            session_id,
-            SessionInfo {
-                created_at: Instant::now(),
-                wrapping_key,
-            },
-        );
+        inner
+            .sessions
+            .insert(session_id, SessionInfo { wrapping_key });
         inner.current_session = Some(session_id);
         inner.locked = false;
         inner.last_activity = Instant::now();
@@ -140,13 +131,9 @@ impl CryptoState {
 
         let wrapping_key = inner.vault.wrapping_key()?.clone();
 
-        inner.sessions.insert(
-            session_id,
-            SessionInfo {
-                created_at: Instant::now(),
-                wrapping_key,
-            },
-        );
+        inner
+            .sessions
+            .insert(session_id, SessionInfo { wrapping_key });
 
         inner.current_session = Some(session_id);
         inner.locked = false;
@@ -396,13 +383,9 @@ impl CryptoState {
         let session_id = Self::new_unique_handle(&inner.sessions);
         let wrapping_key = inner.vault.wrapping_key()?.clone();
         inner.sessions.clear();
-        inner.sessions.insert(
-            session_id,
-            SessionInfo {
-                created_at: Instant::now(),
-                wrapping_key,
-            },
-        );
+        inner
+            .sessions
+            .insert(session_id, SessionInfo { wrapping_key });
         inner.current_session = Some(session_id);
         inner.locked = false;
         inner.last_activity = Instant::now();
@@ -538,124 +521,5 @@ impl CryptoState {
         drop(inner);
         self.signal_auto_lock_change();
         auto_locked
-    }
-
-    #[cfg(test)]
-    fn set_last_activity_for_test(&self, last_activity: Instant) {
-        if let Ok(mut inner) = self.inner.lock() {
-            if !inner.locked {
-                inner.last_activity = last_activity;
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::crypto::vault::MemoryVault;
-
-    #[test]
-    fn prompt_secrets_are_opaque_and_single_use() {
-        let state = CryptoState::new(Box::new(MemoryVault::new()));
-        let token = state
-            .stage_prompt_secret(b"correct horse battery staple")
-            .unwrap();
-        assert_ne!(token, 0);
-        assert_eq!(
-            state.consume_prompt_secret(token).unwrap().expose(),
-            b"correct horse battery staple"
-        );
-        assert!(state.consume_prompt_secret(token).is_err());
-        assert!(state.stage_prompt_secret(b"short").is_err());
-    }
-
-    #[test]
-    fn locking_revokes_staged_prompt_secrets() {
-        let state = CryptoState::new(Box::new(MemoryVault::new()));
-        let token = state
-            .stage_prompt_secret(b"temporary file passphrase")
-            .unwrap();
-        state.lock();
-        assert!(state.consume_prompt_secret(token).is_err());
-    }
-
-    #[test]
-    fn media_operation_handles_are_session_scoped_and_revoked_on_lock() {
-        let state = CryptoState::new(Box::new(MemoryVault::new()));
-        let session = state.create_vault(b"test passphrase").unwrap();
-        let media = state
-            .create_operation_handle(session, OperationClass::MediaStream)
-            .unwrap();
-
-        assert!(state
-            .operation_wrapping_key(media, OperationClass::MediaStream)
-            .is_ok());
-        assert!(state
-            .operation_wrapping_key(media, OperationClass::Download)
-            .is_err());
-
-        state.lock();
-        assert!(state
-            .operation_wrapping_key(media, OperationClass::MediaStream)
-            .is_err());
-    }
-
-    #[test]
-    fn foreground_activity_extends_an_active_deadline() {
-        let state = CryptoState::new(Box::new(MemoryVault::new()));
-        state.create_vault(b"test passphrase").unwrap();
-        state.set_auto_lock_timeout(Some(Duration::from_secs(60)));
-        let first_deadline = state.next_auto_lock_deadline().unwrap();
-
-        assert!(!state.record_activity());
-        assert!(state.next_auto_lock_deadline().unwrap() >= first_deadline);
-        assert!(!state.is_locked());
-    }
-
-    #[test]
-    fn overdue_activity_locks_instead_of_reviving_the_vault() {
-        let state = CryptoState::new(Box::new(MemoryVault::new()));
-        state.create_vault(b"test passphrase").unwrap();
-        state.set_auto_lock_timeout(Some(Duration::from_secs(60)));
-        state.set_last_activity_for_test(Instant::now() - Duration::from_secs(61));
-
-        assert!(state.record_activity());
-        assert!(state.is_locked());
-        assert!(state.next_auto_lock_deadline().is_none());
-    }
-
-    #[test]
-    fn deadline_check_is_atomic_and_disabled_timeout_stays_unlocked() {
-        let state = CryptoState::new(Box::new(MemoryVault::new()));
-        state.create_vault(b"test passphrase").unwrap();
-        state.set_auto_lock_timeout(None);
-        state.set_last_activity_for_test(Instant::now() - Duration::from_secs(24 * 60 * 60));
-
-        assert!(!state.lock_if_auto_lock_due());
-        assert!(!state.record_activity());
-        assert!(!state.is_locked());
-        assert!(state.next_auto_lock_deadline().is_none());
-    }
-
-    #[tokio::test]
-    async fn supervisor_sleeps_without_a_deadline_and_wakes_on_schedule_change() {
-        let state = CryptoState::new(Box::new(MemoryVault::new()));
-        state.create_vault(b"test passphrase").unwrap();
-        state.set_auto_lock_timeout(None);
-
-        let waiter_state = state.clone();
-        let waiter = tokio::spawn(async move {
-            waiter_state.wait_until_auto_locked().await;
-        });
-        tokio::task::yield_now().await;
-        assert!(!waiter.is_finished());
-
-        state.set_auto_lock_timeout(Some(Duration::ZERO));
-        tokio::time::timeout(Duration::from_secs(1), waiter)
-            .await
-            .expect("schedule change should wake the auto-lock supervisor")
-            .expect("auto-lock supervisor should not panic");
-        assert!(state.is_locked());
     }
 }

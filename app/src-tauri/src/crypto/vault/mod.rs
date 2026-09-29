@@ -4,7 +4,6 @@ use crate::crypto::secret::SecretKey;
 /// Trait for vault persistence backends.
 ///
 /// Implementations include:
-/// - `MemoryVault`: test-only, never persists
 /// - `FileVault`: passphrase-protected persistent production backend
 pub trait CryptoVault: Send + Sync {
     /// Check whether a vault has been created.
@@ -43,7 +42,5 @@ pub trait CryptoVault: Send + Sync {
 
 pub mod export;
 pub mod file;
-pub mod memory;
 
 pub use file::FileVault;
-pub use memory::MemoryVault;

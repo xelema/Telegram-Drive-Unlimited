@@ -4,7 +4,6 @@ pub mod header;
 pub mod key_slot;
 pub mod length;
 pub mod range;
-pub mod vectors;
 
 pub use header::{CoreHeader, EnvelopeHeader, KeySlotEntry};
 pub use key_slot::{unwrap_dek, wrap_dek, KeySlotContext};

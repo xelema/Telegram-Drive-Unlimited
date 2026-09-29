@@ -138,22 +138,3 @@ pub fn import_recovery_bundle(bundle: &[u8], recovery_passphrase: &[u8]) -> Cryp
         )
         .map_err(|_| CryptoError::wrong_key_or_corrupt())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn recovery_round_trip_and_fail_closed() {
-        let payload = b"vault payload";
-        let bundle = create_recovery_bundle(payload, b"correct horse battery staple").unwrap();
-        assert_eq!(
-            import_recovery_bundle(&bundle, b"correct horse battery staple").unwrap(),
-            payload
-        );
-        assert!(import_recovery_bundle(&bundle, b"wrong passphrase").is_err());
-        let mut mutated = bundle;
-        *mutated.last_mut().unwrap() ^= 1;
-        assert!(import_recovery_bundle(&mutated, b"correct horse battery staple").is_err());
-    }
-}

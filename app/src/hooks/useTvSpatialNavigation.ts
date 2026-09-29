@@ -2,7 +2,14 @@ import { useEffect } from 'react';
 
 type Direction = 'ArrowLeft' | 'ArrowRight' | 'ArrowUp' | 'ArrowDown';
 
-const FOCUSABLE = 'button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
+const FOCUSABLE = 'button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, [tabindex]:not([tabindex="-1"])';
+
+function isVisible(element: HTMLElement): boolean {
+  if (element.closest('[hidden], [aria-hidden="true"], [inert]') || getComputedStyle(element).visibility === 'hidden') return false;
+  const rect = element.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.right > 0 &&
+    rect.top < window.innerHeight && rect.left < window.innerWidth;
+}
 
 export function findSpatialCandidate(
   current: DOMRect,
@@ -32,14 +39,22 @@ export function useTvSpatialNavigation(enabled: boolean): void {
     if (!enabled) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
-      const focusable = Array.from(document.querySelectorAll<HTMLElement>(FOCUSABLE))
-        .filter(element => {
-          if (element.offsetParent === null || element.getAttribute('aria-hidden') === 'true') return false;
-          const rect = element.getBoundingClientRect();
-          return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.right > 0 &&
-            rect.top < window.innerHeight && rect.left < window.innerWidth;
-        });
-      if (focusable.length === 0) return;
+      const modal = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"], [role="alertdialog"]'))
+        .filter(isVisible).pop();
+      const focusable = Array.from((modal ?? document).querySelectorAll<HTMLElement>(FOCUSABLE))
+        .filter(element => element.offsetParent !== null && isVisible(element));
+      if (modal) {
+        // A remote must not move or dispatch navigation to the page behind a dialog.
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      if (focusable.length === 0) {
+        if (modal && !modal.contains(document.activeElement)) {
+          if (!modal.hasAttribute('tabindex')) modal.tabIndex = -1;
+          modal.focus();
+        }
+        return;
+      }
       const active = document.activeElement instanceof HTMLElement && focusable.includes(document.activeElement)
         ? document.activeElement
         : null;

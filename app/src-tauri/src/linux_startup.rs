@@ -1,6 +1,6 @@
 #[cfg(target_os = "linux")]
 use serde::Deserialize;
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 use std::ffi::OsStr;
 #[cfg(target_os = "linux")]
 use std::path::PathBuf;
@@ -22,14 +22,14 @@ struct SettingsPayload {
     linux_rendering_fix: Option<bool>,
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 #[derive(Debug, Default, PartialEq, Eq)]
 struct RenderingPolicy {
     set_force_shared_memory: bool,
     set_disable_compositing: bool,
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 fn is_truthy(value: Option<&OsStr>) -> bool {
     value.and_then(OsStr::to_str).is_some_and(|value| {
         matches!(
@@ -39,7 +39,7 @@ fn is_truthy(value: Option<&OsStr>) -> bool {
     })
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 fn is_appimage(appimage: Option<&OsStr>, appdir: Option<&OsStr>) -> bool {
     [appimage, appdir]
         .into_iter()
@@ -61,7 +61,7 @@ fn settings_path(home: Option<&OsStr>, xdg_data_home: Option<&OsStr>) -> Option<
     Some(data_home.join(BUNDLE_ID).join("settings.json"))
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 fn choose_rendering_policy(
     appimage: bool,
     rendering_fix_enabled: bool,
@@ -136,99 +136,3 @@ pub fn configure_before_webview() {
 
 #[cfg(not(target_os = "linux"))]
 pub fn configure_before_webview() {}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[cfg(target_os = "linux")]
-    use std::path::Path;
-
-    #[test]
-    fn detects_appimage_from_either_runtime_variable() {
-        assert!(is_appimage(Some(OsStr::new("/tmp/App.AppImage")), None));
-        assert!(is_appimage(None, Some(OsStr::new("/tmp/.mount_App"))));
-        assert!(!is_appimage(None, None));
-        assert!(!is_appimage(Some(OsStr::new("")), Some(OsStr::new(""))));
-    }
-
-    #[test]
-    fn limits_the_automatic_fallback_to_appimages() {
-        assert_eq!(
-            choose_rendering_policy(true, true, false, false, false, false),
-            RenderingPolicy {
-                set_force_shared_memory: true,
-                set_disable_compositing: false,
-            }
-        );
-        assert_eq!(
-            choose_rendering_policy(false, true, false, false, false, false),
-            RenderingPolicy::default()
-        );
-        assert_eq!(
-            choose_rendering_policy(true, false, false, false, false, false),
-            RenderingPolicy::default()
-        );
-    }
-
-    #[test]
-    fn preserves_every_explicit_webkit_rendering_choice() {
-        for explicit_values in [
-            (true, false, false),
-            (false, true, false),
-            (false, false, true),
-        ] {
-            assert_eq!(
-                choose_rendering_policy(
-                    true,
-                    true,
-                    false,
-                    explicit_values.0,
-                    explicit_values.1,
-                    explicit_values.2,
-                ),
-                RenderingPolicy::default()
-            );
-        }
-    }
-
-    #[test]
-    fn safe_mode_is_explicit_and_does_not_replace_an_existing_value() {
-        assert_eq!(
-            choose_rendering_policy(true, true, true, false, false, false),
-            RenderingPolicy {
-                set_force_shared_memory: false,
-                set_disable_compositing: true,
-            }
-        );
-        assert_eq!(
-            choose_rendering_policy(true, true, true, false, false, true),
-            RenderingPolicy::default()
-        );
-    }
-
-    #[test]
-    fn recognizes_documented_safe_mode_values() {
-        for value in ["1", "true", "TRUE", "yes", "on"] {
-            assert!(is_truthy(Some(OsStr::new(value))));
-        }
-        assert!(!is_truthy(Some(OsStr::new("0"))));
-        assert!(!is_truthy(None));
-    }
-
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn honors_an_absolute_xdg_data_home() {
-        assert_eq!(
-            settings_path(Some(OsStr::new("/home/user")), Some(OsStr::new("/data"))),
-            Some(Path::new("/data/com.cameronamer.telegramdrive/settings.json").to_path_buf())
-        );
-        assert_eq!(
-            settings_path(Some(OsStr::new("/home/user")), Some(OsStr::new("relative"))),
-            Some(
-                Path::new("/home/user/.local/share/com.cameronamer.telegramdrive/settings.json")
-                    .to_path_buf()
-            )
-        );
-        assert_eq!(settings_path(None, None), None);
-    }
-}

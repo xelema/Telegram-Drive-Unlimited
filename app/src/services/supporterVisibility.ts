@@ -1,9 +1,9 @@
-export const SUPPORTER_PROMPT_INTERVAL_MS = 24 * 60 * 60 * 1_000;
+export const SUPPORTER_PROMPT_INTERVAL_MS = 7 * 24 * 60 * 60 * 1_000;
 export const SPONSOR_AD_INTERVAL_MS = 15 * 60 * 1_000;
 export const SUPPORTER_VALUE_MOMENT_EVENT = 'telegram-drive-supporter-value-moment';
 
 export type SupporterValueMoment = 'upload_completed' | 'download_completed';
-export type SupporterPromptTrigger = 'ad_dismissed' | SupporterValueMoment;
+export type SupporterPromptTrigger = 'weekly' | 'ad_dismissed' | SupporterValueMoment;
 
 interface SupporterVisibilityStatus {
   state: string;
@@ -42,7 +42,7 @@ export function isSupporterPromptDue(
   if (!shouldOfferNewSupporterPurchase(status)) return false;
   if (!Number.isFinite(lastShownAt) || lastShownAt <= 0) return true;
   const elapsed = now - lastShownAt;
-  return elapsed < 0 || elapsed >= SUPPORTER_PROMPT_INTERVAL_MS;
+  return elapsed >= SUPPORTER_PROMPT_INTERVAL_MS;
 }
 
 export function shouldShowSupporterPrompt(

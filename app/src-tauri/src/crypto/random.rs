@@ -1,12 +1,5 @@
 use rand::RngCore;
 
-/// Generate `n` cryptographically random bytes using the OS CSPRNG.
-pub fn random_bytes(n: usize) -> Vec<u8> {
-    let mut buf = vec![0u8; n];
-    rand::rng().fill_bytes(&mut buf);
-    buf
-}
-
 /// Generate a random 32-byte key (e.g., DEK).
 pub fn random_key() -> [u8; 32] {
     let mut key = [0u8; 32];

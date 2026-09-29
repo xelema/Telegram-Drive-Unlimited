@@ -224,12 +224,12 @@ impl TransferEnqueueRequest {
 }
 
 #[derive(Clone)]
-struct TransferStore {
+pub(crate) struct TransferStore {
     connection: Arc<Mutex<sqlite::Connection>>,
 }
 
 impl TransferStore {
-    fn open(path: &Path) -> Result<(Self, Vec<TransferJob>), String> {
+    pub(crate) fn open(path: &Path) -> Result<(Self, Vec<TransferJob>), String> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         }
@@ -268,7 +268,7 @@ impl TransferStore {
         Ok(jobs)
     }
 
-    async fn upsert(&self, job: &TransferJob) -> Result<(), String> {
+    pub(crate) async fn upsert(&self, job: &TransferJob) -> Result<(), String> {
         let connection = self.connection.clone();
         let job = job.clone();
         crate::db::with_connection(connection, move |connection| {
@@ -358,7 +358,7 @@ impl TransferStore {
         .await
     }
 
-    async fn delete_many(&self, ids: &[String]) -> Result<(), String> {
+    pub(crate) async fn delete_many(&self, ids: &[String]) -> Result<(), String> {
         let connection = self.connection.clone();
         let ids = ids.to_vec();
         crate::db::with_connection(connection, move |connection| {
@@ -395,11 +395,6 @@ impl TransferStore {
             }
         })
         .await
-    }
-
-    #[cfg(test)]
-    async fn delete(&self, id: &str) -> Result<(), String> {
-        self.delete_many(&[id.to_string()]).await
     }
 }
 
@@ -1042,13 +1037,6 @@ impl TransferEngine {
         Ok(changed)
     }
 
-    async fn enqueue(&self, request: TransferEnqueueRequest) -> Result<TransferJob, String> {
-        self.enqueue_many(vec![request])
-            .await?
-            .pop()
-            .ok_or_else(|| "No transfer enqueued".into())
-    }
-
     async fn transition(
         &self,
         id: &str,
@@ -1390,13 +1378,6 @@ fn classify_failure(error: &str) -> TransferErrorCategory {
     }
 }
 
-pub(crate) async fn validate_client_account(
-    account: &AccountGuard,
-    client: &grammers_client::Client,
-) -> Result<(), String> {
-    account.validate_client(client).await
-}
-
 /// Capture the original scoped operation or durable queue owner. Its epoch is
 /// checked again against the actual connected client and before publication.
 pub async fn capture_job_account(app: &AppHandle, id: &str) -> Result<AccountGuard, String> {
@@ -1415,16 +1396,6 @@ pub async fn capture_job_account(app: &AppHandle, id: &str) -> Result<AccountGua
         None
     };
     AccountGuard::open(&root, expected.as_deref())
-}
-
-pub async fn capture_operation_account(
-    app: &AppHandle,
-    id: &str,
-    client: &grammers_client::Client,
-) -> Result<AccountGuard, String> {
-    let account = capture_job_account(app, id).await?;
-    validate_client_account(&account, client).await?;
-    Ok(account)
 }
 
 fn reserve_new_downloads(
@@ -1655,28 +1626,16 @@ pub async fn cmd_transfer_discard_legacy(
 }
 
 fn flood_wait_seconds(error: &str) -> Option<u32> {
-    let marker = "FLOOD_WAIT_";
-    let start = error.to_ascii_uppercase().find(marker)? + marker.len();
-    let digits: String = error[start..]
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect();
-    digits
-        .parse::<u32>()
+    // The durable transfer queue accepts case-insensitive errors and limits
+    // its cooldown window; folder sync keeps the full server-provided delay.
+    let seconds = crate::commands::utils::flood_wait_seconds(&error.to_ascii_uppercase())?;
+    u32::try_from(seconds)
         .ok()
         .map(|seconds| seconds.clamp(1, 300))
 }
 
 fn now_millis() -> i64 {
     chrono::Utc::now().timestamp_millis()
-}
-
-#[tauri::command]
-pub async fn cmd_transfer_enqueue(
-    request: TransferEnqueueRequest,
-    engine: State<'_, Arc<TransferEngine>>,
-) -> Result<TransferJob, String> {
-    engine.enqueue(request).await
 }
 
 #[tauri::command]
@@ -1791,416 +1750,4 @@ pub async fn cmd_transfer_clear_terminal(
     engine
         .clear_terminal(direction, include_failed_and_cancelled, owner_id.as_deref())
         .await
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::PathBuf;
-
-    fn request(id: &str) -> TransferEnqueueRequest {
-        TransferEnqueueRequest {
-            id: id.to_string(),
-            owner_id: Some("100".into()),
-            direction: TransferDirection::Upload,
-            kind: TransferKind::LocalUpload,
-            path: Some("/tmp/file.txt".to_string()),
-            url: None,
-            folder_id: None,
-            message_id: None,
-            filename: "file.txt".to_string(),
-            save_path: None,
-            collision_policy: DownloadCollisionPolicy::KeepBoth,
-            protection_mode: Some("standard".to_string()),
-            prompt_token: None,
-            protect_metadata: Some(true),
-            video_upload_mode: Some("file".to_string()),
-            temp_zip_path: None,
-            total_bytes: Some(10),
-            initial_status: None,
-        }
-    }
-
-    fn job(id: &str, revision: u64) -> TransferJob {
-        let request = request(id);
-        TransferJob {
-            id: request.id,
-            owner_id: request.owner_id,
-            direction: request.direction,
-            kind: request.kind,
-            status: TransferStatus::Pending,
-            download_outcome: None,
-            path: request.path,
-            url: None,
-            folder_id: None,
-            message_id: None,
-            filename: request.filename,
-            save_path: None,
-            collision_policy: DownloadCollisionPolicy::KeepBoth,
-            protection_mode: request.protection_mode,
-            protect_metadata: request.protect_metadata,
-            video_upload_mode: request.video_upload_mode,
-            temp_zip_path: None,
-            progress: 0,
-            transferred_bytes: 0,
-            total_bytes: 10,
-            speed_bytes_per_sec: 0,
-            error: None,
-            error_category: None,
-            persistence_pending: false,
-            retry_at: None,
-            queue_position: 1,
-            revision,
-            created_at: 1,
-            updated_at: i64::try_from(revision).unwrap(),
-        }
-    }
-
-    fn test_store(name: &str) -> (TransferStore, PathBuf) {
-        let path = std::env::temp_dir().join(format!(
-            "telegram-drive-transfer-{name}-{}-{}.db",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
-        (TransferStore::open(&path).unwrap().0, path)
-    }
-
-    async fn execute_test_sql(store: &TransferStore, sql: &str) {
-        let sql = sql.to_string();
-        crate::db::with_connection(store.connection.clone(), move |connection| {
-            connection.execute(sql.as_str()).map_err(|e| e.to_string())
-        })
-        .await
-        .unwrap();
-    }
-
-    async fn stored_jobs(store: &TransferStore) -> Vec<TransferJob> {
-        crate::db::with_connection(store.connection.clone(), TransferStore::load_all_from)
-            .await
-            .unwrap()
-    }
-
-    #[test]
-    fn rejects_incomplete_or_mismatched_jobs() {
-        let mut invalid = request("upload");
-        invalid.path = None;
-        assert!(invalid.validate().is_err());
-        let mut mismatch = request("mismatch");
-        mismatch.direction = TransferDirection::Download;
-        assert!(mismatch.validate().is_err());
-    }
-
-    #[tokio::test]
-    async fn store_survives_reopen() {
-        let (store, path) = test_store("reopen");
-        store.upsert(&job("one", 1)).await.unwrap();
-        drop(store);
-        let (_, loaded) = TransferStore::open(&path).unwrap();
-        assert_eq!(loaded.len(), 1);
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[tokio::test]
-    async fn stale_revision_cannot_overwrite_newer_state() {
-        let (store, path) = test_store("revision");
-        let mut newer = job("one", 2);
-        newer.status = TransferStatus::Completed;
-        store.upsert(&newer).await.unwrap();
-        store.upsert(&job("one", 1)).await.unwrap();
-        drop(store);
-        let (_, loaded) = TransferStore::open(&path).unwrap();
-        assert_eq!(loaded[0].status, TransferStatus::Completed);
-        assert_eq!(loaded[0].revision, 2);
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn classifies_unlock_and_flood_wait_failures() {
-        let mut transfer = job("one", 1);
-        apply_failure(
-            &mut transfer,
-            "[KEY_REQUIRED] passphrase".to_string(),
-            1_000,
-        );
-        assert_eq!(transfer.status, TransferStatus::WaitingForUnlock);
-        apply_failure(&mut transfer, "RPC FLOOD_WAIT_17".to_string(), 1_000);
-        assert_eq!(transfer.status, TransferStatus::Cooldown);
-        assert_eq!(transfer.retry_at, Some(18_000));
-    }
-
-    #[test]
-    fn scheduler_is_fifo_and_enforces_directional_limits() {
-        let mut jobs = HashMap::new();
-        let mut upload_one = job("upload-one", 1);
-        upload_one.queue_position = 1;
-        let mut download_one = job("download-one", 1);
-        download_one.direction = TransferDirection::Download;
-        download_one.kind = TransferKind::Download;
-        download_one.queue_position = 2;
-        let mut upload_two = job("upload-two", 1);
-        upload_two.queue_position = 3;
-        let mut paused = job("paused", 1);
-        paused.queue_position = 0;
-        paused.status = TransferStatus::Paused;
-        for transfer in [upload_one, download_one, upload_two, paused] {
-            jobs.insert(transfer.id.clone(), transfer);
-        }
-
-        let selected = select_pending_job_ids(&jobs, &HashMap::new(), 1, 1);
-        assert_eq!(selected, vec!["upload-one", "download-one"]);
-
-        let active = HashMap::from([("upload-one".to_string(), TransferDirection::Upload)]);
-        let selected = select_pending_job_ids(&jobs, &active, 1, 0);
-        assert_eq!(selected, vec!["upload-two"]);
-    }
-
-    #[test]
-    fn restart_recovery_preserves_pauses_and_requires_new_secret_handles() {
-        let mut running = job("running", 4);
-        running.status = TransferStatus::Uploading;
-        assert!(recover_after_restart(&mut running));
-        assert_eq!(running.status, TransferStatus::Paused);
-        assert_eq!(running.revision, 5);
-
-        let mut protected = job("protected", 7);
-        protected.status = TransferStatus::Encrypting;
-        protected.protection_mode = Some("passphrase".to_string());
-        assert!(recover_after_restart(&mut protected));
-        assert_eq!(protected.status, TransferStatus::Paused);
-
-        let mut paused = job("paused", 2);
-        paused.status = TransferStatus::Paused;
-        assert!(!recover_after_restart(&mut paused));
-        assert_eq!(paused.status, TransferStatus::Paused);
-        assert_eq!(paused.revision, 2);
-    }
-    #[tokio::test]
-    async fn failed_essential_commit_never_acknowledges_or_schedules_memory() {
-        let (store, _) = test_store("disk-failure");
-        let mut memory = HashMap::new();
-        execute_test_sql(&store, "PRAGMA query_only = ON").await;
-        assert!(commit_jobs(&store, &mut memory, &[job("uncommitted", 1)])
-            .await
-            .is_err());
-        assert!(memory.is_empty());
-        assert!(select_pending_job_ids(&memory, &HashMap::new(), 1, 1).is_empty());
-        execute_test_sql(&store, "PRAGMA query_only = OFF").await;
-        commit_jobs(&store, &mut memory, &[job("uncommitted", 1)])
-            .await
-            .unwrap();
-        let mut active = memory["uncommitted"].clone();
-        active.status = TransferStatus::Uploading;
-        active.revision = 2;
-        execute_test_sql(&store, "PRAGMA query_only = ON").await;
-        assert!(commit_jobs(&store, &mut memory, &[active]).await.is_err());
-        assert_eq!(memory["uncommitted"].status, TransferStatus::Pending);
-    }
-
-    #[tokio::test]
-    async fn batch_failure_rolls_back_every_record_and_memory() {
-        let (store, _) = test_store("atomic-batch");
-        execute_test_sql(&store, "CREATE TRIGGER reject_second BEFORE INSERT ON transfer_jobs WHEN NEW.id = 'second' BEGIN SELECT RAISE(ABORT, 'disk failure'); END").await;
-        let mut memory = HashMap::new();
-        assert!(
-            commit_jobs(&store, &mut memory, &[job("first", 1), job("second", 1)])
-                .await
-                .is_err()
-        );
-        assert!(memory.is_empty());
-        assert!(stored_jobs(&store).await.is_empty());
-    }
-
-    #[tokio::test]
-    async fn removed_records_cannot_be_resurrected_by_late_progress() {
-        let (store, _) = test_store("tombstone");
-        store.upsert(&job("gone", 1)).await.unwrap();
-        store.delete("gone").await.unwrap();
-        assert!(store.upsert(&job("gone", 900)).await.is_err());
-        assert!(stored_jobs(&store).await.is_empty());
-    }
-
-    #[test]
-    fn legacy_adoption_is_explicit_paused_and_rejects_account_relative_downloads() {
-        let mut legacy = job("legacy", 1);
-        legacy.owner_id = None;
-        assert!(recover_after_restart(&mut legacy));
-        assert_eq!(legacy.status, TransferStatus::Paused);
-        let adopted = adopt_legacy(&legacy, "200").unwrap();
-        assert_eq!(adopted.owner_id.as_deref(), Some("200"));
-        assert_eq!(adopted.status, TransferStatus::Paused);
-        assert_eq!(adopted.path, legacy.path);
-        legacy.direction = TransferDirection::Download;
-        legacy.kind = TransferKind::Download;
-        assert!(adopt_legacy(&legacy, "200").is_err());
-        assert!(adopt_legacy(&adopted, "300").is_err());
-    }
-
-    #[tokio::test]
-    async fn completion_save_failure_preserves_result_and_restart_requires_review() {
-        let (store, path) = test_store("completion-checkpoint");
-        let mut initial = job("published", 1);
-        initial.status = TransferStatus::Uploading;
-        let mut memory = HashMap::new();
-        let mut pending = HashMap::new();
-        commit_jobs(&store, &mut memory, &[initial]).await.unwrap();
-        let mut result = memory["published"].clone();
-        result.status = TransferStatus::Completed;
-        result.message_id = Some(42);
-        result.revision = 2;
-        execute_test_sql(&store, "PRAGMA query_only = ON").await;
-        let visible = commit_result(&store, &mut memory, &mut pending, result).await;
-        assert_eq!(visible.status, TransferStatus::Completed);
-        assert!(visible.persistence_pending);
-        assert_eq!(pending["published"].message_id, Some(42));
-        assert!(select_pending_job_ids(&memory, &HashMap::new(), 1, 1).is_empty());
-        let (_, recovered) = TransferStore::open(&path).unwrap();
-        assert_eq!(recovered[0].status, TransferStatus::Paused);
-        assert_eq!(
-            recovered[0].error_category,
-            Some(TransferErrorCategory::Interrupted)
-        );
-        execute_test_sql(&store, "PRAGMA query_only = OFF").await;
-        let mut retry = pending["published"].clone();
-        retry.revision = 3;
-        let saved = commit_result(&store, &mut memory, &mut pending, retry).await;
-        assert!(!saved.persistence_pending);
-        assert!(pending.is_empty());
-        let (_, durable) = TransferStore::open(&path).unwrap();
-        assert_eq!(durable[0].status, TransferStatus::Completed);
-        assert_eq!(durable[0].message_id, Some(42));
-    }
-
-    #[tokio::test]
-    async fn record_removal_preserves_external_download_and_failed_source() {
-        let (store, _) = test_store("preserve-files");
-        let file =
-            std::env::temp_dir().join(format!("external-transfer-{}.txt", uuid::Uuid::new_v4()));
-        std::fs::write(&file, "user-owned contents").unwrap();
-        let mut record = job("record", 1);
-        record.path = Some(file.to_string_lossy().into());
-        record.save_path = record.path.clone();
-        store.upsert(&record).await.unwrap();
-        store.delete(&record.id).await.unwrap();
-        assert_eq!(
-            std::fs::read_to_string(&file).unwrap(),
-            "user-owned contents"
-        );
-        std::fs::remove_file(file).unwrap();
-    }
-    #[test]
-    fn activity_projection_hides_protected_metadata_without_losing_retry_identity() {
-        let mut source = job("opaque-retry-id", 4);
-        source.protection_mode = Some("vault_and_passphrase".into());
-        source.filename = "private-title.pdf".into();
-        source.path = Some("/private/source.pdf".into());
-        source.url = Some("https://private.example/file?secret=1".into());
-        source.save_path = Some("/private/destination.pdf".into());
-        source.temp_zip_path = Some("/private/generated.zip".into());
-        source.error = Some("secret failure details".into());
-        let projected = activity_projection(&source);
-        let serialized = serde_json::to_string(&projected).unwrap();
-        assert!(!serialized.contains("private"));
-        assert!(!serialized.contains("secret"));
-        assert_eq!(projected.id, source.id);
-        assert_eq!(projected.owner_id, source.owner_id);
-        assert_eq!(projected.protection_mode, source.protection_mode);
-        assert_eq!(projected.total_bytes, 0);
-        assert_eq!(source.filename, "private-title.pdf");
-        source.protection_mode = Some("standard".into());
-        source.protect_metadata = Some(true);
-        assert_eq!(activity_projection(&source).filename, source.filename);
-        source.status = TransferStatus::WaitingForUnlock;
-        assert!(activity_projection(&source).filename.is_empty());
-    }
-    #[tokio::test]
-    async fn download_policy_and_actual_publication_survive_failed_save_and_restart() {
-        let (store, path) = test_store("download-publication");
-        let mut initial = job("download", 1);
-        initial.kind = TransferKind::Download;
-        initial.direction = TransferDirection::Download;
-        initial.status = TransferStatus::Downloading;
-        initial.collision_policy = DownloadCollisionPolicy::Skip;
-        initial.save_path = Some("/tmp/original.txt".into());
-        let mut memory = HashMap::new();
-        let mut pending = HashMap::new();
-        commit_jobs(&store, &mut memory, &[initial]).await.unwrap();
-        let mut result = memory["download"].clone();
-        result.status = TransferStatus::Completed;
-        result.revision = 2;
-        record_success_response(
-            &mut result,
-            &DownloadPublication {
-                outcome: DownloadOutcome::Skipped,
-                save_path: "/tmp/actual.txt".into(),
-            }
-            .response()
-            .unwrap(),
-        );
-        execute_test_sql(&store, "PRAGMA query_only = ON").await;
-        let visible = commit_result(&store, &mut memory, &mut pending, result).await;
-        assert!(visible.persistence_pending);
-        assert_eq!(visible.download_outcome, Some(DownloadOutcome::Skipped));
-        assert_eq!(
-            pending["download"].save_path.as_deref(),
-            Some("/tmp/actual.txt")
-        );
-        assert!(select_pending_job_ids(&memory, &HashMap::new(), 1, 1).is_empty());
-        let (_, recovered) = TransferStore::open(&path).unwrap();
-        assert_eq!(recovered[0].status, TransferStatus::Paused);
-        assert_eq!(recovered[0].collision_policy, DownloadCollisionPolicy::Skip);
-        execute_test_sql(&store, "PRAGMA query_only = OFF").await;
-        let mut retry = pending["download"].clone();
-        retry.revision = 3;
-        commit_result(&store, &mut memory, &mut pending, retry).await;
-        let (_, durable) = TransferStore::open(&path).unwrap();
-        assert_eq!(durable[0].save_path.as_deref(), Some("/tmp/actual.txt"));
-        assert_eq!(durable[0].filename, "actual.txt");
-        assert_eq!(durable[0].download_outcome, Some(DownloadOutcome::Skipped));
-        assert_eq!(durable[0].owner_id, memory["download"].owner_id);
-    }
-
-    #[test]
-    fn batch_reservations_cover_pending_jobs_and_unowned_imports_remain_unchanged() {
-        let directory =
-            std::env::temp_dir().join(format!("download-reservations-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir(&directory).unwrap();
-        let destination = directory.join("sanitized.txt");
-        let mut a = job("a", 1);
-        a.kind = TransferKind::Download;
-        a.direction = TransferDirection::Download;
-        a.save_path = Some(destination.to_string_lossy().into_owned());
-        let mut b = a.clone();
-        b.id = "b".into();
-        let mut legacy = a.clone();
-        legacy.id = "legacy".into();
-        legacy.owner_id = None;
-        legacy.status = TransferStatus::Paused;
-        let created = ["a".into(), "b".into(), "legacy".into()]
-            .into_iter()
-            .collect();
-        let jobs = reserve_new_downloads(
-            vec![a, b, legacy],
-            &created,
-            std::slice::from_ref(&destination),
-        )
-        .unwrap();
-        assert!(jobs[0]
-            .save_path
-            .as_deref()
-            .unwrap()
-            .ends_with("sanitized (1).txt"));
-        assert!(jobs[1]
-            .save_path
-            .as_deref()
-            .unwrap()
-            .ends_with("sanitized (2).txt"));
-        assert_eq!(
-            jobs[2].save_path.as_deref(),
-            Some(destination.to_str().unwrap())
-        );
-        assert!(jobs[2].owner_id.is_none());
-        assert_eq!(jobs[2].status, TransferStatus::Paused);
-        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
-        std::fs::remove_dir(directory).unwrap();
-    }
 }

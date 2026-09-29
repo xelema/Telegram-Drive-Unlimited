@@ -22,9 +22,11 @@ From `supporter-service/`:
 ```bash
 npm ci
 npm run check
-npm test
+npm run test:e2e
 npx wrangler deploy --dry-run
 ```
+
+The E2E suite drives the production Worker through local HTTP with migrated D1 and a controlled PayPal transport. It does not make real purchases or mutate production state. See [TESTING.md](TESTING.md) for the project testing policy and external-service acceptance requirements.
 
 ## Required Cloudflare configuration
 

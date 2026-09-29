@@ -1,7 +1,8 @@
 import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
 
-import en from './locales/en.json';
+// Optional supporter copy joins the English catalog when its UI is loaded.
+import en from './locales/en.json?core';
 
 // Translation catalogs are data, not executable JavaScript. Only the selected
 // language is fetched; Vite bundles the local JSON assets into desktop/Android.

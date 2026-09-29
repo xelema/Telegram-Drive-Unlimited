@@ -220,37 +220,3 @@ pub async fn cmd_get_storage_insight(
         duplicate_groups,
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::duplicate_key;
-    use crate::models::FileMetadata;
-
-    fn file(name: &str, size: u64) -> FileMetadata {
-        FileMetadata {
-            id: 1,
-            folder_id: None,
-            name: name.to_string(),
-            size,
-            mime_type: None,
-            file_ext: None,
-            created_at: String::new(),
-            icon_type: "file".to_string(),
-            encryption_state: "plain".to_string(),
-            is_favorite: false,
-            is_pinned: false,
-        }
-    }
-
-    #[test]
-    fn duplicate_matching_is_case_insensitive_but_size_sensitive() {
-        assert_eq!(
-            duplicate_key(&file(" Report.PDF ", 10)),
-            duplicate_key(&file("report.pdf", 10))
-        );
-        assert_ne!(
-            duplicate_key(&file("report.pdf", 10)),
-            duplicate_key(&file("report.pdf", 11))
-        );
-    }
-}

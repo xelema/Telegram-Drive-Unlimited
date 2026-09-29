@@ -12,6 +12,9 @@ pub mod desktop_tray;
 pub mod installation;
 pub mod linux_startup;
 pub mod models;
+#[cfg(feature = "native-e2e")]
+#[doc(hidden)]
+pub mod native_e2e;
 #[cfg(not(target_os = "android"))]
 mod network_keepalive;
 
@@ -75,7 +78,6 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 pub mod android_security;
-pub mod android_updates;
 pub mod api_routes;
 pub mod api_secret;
 pub mod crypto_commands;
@@ -1316,7 +1318,6 @@ pub fn run() {
             upload_service::cmd_stop_foreground_service,
             upload_service::cmd_update_foreground_service,
             commands::cmd_connect,
-            commands::cmd_log,
             commands::cmd_delete_file,
             commands::cmd_download_file,
             commands::cmd_move_files,
@@ -1381,8 +1382,6 @@ pub fn run() {
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             transfer_engine::cmd_transfer_discard_legacy,
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
-            transfer_engine::cmd_transfer_enqueue,
-            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             transfer_engine::cmd_transfer_enqueue_many,
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             transfer_engine::cmd_transfer_list,
@@ -1420,10 +1419,6 @@ pub fn run() {
             desktop_lifecycle::cmd_desktop_frontend_ready,
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             desktop_lifecycle::cmd_desktop_frontend_unready,
-            #[cfg(not(any(target_os = "android", target_os = "ios")))]
-            desktop_lifecycle::cmd_show_main_window,
-            #[cfg(not(any(target_os = "android", target_os = "ios")))]
-            desktop_lifecycle::cmd_quit_application,
             commands::cmd_auth_qr_login,
             commands::cmd_auth_qr_poll,
             commands::cmd_get_api_settings,
@@ -1432,7 +1427,6 @@ pub fn run() {
             commands::webdav_settings::cmd_get_webdav_settings,
             commands::webdav_settings::cmd_update_webdav_settings,
             commands::webdav_settings::cmd_regenerate_webdav_token,
-            commands::cmd_delete_image_thumbnail,
             commands::cmd_zip_folder,
             commands::cmd_delete_temp_zip,
             commands::cmd_apply_proxy_settings,
@@ -1443,7 +1437,6 @@ pub fn run() {
             commands::cmd_clear_proxy_secret,
             commands::cmd_get_proxy_status,
             commands::cmd_apply_vpn_settings,
-            commands::cmd_get_network_config,
             commands::cmd_check_latency,
             commands::cmd_detect_vpn,
             commands::cmd_create_share,
@@ -1458,19 +1451,15 @@ pub fn run() {
             cmd_remove_cached_path,
             cmd_get_system_diagnostics,
             installation::cmd_get_installation_info,
-            android_updates::cmd_check_android_update,
-            android_updates::cmd_download_and_install_android_update,
             android_security::cmd_get_android_authentication_available,
             android_security::cmd_android_authenticate,
             android_security::cmd_configure_android_privacy,
             commands::cmd_get_video_metadata,
-            commands::cmd_get_video_metadata_batch,
             transcode::cmd_get_transcode_capabilities,
             transcode::cmd_prepare_transcoded_stream,
             transcode::cmd_get_transcode_status,
             transcode::cmd_cancel_transcode,
             transcode::cmd_get_master_playlist_info,
-            transcode::cmd_get_transcode_cache_info,
             transcode::cmd_set_transcode_cache_limit,
             transcode::cmd_get_cached_variants,
             transcode::cmd_get_detailed_transcode_cache,
@@ -1502,7 +1491,6 @@ pub fn run() {
             crypto_commands::cmd_import_vault_recovery,
             crypto_commands::cmd_generate_recovery_key,
             crypto_commands::cmd_get_file_encryption_info,
-            crypto_commands::cmd_verify_encrypted_file,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

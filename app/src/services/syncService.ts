@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { ConflictResolution, SyncConflict, SyncLogEntry, SyncPair, SyncPairSaveOptions, SyncPreview, SyncPreviewRequest, SyncSettings, SyncStatus } from '../types/sync';
+import type { ConflictResolution, SyncConflict, SyncPair, SyncPairSaveOptions, SyncPreview, SyncPreviewRequest, SyncSettings, SyncStatus } from '../types/sync';
 
 export const getSyncSettings = (ownerId: string) => invoke<SyncSettings>('cmd_get_sync_settings', { ownerId });
 export const toggleSync = (enabled: boolean, ownerId: string) => invoke<SyncSettings>('cmd_toggle_sync', { enabled, ownerId });
@@ -17,7 +17,6 @@ export const setSyncPairActive = (pairId: number, isActive: boolean, ownerId: st
 export const removeSyncPair = (pairId: number, ownerId: string) => invoke<void>('cmd_remove_sync_pair', { pairId, ownerId });
 export const getSyncStatus = (ownerId: string) => invoke<SyncStatus>('cmd_get_sync_status', { ownerId });
 export const getSyncConflicts = (ownerId: string) => invoke<SyncConflict[]>('cmd_get_sync_conflicts', { ownerId });
-export const getSyncLog = (ownerId: string, limit = 100) => invoke<SyncLogEntry[]>('cmd_get_sync_log', { limit, ownerId });
 export const resolveSyncConflict = (pairId: number, path: string, resolution: ConflictResolution, ownerId: string) => invoke<void>('cmd_resolve_conflict', {
   pairId,
   path,

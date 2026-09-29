@@ -19,7 +19,7 @@
     },
     "transfersAndLocalServices": {
       "maxFindings": 148,
-      "patterns": ["DownloadQueue", "UploadQueue", "TransferCenter", "ShareDialog", "SettingsModal", "SettingsTabs", "UploadChoiceContext", "BandwidthWidget", "RemoteUploadModal"]
+      "patterns": ["TransferCenter", "ShareDialog", "SettingsModal", "SettingsTabs", "UploadChoiceContext", "BandwidthWidget", "RemoteUploadModal"]
     },
     "mediaAndHelp": {
       "maxFindings": 102,

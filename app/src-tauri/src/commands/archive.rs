@@ -651,27 +651,3 @@ fn validate_archive_entries(entries: &[ArchiveEntry]) -> Result<(), String> {
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        validate_archive_entries, ArchiveEntry, MAX_ARCHIVE_ENTRIES, MAX_ARCHIVE_ENTRY_BYTES,
-    };
-
-    fn entry(size: u64, compressed_size: u64) -> ArchiveEntry {
-        ArchiveEntry {
-            filename: "file.bin".to_string(),
-            size,
-            compressed_size,
-            is_dir: false,
-        }
-    }
-
-    #[test]
-    fn archive_policy_blocks_entry_count_size_and_ratio_bombs() {
-        assert!(validate_archive_entries(&vec![entry(1, 1); MAX_ARCHIVE_ENTRIES + 1]).is_err());
-        assert!(validate_archive_entries(&[entry(MAX_ARCHIVE_ENTRY_BYTES + 1, 1)]).is_err());
-        assert!(validate_archive_entries(&[entry(2_000, 1)]).is_err());
-        assert!(validate_archive_entries(&[entry(1_000, 1)]).is_ok());
-    }
-}

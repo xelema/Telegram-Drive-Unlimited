@@ -4,7 +4,7 @@ import { load } from "@tauri-apps/plugin-store";
 import { AppProviders } from "./components/shared/AppProviders";
 import { ErrorBoundary } from "./components/shared/ErrorBoundary";
 import { UpdateBanner } from "./components/shared/UpdateBanner";
-import { useUpdateCheck } from "./hooks/useUpdateCheck";
+import { useUpdates } from "./context/UpdateContext";
 import { usePlatform } from "./hooks/usePlatform";
 import "./App.css";
 
@@ -61,7 +61,7 @@ function AppContent() {
   });
   const [whatsNew, setWhatsNew] = useState<WhatsNewDetails | null>(() => consumeWhatsNew(appVersion));
   const { theme } = useTheme();
-  const { available, version, downloading, progress, phase, managedByPackageManager, downloadAndInstall, dismissUpdate } = useUpdateCheck();
+  const { available, version, downloading, progress, phase, managedByPackageManager, downloadAndInstall, dismissUpdate } = useUpdates();
   const { isTelevision } = usePlatform();
   useTvSpatialNavigation(isTelevision);
   const { settings, updateSetting, isLoaded, persistenceStatus, retryPersistence } = useSettings();

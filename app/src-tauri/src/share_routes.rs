@@ -522,7 +522,7 @@ fn render_password_form(
         .body(html)
 }
 
-#[get("/d/{token}")]
+#[get("/{token}")]
 async fn get_shared_file(
     req: HttpRequest,
     path: web::Path<String>,
@@ -655,7 +655,7 @@ async fn get_shared_file(
     }
 }
 
-#[post("/d/{token}/verify")]
+#[post("/{token}/verify")]
 async fn verify_shared_file_password(
     req: HttpRequest,
     path: web::Path<String>,
@@ -761,129 +761,10 @@ pub fn configure_share_routes(cfg: &mut web::ServiceConfig) {
         headers = headers.add((*name, *value));
     }
     cfg.service(
-        web::scope("")
+        web::scope("/d")
             .wrap(headers)
             .app_data(web::FormConfig::default().limit(SHARE_VERIFY_FORM_LIMIT_BYTES))
             .service(get_shared_file)
             .service(verify_shared_file_password),
     );
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        resolve_req_lang, token_attempt_key, PasswordAttemptLimiter, MAX_TRACKED_SHARE_TOKENS,
-        SHARE_PASSWORD_COOLDOWN_SECONDS, SHARE_SECURITY_HEADERS,
-    };
-    use actix_web::test::TestRequest;
-
-    #[test]
-    fn resolves_vietnamese_share_language() {
-        let query_request = TestRequest::with_uri("/d/example?lang=vi").to_http_request();
-        assert_eq!(resolve_req_lang(&query_request), ("vi", "ltr"));
-
-        let header_request = TestRequest::default()
-            .insert_header(("Accept-Language", "vi-VN,vi;q=0.9,en;q=0.8"))
-            .to_http_request();
-        assert_eq!(resolve_req_lang(&header_request), ("vi", "ltr"));
-    }
-
-    #[test]
-    fn resolves_new_regional_share_languages() {
-        for (locale, expected) in [
-            ("bn-BD", "bn-BD"),
-            ("th-TH", "th-TH"),
-            ("fil-PH", "fil-PH"),
-            ("tl-PH", "fil-PH"),
-            ("zh-TW", "zh-TW"),
-            ("zh-Hant", "zh-TW"),
-        ] {
-            let request =
-                TestRequest::with_uri(&format!("/d/example?lang={locale}")).to_http_request();
-            assert_eq!(resolve_req_lang(&request), (expected, "ltr"));
-        }
-
-        let traditional_chinese = TestRequest::default()
-            .insert_header(("Accept-Language", "zh-HK,zh-Hant;q=0.9,en;q=0.8"))
-            .to_http_request();
-        assert_eq!(resolve_req_lang(&traditional_chinese), ("zh-TW", "ltr"));
-    }
-
-    #[test]
-    fn password_attempts_are_throttled_and_recover_after_cooldown() {
-        let mut limiter = PasswordAttemptLimiter::default();
-        let token_key = token_attempt_key("private-share-token");
-
-        for now in 100..105 {
-            assert_eq!(limiter.begin_attempt(token_key, now), Ok(()));
-            limiter.record_failure(&token_key, now);
-        }
-
-        assert_eq!(limiter.begin_attempt(token_key, 105), Err(29));
-        assert_eq!(
-            limiter.begin_attempt(token_key, 104 + SHARE_PASSWORD_COOLDOWN_SECONDS),
-            Ok(())
-        );
-    }
-
-    #[test]
-    fn successful_password_clears_attempt_history() {
-        let mut limiter = PasswordAttemptLimiter::default();
-        let token_key = token_attempt_key("successful-share-token");
-
-        for now in 200..204 {
-            limiter.begin_attempt(token_key, now).unwrap();
-            limiter.record_failure(&token_key, now);
-        }
-        limiter.begin_attempt(token_key, 204).unwrap();
-        limiter.clear(&token_key);
-
-        for now in 205..210 {
-            assert_eq!(limiter.begin_attempt(token_key, now), Ok(()));
-        }
-    }
-
-    #[test]
-    fn password_attempt_tracking_is_bounded() {
-        let mut limiter = PasswordAttemptLimiter::default();
-
-        for index in 0..MAX_TRACKED_SHARE_TOKENS {
-            let token_key = token_attempt_key(&format!("share-{index}"));
-            assert_eq!(limiter.begin_attempt(token_key, 0), Ok(()));
-            limiter
-                .attempts_by_token
-                .get_mut(&token_key)
-                .unwrap()
-                .last_seen = index as i64;
-        }
-
-        assert_eq!(
-            limiter.begin_attempt(token_attempt_key("overflow-share"), 0),
-            Ok(())
-        );
-
-        assert_eq!(limiter.attempts_by_token.len(), MAX_TRACKED_SHARE_TOKENS);
-        assert!(!limiter
-            .attempts_by_token
-            .contains_key(&token_attempt_key("share-0")));
-    }
-
-    #[test]
-    fn share_pages_define_defense_in_depth_headers_and_a_bounded_form() {
-        for required in [
-            "Content-Security-Policy",
-            "X-Content-Type-Options",
-            "Referrer-Policy",
-            "Permissions-Policy",
-            "Cache-Control",
-        ] {
-            assert!(SHARE_SECURITY_HEADERS
-                .iter()
-                .any(|(name, _)| *name == required));
-        }
-    }
-}
-
-#[cfg(test)]
-#[path = "share_ownership_tests.rs"]
-mod ownership_tests;

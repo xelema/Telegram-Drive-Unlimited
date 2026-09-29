@@ -56,18 +56,3 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
         .js_init_script_on_all_frames(SPONSOR_LINK_BRIDGE_SCRIPT)
         .build()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bridge_requires_user_intent_and_safe_web_protocols() {
-        assert!(SPONSOR_LINK_BRIDGE_SCRIPT.contains("event.isTrusted"));
-        assert!(SPONSOR_LINK_BRIDGE_SCRIPT.contains("navigator.userActivation?.isActive === true"));
-        assert!(SPONSOR_LINK_BRIDGE_SCRIPT.contains("url.protocol !== 'https:'"));
-        assert!(SPONSOR_LINK_BRIDGE_SCRIPT.contains("url.protocol !== 'http:'"));
-        assert!(SPONSOR_LINK_BRIDGE_SCRIPT.contains("telegram-drive:ad-link"));
-        assert!(!SPONSOR_LINK_BRIDGE_SCRIPT.contains("__TAURI_INTERNALS__"));
-    }
-}

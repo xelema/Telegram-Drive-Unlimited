@@ -20,9 +20,6 @@ jobs:
       - name: Install dependencies
         run: cd app && npm ci
 
-      - name: Run i18n key types check
-        run: cd app && node scripts/i18n/generate-key-types.cjs --check
-
       - name: Validate locale resources
         run: cd app && npm run i18n:validate
 

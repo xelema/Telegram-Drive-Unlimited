@@ -219,23 +219,17 @@ export async function listenToDesktopTransfers(
     const unlistenUpsert = await listen<DesktopTransferJob>('transfer-upserted', event => {
         onUpsert(event.payload);
     });
-    const unlistenRemove = await listen<string>('transfer-removed', event => {
-        onRemove(event.payload);
-    });
+    let unlistenRemove: UnlistenFn;
+    try {
+        unlistenRemove = await listen<string>('transfer-removed', event => {
+            onRemove(event.payload);
+        });
+    } catch (error) {
+        unlistenUpsert();
+        throw error;
+    }
     return () => {
         unlistenUpsert();
         unlistenRemove();
     };
-}
-
-export function mergeTransferJob(
-    jobs: DesktopTransferJob[],
-    incoming: DesktopTransferJob,
-): DesktopTransferJob[] {
-    const existing = jobs.find(job => job.id === incoming.id);
-    if (existing && existing.revision >= incoming.revision) return jobs;
-    const next = existing
-        ? jobs.map(job => job.id === incoming.id ? incoming : job)
-        : [...jobs, incoming];
-    return next.sort((left, right) => left.queuePosition - right.queuePosition);
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
 interface ProxyStatus {
@@ -14,6 +14,24 @@ export function useTopBarController(proxyEnabled: boolean, proxyLiveStateEnabled
   const moreRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<HTMLDivElement>(null);
   const filterRef = useRef<HTMLDivElement>(null);
+  const filterButtonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (showSearchFilters) filterRef.current?.querySelector('select')?.focus();
+  }, [showSearchFilters]);
+
+  const closeSearchFilters = useCallback(() => {
+    setShowSearchFilters(false);
+    filterButtonRef.current?.focus();
+  }, []);
+
+  const onFilterKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Escape' && showSearchFilters) {
+      event.preventDefault();
+      event.stopPropagation();
+      closeSearchFilters();
+    }
+  };
 
   useEffect(() => {
     if (!proxyEnabled || !proxyLiveStateEnabled) {
@@ -34,14 +52,18 @@ export function useTopBarController(proxyEnabled: boolean, proxyLiveStateEnabled
 
   useEffect(() => {
     if (!showMore && !showViewOptions && !showSearchFilters) return;
-    const closeOutside = (event: MouseEvent) => {
+    const closeOutside = (event: Event) => {
       const target = event.target as Node;
       if (!moreRef.current?.contains(target)) setShowMore(false);
       if (!viewRef.current?.contains(target)) setShowViewOptions(false);
       if (!filterRef.current?.contains(target)) setShowSearchFilters(false);
     };
-    window.addEventListener('mousedown', closeOutside);
-    return () => window.removeEventListener('mousedown', closeOutside);
+    window.addEventListener('pointerdown', closeOutside);
+    window.addEventListener('focusin', closeOutside);
+    return () => {
+      window.removeEventListener('pointerdown', closeOutside);
+      window.removeEventListener('focusin', closeOutside);
+    };
   }, [showMore, showViewOptions, showSearchFilters]);
 
   const toggleSearchFilters = useCallback(() => {
@@ -53,11 +75,13 @@ export function useTopBarController(proxyEnabled: boolean, proxyLiveStateEnabled
   const toggleViewOptions = useCallback(() => {
     setShowViewOptions(value => !value);
     setShowMore(false);
+    setShowSearchFilters(false);
   }, []);
 
   const toggleMore = useCallback(() => {
     setShowMore(value => !value);
     setShowViewOptions(false);
+    setShowSearchFilters(false);
   }, []);
 
   const runMoreAction = useCallback((action: () => void) => {
@@ -73,6 +97,9 @@ export function useTopBarController(proxyEnabled: boolean, proxyLiveStateEnabled
     moreRef,
     viewRef,
     filterRef,
+    filterButtonRef,
+    closeSearchFilters,
+    onFilterKeyDown,
     toggleSearchFilters,
     toggleViewOptions,
     toggleMore,

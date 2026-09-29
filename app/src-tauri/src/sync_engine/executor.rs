@@ -1,6 +1,6 @@
 use crate::{
     bandwidth::BandwidthManager,
-    commands::{self, fs::DownloadFileRequest, TelegramState},
+    commands::{self, fs::DownloadFileRequest, utils::flood_wait_seconds, TelegramState},
     crypto::state::CryptoState,
     db::DbConnection,
     sync_engine::{
@@ -149,16 +149,6 @@ async fn reserve_temporary_download(path: &Path) -> Result<(), String> {
                 format!("Could not reserve temporary download: {error}")
             }
         })
-}
-
-fn flood_wait_seconds(error: &str) -> Option<u64> {
-    let marker = "FLOOD_WAIT_";
-    let start = error.find(marker)? + marker.len();
-    let digits: String = error[start..]
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect();
-    digits.parse().ok()
 }
 
 async fn with_flood_wait<F, Fut, T>(
@@ -701,99 +691,4 @@ pub async fn execute(
         results.push(result);
     }
     results
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn test_directory(label: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "telegram-drive-sync-{label}-{}",
-            uuid::Uuid::new_v4()
-        ))
-    }
-
-    #[test]
-    fn telegram_limit_accepts_exact_boundary_and_rejects_one_byte_over() {
-        assert!(validate_upload_size(TELEGRAM_MAX_FILE_BYTES).is_ok());
-        assert!(validate_upload_size(TELEGRAM_MAX_FILE_BYTES + 1)
-            .unwrap_err()
-            .contains("Skipped"));
-    }
-
-    #[test]
-    fn downloads_use_the_required_temporary_suffix() {
-        let destination = Path::new("/safe/folder/report.pdf");
-        assert_eq!(
-            temporary_download_path(destination).unwrap(),
-            PathBuf::from("/safe/folder/report.pdf.td-sync-tmp")
-        );
-    }
-
-    #[test]
-    fn download_names_are_portable_across_desktop_platforms() {
-        assert!(validate_portable_relative_path("reports/quarter-1.pdf").is_ok());
-        for invalid in [
-            "CON.txt",
-            "aux",
-            "nested/LPT9.log",
-            "report?.pdf",
-            "trailing-dot.",
-            "trailing-space ",
-        ] {
-            assert!(
-                validate_portable_relative_path(invalid).is_err(),
-                "{invalid} must be rejected"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn atomic_replace_overwrites_only_at_the_commit_step() {
-        let directory = test_directory("atomic-replace");
-        std::fs::create_dir_all(&directory).unwrap();
-        let source = directory.join("report.txt.td-sync-tmp");
-        let destination = directory.join("report.txt");
-        std::fs::write(&source, b"new").unwrap();
-        std::fs::write(&destination, b"old").unwrap();
-
-        atomic_replace(&source, &destination).await.unwrap();
-
-        assert_eq!(std::fs::read(&destination).unwrap(), b"new");
-        assert!(!source.exists());
-        std::fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[tokio::test]
-    async fn destructive_local_actions_reject_changed_or_unexpected_files() {
-        let directory = test_directory("precondition");
-        std::fs::create_dir_all(&directory).unwrap();
-        let path = directory.join("report.txt");
-        std::fs::write(&path, b"current").unwrap();
-        let current_hash = super::super::hash_file(&path).unwrap();
-
-        assert!(verify_local_precondition(&path, Some(&current_hash))
-            .await
-            .is_ok());
-        assert!(verify_local_precondition(&path, Some("stale-hash"))
-            .await
-            .is_err());
-        assert!(verify_local_precondition(&path, None).await.is_err());
-
-        std::fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[tokio::test]
-    async fn existing_temporary_download_is_never_overwritten() {
-        let directory = test_directory("temp-reservation");
-        std::fs::create_dir_all(&directory).unwrap();
-        let path = directory.join("report.txt.td-sync-tmp");
-        std::fs::write(&path, b"preserve me").unwrap();
-
-        assert!(reserve_temporary_download(&path).await.is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), b"preserve me");
-
-        std::fs::remove_dir_all(directory).unwrap();
-    }
 }

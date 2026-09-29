@@ -73,6 +73,16 @@ export function SidebarItem({
             style={style}
             {...attributes}
             {...listeners}
+            aria-disabled={undefined}
+            onKeyDown={event => {
+                if (event.target !== event.currentTarget) return;
+                if (!dragActive && (event.key === 'Enter' || (folderId === null && event.key === ' '))) {
+                    event.preventDefault();
+                    onClick();
+                } else {
+                    listeners?.onKeyDown?.(event);
+                }
+            }}
             onClick={onClick}
             title={collapsed ? label : undefined}
             onContextMenu={openFromContextMenu}

@@ -6,6 +6,7 @@ import { SupporterProvider } from '../../context/SupporterContext';
 import { SyncProvider } from '../../context/SyncContext';
 import { ThemeProvider } from '../../context/ThemeContext';
 import { UploadChoiceProvider } from '../../context/UploadChoiceContext';
+import { UpdateProvider } from '../../context/UpdateContext';
 import { EncryptionProvider } from '../../hooks/useEncryption';
 import { ErrorBoundary } from './ErrorBoundary';
 
@@ -41,7 +42,9 @@ export function AppProviders({ children }: AppProvidersProps) {
               <SupporterProvider>
                 <SyncProvider>
                   <UploadChoiceProvider>
-                    <EncryptionProvider>{children}</EncryptionProvider>
+                    <EncryptionProvider>
+                      <UpdateProvider>{children}</UpdateProvider>
+                    </EncryptionProvider>
                   </UploadChoiceProvider>
                 </SyncProvider>
               </SupporterProvider>
