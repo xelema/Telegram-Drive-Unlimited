@@ -60,3 +60,7 @@ bash scripts/run-android-emulator-tests.sh phone
 The runner uses 4096 MB of emulator RAM by default (`ANDROID_EMULATOR_RAM_MB` overrides it). This is a verified test-environment setting, not an application memory requirement. API 35+ phone runs include real PIN cancellation/reopen, camera-journal process restart, and session-recovery journeys after device instrumentation. The runner reinstalls the instrumentation APK for the separate ADB-driven journeys because Gradle removes it after its own tests. Each journey restores its synthetic state; the emulator is shut down on exit. Report device or platform checks that were unavailable as unrun, never as passing.
 
 When fixing a regression, add a failing journey at the affected application boundary, make the smallest implementation change, and run that suite plus relevant static/build checks. Use explicit readiness and observable state changes rather than sleeps that assume a busy runner's scheduling speed.
+
+## Desktop package contents
+
+After the frontend build and native E2E build, run `node scripts/e2e/desktop-package.e2e.cjs` on macOS or Linux. This invokes the real Tauri bundler against the compiled debug application and checks the app/Debian package contents for accidental E2E executables. It does not sign or publish artifacts, launch the GUI, or replace Windows installer verification. The release workflow runs this journey on Linux before creating the draft release.

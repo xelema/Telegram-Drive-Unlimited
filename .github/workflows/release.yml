@@ -71,6 +71,9 @@ jobs:
         working-directory: app/src-tauri
         run: cargo test --locked --features native-e2e --test native_e2e
 
+      - name: Verify desktop package excludes test executables
+        run: node scripts/e2e/desktop-package.e2e.cjs
+
       - name: Verify Rust formatting
         working-directory: app/src-tauri
         run: cargo fmt --all -- --check
