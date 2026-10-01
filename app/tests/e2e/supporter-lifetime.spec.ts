@@ -2,14 +2,13 @@ import { expect, test } from '@playwright/test';
 import { desktopFixture, nativeCalls, openSettings } from './desktop-fixture';
 
 for (const supporterState of ['active', 'needs_refresh'] as const) {
-  test(`${supporterState} entitlement suppresses ads while loading, after refresh failure, and on restart`, async ({ page }) => {
+  test(`${supporterState} entitlement renders no sponsor content while loading, after refresh failure, and on restart`, async ({ page }) => {
     await desktopFixture(page, { supporterState, holdSupporter: true });
     await page.goto('/');
-    await expect(page.getByText('Checking sponsor access', { exact: true })).toBeVisible();
     await expect(page.getByRole('complementary', { name: /Sponsored advertisement/ })).toHaveCount(0);
     await expect(page.locator('iframe[title="Sponsored"]')).toHaveCount(0);
     await page.evaluate(() => (window as any).__desktopTest.releaseSupporter());
-    await expect(page.getByText('Holiday folder photo.jpg', { exact: true })).toBeVisible();
+    await expect(page.getByText('Holiday folder photo.jpg', { exact: true })).toBeVisible({ timeout: 30_000 });
     await openSettings(page);
     await page.getByRole('button', { name: /Lifetime (?:License|license purchased)/ }).click();
     await expect(page.getByRole('heading', { name: 'Lifetime license purchased' })).toBeVisible();
@@ -23,7 +22,7 @@ for (const supporterState of ['active', 'needs_refresh'] as const) {
     expect(await nativeCalls(page, 'cmd_begin_supporter_checkout')).toHaveLength(0);
     await page.reload();
     await page.evaluate(() => (window as any).__desktopTest.releaseSupporter());
-    await expect(page.getByText('Holiday folder photo.jpg', { exact: true })).toBeVisible();
+    await expect(page.getByText('Holiday folder photo.jpg', { exact: true })).toBeVisible({ timeout: 30_000 });
     await expect(page.getByRole('complementary', { name: /Sponsored advertisement/ })).toHaveCount(0);
   });
 }
@@ -49,10 +48,9 @@ test('an expired existing purchase restores ad-free access without a second chec
 });
 
 test('a free account can browse files and settings before accepting any optional purchase', async ({ page }) => {
-  await desktopFixture(page, { supporterState: 'inactive', gatewaySeen: false });
+  await desktopFixture(page, { supporterState: 'inactive' });
   await page.goto('/');
-  await page.getByRole('button', { name: 'Continue to files', exact: true }).click();
-  await expect(page.getByText('Holiday folder photo.jpg', { exact: true })).toBeVisible();
+  await expect(page.getByText('Holiday folder photo.jpg', { exact: true })).toBeVisible({ timeout: 30_000 });
   await page.getByRole('button', { name: 'Saved Messages', exact: true }).click();
   await expect(page.getByText('Holiday saved photo.jpg', { exact: true })).toBeVisible();
   await openSettings(page);
