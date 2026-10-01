@@ -1,3 +1,26 @@
+## [3.9.9] - 2026-10-01
+
+### Unlimited uploads
+
+- Files larger than Telegram's 2 GB document limit are stored as 2 GB parts and rebuilt into the original file on download, without a temporary file.
+- Parts appear as a single entry carrying the original name and total size; rename, move, delete, search and forward act on the whole set.
+- Every part carries a checksum, and an interrupted upload resumes by skipping the parts already stored.
+- Uploads run sequentially, which avoids Telegram's FLOOD_PREMIUM_WAIT on free accounts.
+
+### No advertising
+
+- Sponsor placements and the ad-serving routes of the local streaming server are removed; the application no longer contacts an advertising provider.
+
+### Merged upstream 3.9.8
+
+- Adopted upstream's rewritten file-transfer engine, encrypted upload envelopes, per-account validation, WebDAV access and update system.
+- The weekly transfer quota is no longer enforced.
+
+### Release verification
+
+- Refreshed the reviewed npm and Rust advisory baselines and allowed the grammers fork as a reviewed dependency source.
+- Split files are download-only: no streaming, preview or share links. Android source streaming upload is not included.
+
 ## [3.9.8] - 2026-09-29
 
 ### Desktop reliability
