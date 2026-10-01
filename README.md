@@ -46,8 +46,9 @@ integration, not an ad - but the app no longer shows advertisements to anyone.
 - Telegram Drive is not affiliated with Telegram FZ-LLC, and no Telegram account has
   literally unlimited storage.
 
-Everything else - features, installers, build instructions, documentation and the MIT
-license - comes from upstream and is described below.
+Everything else - features, installers, build instructions and documentation - comes from
+upstream and is described below. Note that upstream publishes no licence file: the MIT
+licence in this repository covers this fork's own additions, not upstream's code.
 
 ---
 
