@@ -1,5 +1,5 @@
 {
-  "expires": "2026-09-30",
+  "expires": "2026-10-31",
   "advisories": {
     "RUSTSEC-2024-0429": "Transitive GTK VariantStrIter path is not used; requires an upstream Tauri-compatible GTK upgrade.",
     "RUSTSEC-2026-0258": "Actix local servers do not expose an upstream HTTP/2 service; requires an Actix-compatible h2 migration.",

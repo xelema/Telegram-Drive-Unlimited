@@ -1,5 +1,5 @@
 {
-  "expires": "2026-09-30",
+  "expires": "2026-10-31",
   "advisories": {
     "GHSA-4x5r-pxfx-6jf8": "Build-only Babel source-map advisory; retained temporarily while the toolchain update is tested.",
     "GHSA-28wg-ghj8-5hjv": "Transitive nanoid path is not used for untrusted generator sizes; awaiting the next compatible lockfile refresh.",
@@ -16,7 +16,11 @@
     "GHSA-v2wj-q39q-566r": "Development-server advisory; CI binds Vite to loopback with repository-controlled inputs.",
     "GHSA-p9ff-h696-f583": "Development-server advisory; CI binds Vite to loopback with repository-controlled inputs.",
     "GHSA-v6wh-96g9-6wx3": "Development-server editor integration is not exposed by the packaged application.",
-    "GHSA-fx2h-pf6j-xcff": "Development-server advisory; the packaged application does not ship the Vite dev server."
+    "GHSA-fx2h-pf6j-xcff": "Development-server advisory; the packaged application does not ship the Vite dev server.",
+    "GHSA-W5VR-8V7Q-W6RV": "Build-time browser target data loader (baseline-browser-mapping); the build is repository-controlled and no untrusted input reaches it.",
+    "GHSA-C83G-RGW3-J3CX": "Build-time browserslist query cache; queries come from repository-controlled browser targets rather than user input.",
+    "GHSA-73WF-GQ98-2V4G": "Build-time browserslist stats parsing; browserslist-stats.json is a repository-controlled file.",
+    "GHSA-XWG4-73V4-XW9W": "Transitive nanoid path used by build tooling with fixed generator sizes; the packaged application does not use it at runtime."
   },
   "policy": "Temporary reviewed baseline only. New advisories fail. Remove entries as compatible fixes land; do not extend the expiry without explicit review."
 }
