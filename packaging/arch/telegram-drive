@@ -1,0 +1,6 @@
+#!/bin/sh
+
+# Pacman owns this installation. The app may check for newer releases, but it
+# must not replace files under /usr through Tauri's self-updater.
+export TELEGRAM_DRIVE_PACKAGE_MANAGER=pacman
+exec /usr/lib/telegram-drive/app "$@"

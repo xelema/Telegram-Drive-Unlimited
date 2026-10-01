@@ -1,9 +1,36 @@
-import { HardDrive, LayoutGrid, Sun, Moon, Settings, Share2, X, Globe } from 'lucide-react';
-import { useTheme } from '../../../context/ThemeContext';
+import {
+    ArrowDown,
+    ArrowUp,
+    ArrowUpDown,
+    Download,
+    FolderInput,
+    FolderPlus,
+    Filter,
+    Globe,
+    HardDrive,
+    HelpCircle,
+    LayoutGrid,
+    List,
+    Moon,
+    MoreHorizontal,
+    Settings,
+    Share2,
+    Keyboard,
+    Sun,
+    Trash2,
+    UploadCloud,
+    X,
+    ZoomIn,
+    ZoomOut,
+} from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { useTheme } from '../../../context/ThemeContext';
 import { useSettings } from '../../../context/SettingsContext';
-import { invoke } from '@tauri-apps/api/core';
-import { useState, useEffect } from 'react';
+import { Button, IconButton, MenuItem, MenuPanel, SearchField, Select } from '../../ui';
+import type { SortDirection, SortField } from './FileExplorer';
+import { DEFAULT_SEARCH_FILTERS, type FileSearchFilters } from '../../../services/fileSearch';
+import { useTopBarController } from './useTopBarController';
+import i18n from '../../../i18n';
 
 interface TopBarProps {
     currentFolderName: string;
@@ -14,157 +41,316 @@ interface TopBarProps {
     onBulkShare: () => void;
     onDownloadFolder: () => void;
     onClearSelection: () => void;
+    onUploadClick: () => void;
     viewMode: 'grid' | 'list';
     setViewMode: (mode: 'grid' | 'list') => void;
+    cardScale: number;
+    onCardScaleChange: (scale: number) => void;
+    sortField: SortField;
+    sortDirection: SortDirection;
+    onSortChange: (field: SortField) => void;
     searchTerm: string;
     onSearchChange: (term: string) => void;
     onSettingsClick: () => void;
     onRemoteUploadClick: () => void;
+    onNewFolderClick: () => void;
+    onShowShortcuts: () => void;
+    onShowHelp: () => void;
+    searchFilters: FileSearchFilters;
+    onSearchFiltersChange: (filters: FileSearchFilters) => void;
 }
 
 export function TopBar({
-    currentFolderName, selectedIds, onShowMoveModal, onBulkDownload, onBulkDelete, onBulkShare,
-    onDownloadFolder, onClearSelection, viewMode, setViewMode, searchTerm, onSearchChange, onSettingsClick,
-    onRemoteUploadClick
+    currentFolderName,
+    selectedIds,
+    onShowMoveModal,
+    onBulkDownload,
+    onBulkDelete,
+    onBulkShare,
+    onDownloadFolder,
+    onClearSelection,
+    onUploadClick,
+    viewMode,
+    setViewMode,
+    cardScale,
+    onCardScaleChange,
+    sortField,
+    sortDirection,
+    onSortChange,
+    searchTerm,
+    onSearchChange,
+    onSettingsClick,
+    onRemoteUploadClick,
+    onNewFolderClick,
+    onShowShortcuts,
+    onShowHelp,
+    searchFilters,
+    onSearchFiltersChange,
 }: TopBarProps) {
     const { theme, toggleTheme } = useTheme();
     const { t } = useTranslation();
     const { settings } = useSettings();
-    const [proxyStatus, setProxyStatus] = useState<{ reachable: boolean; latency_ms: number } | null>(null);
-
-    // Poll proxy status in the top bar
-    useEffect(() => {
-        if (!settings.proxyEnabled || !settings.proxyLiveStateEnabled) {
-            setProxyStatus(null);
-            return;
-        }
-        const checkProxy = async () => {
-            try {
-                const status = await invoke<{ reachable: boolean; latency_ms: number }>('cmd_get_proxy_status');
-                setProxyStatus(status);
-            } catch {
-                setProxyStatus({ reachable: false, latency_ms: -1 });
-            }
-        };
-        checkProxy();
-        const interval = setInterval(checkProxy, 5000);
-        return () => clearInterval(interval);
-    }, [settings.proxyEnabled, settings.proxyLiveStateEnabled]);
+    const {
+        proxyStatus,
+        showMore,
+        showViewOptions,
+        showSearchFilters,
+        moreRef,
+        viewRef,
+        filterRef,
+        filterButtonRef,
+        closeSearchFilters,
+        onFilterKeyDown,
+        toggleSearchFilters,
+        toggleViewOptions,
+        toggleMore,
+        runMoreAction,
+    } = useTopBarController(settings.proxyEnabled, settings.proxyLiveStateEnabled);
+    const hasSearchFilters = Object.entries(searchFilters).some(([key, value]) => value !== DEFAULT_SEARCH_FILTERS[key as keyof FileSearchFilters]);
+    const hasSelection = selectedIds.length > 0;
 
     return (
-        <header className="h-14 border-b border-telegram-border flex items-center px-4 justify-between bg-telegram-surface/80 backdrop-blur-md sticky top-0 z-10" onClick={e => e.stopPropagation()}>
-            <div className="flex-1 flex items-center justify-start gap-4">
-                <div className="flex items-center text-sm breadcrumbs text-telegram-subtext select-none">
-                    <span className="hover:text-telegram-text cursor-pointer transition-colors">{t('common.start')}</span>
-                    <span className="mx-2">/</span>
-                    <span className="text-telegram-text font-medium">{currentFolderName}</span>
+        <header
+            className="desktop-chrome-row quiet-toolbar sticky top-0 z-20 gap-2.5"
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => {
+                // Native toolbar controls own their keys; keep file-list shortcuts out.
+                if ((event.target as HTMLElement).closest('button, select') && !event.metaKey && !event.ctrlKey && !event.altKey) event.stopPropagation();
+            }}
+        >
+            {hasSelection ? (
+                <div className="flex min-w-0 flex-1 items-center gap-2">
+                    <IconButton label={t('files.clear_selection')} onClick={onClearSelection}>
+                        <X className="h-4 w-4" />
+                    </IconButton>
+                    <span className="me-1 min-w-0 truncate text-ui font-medium text-app-text">
+                        {t('files.items_selected', { count: selectedIds.length })}
+                    </span>
+                    <Button size="sm" onClick={onShowMoveModal} leadingIcon={<FolderInput className="h-3.5 w-3.5" />}>
+                        {t('files.move_to')}
+                    </Button>
+                    <Button size="sm" onClick={onBulkDownload} leadingIcon={<Download className="h-3.5 w-3.5" />}>
+                        {t('files.download')}
+                    </Button>
+                    <Button size="sm" onClick={onBulkShare} leadingIcon={<Share2 className="h-3.5 w-3.5" />}>
+                        {t('files.share')}
+                    </Button>
+                    <Button size="sm" variant="danger" onClick={onBulkDelete} leadingIcon={<Trash2 className="h-3.5 w-3.5" />}>
+                        {t('files.delete')}
+                    </Button>
                 </div>
-            </div>
-
-            <div className="w-full max-w-md mx-4">
-                <input
-                    type="text"
-                    placeholder={t('common.search_placeholder')}
-                    className="w-full bg-telegram-hover border border-telegram-border rounded-lg px-3 py-1.5 text-sm text-telegram-text placeholder:text-telegram-subtext focus:outline-none focus:border-telegram-primary/50 transition-colors"
-                    value={searchTerm}
-                    onChange={(e) => onSearchChange(e.target.value)}
-                />
-            </div>
-
-            <div className="flex-1 flex items-center justify-end gap-2">
-                {selectedIds.length > 0 && (
-                    <div className="flex items-center gap-2 mr-4 animate-in fade-in slide-in-from-top-2">
-                        <span className="text-xs text-telegram-subtext mr-2">{t('files.items_selected', { count: selectedIds.length })}</span>
-                        <button onClick={onClearSelection} className="px-2 py-1.5 hover:bg-telegram-hover rounded-md text-xs text-telegram-subtext hover:text-telegram-text transition flex items-center gap-1" title={t('files.clear_selection')}><X className="w-3 h-3" /></button>
-                        <button onClick={onShowMoveModal} className="px-3 py-1.5 bg-telegram-primary/20 hover:bg-telegram-primary/30 text-telegram-primary rounded-md text-xs transition font-medium">{t('files.move_to')}</button>
-                        <button onClick={onBulkDownload} className="px-3 py-1.5 bg-telegram-hover hover:bg-telegram-border rounded-md text-xs text-telegram-text transition">{t('files.download_selected')}</button>
-                        <button onClick={onBulkShare} className="px-3 py-1.5 bg-telegram-primary/20 hover:bg-telegram-primary/30 text-telegram-primary rounded-md text-xs transition font-medium flex items-center gap-1"><Share2 className="w-3 h-3" />{t('files.share')} ({selectedIds.length})</button>
-                        <button onClick={onBulkDelete} className="px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-md text-xs transition">{t('files.delete')}</button>
+            ) : (
+                <>
+                    <div className="min-w-0 flex-[1_1_8rem]">
+                        <h1 className="truncate text-app-title font-semibold tracking-[-0.01em] text-app-text" title={currentFolderName}>
+                            {currentFolderName}
+                        </h1>
                     </div>
-                )}
 
-                {settings.proxyEnabled && settings.proxyLiveStateEnabled && (
-                    <div 
-                        className="flex items-center gap-1.5 mr-2 px-2.5 py-1 rounded bg-white/5 border border-telegram-border text-[11px] text-telegram-subtext font-mono transition-all group relative cursor-help"
-                        title={!proxyStatus 
-                            ? 'Proxy status: checking…' 
-                            : proxyStatus.reachable 
-                                ? `Proxy active: ${proxyStatus.latency_ms}ms latency` 
-                                : 'Proxy status: unreachable'}
-                    >
-                        <div className={`w-2 h-2 rounded-full ${
-                            !proxyStatus 
-                                ? 'bg-amber-400 animate-pulse' 
-                                : proxyStatus.reachable 
-                                    ? 'bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.5)]' 
-                                    : 'bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.5)]'
-                        }`} />
-                        <span>
-                            {!proxyStatus 
-                                ? 'Checking…' 
-                                : proxyStatus.reachable 
-                                    ? `${proxyStatus.latency_ms}ms` 
-                                    : 'Offline'}
-                        </span>
-                        <span className="absolute -bottom-8 left-1/2 -translate-x-1/2 text-[10px] bg-telegram-surface border border-telegram-border px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50 shadow-lg">
-                            {t('common.proxy')}: {!proxyStatus 
-                                ? 'Checking…' 
-                                : proxyStatus.reachable 
-                                    ? `${proxyStatus.latency_ms}ms` 
-                                    : 'Offline'}
-                        </span>
+                    <div className="flex min-w-0 max-w-[25rem] flex-[1_1_25rem] items-center gap-1.5">
+                        <SearchField
+                            data-file-search
+                            containerClassName="min-w-0 flex-1"
+                            placeholder={t('common.search_placeholder')}
+                            value={searchTerm}
+                            onChange={(event) => onSearchChange(event.target.value)}
+                        />
+                        <div ref={filterRef} className="relative shrink-0" onKeyDown={onFilterKeyDown}>
+                            <IconButton
+                                ref={filterButtonRef}
+                                label="Search filters"
+                                size="lg"
+                                aria-haspopup="dialog"
+                                aria-controls={showSearchFilters ? 'search-filter-panel' : undefined}
+                                data-active={hasSearchFilters}
+                                onClick={toggleSearchFilters}
+                                aria-expanded={showSearchFilters}
+                                className="search-filter-trigger"
+                            >
+                                <Filter className="h-3.5 w-3.5" />
+                            </IconButton>
+                            {showSearchFilters && (
+                                <div id="search-filter-panel" role="dialog" aria-label={t('common.search_filters')} className="quiet-menu search-filter-panel absolute end-0 top-full z-50 mt-2">
+                                    <div className="flex items-center justify-between border-b border-app-border-subtle px-4 py-2">
+                                        <span className="text-ui font-semibold text-app-text">{t('common.search_filters')}</span>
+                                        <IconButton size="xs" label={t('common.close')} onClick={closeSearchFilters}><X className="h-3.5 w-3.5" /></IconButton>
+                                    </div>
+                                    <div className="grid gap-3 p-4">
+                                        <label className="search-filter-field text-xs font-medium text-app-text-secondary">Search scope
+                                            <Select value={searchFilters.scope} onChange={(event) => onSearchFiltersChange({ ...searchFilters, scope: event.target.value as FileSearchFilters['scope'] })} className="search-filter-select">
+                                                <option value="folder">Current folder / view</option>
+                                                <option value="all">All Telegram Drive folders</option>
+                                            </Select>
+                                        </label>
+                                        <label className="search-filter-field text-xs font-medium text-app-text-secondary">{t('workspace.file_type')}
+                                            <Select value={searchFilters.type} onChange={(event) => onSearchFiltersChange({ ...searchFilters, type: event.target.value as FileSearchFilters['type'] })} className="search-filter-select">
+                                                <option value="all">All types</option><option value="image">Images</option><option value="video">Videos</option><option value="audio">Audio</option><option value="document">Documents</option><option value="archive">Archives</option><option value="other">Other</option>
+                                            </Select>
+                                        </label>
+                                        <label className="search-filter-field text-xs font-medium text-app-text-secondary">{i18n.t("common.size")}
+                                            <Select value={searchFilters.size} onChange={(event) => onSearchFiltersChange({ ...searchFilters, size: event.target.value as FileSearchFilters['size'] })} className="search-filter-select">
+                                                <option value="any">Any</option><option value="small">Under 10 MB</option><option value="medium">10–100 MB</option><option value="large">100 MB+</option>
+                                            </Select>
+                                        </label>
+                                        <label className="search-filter-field text-xs font-medium text-app-text-secondary">{i18n.t("common.date")}
+                                            <Select value={searchFilters.date} onChange={(event) => onSearchFiltersChange({ ...searchFilters, date: event.target.value as FileSearchFilters['date'] })} className="search-filter-select">
+                                                <option value="any">Any</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option><option value="1y">Last year</option>
+                                            </Select>
+                                        </label>
+                                    </div>
+                                    <div className="border-t border-app-border-subtle p-3">
+                                        <Button className="w-full" onClick={() => onSearchFiltersChange(DEFAULT_SEARCH_FILTERS)}>Reset filters</Button>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
                     </div>
-                )}
 
-                <button onClick={onDownloadFolder} className="p-2 hover:bg-telegram-hover rounded-md text-telegram-subtext hover:text-telegram-text transition group relative" title={t('files.download_folder')}>
-                    <HardDrive className="w-5 h-5" />
-                    <span className="absolute -bottom-8 left-1/2 -translate-x-1/2 text-[10px] bg-telegram-surface border border-telegram-border px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50 shadow-lg">
-                        {t('files.download_all')}
-                    </span>
-                </button>
+                    <div className="flex shrink-0 items-center justify-end gap-1.5">
+                        {settings.proxyEnabled && settings.proxyLiveStateEnabled && (
+                            <div
+                                className="quiet-control flex h-7 items-center gap-1.5 px-2 text-badge text-app-text-secondary"
+                                title={!proxyStatus
+                                    ? 'Proxy status: checking…'
+                                    : proxyStatus.reachable
+                                        ? `Proxy active: ${proxyStatus.latency_ms}ms latency`
+                                        : 'Proxy status: unreachable'}
+                            >
+                                <span className={`h-1.5 w-1.5 rounded-full ${
+                                    !proxyStatus ? 'bg-app-warning animate-pulse' : proxyStatus.reachable ? 'bg-app-success' : 'bg-app-danger'
+                                }`} />
+                                <span className="font-mono">
+                                    {!proxyStatus ? '…' : proxyStatus.reachable ? `${proxyStatus.latency_ms}ms` : 'Offline'}
+                                </span>
+                            </div>
+                        )}
 
-                <button onClick={onRemoteUploadClick} className="p-2 hover:bg-telegram-hover rounded-md text-telegram-subtext hover:text-telegram-text transition group relative" title={t('files.remote_upload')}>
-                    <Globe className="w-5 h-5" />
-                    <span className="absolute -bottom-8 left-1/2 -translate-x-1/2 text-[10px] bg-telegram-surface border border-telegram-border px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50 shadow-lg">
-                        {t('files.remote_upload_url')}
-                    </span>
-                </button>
+                        <Button
+                            variant="primary"
+                            onClick={onUploadClick}
+                            leadingIcon={<UploadCloud className="h-3.5 w-3.5" />}
+                            className="toolbar-upload-action"
+                        >
+                            {t('common.upload')}
+                        </Button>
 
-                <button
-                    onClick={() => setViewMode(viewMode === 'grid' ? 'list' : 'grid')}
-                    className="p-2 hover:bg-telegram-hover rounded-md text-telegram-subtext hover:text-telegram-text transition relative group"
-                    title={t('files.toggle_layout')}
-                >
-                    <LayoutGrid className="w-5 h-5" />
-                    <span className="absolute -bottom-8 left-1/2 -translate-x-1/2 text-[10px] bg-telegram-surface border border-telegram-border px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50 shadow-lg">
-                        {viewMode === 'grid' ? t('files.switch_list') : t('files.switch_grid')}
-                    </span>
-                </button>
+                        <Button
+                            onClick={onNewFolderClick}
+                            leadingIcon={<FolderPlus className="h-3.5 w-3.5" />}
+                        >
+                            {t('common.create_folder')}
+                        </Button>
 
-                <div className="w-px h-6 bg-telegram-border mx-1"></div>
+                        <IconButton
+                            label={viewMode === 'grid' ? t('files.switch_list') : t('files.switch_grid')}
+                            onClick={() => setViewMode(viewMode === 'grid' ? 'list' : 'grid')}
+                        >
+                            {viewMode === 'grid' ? <List className="h-3.5 w-3.5" /> : <LayoutGrid className="h-3.5 w-3.5" />}
+                        </IconButton>
 
-                <button
-                    onClick={onSettingsClick}
-                    className="p-2 hover:bg-telegram-hover rounded-md text-telegram-subtext hover:text-telegram-text transition relative group"
-                    title={t('common.settings')}
-                >
-                    <Settings className="w-5 h-5" />
-                    <span className="absolute -bottom-8 left-1/2 -translate-x-1/2 text-[10px] bg-telegram-surface border border-telegram-border px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50 shadow-lg">
-                        {t('common.settings')}
-                    </span>
-                </button>
+                        <div className="relative" ref={viewRef}>
+                            <IconButton
+                                label="Sort files"
+                                onClick={toggleViewOptions}
+                                aria-expanded={showViewOptions}
+                                className={showViewOptions ? 'bg-app-selected text-app-accent' : ''}
+                            >
+                                <ArrowUpDown className="h-3.5 w-3.5" />
+                            </IconButton>
+                            {showViewOptions && (
+                                <MenuPanel className="absolute end-0 top-9 z-50 w-64">
+                                    <div className="px-2 pb-2 pt-1 text-badge font-medium text-app-text-tertiary">Sort files</div>
+                                    <div className="grid grid-cols-3 gap-1" role="group" aria-label="Sort files">
+                                        {(['name', 'size', 'date'] as const).map((field) => (
+                                            <button
+                                                key={field}
+                                                type="button"
+                                                onClick={() => onSortChange(field)}
+                                                className={`quiet-control flex h-8 min-w-0 items-center justify-center gap-1 px-1.5 text-metadata font-medium ${sortField === field ? 'bg-app-selected text-app-accent' : 'text-app-text-secondary hover:text-app-text'}`}
+                                            >
+                                                <span className="truncate">{t(`common.${field}`)}</span>
+                                                {sortField === field && (sortDirection === 'asc'
+                                                    ? <ArrowUp className="h-3 w-3 shrink-0" />
+                                                    : <ArrowDown className="h-3 w-3 shrink-0" />)}
+                                            </button>
+                                        ))}
+                                    </div>
 
-                <button
-                    onClick={toggleTheme}
-                    className="p-2 hover:bg-telegram-hover rounded-md text-telegram-subtext hover:text-telegram-text transition relative group"
-                    title={theme === 'dark' ? t('common.switch_light') : t('common.switch_dark')}
-                >
-                    {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
-                    <span className="absolute -bottom-8 left-1/2 -translate-x-1/2 text-[10px] bg-telegram-surface border border-telegram-border px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50 shadow-lg">
-                        {theme === 'dark' ? t('common.light_mode') : t('common.dark_mode')}
-                    </span>
-                </button>
-            </div>
+                                    {viewMode === 'grid' && (
+                                        <>
+                                            <div className="my-1 h-px bg-app-border-subtle" />
+                                            <div className="flex h-8 items-center gap-1 px-1">
+                                                <IconButton
+                                                    size="xs"
+                                                    label="Smaller thumbnails"
+                                                    onClick={() => onCardScaleChange(Math.max(0.5, cardScale - 0.25))}
+                                                    disabled={cardScale <= 0.5}
+                                                >
+                                                    <ZoomOut className="h-3.5 w-3.5" />
+                                                </IconButton>
+                                                <input
+                                                    type="range"
+                                                    min="0.5"
+                                                    max="2"
+                                                    step="0.25"
+                                                    value={cardScale}
+                                                    onChange={(event) => onCardScaleChange(parseFloat(event.target.value))}
+                                                    className="h-1 min-w-0 flex-1 cursor-pointer appearance-none rounded-full bg-app-border [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-app-accent"
+                                                    aria-label="Thumbnail size"
+                                                />
+                                                <IconButton
+                                                    size="xs"
+                                                    label="Larger thumbnails"
+                                                    onClick={() => onCardScaleChange(Math.min(2, cardScale + 0.25))}
+                                                    disabled={cardScale >= 2}
+                                                >
+                                                    <ZoomIn className="h-3.5 w-3.5" />
+                                                </IconButton>
+                                                <span className="w-9 text-end text-badge tabular-nums text-app-text-tertiary">{Math.round(cardScale * 100)}%</span>
+                                            </div>
+                                        </>
+                                    )}
+                                </MenuPanel>
+                            )}
+                        </div>
+
+                        <div className="relative" ref={moreRef}>
+                            <IconButton label={t('common.preferences')} onClick={toggleMore} aria-expanded={showMore}>
+                                <MoreHorizontal className="h-3.5 w-3.5" />
+                            </IconButton>
+                            {showMore && (
+                                <MenuPanel className="absolute end-0 top-9 z-50 w-56">
+                                    <MenuItem onClick={() => runMoreAction(onDownloadFolder)}>
+                                        <HardDrive className="h-3.5 w-3.5 text-app-text-secondary" />
+                                        {t('files.download_folder')}
+                                    </MenuItem>
+                                    <MenuItem onClick={() => runMoreAction(onRemoteUploadClick)}>
+                                        <Globe className="h-3.5 w-3.5 text-app-text-secondary" />
+                                        {t('files.remote_upload')}
+                                    </MenuItem>
+                                    <MenuItem onClick={() => runMoreAction(toggleTheme)}>
+                                        {theme === 'dark' ? <Sun className="h-3.5 w-3.5 text-app-text-secondary" /> : <Moon className="h-3.5 w-3.5 text-app-text-secondary" />}
+                                        {theme === 'dark' ? t('common.light_mode') : t('common.dark_mode')}
+                                    </MenuItem>
+                                    <MenuItem onClick={() => runMoreAction(onShowShortcuts)}>
+                                        <Keyboard className="h-3.5 w-3.5 text-app-text-secondary" />
+                                        Keyboard shortcuts
+                                    </MenuItem>
+                                    <MenuItem onClick={() => runMoreAction(onShowHelp)}>
+                                        <HelpCircle className="h-3.5 w-3.5 text-app-text-secondary" />
+                                        Help &amp; FAQ
+                                    </MenuItem>
+                                    <div className="my-1 h-px bg-app-border-subtle" />
+                                    <MenuItem onClick={() => runMoreAction(onSettingsClick)}>
+                                        <Settings className="h-3.5 w-3.5 text-app-text-secondary" />
+                                        {t('common.preferences')}
+                                    </MenuItem>
+                                </MenuPanel>
+                            )}
+                        </div>
+                    </div>
+                </>
+            )}
         </header>
-    )
+    );
 }

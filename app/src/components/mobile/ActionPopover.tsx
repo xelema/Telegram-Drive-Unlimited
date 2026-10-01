@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { X } from 'lucide-react';
+import i18n from '../../i18n';
 
 export interface ActionItem {
   label: string;
@@ -76,7 +77,7 @@ export function ActionPopover({ actions, onClose, title }: ActionPopoverProps) {
           className="w-full mt-3 flex items-center justify-center gap-2 px-4 py-3 rounded-2xl text-sm font-semibold bg-white/5 text-telegram-subtext hover:bg-white/10 border border-white/5 transition-all duration-200 active:scale-[0.98]"
         >
           <X className="w-4 h-4" />
-          Cancel
+          {i18n.t("common.cancel")}
         </button>
       </div>
     </div>

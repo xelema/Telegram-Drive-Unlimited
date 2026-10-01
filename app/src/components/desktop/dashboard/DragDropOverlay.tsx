@@ -1,7 +1,10 @@
 import { motion } from 'framer-motion';
 import { UploadCloud } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
-export function DragDropOverlay() {
+export function DragDropOverlay({ currentFolderName, fileCount }: { currentFolderName: string; fileCount: number }) {
+    const { t } = useTranslation();
+
     return (
         <motion.div
             initial={{ opacity: 0 }}
@@ -19,8 +22,12 @@ export function DragDropOverlay() {
                     <UploadCloud className="w-12 h-12 text-telegram-primary animate-bounce" />
                 </div>
                 <div className="text-center">
-                    <h3 className="text-xl font-bold text-telegram-text">Drop files to upload</h3>
-                    <p className="text-telegram-subtext text-sm mt-1">Files will be uploaded to the current folder</p>
+                    <h3 className="text-xl font-bold text-telegram-text">
+                        {t('files.drop_to_upload', { folder: currentFolderName })}
+                    </h3>
+                    <p className="mt-1 text-sm text-telegram-subtext">
+                        {t('files.drop_hint', { count: fileCount })}
+                    </p>
                 </div>
             </motion.div>
         </motion.div>

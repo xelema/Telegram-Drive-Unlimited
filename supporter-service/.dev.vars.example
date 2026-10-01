@@ -1,0 +1,8 @@
+PAYPAL_CLIENT_ID="sandbox-client-id"
+PAYPAL_CLIENT_SECRET="sandbox-client-secret"
+PAYPAL_MERCHANT_ID="sandbox-merchant-id"
+PAYPAL_WEBHOOK_ID="sandbox-webhook-id"
+PUBLIC_ORIGIN="http://localhost:8787"
+ENTITLEMENT_SIGNING_JWK='{"kty":"OKP","crv":"Ed25519","d":"private-base64url","x":"public-base64url"}'
+RECOVERY_LOOKUP_KEY="base64url-encoded-32-byte-key"
+RECOVERY_ENCRYPTION_KEY="base64url-encoded-32-byte-key"

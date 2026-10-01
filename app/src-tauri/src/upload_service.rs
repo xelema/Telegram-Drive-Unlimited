@@ -5,17 +5,13 @@ pub fn start_foreground_service() {
     if let Ok(vm) = unsafe { jni::JavaVM::from_raw(ctx_obj.vm().cast()) } {
         if let Ok(mut env) = vm.attach_current_thread() {
             let ctx = unsafe { jni::objects::JObject::from_raw(ctx_obj.context().cast()) };
-            
+
             // Get class loader from Context
-            match env.call_method(
-                &ctx,
-                "getClassLoader",
-                "()Ljava/lang/ClassLoader;",
-                &[],
-            ) {
+            match env.call_method(&ctx, "getClassLoader", "()Ljava/lang/ClassLoader;", &[]) {
                 Ok(class_loader_val) => {
                     if let Ok(class_loader) = class_loader_val.l() {
-                        let class_name = env.new_string("com.cameronamer.telegramdrive.UploadForegroundService");
+                        let class_name =
+                            env.new_string("com.cameronamer.telegramdrive.UploadForegroundService");
                         if let Ok(class_name_obj) = class_name {
                             let class_obj_val = env.call_method(
                                 &class_loader,
@@ -45,7 +41,10 @@ pub fn start_foreground_service() {
                                     }
                                 }
                                 Err(e) => {
-                                    log::error!("JNI: loadClass UploadForegroundService failed: {}", e);
+                                    log::error!(
+                                        "JNI: loadClass UploadForegroundService failed: {}",
+                                        e
+                                    );
                                     if env.exception_check().unwrap_or(false) {
                                         let _ = env.exception_describe();
                                         let _ = env.exception_clear();
@@ -74,17 +73,13 @@ pub fn stop_foreground_service() {
     if let Ok(vm) = unsafe { jni::JavaVM::from_raw(ctx_obj.vm().cast()) } {
         if let Ok(mut env) = vm.attach_current_thread() {
             let ctx = unsafe { jni::objects::JObject::from_raw(ctx_obj.context().cast()) };
-            
+
             // Get class loader from Context
-            match env.call_method(
-                &ctx,
-                "getClassLoader",
-                "()Ljava/lang/ClassLoader;",
-                &[],
-            ) {
+            match env.call_method(&ctx, "getClassLoader", "()Ljava/lang/ClassLoader;", &[]) {
                 Ok(class_loader_val) => {
                     if let Ok(class_loader) = class_loader_val.l() {
-                        let class_name = env.new_string("com.cameronamer.telegramdrive.UploadForegroundService");
+                        let class_name =
+                            env.new_string("com.cameronamer.telegramdrive.UploadForegroundService");
                         if let Ok(class_name_obj) = class_name {
                             let class_obj_val = env.call_method(
                                 &class_loader,
@@ -114,7 +109,10 @@ pub fn stop_foreground_service() {
                                     }
                                 }
                                 Err(e) => {
-                                    log::error!("JNI: loadClass UploadForegroundService failed: {}", e);
+                                    log::error!(
+                                        "JNI: loadClass UploadForegroundService failed: {}",
+                                        e
+                                    );
                                     if env.exception_check().unwrap_or(false) {
                                         let _ = env.exception_describe();
                                         let _ = env.exception_clear();
@@ -136,46 +134,58 @@ pub fn stop_foreground_service() {
     }
 }
 
-/// Update the foreground-service notification with the current upload progress.
-/// No-op if the service class or method is missing (best-effort).
 #[cfg(target_os = "android")]
-pub fn update_notification_progress(percent: u8, text: &str) {
+pub fn update_foreground_service(active: i32, progress: i32, speed: i64, paused: bool) {
     let ctx_obj = ndk_context::android_context();
-    let Ok(vm) = (unsafe { jni::JavaVM::from_raw(ctx_obj.vm().cast()) }) else { return };
-    let Ok(mut env) = vm.attach_current_thread() else { return };
+    let Ok(vm) = (unsafe { jni::JavaVM::from_raw(ctx_obj.vm().cast()) }) else {
+        return;
+    };
+    let Ok(mut env) = vm.attach_current_thread() else {
+        return;
+    };
     let ctx = unsafe { jni::objects::JObject::from_raw(ctx_obj.context().cast()) };
-
-    let Ok(class_loader_val) = env.call_method(&ctx, "getClassLoader", "()Ljava/lang/ClassLoader;", &[]) else { return };
-    let Ok(class_loader) = class_loader_val.l() else { return };
-    let Ok(class_name) = env.new_string("com.cameronamer.telegramdrive.UploadForegroundService") else { return };
-    let class_res = env.call_method(
+    let Ok(class_loader_value) =
+        env.call_method(&ctx, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])
+    else {
+        return;
+    };
+    let Ok(class_loader) = class_loader_value.l() else {
+        return;
+    };
+    let Ok(class_name) = env.new_string("com.cameronamer.telegramdrive.UploadForegroundService")
+    else {
+        return;
+    };
+    let Ok(class_value) = env.call_method(
         &class_loader,
         "loadClass",
         "(Ljava/lang/String;)Ljava/lang/Class;",
         &[jni::objects::JValue::from(&class_name)],
-    );
-    let Ok(class_val) = class_res else { let _ = env.exception_clear(); return };
-    let Ok(class_obj) = class_val.l() else { return };
-    let j_class: jni::objects::JClass = class_obj.into();
-
-    let Ok(j_text) = env.new_string(text) else { return };
-    let res = env.call_static_method(
+    ) else {
+        return;
+    };
+    let Ok(class_object) = class_value.l() else {
+        return;
+    };
+    let j_class: jni::objects::JClass = class_object.into();
+    if let Err(error) = env.call_static_method(
         &j_class,
-        "updateProgress",
-        "(Landroid/content/Context;ILjava/lang/String;)V",
+        "updateService",
+        "(Landroid/content/Context;IIJZ)V",
         &[
             jni::objects::JValue::from(&ctx),
-            jni::objects::JValue::from(percent as i32),
-            jni::objects::JValue::from(&j_text),
+            jni::objects::JValue::Int(active.max(0)),
+            jni::objects::JValue::Int(progress.clamp(0, 100)),
+            jni::objects::JValue::Long(speed.max(0)),
+            jni::objects::JValue::Bool(if paused { 1 } else { 0 }),
         ],
-    );
-    if res.is_err() {
-        let _ = env.exception_clear();
+    ) {
+        log::warn!("JNI: updateService call failed: {error}");
+        if env.exception_check().unwrap_or(false) {
+            let _ = env.exception_clear();
+        }
     }
 }
-
-#[cfg(not(target_os = "android"))]
-pub fn update_notification_progress(_percent: u8, _text: &str) {}
 
 #[cfg(not(target_os = "android"))]
 pub fn start_foreground_service() {
@@ -187,6 +197,9 @@ pub fn stop_foreground_service() {
     // Desktop doesn't need this.
 }
 
+#[cfg(not(target_os = "android"))]
+pub fn update_foreground_service(_active: i32, _progress: i32, _speed: i64, _paused: bool) {}
+
 #[tauri::command]
 pub fn cmd_start_foreground_service() {
     #[cfg(target_os = "android")]
@@ -197,4 +210,9 @@ pub fn cmd_start_foreground_service() {
 pub fn cmd_stop_foreground_service() {
     #[cfg(target_os = "android")]
     stop_foreground_service();
+}
+
+#[tauri::command]
+pub fn cmd_update_foreground_service(active: i32, progress: i32, speed: i64, paused: bool) {
+    update_foreground_service(active, progress, speed, paused);
 }

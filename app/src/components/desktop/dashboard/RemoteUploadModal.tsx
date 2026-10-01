@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { X, Globe, ChevronDown } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { TelegramFolder } from '../../../types';
 import { toast } from 'sonner';
+import { useModalFocus } from '../../../hooks/useModalFocus';
 
 interface RemoteUploadModalProps {
     isOpen: boolean;
@@ -15,6 +16,8 @@ export function RemoteUploadModal({ isOpen, onClose, folders, onUpload }: Remote
     const [url, setUrl] = useState('');
     const [folderId, setFolderId] = useState<number | null>(null);
     const { t } = useTranslation();
+    const panelRef = useRef<HTMLFormElement>(null);
+    useModalFocus(panelRef, onClose, isOpen);
 
     if (!isOpen) return null;
 
@@ -35,18 +38,23 @@ export function RemoteUploadModal({ isOpen, onClose, folders, onUpload }: Remote
     };
 
     return (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-app-overlay p-4 backdrop-blur-sm" onClick={onClose}>
             <form
+                ref={panelRef}
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="remote-upload-title"
+                tabIndex={-1}
                 onSubmit={handleSubmit}
-                className="bg-telegram-surface border border-telegram-border rounded-xl w-[420px] shadow-2xl overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-150"
+                className="quiet-raised flex w-[min(440px,calc(100vw-2rem))] flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150"
                 onClick={e => e.stopPropagation()}
             >
-                <div className="p-4 border-b border-telegram-border flex items-center justify-between">
-                    <h3 className="text-telegram-text font-medium flex items-center gap-2">
+                <div className="flex items-center justify-between border-b border-app-border-subtle p-4">
+                    <h3 id="remote-upload-title" className="text-telegram-text font-medium flex items-center gap-2">
                         <Globe className="w-5 h-5 text-telegram-primary" />
                         {t('files.remote_upload_url')}
                     </h3>
-                    <button type="button" onClick={onClose} className="text-telegram-subtext hover:text-telegram-text transition-colors">
+                    <button type="button" onClick={onClose} aria-label={t('common.close')} className="text-telegram-subtext hover:text-telegram-text transition-colors">
                         <X className="w-5 h-5" />
                     </button>
                 </div>
@@ -59,7 +67,7 @@ export function RemoteUploadModal({ isOpen, onClose, folders, onUpload }: Remote
                             placeholder="https://example.com/file.zip"
                             value={url}
                             onChange={e => setUrl(e.target.value)}
-                            className="w-full bg-telegram-bg border border-telegram-border rounded-lg px-3 py-2 text-sm text-telegram-text placeholder:text-telegram-subtext/60 focus:outline-none focus:border-telegram-primary/50 transition-colors"
+                            className="quiet-control w-full border border-app-border bg-app-surface-sunken/50 px-3 py-2 text-sm text-app-text outline-none placeholder:text-app-text-tertiary focus:border-app-accent/60"
                             autoFocus
                         />
                     </div>
@@ -84,7 +92,7 @@ export function RemoteUploadModal({ isOpen, onClose, folders, onUpload }: Remote
                     </div>
                 </div>
 
-                <div className="p-4 border-t border-telegram-border bg-telegram-hover/20 flex gap-3 justify-end">
+                <div className="flex justify-end gap-3 border-t border-app-border-subtle bg-app-surface-sunken/20 p-4">
                     <button
                         type="button"
                         onClick={onClose}

@@ -1,14 +1,19 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { X, ChevronLeft, ChevronRight, Maximize2, Minimize2 } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';
+import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { TelegramFile } from '../../../types';
 import { isVideoFile, isAudioFile } from '../../../utils';
 import { AdaptiveMediaPlayer } from './AdaptiveMediaPlayer';
+import { shouldHandleMediaShortcut } from '../../../services/mediaKeyboard';
+import { useDesktopPlayback } from '../../../hooks/useDesktopPlayback';
+import { PlaybackControls } from '../playback/PlaybackControls';
+import i18n from '../../../i18n';
 
 interface StreamInfo {
     token: string;
     base_url: string;
+    operation_token?: string | null;
 }
 
 interface MediaPlayerProps {
@@ -19,16 +24,23 @@ interface MediaPlayerProps {
     currentIndex?: number;
     totalItems?: number;
     activeFolderId: number | null;
+    ownerId?: string;
+    restart?: boolean;
+    onPlayFile?: (file: TelegramFile) => void;
+    /** Path returned by the account-scoped offline file service. */
+    localPath?: string;
 }
 
 function isMp4Video(name: string): boolean {
     return name.toLowerCase().endsWith('.mp4');
 }
 
-export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, totalItems, activeFolderId }: MediaPlayerProps) {
+export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, totalItems, activeFolderId, ownerId, restart, onPlayFile, localPath }: MediaPlayerProps) {
     const [streamInfo, setStreamInfo] = useState<StreamInfo | null>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const [isFullscreen, setIsFullscreen] = useState(false);
+    const sourceFolder = file.folder_id === undefined ? activeFolderId : file.folder_id;
+    const playback = useDesktopPlayback(file, sourceFolder, ownerId, restart, onPlayFile);
 
     const toggleFullscreen = useCallback(async () => {
         try {
@@ -52,13 +64,18 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
     useEffect(() => {
         let mounted = true;
         let unlistenFn: (() => void) | undefined;
-        getCurrentWindow().onResized(async () => {
-            if (!mounted) return;
-            try {
-                const fs = await getCurrentWindow().isFullscreen();
-                setIsFullscreen(fs);
-            } catch {}
-        }).then(fn => { if (mounted) unlistenFn = fn; });
+        const attach = async () => {
+            const dispose = await getCurrentWindow().onResized(async () => {
+                if (!mounted) return;
+                try {
+                    const fs = await getCurrentWindow().isFullscreen();
+                    if (mounted) setIsFullscreen(fs);
+                } catch {}
+            });
+            if (mounted) unlistenFn = dispose;
+            else dispose();
+        };
+        void attach().catch(() => {});
         return () => {
             mounted = false;
             unlistenFn?.();
@@ -66,12 +83,21 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
     }, []);
 
     useEffect(() => {
-        invoke<StreamInfo>('cmd_get_stream_info').then(setStreamInfo).catch(() => {});
-    }, []);
+        let cancelled = false;
+        setStreamInfo(null);
+        if (localPath) return;
+        invoke<StreamInfo>('cmd_get_stream_info').then(info => {
+            if (!cancelled) setStreamInfo(info);
+        }).catch(() => {});
+        return () => { cancelled = true; };
+    }, [localPath]);
 
-    const folderIdParam = activeFolderId !== null ? activeFolderId.toString() : 'home';
-    const streamUrl = streamInfo
-        ? `${streamInfo.base_url}/stream/${folderIdParam}/${file.id}?token=${streamInfo.token}`
+    const folderIdParam = sourceFolder !== null ? sourceFolder.toString() : 'home';
+    const streamCredential = streamInfo?.operation_token
+        ? `&credential=${encodeURIComponent(streamInfo.operation_token)}`
+        : '';
+    const streamUrl = localPath ? convertFileSrc(localPath) : streamInfo
+        ? `${streamInfo.base_url}/stream/${folderIdParam}/${file.id}?token=${encodeURIComponent(streamInfo.token)}${streamCredential}`
         : null;
 
     const isVideo = isVideoFile(file.name);
@@ -79,11 +105,11 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
     const isMp4 = isMp4Video(file.name);
 
     useEffect(() => {
+        // The adaptive child owns its own controls. Keeping this listener alive
+        // while it is mounted toggles playback twice for a single keypress.
+        if (isMp4 && streamUrl && !localPath) return;
         const handleKeyDown = (e: KeyboardEvent) => {
-            const target = e.target as HTMLElement;
-            if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
-                return;
-            }
+            if (!shouldHandleMediaShortcut(e)) return;
 
             const key = e.key.toLowerCase();
 
@@ -111,77 +137,82 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
 
             if (key === 'm') {
                 e.preventDefault();
-                const video = document.querySelector('video');
-                if (video) {
-                    video.muted = !video.muted;
+                const media = containerRef.current?.querySelector('video, audio') as HTMLMediaElement | null;
+                if (media) {
+                    media.muted = !media.muted;
                 }
             }
 
             if (e.key === ' ') {
                 e.preventDefault();
-                const video = document.querySelector('video');
-                if (video) {
-                    video.paused ? video.play().catch(() => {}) : video.pause();
+                const media = containerRef.current?.querySelector('video, audio') as HTMLMediaElement | null;
+                if (media) {
+                    media.paused ? media.play().catch(() => {}) : media.pause();
                 }
             }
         };
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [onClose, onNext, onPrev, toggleFullscreen]);
+    }, [isMp4, streamUrl, localPath, onClose, onNext, onPrev, toggleFullscreen]);
 
     // MP4 files: use adaptive streaming with quality controls + throttling
-    if (isMp4 && streamUrl) {
+    if (isMp4 && streamUrl && !localPath) {
         return (
             <AdaptiveMediaPlayer
                 file={file}
                 streamUrl={streamUrl}
-                activeFolderId={activeFolderId}
+                activeFolderId={sourceFolder}
                 onClose={onClose}
                 onNext={onNext}
                 onPrev={onPrev}
                 currentIndex={currentIndex}
                 totalItems={totalItems}
+                playback={playback}
             />
         );
     }
 
     return (
-        <div className={`fixed inset-0 z-[200] bg-black/90 animate-in fade-in duration-200 ${isFullscreen ? 'p-0' : 'flex items-center justify-center p-4 backdrop-blur-md'}`} onClick={onClose}>
+        <div className={`viewer-overlay fixed inset-0 z-[200] animate-in fade-in duration-150 ${isFullscreen ? 'p-0' : 'flex items-center justify-center p-4'}`} onClick={onClose}>
             <div ref={containerRef} className={`relative ${isFullscreen ? 'w-full h-full' : 'w-full max-w-6xl flex flex-col items-center'}`} onClick={e => e.stopPropagation()}>
-                <div className={`absolute z-30 flex items-center gap-2 ${isFullscreen ? 'top-4 right-4' : '-top-12 right-0'}`}>
+                <div className={`viewer-toolbar absolute z-30 ${isFullscreen ? 'end-4 top-4' : '-top-10 end-0'}`}>
                     <button
                         onClick={toggleFullscreen}
-                        className="w-10 h-10 flex items-center justify-center text-white/50 hover:text-white bg-white/10 hover:bg-white/20 rounded-full transition-all"
+                        className="viewer-control"
                         title={isFullscreen ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}
+                        aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
                     >
                         {isFullscreen ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
                     </button>
                     <button
                         onClick={onClose}
-                        className="w-10 h-10 flex items-center justify-center text-white/50 hover:text-white bg-white/10 hover:bg-white/20 rounded-full transition-all"
+                        className="viewer-control"
                         title="Close (Esc)"
+                        aria-label="Close media player"
                     >
                         <X className="w-5 h-5" />
                     </button>
                 </div>
                 <button
                     onClick={onPrev}
-                    className={`absolute top-1/2 -translate-y-1/2 p-2 text-white/50 hover:text-white bg-white/10 hover:bg-white/20 rounded-full transition-all z-10 ${isFullscreen ? 'left-4' : 'left-2'}`}
+                    className={`viewer-navigation absolute start-2 top-1/2 z-10 -translate-y-1/2 ${isFullscreen ? 'start-4' : ''}`}
                     title="Previous (ArrowLeft / J)"
+                    aria-label="Previous file"
                 >
-                    <ChevronLeft className="w-6 h-6" />
+                    <ChevronLeft className="h-5 w-5 rtl:rotate-180" />
                 </button>
 
                 <button
                     onClick={onNext}
-                    className={`absolute top-1/2 -translate-y-1/2 p-2 text-white/50 hover:text-white bg-white/10 hover:bg-white/20 rounded-full transition-all z-10 ${isFullscreen ? 'right-4' : 'right-2'}`}
+                    className={`viewer-navigation absolute end-2 top-1/2 z-10 -translate-y-1/2 ${isFullscreen ? 'end-4' : ''}`}
                     title="Next (ArrowRight / L)"
+                    aria-label="Next file"
                 >
-                    <ChevronRight className="w-6 h-6" />
+                    <ChevronRight className="h-5 w-5 rtl:rotate-180" />
                 </button>
 
-                <div className={`bg-black overflow-hidden flex items-center justify-center ${isFullscreen ? 'w-full h-full rounded-none shadow-none ring-0' : 'w-full aspect-video rounded-xl shadow-2xl ring-1 ring-white/10'}`}>
+                <div className={`flex items-center justify-center overflow-hidden bg-black ${isFullscreen ? 'h-full w-full rounded-none shadow-none' : 'viewer-panel aspect-video w-full'}`}>
                     {!streamUrl ? (
                         <div className="flex flex-col items-center gap-4 text-white">
                             <div className="w-10 h-10 border-4 border-telegram-primary border-t-transparent rounded-full animate-spin"></div>
@@ -189,6 +220,7 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
                         </div>
                     ) : isVideo ? (
                         <video
+                            ref={playback.attachMedia}
                             src={streamUrl}
                             controls
                             controlsList="nodownload"
@@ -200,22 +232,24 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
                             <div className="w-32 h-32 rounded-full bg-telegram-surface flex items-center justify-center mb-8 shadow-xl animate-pulse-slow">
                                 <svg xmlns="http://www.w3.org/2000/svg" className="w-12 h-12 text-telegram-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></svg>
                             </div>
-                            <audio src={streamUrl} controls autoPlay className="w-full max-w-md" />
+                            <audio ref={playback.attachMedia} src={streamUrl} controls autoPlay className="w-full max-w-md" />
                         </div>
                     ) : (
                         <div className="text-white">Unsupported media type</div>
                     )}
                 </div>
 
-                {!isFullscreen && <div className="mt-4 text-center">
-                    <h3 className="text-lg font-medium text-white">{file.name}</h3>
-                    <p className="text-sm text-white/50">
-                        Streaming from Telegram Drive
+                {!isFullscreen && <div className="mt-3 max-w-full text-center">
+                    <h3 className="max-w-2xl truncate text-ui font-medium text-white" title={file.name}>{file.name}</h3>
+                    <p className="text-metadata text-white/45">
+                        {i18n.t(localPath ? 'playback.offline_source' : 'playback.remote_source')}
                         {typeof currentIndex === 'number' && typeof totalItems === 'number' && totalItems > 0 && (
-                            <span className="ml-2">• {currentIndex + 1}/{totalItems}</span>
+                            <span className="ms-2">• {currentIndex + 1}/{totalItems}</span>
                         )}
                     </p>
                 </div>}
+
+                {!isFullscreen && <PlaybackControls playback={playback} />}
 
                 {/* Keyboard shortcut hints */}
                 {!isFullscreen && <div className="mt-2 flex items-center gap-4 text-[10px] text-white/25 select-none">
@@ -229,7 +263,7 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
                         <kbd className="px-1 py-0.5 rounded bg-white/10 text-white/40 text-[9px] font-mono">F</kbd> Fullscreen
                     </span>
                     <span className="flex items-center gap-1">
-                        <kbd className="px-1 py-0.5 rounded bg-white/10 text-white/40 text-[9px] font-mono">Esc</kbd> Close
+                        <kbd className="px-1 py-0.5 rounded bg-white/10 text-white/40 text-[9px] font-mono">Esc</kbd> {i18n.t("common.close")}
                     </span>
                     <span className="flex items-center gap-1">
                         <kbd className="px-1 py-0.5 rounded bg-white/10 text-white/40 text-[9px] font-mono">M</kbd> Mute

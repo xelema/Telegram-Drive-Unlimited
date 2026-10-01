@@ -3,10 +3,16 @@ import { X, ChevronLeft, ChevronRight, AlertTriangle, Loader2, RefreshCw, StopCi
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { toast } from 'sonner';
-import Hls from 'hls.js';
-import { TelegramFile, StreamingQuality, TranscodePrepareResult, TranscodeJobPhase, TranscodeCapabilities, QUALITY_LABELS, HLS_QUALITIES } from '../../../types';
+import type Hls from 'hls.js';
+import { TelegramFile, StreamingQuality, TranscodePrepareResult, TranscodeJobPhase, TranscodeCapabilities, MasterPlaylistInfo, QUALITY_LABELS, HLS_QUALITIES } from '../../../types';
 import { useAdaptiveStreaming } from '../../../hooks/useAdaptiveStreaming';
 import { QualitySelector } from '../../shared/QualitySelector';
+import { FfmpegInstallNotice } from '../../shared/FfmpegInstallNotice';
+import { buildAuthenticatedHlsUrl } from '../../../services/hlsPlayback';
+import { shouldHandleMediaShortcut } from '../../../services/mediaKeyboard';
+import type { DesktopPlayback } from '../../../hooks/useDesktopPlayback';
+import { PlaybackControls } from '../playback/PlaybackControls';
+import i18n from '../../../i18n';
 
 interface AdaptiveMediaPlayerProps {
     file: TelegramFile;
@@ -17,9 +23,8 @@ interface AdaptiveMediaPlayerProps {
     currentIndex?: number;
     totalItems?: number;
     streamUrl: string;
+    playback?: DesktopPlayback;
 }
-
-// ── HLS Quality State ────────────────────────────────────────────────
 
 const STREAM_BASE_KEY = '/stream/';
 
@@ -32,6 +37,7 @@ export function AdaptiveMediaPlayer({
     currentIndex,
     totalItems,
     streamUrl,
+    playback,
 }: AdaptiveMediaPlayerProps) {
     // ── Restart counter for MSE pipeline reinit ──────────────────────
     // Must be declared BEFORE restartStreamUrl useMemo
@@ -39,9 +45,11 @@ export function AdaptiveMediaPlayer({
 
     // ── fMP4 remux state ────────────────────────────────────────────
     const [fmp4Remuxing, setFmp4Remuxing] = useState(false);
-    const [fmp4RemuxError, setFmp4RemuxError] = useState<string | null>(null);
     const [fmp4StreamUrl, setFmp4StreamUrl] = useState<string | null>(null);
     const fmp4RemuxingRef = useRef(false);
+    const [playbackConfirmed, setPlaybackConfirmed] = useState(false);
+    const playbackConfirmedRef = useRef(false);
+    const [originalPlaybackError, setOriginalPlaybackError] = useState<string | null>(null);
     // Generation counter bumped on source change so stale async IIFEs
     // from a previous file don't set state on the current file.
     const remuxGenerationRef = useRef(0);
@@ -77,7 +85,6 @@ export function AdaptiveMediaPlayer({
 
         fmp4RemuxingRef.current = true;
         setFmp4Remuxing(true);
-        setFmp4RemuxError(null);
 
         // Capture the generation counter so the async IIFE can bail out
         // if the user navigates to a different file before the remux
@@ -88,7 +95,7 @@ export function AdaptiveMediaPlayer({
 
         (async () => {
             try {
-                const result = await invoke<{ url: string; output_file_key: string; status: string }>(
+                const remuxPreparation = await invoke<{ url: string; output_file_key: string; status: string }>(
                     'cmd_prepare_fmp4_stream',
                     {
                         messageId: file.id,
@@ -102,9 +109,14 @@ export function AdaptiveMediaPlayer({
                     return;
                 }
 
-                if (result.status === 'ready') {
-                    // Already cached — switch immediately
-                    const fullUrl = `${streamBaseRef.current}${result.url}?token=${streamTokenRef.current}`;
+                if (remuxPreparation.status === 'ready') {
+                    if (playbackConfirmedRef.current) {
+                        logRef.current?.('fMP4 cached while original playback is active; keeping current source');
+                        setFmp4Remuxing(false);
+                        fmp4RemuxingRef.current = false;
+                        return;
+                    }
+                    const fullUrl = `${streamBaseRef.current}${remuxPreparation.url}?token=${streamTokenRef.current}`;
                     logRef.current?.('fMP4 already cached, switching to:', fullUrl);
                     abortMseRef.current?.();
                     setFmp4StreamUrl(fullUrl);
@@ -114,10 +126,9 @@ export function AdaptiveMediaPlayer({
                     return;
                 }
 
-                // status === 'processing' — poll until ready
                 logRef.current?.('fMP4 remux started in background, polling status...');
-                const fileKey = result.output_file_key;
-                const fmp4Url = result.url;
+                const fileKey = remuxPreparation.output_file_key;
+                const fmp4Url = remuxPreparation.url;
 
                 const poll = async (): Promise<void> => {
                     for (let i = 0; i < 600; i++) { // max 10 minutes
@@ -134,6 +145,12 @@ export function AdaptiveMediaPlayer({
                         );
 
                         if (status.status === 'ready') {
+                            if (playbackConfirmedRef.current) {
+                                logRef.current?.('fMP4 remux completed during playback; keeping current source');
+                                setFmp4Remuxing(false);
+                                fmp4RemuxingRef.current = false;
+                                return;
+                            }
                             const fullUrl = `${streamBaseRef.current}${fmp4Url}?token=${streamTokenRef.current}`;
                             logRef.current?.('fMP4 remux complete, switching to:', fullUrl);
                             abortMseRef.current?.();
@@ -148,20 +165,18 @@ export function AdaptiveMediaPlayer({
                             throw new Error(status.error || 'fMP4 remux failed');
                         }
 
-                        // status === 'processing' — continue polling
                     }
                     throw new Error('fMP4 remux timed out after 10 minutes');
                 };
 
                 await poll();
-            } catch (e: any) {
+            } catch (error: unknown) {
                 // Don't show error if the user already moved to another file.
                 if (gen !== remuxGenerationRef.current) {
                     fmp4RemuxingRef.current = false;
                     return;
                 }
-                logRef.current?.('fMP4 remux failed:', String(e));
-                setFmp4RemuxError(String(e));
+                logRef.current?.('fMP4 remux failed:', String(error));
                 setFmp4Remuxing(false);
                 fmp4RemuxingRef.current = false;
                 // The hook will fall back to native video since we
@@ -212,6 +227,7 @@ export function AdaptiveMediaPlayer({
     const currentJobIdRef = useRef<string | null>(null);
     const streamBaseRef = useRef<string>('');
     const containerRef = useRef<HTMLDivElement>(null);
+    const getActiveVideo = useCallback(() => containerRef.current?.querySelector('video') ?? null, []);
     const [isFullscreen, setIsFullscreen] = useState(false);
     const isFullscreenRef = useRef(false);
     // HLS video ready flag for retry-safe attach
@@ -220,14 +236,30 @@ export function AdaptiveMediaPlayer({
     const hlsVideoCallbackRef = useCallback((el: HTMLVideoElement | null) => {
         (hlsVideoRef as React.MutableRefObject<HTMLVideoElement | null>).current = el;
         setHlsVideoReady(!!el);
-    }, []);
+        playback?.attachMedia(el);
+    }, [playback?.attachMedia]);
+    const originalVideoCallbackRef = useCallback((el: HTMLVideoElement | null) => {
+        mseVideoRef.current = el;
+        playback?.attachMedia(el);
+    }, [mseVideoRef, playback?.attachMedia]);
 
-    // ── Logging helpers ─────────────────────────────────────────────
     const log = useCallback((msg: string, ...args: unknown[]) => {
-        console.log(`[AdaptivePlayer] ${msg}`, ...args);
+        if (import.meta.env.DEV) console.debug(`[AdaptivePlayer] ${msg}`, ...args);
     }, []);
     // Wire late-bound refs for the progressive handler
     logRef.current = log;
+
+    const markPlaybackConfirmed = useCallback(() => {
+        playbackConfirmedRef.current = true;
+        setPlaybackConfirmed(true);
+        setOriginalPlaybackError(null);
+    }, []);
+
+    const handleOriginalPlaybackError = useCallback((event: React.SyntheticEvent<HTMLVideoElement>) => {
+        playbackConfirmedRef.current = false;
+        setPlaybackConfirmed(false);
+        setOriginalPlaybackError(event.currentTarget.error?.message || 'Unknown error');
+    }, []);
 
     // ── Volume state ─────────────────────────────────────────────────
     const [volume, setVolume] = useState(1);
@@ -265,20 +297,34 @@ export function AdaptiveMediaPlayer({
 
     // Clear transcode cache for current file
     const [clearingCache, setClearingCache] = useState(false);
-    const fileKey = `${activeFolderId ?? 0}_${file.id}`;
 
     const handleClearTranscodeCache = useCallback(async () => {
+        const generation = remuxGenerationRef.current;
+        const isCurrent = () => generation === remuxGenerationRef.current;
         setClearingCache(true);
         try {
+            // Cache identity includes the account. Keep the backend authoritative
+            // so a retry cannot silently target a legacy, unscoped cache entry.
+            const playlist = await invoke<MasterPlaylistInfo>('cmd_get_master_playlist_info', {
+                messageId: file.id,
+                folderId: activeFolderId,
+            });
+            if (!isCurrent()) return;
+            const fileKey = playlist?.file_key;
+            // Omitting fileKey means "clear every file", so fail closed if the
+            // lookup did not provide a usable identity.
+            if (!fileKey?.trim()) throw new Error('The transcode cache identity is unavailable');
+            if (playback?.ownerId && !fileKey.startsWith(`${playback.ownerId}_`)) throw new Error('ACCOUNT_CHANGED');
             const msg = await invoke<string>('cmd_clear_transcode_cache', { fileKey });
+            if (!isCurrent()) return;
             toast.success(msg);
             log('cleared transcode cache for', fileKey);
         } catch (e) {
-            toast.error(`Failed to clear cache: ${e}`);
+            if (isCurrent()) toast.error(`Failed to clear cache: ${e}`);
         } finally {
-            setClearingCache(false);
+            if (isCurrent()) setClearingCache(false);
         }
-    }, [fileKey, log]);
+    }, [file.id, activeFolderId, playback?.ownerId, log]);
 
     // Poll buffered seconds
     useEffect(() => {
@@ -318,12 +364,12 @@ export function AdaptiveMediaPlayer({
 
     // Sync volume to active video element
     const applyVolume = useCallback((v: number, muted: boolean) => {
-        const video = hlsVideoRef.current || mseVideoRef.current;
+        const video = getActiveVideo();
         if (video) {
             video.volume = muted ? 0 : v;
             video.muted = muted;
         }
-    }, []);
+    }, [getActiveVideo]);
 
     const handleVolumeChange = useCallback((newVolume: number) => {
         const clamped = Math.max(0, Math.min(1, newVolume));
@@ -351,12 +397,26 @@ export function AdaptiveMediaPlayer({
 
     // Re-apply volume when video element changes (HLS <-> MSE)
     useEffect(() => {
-        const video = hlsVideoRef.current || mseVideoRef.current;
+        const video = getActiveVideo();
         if (video) {
             video.volume = isMuted ? 0 : volume;
             video.muted = isMuted;
         }
-    }, [isMuted, volume, hlsPhase, msePhase]);
+    }, [getActiveVideo, isMuted, volume, hlsPhase, msePhase]);
+
+    // Native controls and restored playback preferences also change volume.
+    // Keep the custom mute control in sync with the actual active element.
+    useEffect(() => {
+        const video = getActiveVideo();
+        if (!video) return;
+        const sync = () => {
+            setIsMuted(video.muted || video.volume === 0);
+            setVolume(video.volume);
+            if (!video.muted && video.volume > 0) volumeBeforeMute.current = video.volume;
+        };
+        video.addEventListener('volumechange', sync);
+        return () => video.removeEventListener('volumechange', sync);
+    }, [getActiveVideo, playbackMode, hlsPhase, msePhase, useFallback]);
 
     // Extract stream token and base URL once
     useEffect(() => {
@@ -381,11 +441,15 @@ export function AdaptiveMediaPlayer({
         // from the previous file discard their results instead of setting
         // state on the new file.
         setFmp4Remuxing(false);
-        setFmp4RemuxError(null);
         setFmp4StreamUrl(null);
         fmp4RemuxingRef.current = false;
+        playbackConfirmedRef.current = false;
+        setPlaybackConfirmed(false);
+        setOriginalPlaybackError(null);
+        setClearingCache(false);
         remuxGenerationRef.current += 1;
-    }, [streamUrl]);
+        return () => { remuxGenerationRef.current += 1; };
+    }, [streamUrl, file.id, activeFolderId]);
 
     // ── Fetch transcode capabilities ──────────────────────────────────
     useEffect(() => {
@@ -433,8 +497,13 @@ export function AdaptiveMediaPlayer({
                         setHlsPhase('ready');
                         setHlsProgress(1);
                         if (status.playlist_url) {
-                            const fullUrl = `${streamBaseRef.current}${status.playlist_url}?token=${streamTokenRef.current}`;
+                            const fullUrl = buildAuthenticatedHlsUrl(streamUrl, status.playlist_url);
                             setHlsPlaylistUrl(fullUrl);
+                        } else {
+                            setHlsPhase('failed');
+                            setHlsError('The transcode completed without a playable HLS playlist');
+                            setHlsVariantStates(prev => ({ ...prev, [q]: 'failed' }));
+                            break;
                         }
                         setHlsVariantStates(prev => ({ ...prev, [q]: 'ready' }));
                         break;
@@ -453,7 +522,7 @@ export function AdaptiveMediaPlayer({
                 // Status check failed, will retry
             }
         }, 1000);
-    }, []);
+    }, [log, streamUrl]);
 
     // ── Start HLS transcode for a quality ───────────────────────────
     const startTranscode = useCallback(async (quality: StreamingQuality) => {
@@ -466,6 +535,8 @@ export function AdaptiveMediaPlayer({
         if (video) savedTimeRef.current = video.currentTime;
 
         hlsQualityRef.current = quality;
+        playbackConfirmedRef.current = false;
+        setPlaybackConfirmed(false);
         setPlaybackMode('hls');
         setHlsQuality(quality);
         setHlsPhase('preparing');
@@ -484,40 +555,43 @@ export function AdaptiveMediaPlayer({
 
         try {
             // Use activeFolderId instead of file.folder_id so we resolve the correct peer
-            const result = await invoke<TranscodePrepareResult>('cmd_prepare_transcoded_stream', {
+            const transcodePreparation = await invoke<TranscodePrepareResult>('cmd_prepare_transcoded_stream', {
                 messageId: file.id,
                 folderId: activeFolderId,
                 quality,
             });
 
-            log('cmd_prepare_transcoded_stream result', result);
+            log('cmd_prepare_transcoded_stream result', transcodePreparation);
 
-            if (result.status === 'ready') {
+            if (transcodePreparation.status === 'ready') {
                 setHlsPhase('ready');
                 setHlsProgress(1);
                 setHlsVariantStates(prev => ({ ...prev, [quality]: 'ready' }));
-                if (result.playlist_url) {
-                    const fullUrl = `${streamBaseRef.current}${result.playlist_url}?token=${streamTokenRef.current}`;
+                if (transcodePreparation.playlist_url) {
+                    const fullUrl = buildAuthenticatedHlsUrl(streamUrl, transcodePreparation.playlist_url);
                     log('hlsPlaylistUrl', fullUrl);
                     setHlsPlaylistUrl(fullUrl);
+                } else {
+                    setHlsPhase('failed');
+                    setHlsError('The cached transcode has no playable HLS playlist');
+                    setHlsVariantStates(prev => ({ ...prev, [quality]: 'failed' }));
                 }
-            } else if (result.status === 'error') {
+            } else if (transcodePreparation.status === 'error') {
                 setHlsPhase('failed');
-                setHlsError('Transcode failed to start');
+                setHlsError(transcodePreparation.error || 'Transcode failed to start');
                 setHlsVariantStates(prev => ({ ...prev, [quality]: 'failed' }));
             } else {
-                // Job started, begin polling
-                currentJobIdRef.current = result.job_id;
+                currentJobIdRef.current = transcodePreparation.job_id;
                 setHlsVariantStates(prev => ({ ...prev, [quality]: 'preparing' }));
-                pollTranscodeStatus(result.job_id, quality);
+                pollTranscodeStatus(transcodePreparation.job_id, quality);
             }
-        } catch (e: any) {
-            log('startTranscode error', String(e));
+        } catch (error: unknown) {
+            log('startTranscode error', String(error));
             setHlsPhase('failed');
-            setHlsError(String(e));
+            setHlsError(String(error));
             setHlsVariantStates(prev => ({ ...prev, [quality]: 'failed' }));
         }
-    }, [file.id, activeFolderId, mseVideoRef, pollTranscodeStatus, abortMse, log]);
+    }, [file.id, activeFolderId, mseVideoRef, pollTranscodeStatus, abortMse, log, streamUrl]);
 
     // ── Handle quality change ────────────────────────────────────────
     const handleQualityChange = useCallback((quality: StreamingQuality) => {
@@ -538,6 +612,9 @@ export function AdaptiveMediaPlayer({
             }
             hlsQualityRef.current = null;
             currentJobIdRef.current = null;
+            playbackConfirmedRef.current = false;
+            setPlaybackConfirmed(false);
+            setOriginalPlaybackError(null);
             setPlaybackMode('original');
             setHlsPhase('idle');
             setHlsQuality(null);
@@ -563,7 +640,7 @@ export function AdaptiveMediaPlayer({
         // Try DOM/video fullscreen first
         let fullscreenSuccess = false;
         try {
-            const video = (hlsVideoRef.current || mseVideoRef.current) as HTMLVideoElement | null;
+            const video = getActiveVideo();
             if (video && typeof video.requestFullscreen === 'function') {
                 await video.requestFullscreen({ navigationUI: 'hide' });
                 fullscreenSuccess = true;
@@ -579,7 +656,7 @@ export function AdaptiveMediaPlayer({
             } catch {}
         }
         setIsFullscreen(true);
-    }, []);
+    }, [getActiveVideo]);
 
     const exitFullscreen = useCallback(async () => {
         if (document.fullscreenElement) {
@@ -615,13 +692,18 @@ export function AdaptiveMediaPlayer({
         let domFs = false;
         const sync = () => { if (mounted) setIsFullscreen(tauriFs || domFs); };
 
-        getCurrentWindow().onResized(async () => {
-            if (!mounted) return;
-            try {
-                tauriFs = await getCurrentWindow().isFullscreen();
-                sync();
-            } catch {}
-        }).then(fn => { if (mounted) unlistenFn = fn; });
+        const attach = async () => {
+            const dispose = await getCurrentWindow().onResized(async () => {
+                if (!mounted) return;
+                try {
+                    tauriFs = await getCurrentWindow().isFullscreen();
+                    sync();
+                } catch {}
+            });
+            if (mounted) unlistenFn = dispose;
+            else dispose();
+        };
+        void attach().catch(() => {});
 
         const onFsChange = () => {
             domFs = !!document.fullscreenElement;
@@ -651,11 +733,10 @@ export function AdaptiveMediaPlayer({
         // Seek to saved position
         const savedTime = savedTimeRef.current;
 
-        // Log HLS metadata once the video loads
         const onHlsMetadata = () => {
             const v = hlsVideoRef.current;
             if (v) {
-                console.log('[AdaptivePlayer] HLS metadata', {
+                log('HLS metadata', {
                     width: v.videoWidth,
                     height: v.videoHeight,
                     src: v.currentSrc,
@@ -667,61 +748,103 @@ export function AdaptiveMediaPlayer({
             }
         };
 
-        if (video.canPlayType('application/vnd.apple.mpegurl')) {
-            // Native HLS support (Safari)
-            video.src = hlsPlaylistUrl;
-            video.addEventListener('loadedmetadata', () => {
-                onHlsMetadata();
-                if (savedTime > 0) video.currentTime = savedTime;
-                video.play().catch(() => {});
-            }, { once: true });
-        } else if (Hls.isSupported()) {
-            const token = streamTokenRef.current;
-            const hls = new Hls({
-                enableWorker: true,
-                lowLatencyMode: false,
-                backBufferLength: 90,
-                // ── Token propagation: append ?token=... to every /hls/ request ──
-                // Guard against URLs that already have a token param
-                xhrSetup: (xhr, url) => {
-                    if (token && url.includes('/hls/') && !/[?&]token=/.test(url)) {
-                        const sep = url.includes('?') ? '&' : '?';
-                        xhr.open('GET', `${url}${sep}token=${encodeURIComponent(token)}`, true);
+        let disposed = false;
+        let removeNativeListeners: (() => void) | null = null;
+
+        void import('hls.js').then(({ default: HlsRuntime }) => {
+            if (disposed) return;
+            if (HlsRuntime.isSupported()) {
+                const token = streamTokenRef.current;
+                const hls = new HlsRuntime({
+                    enableWorker: true,
+                    lowLatencyMode: false,
+                    backBufferLength: 90,
+                    // ── Token propagation: append ?token=... to every /hls/ request ──
+                    // Guard against URLs that already have a token param
+                    xhrSetup: (xhr, url) => {
+                        if (token && url.includes('/hls/') && !/[?&]token=/.test(url)) {
+                            const sep = url.includes('?') ? '&' : '?';
+                            xhr.open('GET', `${url}${sep}token=${encodeURIComponent(token)}`, true);
+                        }
+                    },
+                });
+                hlsRef.current = hls;
+                let networkRecoveryAttempted = false;
+                let mediaRecoveryAttempted = false;
+
+                // WebView2 is more reliable when the MediaSource is attached before
+                // the manifest request starts.
+                hls.on(HlsRuntime.Events.MEDIA_ATTACHED, () => {
+                    hls.loadSource(hlsPlaylistUrl);
+                });
+
+                hls.on(HlsRuntime.Events.MANIFEST_PARSED, () => {
+                    log('HLS MANIFEST_PARSED, seeking to', savedTime);
+                    onHlsMetadata();
+                    if (savedTime > 0) video.currentTime = savedTime;
+                    video.play().catch(() => {});
+                });
+
+                hls.on(HlsRuntime.Events.ERROR, (_event, data) => {
+                    if (data.fatal) {
+                        log('HLS fatal error', data.type, data.details);
+                        console.error('[HLS] Fatal error:', data.type, data.details);
+
+                        if (data.type === HlsRuntime.ErrorTypes.NETWORK_ERROR && !networkRecoveryAttempted) {
+                            networkRecoveryAttempted = true;
+                            hls.startLoad();
+                            return;
+                        }
+                        if (data.type === HlsRuntime.ErrorTypes.MEDIA_ERROR && !mediaRecoveryAttempted) {
+                            mediaRecoveryAttempted = true;
+                            hls.recoverMediaError();
+                            return;
+                        }
+
+                        setHlsError(`HLS playback error: ${data.details}`);
+                        setHlsPhase('failed');
+                    } else {
+                        log('HLS non-fatal error', data.type, data.details);
                     }
-                },
-            });
-            hlsRef.current = hls;
-
-            hls.loadSource(hlsPlaylistUrl);
-            hls.attachMedia(video);
-
-            hls.on(Hls.Events.MANIFEST_PARSED, () => {
-                log('HLS MANIFEST_PARSED, seeking to', savedTime);
-                onHlsMetadata();
-                if (savedTime > 0) video.currentTime = savedTime;
-                video.play().catch(() => {});
-            });
-
-            hls.on(Hls.Events.ERROR, (_event, data) => {
-                if (data.fatal) {
-                    log('HLS fatal error', data.type, data.details);
-                    console.error('[HLS] Fatal error:', data.type, data.details);
-                    setHlsError(`HLS playback error: ${data.details}`);
+                });
+                hls.attachMedia(video);
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                // Native HLS fallback for engines without MediaSource support.
+                const handleLoadedMetadata = () => {
+                    onHlsMetadata();
+                    if (savedTime > 0) video.currentTime = savedTime;
+                    video.play().catch(() => {});
+                };
+                const handleNativeError = () => {
+                    setHlsError(`Native HLS playback error${video.error?.message ? `: ${video.error.message}` : ''}`);
                     setHlsPhase('failed');
-                    hls.destroy();
-                    hlsRef.current = null;
-                } else {
-                    log('HLS non-fatal error', data.type, data.details);
-                }
-            });
-        } else {
-            log('HLS not supported in this browser');
-            setHlsError('HLS playback not supported in this browser');
+                };
+                video.addEventListener('loadedmetadata', handleLoadedMetadata, { once: true });
+                video.addEventListener('error', handleNativeError, { once: true });
+                video.src = hlsPlaylistUrl;
+                removeNativeListeners = () => {
+                    video.removeEventListener('loadedmetadata', handleLoadedMetadata);
+                    video.removeEventListener('error', handleNativeError);
+                };
+            } else {
+                log('HLS not supported in this browser');
+                setHlsError('HLS playback not supported in this browser');
+                setHlsPhase('failed');
+            }
+        }).catch(() => {
+            if (disposed) return;
+            setHlsError('HLS playback module could not be loaded');
             setHlsPhase('failed');
-        }
+        });
 
         return () => {
-            // Don't destroy on cleanup, only on explicit switch
+            disposed = true;
+            removeNativeListeners?.();
+            const activeHls = hlsRef.current;
+            if (activeHls) {
+                hlsRef.current = null;
+                activeHls.destroy();
+            }
         };
     }, [playbackMode, hlsPlaylistUrl, hlsPhase, hlsVideoReady, log]);
 
@@ -742,6 +865,9 @@ export function AdaptiveMediaPlayer({
             hlsRef.current = null;
         }
         hlsQualityRef.current = null;
+        playbackConfirmedRef.current = false;
+        setPlaybackConfirmed(false);
+        setOriginalPlaybackError(null);
         setPlaybackMode('original');
         setHlsPhase('idle');
         setHlsQuality(null);
@@ -776,8 +902,7 @@ export function AdaptiveMediaPlayer({
     // ── Keyboard shortcuts ───────────────────────────────────────────
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
-            const target = e.target as HTMLElement;
-            if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return;
+            if (!shouldHandleMediaShortcut(e)) return;
             const key = e.key.toLowerCase();
             if (e.key === 'ArrowRight' || key === 'l') { e.preventDefault(); onNext?.(); }
             else if (e.key === 'ArrowLeft' || key === 'j') { e.preventDefault(); onPrev?.(); }
@@ -795,7 +920,7 @@ export function AdaptiveMediaPlayer({
             else if (key === 'd') { e.preventDefault(); toggleDebugOverlay(); }
             else if (e.key === ' ') {
                 e.preventDefault();
-                const video = hlsVideoRef.current || mseVideoRef.current;
+                const video = getActiveVideo();
                 if (video) {
                     video.paused ? video.play().catch(() => {}) : video.pause();
                 }
@@ -803,15 +928,20 @@ export function AdaptiveMediaPlayer({
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [onClose, onNext, onPrev, toggleFullscreen, toggleMute, toggleDebugOverlay]);
+    }, [getActiveVideo, onClose, onNext, onPrev, toggleFullscreen, toggleMute, toggleDebugOverlay]);
 
     // ── Determine current display state ──────────────────────────────
     const isHlsMode = playbackMode === 'hls';
     const hasVideoTrack = tracks.some(t => t.type === 'video');
     const isMseLoading = msePhase === 'loading' || msePhase === 'initializing';
     const isHlsLoading = hlsPhase === 'preparing' || hlsPhase === 'caching' || hlsPhase === 'transcoding';
-    const displayPhase: string = isHlsMode ? hlsPhase : (isMseLoading ? 'loading' : msePhase);
-    const displayError: string | null = isHlsMode ? hlsError : mseError;
+    const originalDisplayPhase: string = originalPlaybackError
+        ? 'error'
+        : useFallback
+            ? (playbackConfirmed ? 'playing' : 'loading')
+            : (isMseLoading ? 'loading' : msePhase);
+    const displayPhase: string = isHlsMode ? hlsPhase : originalDisplayPhase;
+    const displayError: string | null = isHlsMode ? hlsError : (originalPlaybackError || mseError);
     const showOriginalVideo = !isHlsMode && !useFallback;
 
     // Build the effective quality label
@@ -819,38 +949,40 @@ export function AdaptiveMediaPlayer({
 
     return (
         <div
-            className={`fixed inset-0 z-[200] bg-black/90 animate-in fade-in duration-200 ${isFullscreen ? 'p-0' : 'flex items-center justify-center p-4 backdrop-blur-md'}`}
+            className={`viewer-overlay fixed inset-0 z-[200] animate-in fade-in duration-150 ${isFullscreen ? 'p-0' : 'flex items-center justify-center p-4'}`}
             onClick={onClose}
         >
             <div ref={containerRef} className={`relative ${isFullscreen ? 'fixed inset-0 w-screen h-screen max-w-none' : 'w-full max-w-6xl flex flex-col items-center'}`} onClick={e => e.stopPropagation()}>
                 {/* Nav buttons */}
-                <button onClick={onPrev} className={`absolute left-2 top-1/2 -translate-y-1/2 p-2 text-white/50 hover:text-white bg-white/10 hover:bg-white/20 rounded-full transition-all z-10 ${isFullscreen ? 'left-4' : ''}`} title="Previous (ArrowLeft / J)">
-                    <ChevronLeft className="w-6 h-6" />
+                <button onClick={onPrev} className={`viewer-navigation absolute start-2 top-1/2 z-10 -translate-y-1/2 ${isFullscreen ? 'start-4' : ''}`} title="Previous (ArrowLeft / J)" aria-label="Previous file">
+                    <ChevronLeft className="h-5 w-5 rtl:rotate-180" />
                 </button>
-                <button onClick={onNext} className={`absolute right-2 top-1/2 -translate-y-1/2 p-2 text-white/50 hover:text-white bg-white/10 hover:bg-white/20 rounded-full transition-all z-10 ${isFullscreen ? 'right-4' : ''}`} title="Next (ArrowRight / L)">
-                    <ChevronRight className="w-6 h-6" />
+                <button onClick={onNext} className={`viewer-navigation absolute end-2 top-1/2 z-10 -translate-y-1/2 ${isFullscreen ? 'end-4' : ''}`} title="Next (ArrowRight / L)" aria-label="Next file">
+                    <ChevronRight className="h-5 w-5 rtl:rotate-180" />
                 </button>
-                <div className={`absolute z-30 flex items-center gap-2 ${isFullscreen ? 'top-4 right-4' : '-top-12 right-0'}`}>
+                <div className={`viewer-toolbar absolute z-30 ${isFullscreen ? 'end-4 top-4' : '-top-10 end-0'}`}>
                     <button
                         onClick={toggleFullscreen}
-                        className="w-10 h-10 flex items-center justify-center text-white/50 hover:text-white bg-white/10 hover:bg-white/20 rounded-full transition-all"
+                        className="viewer-control"
                         title={isFullscreen ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}
+                        aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
                     >
                         {isFullscreen ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
                     </button>
                     <button
                         onClick={onClose}
-                        className="w-10 h-10 flex items-center justify-center text-white/50 hover:text-white bg-white/10 hover:bg-white/20 rounded-full transition-all"
+                        className="viewer-control"
                         title="Close (Esc)"
+                        aria-label="Close media player"
                     >
                         <X className="w-5 h-5" />
                     </button>
                 </div>
 
                 {/* Video container */}
-                <div className={`bg-black overflow-hidden flex items-center justify-center relative ${isFullscreen ? 'w-full h-full rounded-none shadow-none ring-0' : 'w-full aspect-video rounded-xl shadow-2xl ring-1 ring-white/10'}`}>
+                <div className={`relative flex items-center justify-center overflow-hidden bg-black ${isFullscreen ? 'h-full w-full rounded-none shadow-none' : 'viewer-panel aspect-video w-full'}`}>
                     {/* fMP4 remux loading overlay */}
-                    {fmp4Remuxing && (
+                    {fmp4Remuxing && !useFallback && !playbackConfirmed && (
                         <div className="flex flex-col items-center gap-4 text-white absolute inset-0 bg-black/80 z-10">
                             <Zap className="w-10 h-10 text-telegram-primary animate-pulse" />
                             <div className="flex flex-col items-center gap-1">
@@ -862,20 +994,8 @@ export function AdaptiveMediaPlayer({
                         </div>
                     )}
 
-                    {/* fMP4 remux error */}
-                    {fmp4RemuxError && !fmp4Remuxing && (
-                        <div className="flex flex-col items-center gap-3 text-white absolute inset-0 bg-black/80 z-10">
-                            <AlertTriangle className="w-10 h-10 text-amber-400" />
-                            <p className="text-sm text-amber-400 font-medium">Streaming conversion failed</p>
-                            <p className="text-xs text-white/40 text-center max-w-md">
-                                {fmp4RemuxError}
-                            </p>
-                            <p className="text-[11px] text-white/20">Falling back to native video player...</p>
-                        </div>
-                    )}
-
                     {/* Error display */}
-                    {(displayPhase === 'error' || displayPhase === 'failed') && (
+                    {(isHlsMode || !playbackConfirmed) && (displayPhase === 'error' || displayPhase === 'failed') && (
                         <div className="flex flex-col items-center gap-3 text-white px-8">
                             <AlertTriangle className="w-10 h-10 text-red-400" />
                             <p className="text-sm text-red-400 font-medium">Playback Error</p>
@@ -883,7 +1003,7 @@ export function AdaptiveMediaPlayer({
                             {isHlsMode && (
                                 <button onClick={retryTranscode} className="mt-2 flex items-center gap-2 px-3 py-1.5 bg-white/10 hover:bg-white/20 rounded-lg text-xs font-medium transition-colors">
                                     <RefreshCw className="w-3.5 h-3.5" />
-                                    Retry
+                                    {i18n.t("common.retry")}
                                 </button>
                             )}
                         </div>
@@ -915,7 +1035,7 @@ export function AdaptiveMediaPlayer({
                                 title="Cancel transcode"
                             >
                                 <StopCircle className="w-3.5 h-3.5" />
-                                Cancel
+                                {i18n.t("common.cancel")}
                             </button>
                         </div>
                     )}
@@ -943,7 +1063,18 @@ export function AdaptiveMediaPlayer({
 
                     {/* Fallback: native <video> (non-MP4 or no MSE support) */}
                     {useFallback && !isHlsMode && (
-                        <video src={fallbackUrl} controls controlsList="nodownload" autoPlay className="w-full h-full object-contain" />
+                        <video
+                            ref={playback?.attachMedia}
+                            src={fallbackUrl}
+                            controls
+                            controlsList="nodownload"
+                            autoPlay
+                            className="w-full h-full object-contain"
+                            onLoadedData={markPlaybackConfirmed}
+                            onCanPlay={markPlaybackConfirmed}
+                            onPlaying={markPlaybackConfirmed}
+                            onError={handleOriginalPlaybackError}
+                        />
                     )}
 
                     {/* HLS video element — rendered as soon as HLS mode is active so attachMedia works */}
@@ -953,6 +1084,8 @@ export function AdaptiveMediaPlayer({
                             controls={hlsPhase === 'ready'}
                             controlsList="nodownload"
                             autoPlay
+                            onLoadedData={markPlaybackConfirmed}
+                            onPlaying={markPlaybackConfirmed}
                             className={`w-full h-full object-contain ${hlsPhase === 'ready' ? 'opacity-100' : 'opacity-0 absolute inset-0 pointer-events-none'}`}
                         />
                     )}
@@ -960,10 +1093,13 @@ export function AdaptiveMediaPlayer({
                     {/* MSE video element (original mode, hidden during loading/error/HLS) */}
                     {showOriginalVideo && (
                         <video
-                            ref={mseVideoRef}
+                            ref={originalVideoCallbackRef}
                             controls
                             controlsList="nodownload"
                             autoPlay
+                            onLoadedData={markPlaybackConfirmed}
+                            onCanPlay={markPlaybackConfirmed}
+                            onPlaying={markPlaybackConfirmed}
                             className={`w-full h-full object-contain ${(isMseLoading || msePhase === 'error') ? 'opacity-0' : 'opacity-100'}`}
                         />
                     )}
@@ -1018,7 +1154,7 @@ export function AdaptiveMediaPlayer({
                             </div>
                             {(sourceResolution || playingResolution) && (
                                 <div className="flex justify-between gap-4">
-                                    <span className="text-white/40">Size</span>
+                                    <span className="text-white/40">{i18n.t("common.size")}</span>
                                     <span>
                                         {playingResolution ? `${playingResolution.w}×${playingResolution.h}` : ''}
                                         {playingResolution && sourceResolution && (playingResolution.w !== sourceResolution.w || playingResolution.h !== sourceResolution.h)
@@ -1033,7 +1169,7 @@ export function AdaptiveMediaPlayer({
                                     onClick={handleClearTranscodeCache}
                                     disabled={clearingCache}
                                     className="pointer-events-auto flex items-center gap-1.5 text-[9px] text-red-400/60 hover:text-red-400 transition-colors disabled:opacity-50"
-                                    title={`Clear all transcoded HLS variants for ${fileKey}`}
+                                    title={`Clear all transcoded HLS variants for ${file.name}`}
                                 >
                                     <Trash2 className="w-3 h-3" />
                                     {clearingCache ? 'Clearing...' : 'Clear Transcodes'}
@@ -1045,16 +1181,16 @@ export function AdaptiveMediaPlayer({
 
                 {/* Fullscreen overlay toolbar */}
                 {isFullscreen && (displayPhase !== 'error' && displayPhase !== 'failed') && (
-                    <div className="absolute bottom-0 left-0 right-0 z-30 bg-gradient-to-t from-black/90 via-black/60 to-transparent p-4 pt-12 pointer-events-none">
+                    <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 bg-gradient-to-t from-black/90 via-black/60 to-transparent p-4 pt-12">
                         <div className="flex items-center justify-between pointer-events-auto">
                             <div className="flex items-center gap-3">
                                 {/* Play/Pause */}
                                 <button
                                     onClick={() => {
-                                        const video = hlsVideoRef.current || mseVideoRef.current;
+                                        const video = getActiveVideo();
                                         if (video) video.paused ? video.play().catch(() => {}) : video.pause();
                                     }}
-                                    className="p-2 text-white/80 hover:text-white hover:bg-white/10 rounded-full transition-all"
+                                    className="viewer-control text-white/80"
                                     title="Play/Pause (Space)"
                                 >
                                     <Play className="w-5 h-5" />
@@ -1065,7 +1201,7 @@ export function AdaptiveMediaPlayer({
                                     onMouseEnter={() => setShowVolumeSlider(true)}
                                     onMouseLeave={() => setShowVolumeSlider(false)}
                                 >
-                                    <button onClick={toggleMute} className="p-1.5 text-white/60 hover:text-white rounded-full hover:bg-white/10" title={isMuted ? 'Unmute' : 'Mute'}>
+                                    <button onClick={toggleMute} className="viewer-control text-white/60" title={isMuted ? 'Unmute' : 'Mute'}>
                                         {isMuted || volume === 0 ? <VolumeX className="w-4 h-4" /> : volume < 0.5 ? <Volume1 className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
                                     </button>
                                     <div className={`overflow-hidden transition-all duration-200 ${showVolumeSlider ? 'w-20 opacity-100' : 'w-0 opacity-0'}`}>
@@ -1101,8 +1237,9 @@ export function AdaptiveMediaPlayer({
                                 {/* Exit fullscreen */}
                                 <button
                                     onClick={exitFullscreen}
-                                    className="w-10 h-10 flex items-center justify-center text-white/60 hover:text-white hover:bg-white/10 rounded-full transition-all"
+                                    className="viewer-control"
                                     title="Exit fullscreen (F)"
+                                    aria-label="Exit fullscreen"
                                 >
                                     <Minimize2 className="w-5 h-5" />
                                 </button>
@@ -1110,8 +1247,9 @@ export function AdaptiveMediaPlayer({
                                 {/* Close */}
                                 <button
                                     onClick={onClose}
-                                    className="w-10 h-10 flex items-center justify-center text-white/60 hover:text-white hover:bg-white/10 rounded-full transition-all"
+                                    className="viewer-control"
                                     title="Close (Esc)"
+                                    aria-label="Close media player"
                                 >
                                     <X className="w-5 h-5" />
                                 </button>
@@ -1122,9 +1260,9 @@ export function AdaptiveMediaPlayer({
 
                 {/* Bottom bar: file info + volume + quality selector (non-fullscreen) */}
                 {!isFullscreen && <div className="mt-3 w-full flex items-center justify-between px-1 gap-3">
-                    <div className="text-left min-w-0 flex-1">
-                        <h3 className="text-sm font-medium text-white truncate max-w-md">{file.name}</h3>
-                        <p className="text-[11px] text-white/40 flex items-center gap-2">
+                    <div className="min-w-0 flex-1 text-start">
+                        <h3 className="max-w-md truncate text-ui font-medium text-white" title={file.name}>{file.name}</h3>
+                        <p className="flex items-center gap-2 text-badge text-white/40">
                             {isHlsMode && hlsQuality && (
                                 <span className="text-telegram-primary">{QUALITY_LABELS[hlsQuality]}</span>
                             )}
@@ -1167,6 +1305,12 @@ export function AdaptiveMediaPlayer({
                     </div>
                 </div>}
 
+                {!isFullscreen && (
+                    <FfmpegInstallNotice available={transcodeCapabilities?.available} variant="player" />
+                )}
+
+                {!isFullscreen && playback && <PlaybackControls playback={playback} />}
+
                 {/* Keyboard shortcut hints */}
                 {!isFullscreen && <div className="mt-2 flex items-center gap-4 text-[10px] text-white/25 select-none">
                     <span className="flex items-center gap-1">
@@ -1179,7 +1323,7 @@ export function AdaptiveMediaPlayer({
                         <kbd className="px-1 py-0.5 rounded bg-white/10 text-white/40 text-[9px] font-mono">F</kbd> Fullscreen
                     </span>
                     <span className="flex items-center gap-1">
-                        <kbd className="px-1 py-0.5 rounded bg-white/10 text-white/40 text-[9px] font-mono">Esc</kbd> Close
+                        <kbd className="px-1 py-0.5 rounded bg-white/10 text-white/40 text-[9px] font-mono">Esc</kbd> {i18n.t("common.close")}
                     </span>
                     <span className="flex items-center gap-1">
                         <kbd className="px-1 py-0.5 rounded bg-white/10 text-white/40 text-[9px] font-mono">M</kbd> Mute

@@ -8,6 +8,11 @@
     "main"
   ],
   "permissions": [
+    "core:default",
+    "os:default",
+    "store:default",
+    "deep-link:default",
+    "clipboard-manager:allow-write-text",
     {
       "identifier": "fs:allow-read",
       "allow": [
@@ -22,7 +27,8 @@
         { "path": "$APPDATA/**" }
       ]
     },
-    "dialog:default",
+    "dialog:allow-open",
+    "dialog:allow-save",
     "opener:default",
     "shell:allow-open"
   ]

@@ -1,22 +1,37 @@
-import { useState, useEffect, useCallback } from 'react';
+import '../../../i18n/supporterTranslations';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, RotateCcw, Download, Upload, Trash2, HardDrive, Globe, Key, Copy, Check, RefreshCw, FolderArchive, Shield, Zap, Activity, Gauge, Wifi, ChevronDown, Link, Sparkles, Info, Clipboard, Monitor, Loader2, Languages, Play, Palette, Plus, Tag } from 'lucide-react';
+import { X, RotateCcw, Download, Upload, Trash2, HardDrive, Globe, Key, Copy, Check, RefreshCw, FolderArchive, Shield, Zap, Activity, Gauge, Wifi, ChevronDown, Link, Sparkles, Info, Monitor, Loader2, Languages, Play, Palette, Tag, Search, Bug, Database, FolderSync } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
-import { open } from '@tauri-apps/plugin-shell';
 import { toast } from 'sonner';
+import { useSupporter } from '../../../context/SupporterContext';
 import { useSettings } from '../../../context/SettingsContext';
 import { useConfirm } from '../../../context/ConfirmContext';
 import { useTranslation } from 'react-i18next';
-import { LANGUAGES } from '../../../i18n/languages';
-import { ShareInfo, CacheEntry, DetailedCacheInfo } from '../../../types';
+import { LANGUAGES, type LanguagePreference } from '../../../i18n/languages';
+import { ShareInfo, CacheEntry, DetailedCacheInfo, OfflineCacheStatus, TranscodeCapabilities } from '../../../types';
 import { version as appVersion } from '../../../../package.json';
-import { useTheme } from '../../../context/ThemeContext';
-import { CustomTheme, ThemeColorPalette, generateThemeId } from '../../../theme/themeEngine';
-import { getDefaultPalette } from '../../../theme/presets';
+import { clearImageMemoryCaches } from '../../../services/imagePreviewCache';
+import { useModalFocus } from '../../../hooks/useModalFocus';
+import { AccessTransparencyDialog, type LocalAccessService } from '../../shared/AccessTransparencyDialog';
+import { getDetailedTranscodeCache, transcodeCacheErrorMessage } from '../../../services/transcodeCacheClient';
+import { formatBytes } from '../../../utils';
+import { SettingsRow, SettingsStepper, SettingsToggle } from './settings/SettingsControls';
+import { AboutSettingsTab, AdvancedSettingsTab, EncryptionSettingsTab, GeneralSettingsTab, LicenseSettingsTab, PrivacySettingsTab, ProxySettingsTab, SharingSettingsTab, ThemeSettingsTab, VpnSettingsTab, WebDavSettingsTab } from './settings/SettingsTabs';
+import { FfmpegInstallNotice } from '../../shared/FfmpegInstallNotice';
+import { SyncSettingsPanel } from '../sync/SyncSettingsPanel';
+import { DesktopBehaviorSettings } from './settings/DesktopBehaviorSettings';
+import { userFacingError } from '../../../services/userFacingError';
+import { useActionScope } from '../../../hooks/useActionScope';
+import { useUpdates } from '../../../context/UpdateContext';
+import { applyProxySettings, applyVpnSettings } from '../../../services/networkSettings';
 
 interface SettingsModalProps {
+    ownerId: string | null;
     isOpen: boolean;
     onClose: () => void;
+    initialTab?: SettingsTab;
+    focusSupporter?: boolean;
 }
 
 interface ApiSettings {
@@ -24,50 +39,149 @@ interface ApiSettings {
     port: number;
     key_set: boolean;
     running: boolean;
+    last_error: string | null;
 }
 
-type SettingsTab = 'general' | 'themes' | 'proxy' | 'vpn' | 'sharing' | 'about';
+interface WebDavSettings {
+    supported: boolean;
+    enabled: boolean;
+    port: number;
+    write_enabled: boolean;
+    token_set: boolean;
+    running: boolean;
+    last_error: string | null;
+}
 
-export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
-    const { settings, updateSetting, resetSettings } = useSettings();
+interface WebDavTokenResponse {
+    token: string;
+    url: string;
+}
+
+export type SettingsTab = 'general' | 'privacy' | 'license' | 'advanced' | 'webdav' | 'themes' | 'proxy' | 'vpn' | 'encryption' | 'sharing' | 'sync' | 'about';
+
+export function SettingsModal(props: SettingsModalProps) {
+    return <OwnedSettingsModal key={props.ownerId ?? 'signed-out'} {...props} />;
+}
+
+function OwnedSettingsModal({ ownerId, isOpen, onClose, initialTab = 'general', focusSupporter = false }: SettingsModalProps) {
+    const { settings, updateSetting, updateSettings, resetSettings, isLoaded, persistenceStatus } = useSettings();
     const { confirm } = useConfirm();
     const { t } = useTranslation();
+    const { status: supporterStatus } = useSupporter();
+    const tabLabel = (tab: SettingsTab) => tab === 'license'
+        ? t(supporterStatus.ad_free ? 'supporter_license.purchased_title' : 'supporter_license.nav_title')
+        : t(`settings.tab_${tab}`);
     const [clearing, setClearing] = useState(false);
 
     // Transcode cache state
     const [transcodeCache, setTranscodeCache] = useState<DetailedCacheInfo | null>(null);
     const [cacheLoading, setCacheLoading] = useState(false);
+    const [cacheError, setCacheError] = useState<string | null>(null);
+    const [transcodeCapabilities, setTranscodeCapabilities] = useState<TranscodeCapabilities | null>(null);
+    const cacheRequestId = useRef(0);
+    const [offlineCache, setOfflineCache] = useState<OfflineCacheStatus | null>(null);
+    const [offlineCacheLoading, setOfflineCacheLoading] = useState(false);
+    const [offlineCacheError, setOfflineCacheError] = useState<string | null>(null);
     const [clearingVariant, setClearingVariant] = useState<string | null>(null); // file_key:quality being cleared
     const [activeTab, setActiveTab] = useState<SettingsTab>('general');
+    const [settingsSearch, setSettingsSearch] = useState('');
+    const [showGeneralAdvanced, setShowGeneralAdvanced] = useState(false);
+    const [accessTransparency, setAccessTransparency] = useState<LocalAccessService | null>(null);
+    const modalRef = useRef<HTMLDivElement>(null);
+    useModalFocus(modalRef, onClose, isOpen && !accessTransparency);
+    useEffect(() => {
+        if (isOpen) {
+            setActiveTab(initialTab);
+        } else {
+            setAccessTransparency(null);
+        }
+    }, [initialTab, isOpen]);
+    useEffect(() => {
+        const container = modalRef.current;
+        if (!isOpen || activeTab !== 'license' || !focusSupporter || !container) return;
+        let frame = 0;
+        const focusSection = () => {
+            const section = container.querySelector<HTMLElement>('#desktop-supporter-section');
+            if (!section) return;
+            observer.disconnect();
+            frame = window.requestAnimationFrame(() => {
+                section.scrollIntoView({ block: 'start' });
+                section.focus({ preventScroll: true });
+            });
+        };
+        // The license section is loaded on demand, so it may mount after the tab.
+        const observer = new MutationObserver(focusSection);
+        observer.observe(container, { childList: true, subtree: true });
+        focusSection();
+        return () => { observer.disconnect(); window.cancelAnimationFrame(frame); };
+    }, [activeTab, focusSupporter, isOpen]);
     const [latencyMs, setLatencyMs] = useState<number | null>(null);
     const [vpnDetected, setVpnDetected] = useState<boolean | null>(null);
     const [proxyStatus, setProxyStatus] = useState<{ reachable: boolean; latency_ms: number } | null>(null);
     const [isTestingProxy, setIsTestingProxy] = useState(false);
 
-    // Update check state
+    const {
+        checking: updateChecking,
+        available: updateAvailable,
+        version: updateVersion,
+        downloading: updateDownloading,
+        progress: updateProgress,
+        managedByPackageManager,
+        checkForUpdates,
+        downloadAndInstall,
+    } = useUpdates();
+    const [networkApplyFailed, setNetworkApplyFailed] = useState({ proxy: false, vpn: false });
+    const [networkRetry, setNetworkRetry] = useState(0);
+    const networkSettingsReady = isLoaded && persistenceStatus !== 'loading' && persistenceStatus !== 'error';
+
     // Reconnect state
     const [reconnecting, setReconnecting] = useState(false);
 
     // Diagnostics state
     const [diagLoading, setDiagLoading] = useState(false);
 
+    const handleCheckForUpdates = useCallback(async () => {
+        const result = await checkForUpdates();
+        if (result.error) {
+            if (result.error.includes('dev') || result.error.includes('no current version')) {
+                toast.info(t('settings.update_prod_only_toast'));
+            } else {
+                toast.error(t('settings.update_check_failed_toast', { error: result.error }));
+            }
+        } else if (result.version) {
+            toast.success(t('settings.update_available_toast', { version: result.version }));
+        } else {
+            toast.success(t('settings.latest_version_toast'));
+        }
+    }, [checkForUpdates, t]);
+
+    const handleInstallUpdate = useCallback(async () => {
+        const result = await downloadAndInstall();
+        if (result.error) toast.error(t('settings.update_failed_toast', { error: result.error }));
+    }, [downloadAndInstall, t]);
+
     // Sharing settings state
     const [shares, setShares] = useState<ShareInfo[]>([]);
     const [refreshing, setRefreshing] = useState(false);
     const [copiedId, setCopiedId] = useState<string | null>(null);
     const [globalDomain, setGlobalDomain] = useState('');
+    const captureShareScope = useActionScope(isOpen ? ownerId : null);
+    const shareRequest = useRef(0);
 
     const fetchShares = useCallback(async () => {
+        const isCurrent = captureShareScope();
+        if (!ownerId || !isCurrent()) return;
+        const request = ++shareRequest.current;
         setRefreshing(true);
         try {
-            const list = await invoke<ShareInfo[]>('cmd_list_shares');
-            setShares(list);
+            const list = await invoke<ShareInfo[]>('cmd_list_shares', { ownerId });
+            if (isCurrent() && request === shareRequest.current) setShares(list.filter(share => share.owner_id === ownerId));
         } catch (e) {
-            toast.error(t('settings.load_shares_failed', { error: e }));
+            if (isCurrent() && request === shareRequest.current) toast.error(t('settings.load_shares_failed', { error: e }));
         } finally {
-            setRefreshing(false);
+            if (isCurrent() && request === shareRequest.current) setRefreshing(false);
         }
-    }, [t]);
+    }, [captureShareScope, ownerId, t]);
 
     useEffect(() => {
         if (isOpen && activeTab === 'sharing') {
@@ -76,26 +190,30 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     }, [isOpen, activeTab, fetchShares]);
 
     const handleRevokeShare = async (id: string) => {
+        const isCurrent = captureShareScope();
+        if (!ownerId || !isCurrent() || !shares.some(share => share.id === id && share.owner_id === ownerId)) return;
         const ok = await confirm({
             title: t('settings.revoke_link_title'),
             message: t('settings.revoke_link_desc'),
             confirmText: t('settings.revoke'),
             variant: 'danger',
         });
-        if (!ok) return;
+        if (!ok || !isCurrent()) return;
 
         try {
-            await invoke('cmd_revoke_share', { id });
+            await invoke('cmd_revoke_share', { id, ownerId });
+            if (!isCurrent()) return;
             toast.success(t('settings.link_revoked'));
             fetchShares();
         } catch (e) {
-            toast.error(t('settings.link_revoke_failed', { error: e }));
+            if (isCurrent()) toast.error(t('settings.link_revoke_failed', { error: e }));
         }
     };
 
     const handleCopyShare = (id: string) => {
-        const share = shares.find(s => s.id === id);
-        if (!share) return;
+        const isCurrent = captureShareScope();
+        const share = shares.find(s => s.id === id && s.owner_id === ownerId);
+        if (!share || !isCurrent()) return;
         
         let link = `http://127.0.0.1:14201/d/${share.id}`;
         if (globalDomain.trim()) {
@@ -104,23 +222,49 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         
         navigator.clipboard.writeText(link);
         setCopiedId(share.id);
-        setTimeout(() => setCopiedId(null), 2000);
+        setTimeout(() => { if (isCurrent()) setCopiedId(null); }, 2000);
     };
 
     // API settings state
-    const [apiSettings, setApiSettings] = useState<ApiSettings>({ enabled: false, port: 8550, key_set: false, running: false });
+    const [apiSettings, setApiSettings] = useState<ApiSettings>({ enabled: false, port: 8550, key_set: false, running: false, last_error: null });
     const [apiPort, setApiPort] = useState('8550');
     const [apiLoading, setApiLoading] = useState(false);
     const [generatedKey, setGeneratedKey] = useState<string | null>(null);
     const [keyCopied, setKeyCopied] = useState(false);
 
+    // WebDAV settings state
+    const [webDavSettings, setWebDavSettings] = useState<WebDavSettings>({
+        supported: true,
+        enabled: false,
+        port: 8551,
+        write_enabled: false,
+        token_set: false,
+        running: false,
+        last_error: null,
+    });
+    const [webDavPort, setWebDavPort] = useState('8551');
+    const [webDavLoading, setWebDavLoading] = useState(false);
+    const [webDavGenerating, setWebDavGenerating] = useState(false);
+    const [generatedWebDavUrl, setGeneratedWebDavUrl] = useState<string | null>(null);
+    const [webDavUrlCopied, setWebDavUrlCopied] = useState(false);
+
     const fetchApiSettings = useCallback(async () => {
         try {
-            const result = await invoke<ApiSettings>('cmd_get_api_settings');
-            setApiSettings(result);
-            setApiPort(result.port.toString());
+            const apiStatus = await invoke<ApiSettings>('cmd_get_api_settings');
+            setApiSettings(apiStatus);
+            setApiPort(apiStatus.port.toString());
         } catch {
             // API settings not available
+        }
+    }, []);
+
+    const fetchWebDavSettings = useCallback(async (syncPort = true) => {
+        try {
+            const webDavStatus = await invoke<WebDavSettings>('cmd_get_webdav_settings');
+            setWebDavSettings(webDavStatus);
+            if (syncPort) setWebDavPort(webDavStatus.port.toString());
+        } catch {
+            setWebDavSettings(previous => ({ ...previous, supported: false }));
         }
     }, []);
 
@@ -128,21 +272,58 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     useEffect(() => {
         if (isOpen) {
             fetchApiSettings();
+            fetchWebDavSettings();
             setGeneratedKey(null);
             setKeyCopied(false);
+            setGeneratedWebDavUrl(null);
+            setWebDavUrlCopied(false);
         }
-    }, [isOpen, fetchApiSettings]);
+    }, [isOpen, fetchApiSettings, fetchWebDavSettings]);
 
     // Fetch transcode cache info
-    const fetchTranscodeCache = useCallback(async () => {
+    const fetchTranscodeCache = useCallback(async (refresh = false) => {
+        const requestId = ++cacheRequestId.current;
         setCacheLoading(true);
+        setCacheError(null);
         try {
-            const info = await invoke<DetailedCacheInfo>('cmd_get_detailed_transcode_cache');
-            setTranscodeCache(info);
-        } catch {
-            setTranscodeCache(null);
+            const cacheDetails = await getDetailedTranscodeCache(refresh);
+            if (cacheRequestId.current === requestId) {
+                setTranscodeCache(cacheDetails);
+                setCacheError(cacheDetails.last_error && cacheDetails.entries.length === 0
+                    ? cacheDetails.last_error
+                    : null);
+            }
+        } catch (error) {
+            if (cacheRequestId.current === requestId) {
+                setTranscodeCache(null);
+                setCacheError(transcodeCacheErrorMessage(error));
+            }
         } finally {
-            setCacheLoading(false);
+            if (cacheRequestId.current === requestId) {
+                setCacheLoading(false);
+            }
+        }
+    }, []);
+
+    const fetchTranscodeCapabilities = useCallback(async () => {
+        try {
+            setTranscodeCapabilities(await invoke<TranscodeCapabilities>('cmd_get_transcode_capabilities'));
+        } catch {
+            setTranscodeCapabilities(null);
+        }
+    }, []);
+
+    const fetchOfflineCache = useCallback(async () => {
+        setOfflineCacheLoading(true);
+        setOfflineCacheError(null);
+        try {
+            const cacheStatus = await invoke<OfflineCacheStatus>('cmd_get_offline_cache_status');
+            setOfflineCache(cacheStatus);
+        } catch (error) {
+            setOfflineCache(null);
+            setOfflineCacheError(error instanceof Error ? error.message : String(error));
+        } finally {
+            setOfflineCacheLoading(false);
         }
     }, []);
 
@@ -150,8 +331,16 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     useEffect(() => {
         if (isOpen && activeTab === 'general') {
             fetchTranscodeCache();
+            fetchTranscodeCapabilities();
+            fetchOfflineCache();
         }
-    }, [isOpen, activeTab, fetchTranscodeCache]);
+    }, [isOpen, activeTab, fetchOfflineCache, fetchTranscodeCache, fetchTranscodeCapabilities]);
+
+    useEffect(() => {
+        if (!isOpen || activeTab !== 'general' || !transcodeCache?.scan_in_progress) return;
+        const interval = window.setInterval(() => void fetchTranscodeCache(false), 1_000);
+        return () => window.clearInterval(interval);
+    }, [activeTab, fetchTranscodeCache, isOpen, transcodeCache?.scan_in_progress]);
 
     // Poll API status while modal is open and API is enabled
     useEffect(() => {
@@ -160,58 +349,38 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         return () => clearInterval(interval);
     }, [isOpen, apiSettings.enabled, fetchApiSettings]);
 
-    // Sync proxy settings to backend whenever they change
+    // Poll WebDAV runtime state while its tab is visible.
     useEffect(() => {
-        const applyProxy = async () => {
-            try {
-                await invoke('cmd_apply_proxy_settings', {
-                    enabled: settings.proxyEnabled,
-                    proxyType: settings.proxyType,
-                    host: settings.proxyHost,
-                    port: settings.proxyPort,
-                    username: settings.proxyUsername,
-                    password: settings.proxyPassword,
-                });
-            } catch {
-                // best-effort sync
-            }
-        };
-        applyProxy();
+        if (!isOpen || activeTab !== 'webdav') return;
+        const interval = setInterval(() => void fetchWebDavSettings(false), 3000);
+        return () => clearInterval(interval);
+    }, [isOpen, activeTab, fetchWebDavSettings]);
+
+    // Apply only loaded settings; startup defaults must not overwrite native state.
+    useEffect(() => {
+        if (!networkSettingsReady) return;
+        let cancelled = false;
+        void applyProxySettings(settings).then(
+            () => { if (!cancelled) setNetworkApplyFailed(current => ({ ...current, proxy: false })); },
+            () => { if (!cancelled) setNetworkApplyFailed(current => ({ ...current, proxy: true })); },
+        );
+        return () => { cancelled = true; };
     }, [
+        networkSettingsReady, networkRetry,
         settings.proxyEnabled, settings.proxyType, settings.proxyHost,
         settings.proxyPort, settings.proxyUsername, settings.proxyPassword,
     ]);
 
-    // Sync VPN optimizer settings to backend whenever they change
     useEffect(() => {
-        const applyVpn = async () => {
-            try {
-                await invoke('cmd_apply_vpn_settings', {
-                    enabled: settings.vpnMode,
-                    timeoutMultiplier: settings.timeoutMultiplier,
-                    retryAttempts: settings.retryAttempts,
-                    retryBaseBackoffMs: Math.round(settings.retryBaseBackoffSec * 1000),
-                    retryMaxBackoffMs: Math.round(settings.retryMaxBackoffSec * 1000),
-                    adaptivePolling: settings.adaptivePolling,
-                    pollingMinSec: settings.pollingMinSec,
-                    pollingMaxSec: settings.pollingMaxSec,
-                    preferredDc: settings.preferredDC,
-                    dcFallbackAttempts: settings.dcFallbackAttempts,
-                    floodWaitRespect: settings.floodWaitRespect,
-                    peerCacheSize: settings.peerCacheSize,
-                    bandwidthLimitUpKbs: settings.bandwidthLimitUpKBs,
-                    bandwidthLimitDownKbs: settings.bandwidthLimitDownKBs,
-                    chunkSizeKb: settings.chunkSizeKb,
-                    keepAliveIntervalSec: settings.keepAliveIntervalSec,
-                    autoDetectVpn: settings.autoDetectVpn,
-                    archiveMaxBytes: settings.archiveMaxBytes * 1024 * 1024,
-                });
-            } catch {
-                // best-effort sync
-            }
-        };
-        applyVpn();
+        if (!networkSettingsReady) return;
+        let cancelled = false;
+        void applyVpnSettings(settings).then(
+            () => { if (!cancelled) setNetworkApplyFailed(current => ({ ...current, vpn: false })); },
+            () => { if (!cancelled) setNetworkApplyFailed(current => ({ ...current, vpn: true })); },
+        );
+        return () => { cancelled = true; };
     }, [
+        networkSettingsReady, networkRetry,
         settings.vpnMode, settings.timeoutMultiplier, settings.retryAttempts,
         settings.retryBaseBackoffSec, settings.retryMaxBackoffSec, settings.adaptivePolling,
         settings.pollingMinSec, settings.pollingMaxSec, settings.preferredDC,
@@ -267,6 +436,16 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     }, [isOpen, activeTab]);
 
     const handleApiToggle = async () => {
+        if (!apiSettings.enabled && !settings.restPermissionExplained) {
+            const understood = await confirm({
+                title: 'Before enabling REST access',
+                message: 'The REST server opens a local automation endpoint on the port shown below. Anyone who can reach that address still needs the generated API key. Keep the key private, bind only to networks you trust, and disable the server when it is no longer needed.',
+                confirmText: 'I understand — enable',
+                variant: 'info',
+            });
+            if (!understood) return;
+            updateSetting('restPermissionExplained', true);
+        }
         setApiLoading(true);
         try {
             const port = parseInt(apiPort, 10);
@@ -275,12 +454,16 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                 setApiLoading(false);
                 return;
             }
-            const result = await invoke<ApiSettings>('cmd_update_api_settings', {
+            const updatedSettings = await invoke<ApiSettings>('cmd_update_api_settings', {
                 enabled: !apiSettings.enabled,
                 port,
             });
-            setApiSettings(result);
-            toast.success(result.enabled ? t('settings.api_server_started') : t('settings.api_server_stopped'));
+            setApiSettings(updatedSettings);
+            if (updatedSettings.last_error) {
+                toast.error(updatedSettings.last_error);
+            } else {
+                toast.success(updatedSettings.enabled ? t('settings.api_server_started') : t('settings.api_server_stopped'));
+            }
         } catch (e) {
             toast.error(t('settings.api_update_failed', { error: e }));
         } finally {
@@ -297,12 +480,16 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         if (port === apiSettings.port) return;
         setApiLoading(true);
         try {
-            const result = await invoke<ApiSettings>('cmd_update_api_settings', {
+            const updatedSettings = await invoke<ApiSettings>('cmd_update_api_settings', {
                 enabled: apiSettings.enabled,
                 port,
             });
-            setApiSettings(result);
-            toast.success(t('settings.api_port_updated', { port }));
+            setApiSettings(updatedSettings);
+            if (updatedSettings.last_error) {
+                toast.error(updatedSettings.last_error);
+            } else {
+                toast.success(t('settings.api_port_updated', { port }));
+            }
         } catch (e) {
             toast.error(t('settings.api_port_update_failed', { error: e }));
         } finally {
@@ -342,6 +529,155 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         }
     };
 
+    const parseWebDavPort = () => {
+        const port = Number.parseInt(webDavPort, 10);
+        if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+            toast.error(t('settings.port_range_error'));
+            return null;
+        }
+        return port;
+    };
+
+    const generateWebDavLink = async (askBeforeReplacing = true) => {
+        if (askBeforeReplacing && webDavSettings.token_set) {
+            const ok = await confirm({
+                title: t('settings.webdav_regenerate_title'),
+                message: t('settings.webdav_regenerate_desc'),
+                confirmText: t('settings.regenerate'),
+                variant: 'danger',
+            });
+            if (!ok) return null;
+        }
+        setWebDavGenerating(true);
+        try {
+            const generatedLink = await invoke<WebDavTokenResponse>('cmd_regenerate_webdav_token');
+            setGeneratedWebDavUrl(generatedLink.url);
+            setWebDavUrlCopied(false);
+            setWebDavSettings(previous => ({ ...previous, token_set: true }));
+            toast.success(t('settings.webdav_link_generated'));
+            return generatedLink;
+        } catch (error) {
+            toast.error(t('settings.webdav_generate_failed', { error }));
+            return null;
+        } finally {
+            setWebDavGenerating(false);
+        }
+    };
+
+    const handleWebDavToggle = async () => {
+        const port = parseWebDavPort();
+        if (port === null || !webDavSettings.supported) return;
+        if (!webDavSettings.enabled && !settings.webdavPermissionExplained) {
+            const understood = await confirm({
+                title: 'Before enabling WebDAV access',
+                message: 'WebDAV lets Finder and file managers browse your Telegram Drive through the complete token URL. The token is the credential: Guest or anonymous login has no access. Read-only mode is safest; enabling changes also permits uploads, moves, renames, and deletes.',
+                confirmText: 'I understand — enable',
+                variant: 'info',
+            });
+            if (!understood) return;
+            updateSetting('webdavPermissionExplained', true);
+        }
+        setWebDavLoading(true);
+        try {
+            if (!webDavSettings.enabled && !webDavSettings.token_set) {
+                const generated = await generateWebDavLink(false);
+                if (!generated) return;
+            }
+            const updatedSettings = await invoke<WebDavSettings>('cmd_update_webdav_settings', {
+                enabled: !webDavSettings.enabled,
+                port,
+                writeEnabled: webDavSettings.write_enabled,
+            });
+            setWebDavSettings(updatedSettings);
+            if (updatedSettings.last_error) {
+                toast.error(updatedSettings.last_error);
+            } else {
+                toast.success(updatedSettings.enabled ? t('settings.webdav_started') : t('settings.webdav_stopped_toast'));
+            }
+        } catch (error) {
+            toast.error(t('settings.webdav_update_failed', { error }));
+        } finally {
+            setWebDavLoading(false);
+        }
+    };
+
+    const handleWebDavPortApply = async () => {
+        const port = parseWebDavPort();
+        if (port === null || port === webDavSettings.port || !webDavSettings.supported) return;
+        setWebDavLoading(true);
+        try {
+            const updatedSettings = await invoke<WebDavSettings>('cmd_update_webdav_settings', {
+                enabled: webDavSettings.enabled,
+                port,
+                writeEnabled: webDavSettings.write_enabled,
+            });
+            setWebDavSettings(updatedSettings);
+            setGeneratedWebDavUrl(previous => {
+                if (!previous) return previous;
+                try {
+                    const updated = new URL(previous);
+                    updated.port = port.toString();
+                    return updated.toString();
+                } catch {
+                    return previous;
+                }
+            });
+            if (updatedSettings.last_error) {
+                toast.error(updatedSettings.last_error);
+            } else {
+                toast.success(t('settings.webdav_port_updated', { port }));
+            }
+        } catch (error) {
+            setWebDavPort(webDavSettings.port.toString());
+            toast.error(t('settings.webdav_update_failed', { error }));
+        } finally {
+            setWebDavLoading(false);
+        }
+    };
+
+    const handleWebDavWriteToggle = async () => {
+        if (!webDavSettings.supported) return;
+        const port = parseWebDavPort();
+        if (port === null) return;
+        const nextWriteEnabled = !webDavSettings.write_enabled;
+        if (nextWriteEnabled) {
+            const ok = await confirm({
+                title: t('settings.webdav_enable_changes_title'),
+                message: t('settings.webdav_enable_changes_confirm'),
+                confirmText: t('common.confirm'),
+                variant: 'danger',
+            });
+            if (!ok) return;
+        }
+        setWebDavLoading(true);
+        try {
+            const updatedSettings = await invoke<WebDavSettings>('cmd_update_webdav_settings', {
+                enabled: webDavSettings.enabled,
+                port,
+                writeEnabled: nextWriteEnabled,
+            });
+            setWebDavSettings(updatedSettings);
+            if (updatedSettings.last_error) {
+                toast.error(updatedSettings.last_error);
+            }
+        } catch (error) {
+            toast.error(t('settings.webdav_update_failed', { error }));
+        } finally {
+            setWebDavLoading(false);
+        }
+    };
+
+    const handleCopyWebDavUrl = async () => {
+        if (!generatedWebDavUrl) return;
+        try {
+            await navigator.clipboard.writeText(generatedWebDavUrl);
+            setWebDavUrlCopied(true);
+            setTimeout(() => setWebDavUrlCopied(false), 2000);
+        } catch {
+            toast.error(t('settings.copy_clipboard_failed'));
+        }
+    };
+
     return (
         <AnimatePresence>
             {isOpen && (
@@ -349,60 +685,80 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
-                    className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm"
+                    className="fixed inset-0 z-[100] flex items-center justify-center bg-app-overlay p-6 backdrop-blur-sm"
                     onClick={onClose}
                 >
                     <motion.div
+                        ref={modalRef}
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="settings-dialog-title"
+                        tabIndex={-1}
                         layout
                         initial={{ opacity: 0, scale: 0.95, y: 10 }}
                         animate={{ opacity: 1, scale: 1, y: 0 }}
                         exit={{ opacity: 0, scale: 0.95, y: 10 }}
-                        transition={{ type: 'spring', damping: 25, stiffness: 220 }}
-                        className="bg-telegram-surface border border-telegram-border rounded-xl w-[440px] shadow-2xl overflow-hidden flex flex-col"
+                        transition={{ duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
+                        className="quiet-raised flex h-[min(760px,calc(100vh-3rem))] w-[min(920px,calc(100vw-3rem))] flex-col overflow-hidden"
                         onClick={e => e.stopPropagation()}
                     >
                         {/* Header */}
-                        <div className="px-5 py-4 border-b border-telegram-border flex justify-between items-center">
-                            <h2 className="text-telegram-text font-semibold text-base">{t('settings.title')}</h2>
+                        <div className="flex min-h-16 items-center justify-between border-b border-app-border-subtle px-6 py-4">
+                            <div>
+                                <h2 id="settings-dialog-title" className="text-base font-semibold text-app-text">{t('settings.title')}</h2>
+                                <p className="mt-0.5 text-xs text-app-text-tertiary">{tabLabel(activeTab)}</p>
+                            </div>
                             <button
                                 onClick={onClose}
-                                className="p-1.5 hover:bg-telegram-hover rounded-lg text-telegram-subtext hover:text-telegram-text transition"
+                                aria-label={t('common.close')}
+                                className="quiet-control p-2 text-app-text-secondary hover:text-app-text"
                             >
                                 <X className="w-4 h-4" />
                             </button>
                         </div>
 
-                        {/* Tab Bar */}
-                        <div className="px-5 pt-3 pb-0 flex gap-1 justify-start overflow-x-auto border-b border-telegram-border scrollbar-none">
-                            {([['general', Globe], ['themes', Palette], ['proxy', Shield], ['vpn', Zap], ['sharing', Link], ['about', Info]] as const).map(([key, Icon]) => (
-                                <button
-                                    key={key}
-                                    onClick={() => setActiveTab(key as SettingsTab)}
-                                    className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-t-lg transition-colors shrink-0 ${
-                                        activeTab === key
-                                            ? 'text-telegram-primary border-b-2 border-telegram-primary bg-telegram-primary/5'
-                                            : 'text-telegram-subtext hover:text-telegram-text hover:bg-telegram-hover/50'
-                                    }`}
-                                >
-                                    <Icon className="w-3.5 h-3.5" />
-                                    {t(`settings.tab_${key}`)}
-                                </button>
-                            ))}
-                        </div>
+                        <div className="flex min-h-0 flex-1">
+                        {/* Settings navigation */}
+                        <aside className="w-56 shrink-0 overflow-y-auto border-e border-app-border-subtle bg-app-sidebar p-3">
+                            <div className="relative mb-3">
+                                <Search className="pointer-events-none absolute start-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-app-text-tertiary" />
+                                <input value={settingsSearch} onChange={(event) => setSettingsSearch(event.target.value)} placeholder="Search settings" className="quiet-control h-9 w-full border border-app-border bg-app-surface-sunken ps-8 pe-2 text-sm text-app-text outline-none focus:border-app-accent" />
+                            </div>
+                            {([
+                                ['Essentials', [['general', Globe, 'General transfers language updates'], ['themes', Palette, 'Appearance colors themes']] as const],
+                                ['Security & Privacy', [['privacy', Bug, 'Privacy telemetry crash reports consent'], ['encryption', Shield, 'Encryption vault security auto lock']] as const],
+                                ['Connections', [['sync', FolderSync, 'Folder sync local directories Telegram channels'], ['sharing', Link, 'Sharing links local server']] as const],
+                                ['Advanced', [['advanced', Gauge, 'REST API proxy VPN WebDAV network integration Finder token port']] as const],
+                                ['Support', [['license', Key, 'Supporter lifetime license ad-free ads $5 PayPal recovery purchase'], ['about', Info, 'About diagnostics version updates']] as const],
+                            ] as const).map(([group, items]) => {
+                                const visibleItems = items.filter(([key, , keywords]) => `${key} ${keywords} ${tabLabel(key)}`.toLowerCase().includes(settingsSearch.trim().toLowerCase()));
+                                if (visibleItems.length === 0) return null;
+                                return (
+                                    <div key={group} className="mb-3">
+                                        <div className="mb-1 px-2 text-[10px] font-semibold uppercase tracking-wider text-app-text-tertiary">{group}</div>
+                                        {visibleItems.map(([key, Icon]) => (
+                                            <button key={key} onClick={() => setActiveTab(key)} className={`quiet-control mb-0.5 flex w-full items-center gap-2.5 px-3 py-2 text-start text-sm font-medium ${activeTab === key ? 'bg-app-selected text-app-text' : 'text-app-text-secondary hover:text-app-text'}`}>
+                                                <Icon className={`h-4 w-4 shrink-0 ${activeTab === key ? 'text-app-accent' : ''}`} />
+                                                {tabLabel(key)}
+                                            </button>
+                                        ))}
+                                    </div>
+                                );
+                            })}
+                        </aside>
 
                         {/* Body */}
-                        <motion.div layout className="px-5 py-4 max-h-[70vh] overflow-y-auto overflow-x-hidden relative">
-                            <AnimatePresence mode="popLayout" initial={false}>
+                        <div className="relative min-w-0 flex-1 overflow-y-auto overflow-x-hidden px-7 py-6">
+                            {((activeTab === 'proxy' && networkApplyFailed.proxy) || (activeTab === 'vpn' && networkApplyFailed.vpn)) && (
+                                <div role="alert" className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-app-danger/30 p-3 text-sm text-app-text">
+                                    <span>{t('common.operation_failed')}</span>
+                                    <button type="button" onClick={() => setNetworkRetry(value => value + 1)} className="quiet-control px-3 py-1.5">{t('common.retry')}</button>
+                                </div>
+                            )}
+                            <AnimatePresence mode="wait" initial={false}>
 
                                 {activeTab === 'general' && (
-                                    <motion.div
-                                        key="general"
-                                        initial={{ opacity: 0, x: -20 }}
-                                        animate={{ opacity: 1, x: 0 }}
-                                        exit={{ opacity: 0, x: 20 }}
-                                        transition={{ type: 'spring', damping: 25, stiffness: 220, opacity: { duration: 0.15 } }}
-                                        className="space-y-6 w-full"
-                                    >
+                                    <GeneralSettingsTab>
 
                             {/* Transfers Section */}
                             <section className="space-y-3">
@@ -411,133 +767,48 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     {t('settings.transfers')}
                                 </h3>
 
-                                {/* Max Concurrent Uploads */}
-                                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                                    <div className="flex items-center gap-2">
-                                        <Upload className="w-4 h-4 text-telegram-subtext" />
-                                        <div>
-                                            <p className="text-sm text-telegram-text font-medium">{t('settings.concurrent_uploads')}</p>
-                                            <p className="text-xs text-telegram-subtext">{t('settings.max_uploads_desc')}</p>
-                                        </div>
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                        <button
-                                            onClick={() => updateSetting('maxConcurrentUploads', Math.max(1, settings.maxConcurrentUploads - 1))}
-                                            className="w-7 h-7 flex items-center justify-center rounded-md bg-telegram-bg text-telegram-subtext hover:text-telegram-text hover:bg-telegram-border transition text-sm font-medium"
+                                <SettingsRow
+                                    icon={<Upload className="h-4 w-4 text-telegram-subtext" />}
+                                    title={t('settings.concurrent_uploads')}
+                                    description={t('settings.max_uploads_desc')}
+                                    control={<SettingsStepper value={settings.maxConcurrentUploads} minimum={1} maximum={10} label={t('settings.concurrent_uploads')} onChange={value => updateSetting('maxConcurrentUploads', value)} />}
+                                />
+
+                                <SettingsRow
+                                    icon={<Download className="h-4 w-4 text-telegram-subtext" />}
+                                    title={t('settings.concurrent_downloads')}
+                                    description={t('settings.max_downloads_desc')}
+                                    control={<SettingsStepper value={settings.maxConcurrentDownloads} minimum={1} maximum={10} label={t('settings.concurrent_downloads')} onChange={value => updateSetting('maxConcurrentDownloads', value)} />}
+                                />
+
+                                <SettingsRow icon={<FolderArchive className="h-4 w-4 text-telegram-subtext" />} title={t('settings.zip_before_upload')} description={t('settings.zip_folders_desc')} control={<SettingsToggle checked={settings.zipFolders} label={t('settings.zip_before_upload')} onChange={() => updateSetting('zipFolders', !settings.zipFolders)} />} />
+
+                                <SettingsRow
+                                    icon={<Play className="h-4 w-4 text-telegram-subtext" />}
+                                    title={t('settings.video_upload_default')}
+                                    description={t('settings.video_upload_desc')}
+                                    control={(
+                                        <select
+                                            value={settings.videoUploadMode}
+                                            onChange={event => updateSetting('videoUploadMode', event.target.value as 'file' | 'media')}
+                                            aria-label={t('settings.video_upload_default')}
+                                            className="rounded-md border border-telegram-border bg-telegram-bg px-2.5 py-1.5 text-sm text-telegram-text focus:border-telegram-primary/50 focus:outline-none"
                                         >
-                                            -
-                                        </button>
-                                        <span className="text-sm text-telegram-text font-medium w-5 text-center">
-                                            {settings.maxConcurrentUploads}
-                                        </span>
-                                        <button
-                                            onClick={() => updateSetting('maxConcurrentUploads', Math.min(10, settings.maxConcurrentUploads + 1))}
-                                            className="w-7 h-7 flex items-center justify-center rounded-md bg-telegram-bg text-telegram-subtext hover:text-telegram-text hover:bg-telegram-border transition text-sm font-medium"
-                                        >
-                                            +
-                                        </button>
-                                    </div>
-                                </div>
+                                            <option value="file">{t('settings.video_upload_file')}</option>
+                                            <option value="media">{t('settings.video_upload_media')}</option>
+                                        </select>
+                                    )}
+                                />
 
-                                {/* Max Concurrent Downloads */}
-                                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                                    <div className="flex items-center gap-2">
-                                        <Download className="w-4 h-4 text-telegram-subtext" />
-                                        <div>
-                                            <p className="text-sm text-telegram-text font-medium">{t('settings.concurrent_downloads')}</p>
-                                            <p className="text-xs text-telegram-subtext">{t('settings.max_downloads_desc')}</p>
-                                        </div>
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                        <button
-                                            onClick={() => updateSetting('maxConcurrentDownloads', Math.max(1, settings.maxConcurrentDownloads - 1))}
-                                            className="w-7 h-7 flex items-center justify-center rounded-md bg-telegram-bg text-telegram-subtext hover:text-telegram-text hover:bg-telegram-border transition text-sm font-medium"
-                                        >
-                                            -
-                                        </button>
-                                        <span className="text-sm text-telegram-text font-medium w-5 text-center">
-                                            {settings.maxConcurrentDownloads}
-                                        </span>
-                                        <button
-                                            onClick={() => updateSetting('maxConcurrentDownloads', Math.min(10, settings.maxConcurrentDownloads + 1))}
-                                            className="w-7 h-7 flex items-center justify-center rounded-md bg-telegram-bg text-telegram-subtext hover:text-telegram-text hover:bg-telegram-border transition text-sm font-medium"
-                                        >
-                                            +
-                                        </button>
-                                    </div>
-                                </div>
+                                <SettingsRow icon={<Tag className="h-4 w-4 text-telegram-subtext" />} title={t('common.hide_groups')} description={t('common.hide_groups_desc')} control={<SettingsToggle checked={settings.hideGroups} label={t('common.hide_groups')} onChange={() => updateSetting('hideGroups', !settings.hideGroups)} />} />
 
-                                {/* Zip Folders */}
-                                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                                    <div className="flex items-center gap-2">
-                                        <FolderArchive className="w-4 h-4 text-telegram-subtext" />
-                                        <div>
-                                            <p className="text-sm text-telegram-text font-medium">{t('settings.zip_before_upload')}</p>
-                                            <p className="text-xs text-telegram-subtext">{t('settings.zip_folders_desc')}</p>
-                                        </div>
-                                    </div>
-                                    <button
-                                        onClick={() => updateSetting('zipFolders', !settings.zipFolders)}
-                                        className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${settings.zipFolders ? 'bg-telegram-primary' : 'bg-telegram-border'}`}
-                                    >
-                                        <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.zipFolders ? 'translate-x-5' : 'translate-x-0'}`} />
-                                    </button>
-                                </div>
+                                <SettingsRow icon={<Zap className="h-4 w-4 text-telegram-subtext" />} title={t('settings.performance_mode')} description={t('settings.performance_mode_desc')} control={<SettingsToggle checked={settings.performanceMode} label={t('settings.performance_mode')} onChange={() => updateSetting('performanceMode', !settings.performanceMode)} />} />
 
-                                {/* Hide Folder Groups */}
-                                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                                    <div className="flex items-center gap-2">
-                                        <Tag className="w-4 h-4 text-telegram-subtext" />
-                                        <div>
-                                            <p className="text-sm text-telegram-text font-medium">{t('common.hide_groups')}</p>
-                                            <p className="text-xs text-telegram-subtext">{t('common.hide_groups_desc')}</p>
-                                        </div>
-                                    </div>
-                                    <button
-                                        onClick={() => updateSetting('hideGroups', !settings.hideGroups)}
-                                        className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${settings.hideGroups ? 'bg-telegram-primary' : 'bg-telegram-border'}`}
-                                    >
-                                        <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.hideGroups ? 'translate-x-5' : 'translate-x-0'}`} />
-                                    </button>
-                                </div>
-
-                                {/* Performance Mode */}
-                                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                                    <div className="flex items-center gap-2">
-                                        <Zap className="w-4 h-4 text-telegram-subtext" />
-                                        <div>
-                                            <p className="text-sm text-telegram-text font-medium">{t('settings.performance_mode')}</p>
-                                            <p className="text-xs text-telegram-subtext">{t('settings.performance_mode_desc')}</p>
-                                        </div>
-                                    </div>
-                                    <button
-                                        onClick={() => updateSetting('performanceMode', !settings.performanceMode)}
-                                        className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${settings.performanceMode ? 'bg-telegram-primary' : 'bg-telegram-border'}`}
-                                    >
-                                        <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.performanceMode ? 'translate-x-5' : 'translate-x-0'}`} />
-                                    </button>
-                                </div>
-
-                                {/* Linux Rendering Fix */}
-                                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                                    <div className="flex items-center gap-2">
-                                        <Monitor className="w-4 h-4 text-telegram-subtext" />
-                                        <div>
-                                            <p className="text-sm text-telegram-text font-medium">{t('settings.linux_rendering_fix')}</p>
-                                            <p className="text-xs text-telegram-subtext">{t('settings.linux_rendering_desc')}</p>
-                                        </div>
-                                    </div>
-                                    <button
-                                        onClick={() => {
-                                            updateSetting('linuxRenderingFix', !settings.linuxRenderingFix);
-                                            toast.info(t('settings.restart_app_toast'), { duration: 5000 });
-                                        }}
-                                        className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${settings.linuxRenderingFix ? 'bg-telegram-primary' : 'bg-telegram-border'}`}
-                                    >
-                                        <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.linuxRenderingFix ? 'translate-x-5' : 'translate-x-0'}`} />
-                                    </button>
-                                </div>
+                                <SettingsRow icon={<Monitor className="h-4 w-4 text-telegram-subtext" />} title={t('settings.linux_rendering_fix')} description={t('settings.linux_rendering_desc')} control={<SettingsToggle checked={settings.linuxRenderingFix} label={t('settings.linux_rendering_fix')} onChange={() => { updateSetting('linuxRenderingFix', !settings.linuxRenderingFix); toast.info(t('settings.restart_app_toast'), { duration: 5000 }); }} />} />
                             </section>
+
+                            {/* Language & Region Section */}
+                            <DesktopBehaviorSettings />
 
                             {/* Language & Region Section */}
                             <section className="space-y-3">
@@ -557,7 +828,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     <div className="relative">
                                         <select
                                             value={settings.language}
-                                            onChange={e => updateSetting('language', e.target.value as any)}
+                                            onChange={event => updateSetting('language', event.target.value as LanguagePreference)}
+                                            aria-label={t('settings.app_language')}
                                             className="appearance-none bg-telegram-bg border border-telegram-border rounded-md pl-3 pr-8 py-1.5 text-sm text-telegram-text focus:outline-none focus:border-telegram-primary/50 transition cursor-pointer"
                                         >
                                             {LANGUAGES.map(lang => (
@@ -571,8 +843,12 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                 </div>
                             </section>
 
+                            {!showGeneralAdvanced && (
+                                <button type="button" onClick={() => setActiveTab('advanced')} className="quiet-surface flex w-full items-center justify-between p-4 text-start hover:border-app-accent/30 hover:bg-app-hover"><span><strong className="block text-sm text-app-text">Advanced settings</strong><span className="mt-1 block text-xs text-app-text-secondary">REST API, WebDAV, proxy, VPN, and network tuning</span></span><Gauge className="h-5 w-5 text-app-accent" /></button>
+                            )}
+
                             {/* REST API Section */}
-                            <section className="space-y-3">
+                            <section className={`${showGeneralAdvanced ? '' : 'hidden'} space-y-3`}>
                                 <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
                                     <Globe className="w-3.5 h-3.5" />
                                     {t('settings.rest_api')}
@@ -590,13 +866,21 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         </div>
                                     </div>
                                     <button
+                                        type="button" role="switch" aria-checked={apiSettings.enabled} aria-label={t('settings.enable_api_server')}
                                         onClick={handleApiToggle}
                                         disabled={apiLoading}
                                         className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${apiSettings.enabled ? 'bg-telegram-primary' : 'bg-telegram-border'} disabled:opacity-50`}
                                     >
-                                        <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${apiSettings.enabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                                        <span className={`absolute top-0.5 start-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${apiSettings.enabled ? 'translate-x-5 rtl:-translate-x-5' : 'translate-x-0'}`} />
                                     </button>
                                 </div>
+
+                                {apiSettings.last_error && (
+                                    <div className="rounded-lg border border-red-500/20 bg-red-500/5 p-3">
+                                        <p className="text-xs font-medium text-red-300">{t('settings.webdav_last_error')}</p>
+                                        <p className="mt-1 break-words font-mono text-[11px] text-red-300/80">{apiSettings.last_error}</p>
+                                    </div>
+                                )}
 
                                 {/* Port */}
                                 <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
@@ -660,6 +944,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         </div>
                                     )}
                                 </div>
+                                <button type="button" onClick={() => setAccessTransparency('rest')} className="quiet-control flex w-full items-center justify-center gap-2 border border-app-border-subtle px-3 py-2 text-xs font-medium text-app-accent"><Info className="h-3.5 w-3.5" aria-hidden="true" />Understand REST permissions</button>
                             </section>
 
                             {/* Storage Section */}
@@ -682,12 +967,72 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         <span className="text-sm text-telegram-primary font-mono font-medium">{settings.transcodeCacheMaxGb} GB</span>
                                     </div>
                                     <input type="range" min="1" max="50" step="1" value={settings.transcodeCacheMaxGb}
+                                        aria-label={t('settings.transcode_cache_limit')}
                                         onChange={e => {
                                             const gb = parseInt(e.target.value);
                                             updateSetting('transcodeCacheMaxGb', gb);
                                             invoke('cmd_set_transcode_cache_limit', { maxGb: gb }).catch(() => {});
                                         }}
                                         className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
+                                </div>
+
+                                <div className="flex items-center justify-between gap-3 rounded-lg bg-telegram-hover/50 p-3">
+                                    <div className="flex min-w-0 items-center gap-2">
+                                        <Database className="h-4 w-4 shrink-0 text-telegram-subtext" />
+                                        <div className="min-w-0">
+                                            <p className="text-sm font-medium text-telegram-text">{t('settings.offline_cache')}</p>
+                                            <p className="text-xs text-telegram-subtext">{t('settings.offline_cache_desc')}</p>
+                                            <p className="mt-1 text-xs font-mono text-telegram-primary">
+                                                {offlineCacheError
+                                                    ? <span role="alert" className="text-red-400">{t('settings.failed_prefix', { error: offlineCacheError })}</span>
+                                                    : offlineCache
+                                                    ? t('settings.offline_cache_usage', {
+                                                        count: offlineCache.file_count,
+                                                        used: formatBytes(offlineCache.total_bytes),
+                                                        limit: formatBytes(offlineCache.max_bytes),
+                                                    })
+                                                    : t('common.loading')}
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <div className="flex shrink-0 items-center gap-1.5">
+                                        <button
+                                            type="button"
+                                            onClick={fetchOfflineCache}
+                                            disabled={offlineCacheLoading}
+                                            className="rounded-md p-1.5 text-telegram-subtext transition hover:bg-telegram-hover hover:text-telegram-text disabled:opacity-50"
+                                            title={t('settings.refresh_offline_cache')}
+                                        >
+                                            <RefreshCw className={`h-3.5 w-3.5 ${offlineCacheLoading ? 'animate-spin' : ''}`} />
+                                        </button>
+                                        <button
+                                            type="button"
+                                            disabled={offlineCacheLoading || !offlineCache || offlineCache.file_count === 0}
+                                            onClick={async () => {
+                                                const ok = await confirm({
+                                                    title: t('settings.clear_offline_cache_title'),
+                                                    message: t('settings.clear_offline_cache_desc'),
+                                                    confirmText: t('settings.clear'),
+                                                    variant: 'danger',
+                                                });
+                                                if (!ok) return;
+                                                setOfflineCacheLoading(true);
+                                                try {
+                                                    await invoke('cmd_clean_preview_cache');
+                                                    clearImageMemoryCaches();
+                                                    await fetchOfflineCache();
+                                                    toast.success(t('settings.offline_cache_cleared'));
+                                                } catch {
+                                                    toast.error(t('settings.cache_clear_failed'));
+                                                } finally {
+                                                    setOfflineCacheLoading(false);
+                                                }
+                                            }}
+                                            className="rounded-lg bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-400 transition hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                                        >
+                                            {t('settings.clear')}
+                                        </button>
+                                    </div>
                                 </div>
 
                                 <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
@@ -711,6 +1056,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                             setClearing(true);
                                             try {
                                                 await invoke('cmd_clean_cache');
+                                                clearImageMemoryCaches();
+                                                await fetchOfflineCache();
                                                 toast.success(t('settings.cache_cleared'));
                                             } catch {
                                                 toast.error(t('settings.cache_clear_failed'));
@@ -733,22 +1080,26 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                 <p className="text-sm text-telegram-text font-medium">{t('settings.transcode_cache')}</p>
                                                 <p className="text-xs text-telegram-subtext">
                                                     {transcodeCache
-                                                        ? `${(transcodeCache.total_bytes / 1048576).toFixed(1)} MB / ${(transcodeCache.max_bytes / 1073741824).toFixed(1)} GB`
-                                                        : t('common.loading')}
+                                                        ? `${(transcodeCache.total_bytes / 1048576).toFixed(1)} MB / ${(transcodeCache.max_bytes / 1073741824).toFixed(1)} GB${transcodeCache.scan_in_progress ? ' · Inspecting…' : ''}`
+                                                        : cacheLoading
+                                                            ? t('common.loading')
+                                                            : cacheError
+                                                                ? t('settings.failed_prefix', { error: cacheError })
+                                                                : t('settings.no_transcoded_cached')}
                                                 </p>
                                             </div>
                                         </div>
                                         <div className="flex items-center gap-1.5">
                                             <button
-                                                onClick={fetchTranscodeCache}
-                                                disabled={cacheLoading}
+                                                onClick={() => void fetchTranscodeCache(true)}
+                                                disabled={cacheLoading || transcodeCache?.scan_in_progress || clearingVariant !== null}
                                                 className="p-1.5 rounded-md hover:bg-telegram-hover text-telegram-subtext hover:text-telegram-text transition"
                                                 title={t('settings.refresh_links')}
                                             >
-                                                <RefreshCw className={`w-3 h-3 ${cacheLoading ? 'animate-spin' : ''}`} />
+                                                <RefreshCw className={`w-3 h-3 ${cacheLoading || transcodeCache?.scan_in_progress ? 'animate-spin' : ''}`} />
                                             </button>
                                             <button
-                                                disabled={!transcodeCache || transcodeCache.entries.length === 0}
+                                                disabled={cacheLoading || clearingVariant !== null || (!cacheError && (!transcodeCache || transcodeCache.entries.length === 0))}
                                                 onClick={async () => {
                                                     const ok = await confirm({
                                                         title: t('settings.clear_transcode_title'),
@@ -761,7 +1112,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                     try {
                                                         const msg = await invoke<string>('cmd_clear_transcode_cache', {});
                                                         toast.success(msg);
-                                                        fetchTranscodeCache();
+                                                        await fetchTranscodeCache(true);
                                                     } catch (e) {
                                                         toast.error(t('settings.failed_prefix', { error: e }));
                                                     } finally {
@@ -775,8 +1126,22 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         </div>
                                     </div>
 
+                                    <FfmpegInstallNotice available={transcodeCapabilities?.available} />
+
                                     {/* Cache entries list */}
-                                    {transcodeCache && transcodeCache.entries.length > 0 ? (
+                                    {cacheLoading && !transcodeCache ? (
+                                        <div className="flex items-center justify-center py-2" role="status" aria-label={t('common.loading')}>
+                                            <RefreshCw className="w-3 h-3 text-telegram-subtext animate-spin" />
+                                        </div>
+                                    ) : cacheError ? (
+                                        <div className="rounded-md border border-red-500/20 bg-red-500/5 p-2.5 text-center" role="alert">
+                                            <p className="break-words text-[11px] text-red-300">{t('settings.failed_prefix', { error: cacheError })}</p>
+                                            <button type="button" onClick={() => void fetchTranscodeCache(true)} className="quiet-control mt-2 px-2.5 py-1 text-[10px] text-app-text">
+                                                <RefreshCw className="h-3 w-3" />
+                                                {t('settings.retry_encryption_check')}
+                                            </button>
+                                        </div>
+                                    ) : transcodeCache && transcodeCache.entries.length > 0 ? (
                                         <div className="space-y-1.5 max-h-[200px] overflow-y-auto pr-1 custom-scrollbar">
                                             {/* Group HLS variants by file_key (exclude originals, which are cleared via per-file Clear or Clear All) */}
                                             {(() => {
@@ -800,7 +1165,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                                     try {
                                                                         const msg = await invoke<string>('cmd_clear_transcode_cache', { fileKey });
                                                                         toast.success(msg);
-                                                                        fetchTranscodeCache();
+                                                                        await fetchTranscodeCache();
                                                                     } catch (e) {
                                                                         toast.error(t('settings.failed_prefix', { error: e }));
                                                                     } finally {
@@ -824,7 +1189,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                                         try {
                                                                             const msg = await invoke<string>('cmd_clear_transcode_cache', { fileKey: e.file_key, quality: e.quality });
                                                                             toast.success(msg);
-                                                                            fetchTranscodeCache();
+                                                                            await fetchTranscodeCache();
                                                                         } catch (err) {
                                                                             toast.error(t('settings.failed_prefix', { error: err }));
                                                                         } finally {
@@ -849,26 +1214,89 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         </div>
                                     ) : transcodeCache && transcodeCache.entries.length === 0 ? (
                                         <p className="text-[11px] text-telegram-subtext/50 text-center py-2">{t('settings.no_transcoded_cached')}</p>
-                                    ) : (
-                                        <div className="flex items-center justify-center py-2">
-                                            <RefreshCw className="w-3 h-3 text-telegram-subtext animate-spin" />
+                                    ) : null}
+                                </div>
+                            </section>
+
+                            {/* Updates Section */}
+                            <section className="space-y-3">
+                                <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
+                                    <Sparkles className="w-3.5 h-3.5" />
+                                    {t('settings.updates')}
+                                </h3>
+
+                                <div className="p-3 rounded-lg bg-telegram-hover/50 space-y-3">
+                                    <div className="flex items-center justify-between">
+                                        <div className="flex items-center gap-2">
+                                            <Download className="w-4 h-4 text-telegram-subtext" />
+                                            <div>
+                                                <p className="text-sm text-telegram-text font-medium">{t('settings.check_for_updates')}</p>
+                                                <p className="text-xs text-telegram-subtext">
+                                                    {updateVersion ? t('settings.update_available', { version: updateVersion }) : t('settings.check_updates_desc')}
+                                                </p>
+                                            </div>
+                                        </div>
+                                        {updateAvailable && !updateDownloading ? (
+                                            <button
+                                                onClick={handleInstallUpdate}
+                                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-telegram-primary text-white hover:bg-telegram-primary/90 transition"
+                                            >
+                                                <Download className="w-3 h-3" />
+                                                {managedByPackageManager ? t('files.open') : t('settings.update_restart')}
+                                            </button>
+                                        ) : updateDownloading ? (
+                                            <div className="flex items-center gap-2">
+                                                <RefreshCw className="w-3.5 h-3.5 text-telegram-primary animate-spin" />
+                                                <span className="text-xs text-telegram-primary font-mono">{updateProgress}%</span>
+                                            </div>
+                                        ) : (
+                                            <button
+                                                onClick={handleCheckForUpdates}
+                                                disabled={updateChecking}
+                                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-telegram-primary/10 text-telegram-primary hover:bg-telegram-primary/20 transition disabled:opacity-50"
+                                            >
+                                                <RefreshCw className={`w-3 h-3 ${updateChecking ? 'animate-spin' : ''}`} />
+                                                {updateChecking ? t('settings.checking') : t('settings.check_now')}
+                                            </button>
+                                        )}
+                                    </div>
+                                    {updateDownloading && (
+                                        <div className="w-full h-1.5 bg-telegram-border rounded-full overflow-hidden">
+                                            <div
+                                                className="h-full bg-telegram-primary rounded-full transition-all duration-300"
+                                                style={{ width: `${updateProgress}%` }}
+                                            />
                                         </div>
                                     )}
                                 </div>
                             </section>
 
-                                    </motion.div>
+                                    </GeneralSettingsTab>
+                                )}
+
+                                {activeTab === 'license' && <LicenseSettingsTab />}
+
+                                {activeTab === 'privacy' && (
+                                    <PrivacySettingsTab
+                                        crashReportingEnabled={settings.crashReportingEnabled}
+                                        onCrashReportingChange={() => updateSettings({ crashReportingEnabled: !settings.crashReportingEnabled, crashReportingConsentSeen: true })}
+                                        settings={settings}
+                                        onSettingsChange={updateSettings}
+                                        onSettingsSyncEnabledChange={enabled => updateSetting('telegramSettingsSyncEnabled', enabled)}
+                                    />
+                                )}
+
+                                {activeTab === 'advanced' && (
+                                    <AdvancedSettingsTab
+                                        onOpenApi={() => { setShowGeneralAdvanced(true); setActiveTab('general'); }}
+                                        onOpenWebDav={() => setActiveTab('webdav')}
+                                        onOpenProxy={() => setActiveTab('proxy')}
+                                        onOpenVpn={() => setActiveTab('vpn')}
+                                    />
                                 )}
 
                                 {activeTab === 'proxy' && (
-                                    <motion.section
-                                        key="proxy"
-                                        initial={{ opacity: 0, x: -20 }}
-                                        animate={{ opacity: 1, x: 0 }}
-                                        exit={{ opacity: 0, x: 20 }}
-                                        transition={{ type: 'spring', damping: 25, stiffness: 220, opacity: { duration: 0.15 } }}
-                                        className="space-y-3 w-full"
-                                    >
+                                    <ProxySettingsTab>
                                 <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
                                     <Shield className="w-3.5 h-3.5" />
                                     {t('settings.proxy_config')}
@@ -905,10 +1333,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         </div>
                                     </div>
                                     <button
+                                        type="button" role="switch" aria-checked={settings.proxyEnabled} aria-label={t('common.enable_proxy')}
                                         onClick={() => updateSetting('proxyEnabled', !settings.proxyEnabled)}
                                         className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${settings.proxyEnabled ? 'bg-telegram-primary' : 'bg-telegram-border'}`}
                                     >
-                                        <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.proxyEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                                        <span className={`absolute top-0.5 start-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.proxyEnabled ? 'translate-x-5 rtl:-translate-x-5' : 'translate-x-0'}`} />
                                     </button>
                                 </div>
 
@@ -920,10 +1349,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                             <p className="text-xs text-telegram-subtext">{t('settings.live_state_desc') || 'Periodically check connectivity and display latency'}</p>
                                         </div>
                                         <button
+                                            type="button" role="switch" aria-checked={settings.proxyLiveStateEnabled} aria-label={t('settings.live_state')}
                                             onClick={() => updateSetting('proxyLiveStateEnabled', !settings.proxyLiveStateEnabled)}
                                             className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${settings.proxyLiveStateEnabled ? 'bg-telegram-primary' : 'bg-telegram-border'}`}
                                         >
-                                            <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.proxyLiveStateEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                                            <span className={`absolute top-0.5 start-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.proxyLiveStateEnabled ? 'translate-x-5 rtl:-translate-x-5' : 'translate-x-0'}`} />
                                         </button>
                                     </div>
                                 )}
@@ -942,6 +1372,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         <select
                                             value={settings.proxyType}
                                             onChange={e => updateSetting('proxyType', e.target.value as 'socks5' | 'http' | 'https')}
+                                            aria-label={t('common.proxy_type')}
                                             className="appearance-none bg-telegram-bg border border-telegram-border rounded-md pl-3 pr-8 py-1.5 text-sm text-telegram-text focus:outline-none focus:border-telegram-primary/50 transition cursor-pointer"
                                         >
                                             <option value="socks5">SOCKS5</option>
@@ -1002,13 +1433,31 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         <p className="text-sm text-telegram-text font-medium">{t('common.password')}</p>
                                         <p className="text-xs text-telegram-subtext">{t('settings.optional')}</p>
                                     </div>
-                                    <input
-                                        type="password"
-                                        placeholder={t('settings.optional')}
-                                        value={settings.proxyPassword}
-                                        onChange={e => updateSetting('proxyPassword', e.target.value)}
-                                        className="w-40 bg-telegram-bg border border-telegram-border rounded-md px-2 py-1 text-sm text-telegram-text text-right focus:outline-none focus:border-telegram-primary/50 transition placeholder:text-telegram-subtext/40"
-                                    />
+                                    <div className="flex items-center gap-2">
+                                        <input
+                                            type="password"
+                                            placeholder={t('settings.optional')}
+                                            value={settings.proxyPassword}
+                                            onChange={e => updateSetting('proxyPassword', e.target.value)}
+                                            className="w-40 bg-telegram-bg border border-telegram-border rounded-md px-2 py-1 text-sm text-telegram-text text-right focus:outline-none focus:border-telegram-primary/50 transition placeholder:text-telegram-subtext/40"
+                                        />
+                                        <button
+                                            type="button"
+                                            aria-label={`${t('settings.clear')} ${t('common.password')}`}
+                                            title={`${t('settings.clear')} ${t('common.password')}`}
+                                            onClick={async () => {
+                                                try {
+                                                    await invoke('cmd_clear_proxy_secret');
+                                                    updateSetting('proxyPassword', '');
+                                                } catch (error) {
+                                                    toast.error(userFacingError(error, t));
+                                                }
+                                            }}
+                                            className="rounded-md border border-telegram-border px-2 py-1 text-xs text-telegram-subtext transition hover:border-telegram-primary/50 hover:text-telegram-text"
+                                        >
+                                            {t('settings.clear')}
+                                        </button>
+                                    </div>
                                 </div>
 
                                 {/* Info note */}
@@ -1081,18 +1530,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         </button>
                                     </div>
                                 </div>
-                            </motion.section>
+                            </ProxySettingsTab>
                         )}
 
                         {activeTab === 'vpn' && (
-                                    <motion.section
-                                        key="vpn"
-                                        initial={{ opacity: 0, x: -20 }}
-                                        animate={{ opacity: 1, x: 0 }}
-                                        exit={{ opacity: 0, x: 20 }}
-                                        transition={{ type: 'spring', damping: 25, stiffness: 220, opacity: { duration: 0.15 } }}
-                                        className="space-y-3 w-full"
-                                    >
+                                    <VpnSettingsTab>
                                 <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
                                     <Zap className="w-3.5 h-3.5" />
                                     {t('settings.vpn_optimizer')}
@@ -1119,10 +1561,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         </div>
                                     </div>
                                     <button
+                                        type="button" role="switch" aria-checked={settings.vpnMode} aria-label={t('settings.vpn_mode')}
                                         onClick={() => updateSetting('vpnMode', !settings.vpnMode)}
                                         className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${settings.vpnMode ? 'bg-emerald-500' : 'bg-telegram-border'}`}
                                     >
-                                        <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.vpnMode ? 'translate-x-5' : 'translate-x-0'}`} />
+                                        <span className={`absolute top-0.5 start-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.vpnMode ? 'translate-x-5 rtl:-translate-x-5' : 'translate-x-0'}`} />
                                     </button>
                                 </div>
 
@@ -1137,6 +1580,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                             <span className="text-sm text-telegram-primary font-mono font-medium">{settings.timeoutMultiplier}×</span>
                                         </div>
                                         <input type="range" min="1" max="5" step="1" value={settings.timeoutMultiplier}
+                                            aria-label={t('settings.timeout_multiplier')}
                                             onChange={e => updateSetting('timeoutMultiplier', parseInt(e.target.value))}
                                             className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
                                     </div>
@@ -1151,6 +1595,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                             <span className="text-sm text-telegram-primary font-mono font-medium">{settings.retryAttempts}</span>
                                         </div>
                                         <input type="range" min="0" max="5" step="1" value={settings.retryAttempts}
+                                            aria-label={t('settings.retry_attempts')}
                                             onChange={e => updateSetting('retryAttempts', parseInt(e.target.value))}
                                             className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
                                     </div>
@@ -1163,6 +1608,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                             <span className="text-xs text-telegram-primary font-mono">{settings.retryBaseBackoffSec}s</span>
                                         </div>
                                         <input type="range" min="0.5" max="5" step="0.5" value={settings.retryBaseBackoffSec}
+                                            aria-label={t('settings.base_delay')}
                                             onChange={e => updateSetting('retryBaseBackoffSec', parseFloat(e.target.value))}
                                             className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
                                         <div className="flex items-center justify-between">
@@ -1170,40 +1616,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                             <span className="text-xs text-telegram-primary font-mono">{settings.retryMaxBackoffSec}s</span>
                                         </div>
                                         <input type="range" min="8" max="60" step="2" value={settings.retryMaxBackoffSec}
+                                            aria-label={t('settings.max_delay')}
                                             onChange={e => updateSetting('retryMaxBackoffSec', parseInt(e.target.value))}
                                             className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
-                                    </div>
-
-                                    {/* Adaptive Polling */}
-                                    <div className="p-3 rounded-lg bg-telegram-hover/50 space-y-2">
-                                        <div className="flex items-center justify-between">
-                                            <div>
-                                                <p className="text-sm text-telegram-text font-medium">{t('settings.adaptive_polling')}</p>
-                                                <p className="text-xs text-telegram-subtext">{t('settings.adaptive_polling_desc')}</p>
-                                            </div>
-                                            <button
-                                                onClick={() => updateSetting('adaptivePolling', !settings.adaptivePolling)}
-                                                className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${settings.adaptivePolling ? 'bg-telegram-primary' : 'bg-telegram-border'}`}
-                                            >
-                                                <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.adaptivePolling ? 'translate-x-5' : 'translate-x-0'}`} />
-                                            </button>
-                                        </div>
-                                        {settings.adaptivePolling && (<>
-                                            <div className="flex items-center justify-between">
-                                                <p className="text-xs text-telegram-subtext">{t('settings.min_interval')}</p>
-                                                <span className="text-xs text-telegram-primary font-mono">{settings.pollingMinSec}s</span>
-                                            </div>
-                                            <input type="range" min="10" max="30" step="5" value={settings.pollingMinSec}
-                                                onChange={e => updateSetting('pollingMinSec', parseInt(e.target.value))}
-                                                className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
-                                            <div className="flex items-center justify-between">
-                                                <p className="text-xs text-telegram-subtext">{t('settings.max_interval')}</p>
-                                                <span className="text-xs text-telegram-primary font-mono">{settings.pollingMaxSec}s</span>
-                                            </div>
-                                            <input type="range" min="45" max="120" step="15" value={settings.pollingMaxSec}
-                                                onChange={e => updateSetting('pollingMaxSec', parseInt(e.target.value))}
-                                                className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
-                                        </>)}
                                     </div>
 
                                     {/* Preferred DC */}
@@ -1216,6 +1631,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                             <select
                                                 value={settings.preferredDC}
                                                 onChange={e => updateSetting('preferredDC', e.target.value as typeof settings.preferredDC)}
+                                                aria-label={t('settings.preferred_dc')}
                                                 className="appearance-none bg-telegram-bg border border-telegram-border rounded-md pl-3 pr-8 py-1.5 text-sm text-telegram-text focus:outline-none focus:border-telegram-primary/50 transition cursor-pointer"
                                             >
                                                 <option value="auto">{t('settings.auto')}</option>
@@ -1239,6 +1655,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                             <span className="text-sm text-telegram-primary font-mono font-medium">{settings.dcFallbackAttempts}</span>
                                         </div>
                                         <input type="range" min="1" max="4" step="1" value={settings.dcFallbackAttempts}
+                                            aria-label={t('settings.dc_fallback_attempts')}
                                             onChange={e => updateSetting('dcFallbackAttempts', parseInt(e.target.value))}
                                             className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
                                     </div>
@@ -1250,25 +1667,12 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                             <p className="text-xs text-telegram-subtext">{t('settings.respect_flood_desc')}</p>
                                         </div>
                                         <button
+                                            type="button" role="switch" aria-checked={settings.floodWaitRespect} aria-label={t('settings.respect_flood')}
                                             onClick={() => updateSetting('floodWaitRespect', !settings.floodWaitRespect)}
                                             className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${settings.floodWaitRespect ? 'bg-telegram-primary' : 'bg-telegram-border'}`}
                                         >
-                                            <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.floodWaitRespect ? 'translate-x-5' : 'translate-x-0'}`} />
+                                            <span className={`absolute top-0.5 start-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.floodWaitRespect ? 'translate-x-5 rtl:-translate-x-5' : 'translate-x-0'}`} />
                                         </button>
-                                    </div>
-
-                                    {/* Peer Cache Size */}
-                                    <div className="p-3 rounded-lg bg-telegram-hover/50 space-y-2">
-                                        <div className="flex items-center justify-between">
-                                            <div>
-                                                <p className="text-sm text-telegram-text font-medium">{t('settings.peer_cache_size')}</p>
-                                                <p className="text-xs text-telegram-subtext">{t('settings.peer_cache_desc')}</p>
-                                            </div>
-                                            <span className="text-sm text-telegram-primary font-mono font-medium">{settings.peerCacheSize}</span>
-                                        </div>
-                                        <input type="range" min="100" max="2000" step="100" value={settings.peerCacheSize}
-                                            onChange={e => updateSetting('peerCacheSize', parseInt(e.target.value))}
-                                            className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
                                     </div>
 
                                     {/* Bandwidth Throttle */}
@@ -1278,21 +1682,13 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                             {t('settings.bandwidth_throttle')}
                                         </p>
                                         <div className="flex items-center justify-between">
-                                            <p className="text-xs text-telegram-subtext">{t('settings.upload_limit')}</p>
-                                            <span className="text-xs text-telegram-primary font-mono">
-                                                {settings.bandwidthLimitUpKBs === 0 ? t('settings.unlimited') : `${settings.bandwidthLimitUpKBs} KB/s`}
-                                            </span>
-                                        </div>
-                                        <input type="range" min="0" max="5120" step="128" value={settings.bandwidthLimitUpKBs}
-                                            onChange={e => updateSetting('bandwidthLimitUpKBs', parseInt(e.target.value))}
-                                            className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
-                                        <div className="flex items-center justify-between">
                                             <p className="text-xs text-telegram-subtext">{t('settings.download_limit')}</p>
                                             <span className="text-xs text-telegram-primary font-mono">
                                                 {settings.bandwidthLimitDownKBs === 0 ? t('settings.unlimited') : `${settings.bandwidthLimitDownKBs} KB/s`}
                                             </span>
                                         </div>
                                         <input type="range" min="0" max="5120" step="128" value={settings.bandwidthLimitDownKBs}
+                                            aria-label={t('settings.download_limit')}
                                             onChange={e => updateSetting('bandwidthLimitDownKBs', parseInt(e.target.value))}
                                             className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
                                     </div>
@@ -1307,6 +1703,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                             <select
                                                 value={settings.chunkSizeKb}
                                                 onChange={e => updateSetting('chunkSizeKb', parseInt(e.target.value))}
+                                                aria-label={t('settings.transfer_chunk_size')}
                                                 className="appearance-none bg-telegram-bg border border-telegram-border rounded-md pl-3 pr-8 py-1.5 text-sm text-telegram-text focus:outline-none focus:border-telegram-primary/50 transition cursor-pointer"
                                             >
                                                 <option value={128}>128 KB</option>
@@ -1329,6 +1726,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                             </span>
                                         </div>
                                         <input type="range" min="0" max="120" step="15" value={settings.keepAliveIntervalSec}
+                                            aria-label={t('settings.keep_alive')}
                                             onChange={e => updateSetting('keepAliveIntervalSec', parseInt(e.target.value))}
                                             className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
                                     </div>
@@ -1345,11 +1743,12 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                             </span>
                                         </div>
                                         <input type="range" min="0" max="2048" step="64" value={settings.archiveMaxBytes}
+                                            aria-label={t('settings.bulk_archive_limit')}
                                             onChange={e => updateSetting('archiveMaxBytes', parseInt(e.target.value))}
                                             className="w-full h-1.5 rounded-full appearance-none bg-telegram-border accent-telegram-primary cursor-pointer" />
                                     </div>
 
-                                    {/* Auto-Detect VPN */}
+                                    {/* VPN detection status (the diagnostic runs when this tab opens). */}
                                     <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
                                         <div className="flex items-center gap-2">
                                             <Wifi className="w-4 h-4 text-telegram-subtext" />
@@ -1360,26 +1759,169 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                 </p>
                                             </div>
                                         </div>
-                                        <button
-                                            onClick={() => updateSetting('autoDetectVpn', !settings.autoDetectVpn)}
-                                            className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${settings.autoDetectVpn ? 'bg-telegram-primary' : 'bg-telegram-border'}`}
-                                        >
-                                            <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${settings.autoDetectVpn ? 'translate-x-5' : 'translate-x-0'}`} />
-                                        </button>
                                     </div>
                                 </>)}
-                                    </motion.section>
+                                    </VpnSettingsTab>
                                 )}
 
+                                {activeTab === 'webdav' && (
+                                    <WebDavSettingsTab>
+                                        <div className="flex items-start gap-3 rounded-lg border border-telegram-primary/20 bg-telegram-primary/5 p-3">
+                                            <HardDrive className="mt-0.5 h-4 w-4 shrink-0 text-telegram-primary" />
+                                            <div>
+                                                <h3 className="text-sm font-semibold text-telegram-text">{t('settings.webdav_title')}</h3>
+                                                <p className="mt-1 text-xs leading-relaxed text-telegram-subtext">{t('settings.webdav_description')}</p>
+                                                <p className="mt-1 text-[11px] text-telegram-primary">{t('settings.webdav_local_only')}</p>
+                                                <p className="mt-2 text-xs leading-relaxed text-telegram-subtext"><strong className="text-telegram-text">Use WebDAV, not SMB.</strong> Connect with the complete generated <code>/dav/&lt;token&gt;/</code> URL. Finder's Guest/anonymous login has no token and will show an empty location; no guest account is created.</p>
+                                            </div>
+                                        </div>
+                                        <button type="button" onClick={() => setAccessTransparency('webdav')} className="quiet-control flex w-full items-center justify-center gap-2 border border-app-border-subtle px-3 py-2 text-xs font-medium text-app-accent"><Info className="h-3.5 w-3.5" aria-hidden="true" />Understand WebDAV permissions</button>
+
+                                        {!webDavSettings.supported ? (
+                                            <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-4 text-sm text-amber-300">
+                                                {t('settings.webdav_mobile_unavailable')}
+                                            </div>
+                                        ) : (
+                                            <>
+                                                <div className="flex items-center justify-between rounded-lg bg-telegram-hover/50 p-3">
+                                                    <div className="flex items-center gap-2">
+                                                        <div className={`h-2.5 w-2.5 rounded-full ${
+                                                            webDavSettings.running
+                                                                ? 'bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.5)]'
+                                                                : webDavSettings.enabled
+                                                                    ? 'animate-pulse bg-amber-400'
+                                                                    : 'bg-gray-500'
+                                                        }`} />
+                                                        <div>
+                                                            <p className="text-sm font-medium text-telegram-text">{t('settings.enable_webdav')}</p>
+                                                            <p className="text-xs text-telegram-subtext">
+                                                                {webDavSettings.running
+                                                                    ? t('settings.webdav_running', { port: webDavSettings.port })
+                                                                    : t('settings.webdav_stopped')}
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                    <button
+                                                        type="button"
+                                                        role="switch"
+                                                        aria-checked={webDavSettings.enabled}
+                                                        onClick={handleWebDavToggle}
+                                                        disabled={webDavLoading || webDavGenerating}
+                                                        aria-label={t('settings.enable_webdav')}
+                                                        className={`relative h-6 w-11 rounded-full transition-colors duration-200 ${webDavSettings.enabled ? 'bg-telegram-primary' : 'bg-telegram-border'} disabled:opacity-50`}
+                                                    >
+                                                        <span className={`absolute start-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform duration-200 ${webDavSettings.enabled ? 'translate-x-5 rtl:-translate-x-5' : 'translate-x-0'}`} />
+                                                    </button>
+                                                </div>
+
+                                                <div className="flex items-center justify-between rounded-lg bg-telegram-hover/50 p-3">
+                                                    <div>
+                                                        <p className="text-sm font-medium text-telegram-text">{t('common.port')}</p>
+                                                        <p className="text-xs text-telegram-subtext">{t('settings.webdav_port_desc')}</p>
+                                                    </div>
+                                                    <input
+                                                        type="number"
+                                                        inputMode="numeric"
+                                                        min="1024"
+                                                        max="65535"
+                                                        value={webDavPort}
+                                                        onChange={event => setWebDavPort(event.target.value)}
+                                                        onBlur={handleWebDavPortApply}
+                                                        onKeyDown={event => {
+                                                            if (event.key === 'Enter') {
+                                                                event.currentTarget.blur();
+                                                            }
+                                                        }}
+                                                        disabled={webDavLoading || webDavGenerating}
+                                                        aria-label={t('common.port')}
+                                                        className="w-24 rounded-md border border-telegram-border bg-telegram-bg px-2 py-1.5 text-center font-mono text-sm text-telegram-text outline-none transition focus:border-telegram-primary/50 disabled:opacity-50"
+                                                    />
+                                                </div>
+
+                                                <div className="flex items-center justify-between rounded-lg bg-telegram-hover/50 p-3">
+                                                    <div className="max-w-[75%]">
+                                                        <p className="text-sm font-medium text-telegram-text">{t('settings.webdav_allow_changes')}</p>
+                                                        <p className="text-xs text-telegram-subtext">{t('settings.webdav_allow_changes_desc')}</p>
+                                                    </div>
+                                                    <button
+                                                        type="button"
+                                                        role="switch"
+                                                        aria-checked={webDavSettings.write_enabled}
+                                                        onClick={handleWebDavWriteToggle}
+                                                        disabled={webDavLoading || webDavGenerating}
+                                                        aria-label={t('settings.webdav_allow_changes')}
+                                                        className={`relative h-6 w-11 shrink-0 rounded-full transition-colors duration-200 ${webDavSettings.write_enabled ? 'bg-telegram-primary' : 'bg-telegram-border'} disabled:opacity-50`}
+                                                    >
+                                                        <span className={`absolute start-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform duration-200 ${webDavSettings.write_enabled ? 'translate-x-5 rtl:-translate-x-5' : 'translate-x-0'}`} />
+                                                    </button>
+                                                </div>
+
+                                                <div className="space-y-3 rounded-lg bg-telegram-hover/50 p-3">
+                                                    <div className="flex items-center justify-between gap-3">
+                                                        <div className="flex min-w-0 items-center gap-2">
+                                                            <Key className="h-4 w-4 shrink-0 text-telegram-subtext" />
+                                                            <div className="min-w-0">
+                                                                <p className="text-sm font-medium text-telegram-text">{t('settings.webdav_connection_link')}</p>
+                                                                <p className="text-xs text-telegram-subtext">
+                                                                    {webDavSettings.token_set
+                                                                        ? t('settings.webdav_link_configured')
+                                                                        : t('settings.webdav_link_unset')}
+                                                                </p>
+                                                            </div>
+                                                        </div>
+                                                        <button
+                                                            onClick={() => void generateWebDavLink(true)}
+                                                            disabled={webDavLoading || webDavGenerating}
+                                                            className="flex shrink-0 items-center gap-1.5 rounded-lg bg-telegram-primary/10 px-3 py-1.5 text-xs font-medium text-telegram-primary transition hover:bg-telegram-primary/20 disabled:opacity-50"
+                                                        >
+                                                            <RefreshCw className={`h-3 w-3 ${webDavGenerating ? 'animate-spin' : ''}`} />
+                                                            {webDavSettings.token_set ? t('settings.regenerate') : t('settings.generate')}
+                                                        </button>
+                                                    </div>
+
+                                                    {generatedWebDavUrl && (
+                                                        <div className="rounded-lg border border-yellow-500/20 bg-telegram-bg p-2.5">
+                                                            <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-yellow-400/80">
+                                                                {t('settings.webdav_copy_alert')}
+                                                            </p>
+                                                            <div className="flex items-center gap-2">
+                                                                <code className="min-w-0 flex-1 select-all overflow-x-auto rounded bg-telegram-hover px-2 py-1.5 font-mono text-xs text-telegram-text">
+                                                                    {generatedWebDavUrl}
+                                                                </code>
+                                                                <button
+                                                                    onClick={handleCopyWebDavUrl}
+                                                                    className="shrink-0 rounded-md p-1.5 text-telegram-subtext transition hover:bg-telegram-hover hover:text-telegram-text"
+                                                                    title={t('settings.webdav_connection_link')}
+                                                                >
+                                                                    {webDavUrlCopied
+                                                                        ? <Check className="h-4 w-4 text-green-400" />
+                                                                        : <Copy className="h-4 w-4" />}
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                </div>
+
+                                                <div className="flex items-center gap-2 text-[11px] text-telegram-subtext">
+                                                    {(webDavLoading || webDavGenerating) && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                                                    <span>{webDavSettings.write_enabled ? t('settings.webdav_changes_enabled') : t('settings.webdav_read_only')}</span>
+                                                </div>
+
+                                                {webDavSettings.last_error && (
+                                                    <div className="rounded-lg border border-red-500/20 bg-red-500/5 p-3">
+                                                        <p className="text-xs font-medium text-red-300">{t('settings.webdav_last_error')}</p>
+                                                        <p className="mt-1 break-words font-mono text-[11px] text-red-300/80">{webDavSettings.last_error}</p>
+                                                    </div>
+                                                )}
+                                            </>
+                                        )}
+                                    </WebDavSettingsTab>
+                                )}
+
+                                {activeTab === 'encryption' && <EncryptionSettingsTab />}
+
                                 {activeTab === 'sharing' && (
-                                    <motion.section
-                                        key="sharing"
-                                        initial={{ opacity: 0, x: -20 }}
-                                        animate={{ opacity: 1, x: 0 }}
-                                        exit={{ opacity: 0, x: 20 }}
-                                        transition={{ type: 'spring', damping: 25, stiffness: 220, opacity: { duration: 0.15 } }}
-                                        className="space-y-4 w-full"
-                                    >
+                                    <SharingSettingsTab>
                                         <div className="flex items-center justify-between">
                                             <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
                                                 <Link className="w-3.5 h-3.5 text-telegram-primary" />
@@ -1476,97 +2018,35 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                                 })}
                                             </div>
                                         )}
-                                    </motion.section>
+                                    </SharingSettingsTab>
                                 )}
-                                {activeTab === 'themes' && (
-                                    <ThemesTab />
-                                )}
+                                {activeTab === 'themes' && <ThemeSettingsTab />}
+                                {activeTab === 'sync' && <SyncSettingsPanel />}
                                 {activeTab === 'about' && (
-                                    <motion.section
-                                        key="about"
-                                        initial={{ opacity: 0, x: -20 }}
-                                        animate={{ opacity: 1, x: 0 }}
-                                        exit={{ opacity: 0, x: 20 }}
-                                        transition={{ type: 'spring', damping: 25, stiffness: 220, opacity: { duration: 0.15 } }}
-                                        className="space-y-4 w-full"
-                                    >
-                                        <div className="flex flex-col items-center py-6 space-y-5">
-                                            {/* Logo */}
-                                            <img src="/logo.svg" className="w-16 h-16 drop-shadow-lg" alt="Telegram Drive Logo" />
-                                            
-                                            {/* App Name & Version */}
-                                            <div className="text-center">
-                                                <h3 className="text-base font-bold text-telegram-text">Telegram Drive</h3>
-                                                <p className="text-xs text-telegram-subtext mt-0.5">v{appVersion}</p>
-                                            </div>
-
-                                            {/* Divider */}
-                                            <div className="w-12 h-px bg-telegram-border" />
-
-                                            {/* Diagnostics */}
-                                            <button
-                                                onClick={async () => {
-                                                    setDiagLoading(true);
-                                                    try {
-                                                        const info = await invoke<string>('cmd_get_system_diagnostics');
-                                                        await navigator.clipboard.writeText(info);
-                                                        toast.success(t('settings.diagnostics_copied'));
-                                                    } catch (e) {
-                                                        toast.error(t('settings.diagnostics_copy_failed', { error: e }));
-                                                    } finally {
-                                                        setDiagLoading(false);
-                                                    }
-                                                }}
-                                                disabled={diagLoading}
-                                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-telegram-hover border border-telegram-border text-telegram-subtext hover:text-telegram-text hover:bg-telegram-border/30 transition disabled:opacity-50"
-                                            >
-                                                {diagLoading ? (
-                                                    <Loader2 className="w-3 h-3 animate-spin" />
-                                                ) : (
-                                                    <Clipboard className="w-3 h-3" />
-                                                )}
-                                                {t('settings.copy_diagnostics')}
-                                            </button>
-
-                                            {/* Creator Info */}
-                                            <div className="text-center space-y-3">
-                                                <div>
-                                                    <p className="text-sm font-semibold text-telegram-text">Cameron Amer</p>
-                                                </div>
-
-                                                {/* Website Link */}
-                                                <button
-                                                    onClick={(e) => { e.preventDefault(); open('https://www.cameronamer.com'); }}
-                                                    className="flex items-center justify-center gap-1.5 text-xs text-telegram-primary hover:text-telegram-primary/80 transition-colors cursor-pointer"
-                                                >
-                                                    <Globe className="w-3.5 h-3.5" />
-                                                    www.cameronamer.com
-                                                </button>
-
-                                                {/* GitHub Link */}
-                                                <button
-                                                    onClick={(e) => { e.preventDefault(); open('https://github.com/caamer20/telegram-drive'); }}
-                                                    className="flex items-center justify-center gap-1.5 text-xs text-telegram-primary hover:text-telegram-primary/80 transition-colors cursor-pointer"
-                                                >
-                                                    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
-                                                        <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
-                                                    </svg>
-                                                    github.com/caamer20/telegram-drive
-                                                </button>
-                                            </div>
-
-                                            {/* Tagline */}
-                                            <p className="text-[11px] text-telegram-subtext/60 leading-relaxed max-w-[280px] text-center">
-                                                {t('settings.tagline')}
-                                            </p>
-                                        </div>
-                                    </motion.section>
+                                    <AboutSettingsTab
+                                        appVersion={appVersion}
+                                        diagnosticsLoading={diagLoading}
+                                        t={t}
+                                        onCopyDiagnostics={async () => {
+                                            setDiagLoading(true);
+                                            try {
+                                                const diagnostics = await invoke<string>('cmd_get_system_diagnostics');
+                                                await navigator.clipboard.writeText(diagnostics);
+                                                toast.success(t('settings.diagnostics_copied'));
+                                            } catch (error) {
+                                                toast.error(t('settings.diagnostics_copy_failed', { error }));
+                                            } finally {
+                                                setDiagLoading(false);
+                                            }
+                                        }}
+                                    />
                                 )}
                             </AnimatePresence>
-                        </motion.div>
+                        </div>
+                        </div>
 
                         {/* Footer */}
-                        <div className="px-5 py-3 border-t border-telegram-border flex items-center justify-between">
+                        <div className="flex items-center justify-between border-t border-app-border-subtle px-6 py-3">
                             <button
                                 onClick={resetSettings}
                                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-telegram-subtext hover:text-red-400 hover:bg-red-500/10 transition font-medium"
@@ -1576,7 +2056,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                             </button>
                             <button
                                 onClick={onClose}
-                                className="px-4 py-1.5 rounded-lg text-xs font-medium bg-telegram-primary text-white hover:bg-telegram-primary/90 transition"
+                                className="px-4 py-1.5 rounded-lg text-xs font-medium bg-telegram-primary text-app-accent-contrast hover:bg-telegram-primary/90 transition"
                             >
                                 {t('settings.done')}
                             </button>
@@ -1584,283 +2064,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                     </motion.div>
                 </motion.div>
             )}
+            {isOpen && accessTransparency && <AccessTransparencyDialog service={accessTransparency} onClose={() => setAccessTransparency(null)} />}
         </AnimatePresence>
-    );
-}
-
-// ── Themes Tab ──────────────────────────────────────────────────────
-// Inline component (follows the pattern of the other tabs in this file).
-
-const PALETTE_KEYS: { key: keyof ThemeColorPalette; labelKey: string }[] = [
-    { key: 'bg', labelKey: 'settings.color_bg' },
-    { key: 'surface', labelKey: 'settings.color_surface' },
-    { key: 'primary', labelKey: 'settings.color_primary' },
-    { key: 'secondary', labelKey: 'settings.color_secondary' },
-    { key: 'text', labelKey: 'settings.color_text' },
-    { key: 'subtext', labelKey: 'settings.color_subtext' },
-];
-
-function ThemesTab() {
-    const { t } = useTranslation();
-    const {
-        customThemes,
-        activeCustomThemeId,
-        setActiveCustomTheme,
-        addCustomTheme,
-        deleteCustomTheme,
-        updateCustomTheme,
-    } = useTheme();
-    const { confirm } = useConfirm();
-
-    const [editingId, setEditingId] = useState<string | null>(null);
-
-    const builtinThemes = customThemes.filter(t => t.isBuiltin);
-    const userThemes = customThemes.filter(t => !t.isBuiltin);
-    const editingTheme = editingId ? customThemes.find(t => t.id === editingId) : null;
-
-    const handleCreateTheme = () => {
-        const id = generateThemeId();
-        const newTheme: CustomTheme = {
-            id,
-            name: 'My Theme',
-            isDark: true,
-            palette: getDefaultPalette(true),
-        };
-        addCustomTheme(newTheme);
-        setEditingId(id);
-        setActiveCustomTheme(id);
-    };
-
-    const handleSelectTheme = (theme: CustomTheme) => {
-        if (activeCustomThemeId === theme.id) {
-            // Deselect → reset to default
-            setActiveCustomTheme(null);
-            setEditingId(null);
-        } else {
-            setActiveCustomTheme(theme.id);
-            if (!theme.isBuiltin) {
-                setEditingId(theme.id);
-            } else {
-                setEditingId(null);
-            }
-        }
-    };
-
-    const handleDeleteTheme = async (id: string) => {
-        const ok = await confirm({
-            title: t('settings.delete_theme'),
-            message: t('settings.delete_theme_confirm'),
-            confirmText: t('common.delete'),
-            variant: 'danger',
-        });
-        if (!ok) return;
-        deleteCustomTheme(id);
-        if (editingId === id) setEditingId(null);
-    };
-
-    const handlePaletteChange = (key: keyof ThemeColorPalette, value: string) => {
-        if (!editingTheme || editingTheme.isBuiltin) return;
-        const newPalette = { ...editingTheme.palette, [key]: value };
-        updateCustomTheme(editingTheme.id, { palette: newPalette });
-    };
-
-    const handleBaseToggle = (isDark: boolean) => {
-        if (!editingTheme || editingTheme.isBuiltin) return;
-        updateCustomTheme(editingTheme.id, { isDark });
-    };
-
-    const handleNameChange = (name: string) => {
-        if (!editingTheme || editingTheme.isBuiltin) return;
-        updateCustomTheme(editingTheme.id, { name });
-    };
-
-    return (
-        <motion.section
-            key="themes"
-            initial={{ opacity: 0, x: -20 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: 20 }}
-            transition={{ type: 'spring', damping: 25, stiffness: 220, opacity: { duration: 0.15 } }}
-            className="space-y-5 w-full"
-        >
-            {/* Presets */}
-            <div className="space-y-2">
-                <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
-                    <Palette className="w-3.5 h-3.5" />
-                    {t('settings.presets')}
-                </h3>
-                <div className="grid grid-cols-4 gap-2">
-                    {builtinThemes.map(theme => (
-                        <button
-                            key={theme.id}
-                            onClick={() => handleSelectTheme(theme)}
-                            className={`relative rounded-lg p-0.5 transition-all duration-200 ${
-                                activeCustomThemeId === theme.id
-                                    ? 'ring-2 ring-telegram-primary ring-offset-1 ring-offset-telegram-surface'
-                                    : 'hover:ring-1 hover:ring-telegram-subtext/30'
-                            }`}
-                            title={theme.name}
-                        >
-                            {/* Color preview swatch */}
-                            <div className="rounded-md overflow-hidden h-10 flex">
-                                <div className="flex-1" style={{ background: theme.palette.bg }} />
-                                <div className="flex-1" style={{ background: theme.palette.surface }} />
-                                <div className="flex-1" style={{ background: theme.palette.primary }} />
-                            </div>
-                            <p className="text-[10px] text-telegram-subtext mt-1 truncate text-center">
-                                {theme.name}
-                            </p>
-                            {activeCustomThemeId === theme.id && (
-                                <div className="absolute -top-1 -right-1 w-4 h-4 bg-telegram-primary rounded-full flex items-center justify-center">
-                                    <Check className="w-2.5 h-2.5 text-white" />
-                                </div>
-                            )}
-                        </button>
-                    ))}
-                </div>
-            </div>
-
-            {/* Custom Themes */}
-            <div className="space-y-2">
-                <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
-                    <Sparkles className="w-3.5 h-3.5" />
-                    {t('settings.custom_themes')}
-                </h3>
-
-                {userThemes.length > 0 && (
-                    <div className="grid grid-cols-4 gap-2">
-                        {userThemes.map(theme => (
-                            <button
-                                key={theme.id}
-                                onClick={() => handleSelectTheme(theme)}
-                                className={`relative rounded-lg p-0.5 transition-all duration-200 ${
-                                    activeCustomThemeId === theme.id
-                                        ? 'ring-2 ring-telegram-primary ring-offset-1 ring-offset-telegram-surface'
-                                        : 'hover:ring-1 hover:ring-telegram-subtext/30'
-                                }`}
-                                title={theme.name}
-                            >
-                                <div className="rounded-md overflow-hidden h-10 flex">
-                                    <div className="flex-1" style={{ background: theme.palette.bg }} />
-                                    <div className="flex-1" style={{ background: theme.palette.surface }} />
-                                    <div className="flex-1" style={{ background: theme.palette.primary }} />
-                                </div>
-                                <p className="text-[10px] text-telegram-subtext mt-1 truncate text-center">
-                                    {theme.name}
-                                </p>
-                                {activeCustomThemeId === theme.id && (
-                                    <div className="absolute -top-1 -right-1 w-4 h-4 bg-telegram-primary rounded-full flex items-center justify-center">
-                                        <Check className="w-2.5 h-2.5 text-white" />
-                                    </div>
-                                )}
-                            </button>
-                        ))}
-                    </div>
-                )}
-
-                <button
-                    onClick={handleCreateTheme}
-                    className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg border border-dashed border-telegram-border text-telegram-subtext hover:text-telegram-primary hover:border-telegram-primary/50 transition-colors text-xs"
-                >
-                    <Plus className="w-3.5 h-3.5" />
-                    {t('settings.create_theme')}
-                </button>
-            </div>
-
-            {/* Editor (shown when a custom theme is selected) */}
-            {editingTheme && !editingTheme.isBuiltin && (
-                <div className="space-y-3 p-3 rounded-lg bg-telegram-hover/30 border border-telegram-border/50">
-                    <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider">
-                        {t('settings.edit_theme')}
-                    </h3>
-
-                    {/* Theme Name */}
-                    <div className="flex items-center gap-2">
-                        <label className="text-xs text-telegram-subtext w-16 shrink-0">{t('settings.theme_name')}</label>
-                        <input
-                            type="text"
-                            value={editingTheme.name}
-                            onChange={e => handleNameChange(e.target.value)}
-                            className="flex-1 px-2 py-1.5 rounded-md text-xs bg-telegram-surface border border-telegram-border text-telegram-text focus:border-telegram-primary outline-none transition"
-                            maxLength={32}
-                        />
-                    </div>
-
-                    {/* Base Mode Toggle */}
-                    <div className="flex items-center gap-2">
-                        <label className="text-xs text-telegram-subtext w-16 shrink-0">{t('settings.base_mode')}</label>
-                        <div className="flex gap-1">
-                            <button
-                                onClick={() => handleBaseToggle(true)}
-                                className={`px-3 py-1 rounded-md text-xs font-medium transition ${
-                                    editingTheme.isDark
-                                        ? 'bg-telegram-primary text-white'
-                                        : 'bg-telegram-hover text-telegram-subtext hover:text-telegram-text'
-                                }`}
-                            >
-                                Dark
-                            </button>
-                            <button
-                                onClick={() => handleBaseToggle(false)}
-                                className={`px-3 py-1 rounded-md text-xs font-medium transition ${
-                                    !editingTheme.isDark
-                                        ? 'bg-telegram-primary text-white'
-                                        : 'bg-telegram-hover text-telegram-subtext hover:text-telegram-text'
-                                }`}
-                            >
-                                Light
-                            </button>
-                        </div>
-                    </div>
-
-                    {/* Color Pickers */}
-                    <div className="space-y-2">
-                        {PALETTE_KEYS.map(({ key, labelKey }) => (
-                            <div key={key} className="flex items-center gap-2">
-                                <label className="text-xs text-telegram-subtext w-16 shrink-0">{t(labelKey)}</label>
-                                <div className="flex items-center gap-1.5 flex-1">
-                                    <input
-                                        type="color"
-                                        value={editingTheme.palette[key].startsWith('rgba') ? '#888888' : editingTheme.palette[key]}
-                                        onChange={e => handlePaletteChange(key, e.target.value)}
-                                        className="w-7 h-7 rounded-md border border-telegram-border cursor-pointer p-0.5 bg-transparent"
-                                    />
-                                    <input
-                                        type="text"
-                                        value={editingTheme.palette[key]}
-                                        onChange={e => handlePaletteChange(key, e.target.value)}
-                                        className="flex-1 px-2 py-1 rounded-md text-xs bg-telegram-surface border border-telegram-border text-telegram-text focus:border-telegram-primary outline-none transition font-mono"
-                                        maxLength={30}
-                                    />
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-
-                    {/* Delete Button */}
-                    <button
-                        onClick={() => handleDeleteTheme(editingTheme.id)}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-red-400 hover:bg-red-500/10 transition"
-                    >
-                        <Trash2 className="w-3.5 h-3.5" />
-                        {t('settings.delete_theme')}
-                    </button>
-                </div>
-            )}
-
-            {/* Reset to Default */}
-            {activeCustomThemeId && (
-                <button
-                    onClick={() => {
-                        setActiveCustomTheme(null);
-                        setEditingId(null);
-                    }}
-                    className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium text-telegram-subtext hover:text-telegram-text bg-telegram-hover/50 hover:bg-telegram-hover transition"
-                >
-                    <RotateCcw className="w-3.5 h-3.5" />
-                    {t('settings.reset_default')}
-                </button>
-            )}
-        </motion.section>
     );
 }

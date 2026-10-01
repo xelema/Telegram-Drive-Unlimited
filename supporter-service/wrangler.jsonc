@@ -1,0 +1,39 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "telegram-drive-supporter",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-10",
+  "workers_dev": true,
+  "triggers": {
+    "crons": ["17 3 * * *"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "telegram-drive-supporter",
+      "database_id": "39662fb8-7c6e-4659-8763-a936ddfddd71",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "vars": {
+    "PAYPAL_ENVIRONMENT": "live",
+    "SUPPORTER_PRICE": "5.00",
+    "SUPPORTER_CURRENCY": "USD",
+    "MAX_ACTIVE_DEVICES": "3",
+    "TERMS_VERSION": "2026-08-11",
+    "ENTITLEMENT_TTL_DAYS": "30",
+    "OFFLINE_GRACE_DAYS": "7"
+  },
+  "secrets": {
+    "required": [
+      "PAYPAL_CLIENT_ID",
+      "PAYPAL_CLIENT_SECRET",
+      "PAYPAL_MERCHANT_ID",
+      "PAYPAL_WEBHOOK_ID",
+      "PUBLIC_ORIGIN",
+      "ENTITLEMENT_SIGNING_JWK",
+      "RECOVERY_LOOKUP_KEY",
+      "RECOVERY_ENCRYPTION_KEY"
+    ]
+  }
+}

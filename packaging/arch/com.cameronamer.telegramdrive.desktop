@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Telegram Drive
+Comment=Browse and manage files stored in your Telegram account
+Exec=telegram-drive
+Icon=com.cameronamer.telegramdrive
+Terminal=false
+Categories=Network;FileTransfer;Utility;
+StartupWMClass=app
+StartupNotify=true

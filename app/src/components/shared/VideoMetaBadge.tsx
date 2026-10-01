@@ -27,7 +27,7 @@ export function VideoMetaBadge({ metadata, isLoading }: VideoMetaBadgeProps) {
     if (!hasDuration && !hasResolution) return null;
 
     return (
-        <span className="inline-flex items-center gap-1.5 text-[10px] text-telegram-subtext/60 font-medium tracking-wide">
+        <span className="inline-flex shrink-0 items-center gap-1.5 text-badge font-medium text-app-text-tertiary">
             {hasDuration && (
                 <span className="flex items-center gap-0.5">
                     <Clock className="w-2.5 h-2.5" />

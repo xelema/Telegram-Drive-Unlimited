@@ -1,17 +1,17 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { MoreVertical, Globe, Pencil, Trash2, EyeOff, Eye, Link } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 
 import { FolderGroup } from '../../../types';
+import { useSidebarFolderMenu } from './useSidebarFolderMenu';
 
 interface SidebarItemProps {
     icon: React.ElementType;
     label: string;
     active: boolean;
     onClick: () => void;
-    onDrop: (e: React.DragEvent) => void;
     onDelete?: () => void;
     folderId: number | null;
     isPublic?: boolean;
@@ -24,21 +24,12 @@ interface SidebarItemProps {
 }
 
 /**
- * SidebarItem - Pure DOM event-based drop handling
- * 
- * With Tauri's dragDropEnabled: false, DOM events work reliably.
- * This component handles internal file moves via standard React drag events.
- * Right-click shows a context menu for folder management.
+ * Sortable sidebar folder and drop target for pointer/keyboard file moves.
  */
 export function SidebarItem({
-    icon: Icon, label, active = false, onClick, onDrop, onDelete, folderId, isPublic, onRename, onToggleVisibility, onExportInvite, collapsed = false,
+    icon: Icon, label, active = false, onClick, onDelete, folderId, isPublic, onRename, onToggleVisibility, onExportInvite, collapsed = false,
     groups = [], onAssignFolderToGroup
 }: SidebarItemProps) {
-    const [isOver, setIsOver] = useState(false);
-    const [dragCount, setDragCount] = useState(0);
-    const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
-    const menuRef = useRef<HTMLDivElement>(null);
-    const settingsBtnRef = useRef<HTMLDivElement>(null);
     const { t } = useTranslation();
 
     const {
@@ -48,9 +39,12 @@ export function SidebarItem({
         transform,
         transition,
         isDragging,
+        isOver,
+        active: dragActive,
     } = useSortable({
         id: folderId !== null ? `folder-${folderId}` : 'saved-messages',
-        disabled: folderId === null,
+        data: { kind: 'sidebar-folder', folderId },
+        disabled: folderId === null ? { draggable: true, droppable: false } : false,
     });
 
     const style = folderId !== null ? {
@@ -60,59 +54,18 @@ export function SidebarItem({
     } : undefined;
 
     const hasFolderActions = onDelete && folderId !== null;
-
-    // Open the settings popover positioned relative to the ⋮ button
-    const openSettingsPopover = useCallback((e: React.MouseEvent) => {
-        e.stopPropagation();
-        if (!settingsBtnRef.current) return;
-        const rect = settingsBtnRef.current.getBoundingClientRect();
-        setContextMenu({ x: rect.left - 200, y: rect.bottom + 4 });
-    }, []);
-
-    // Open context menu at mouse position (right-click)
-    const openContextMenu = useCallback((e: React.MouseEvent) => {
-        e.preventDefault();
-        e.stopPropagation();
-        if (hasFolderActions) {
-            setContextMenu({ x: e.clientX, y: e.clientY });
-        }
-    }, [hasFolderActions]);
-
-    // Close context menu on outside click
-    useEffect(() => {
-        if (!contextMenu) return;
-        const handler = () => setContextMenu(null);
-        window.addEventListener('click', handler);
-        window.addEventListener('contextmenu', handler);
-        return () => {
-            window.removeEventListener('click', handler);
-            window.removeEventListener('contextmenu', handler);
-        };
-    }, [contextMenu]);
-
-    // Adjust menu position to stay in viewport
-    useEffect(() => {
-        if (!contextMenu || !menuRef.current) return;
-        const rect = menuRef.current.getBoundingClientRect();
-        let newX = contextMenu.x;
-        let newY = contextMenu.y;
-        if (newX + rect.width > window.innerWidth) newX = newX - rect.width;
-        if (newY + rect.height > window.innerHeight) newY = newY - rect.height;
-        if (newX !== contextMenu.x || newY !== contextMenu.y) {
-            setContextMenu({ x: newX, y: newY });
-        }
-    }, [contextMenu]);
-
-    // Parse drop count from drag data so we can show a badge
-    const parseDragCount = useCallback((e: React.DragEvent): number => {
-        const rawIds = e.dataTransfer.getData("application/x-telegram-file-ids");
-        if (rawIds) {
-            try { const ids = JSON.parse(rawIds); if (Array.isArray(ids) && ids.length > 0) return ids.length; } catch { /* ignore */ }
-        }
-        const singleId = e.dataTransfer.getData("application/x-telegram-file-id");
-        if (singleId) return 1;
-        return 0;
-    }, []);
+    const {
+        menuPosition,
+        menuRef,
+        triggerRef,
+        openFromTrigger,
+        openFromContextMenu,
+        runAndClose,
+    } = useSidebarFolderMenu(Boolean(hasFolderActions));
+    const isFileDragOver = isOver && dragActive?.data.current?.kind === 'telegram-files';
+    const dragCount = Array.isArray(dragActive?.data.current?.fileIds)
+        ? dragActive.data.current.fileIds.length
+        : 0;
 
     return (
         <div
@@ -120,48 +73,29 @@ export function SidebarItem({
             style={style}
             {...attributes}
             {...listeners}
-            onClick={onClick}
-            title={collapsed ? label : undefined}
-            onDragEnter={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setIsOver(true);
-                setDragCount(parseDragCount(e));
-            }}
-            onDragOver={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                e.dataTransfer.dropEffect = 'move';
-            }}
-            onDragLeave={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                const rect = e.currentTarget.getBoundingClientRect();
-                const x = e.clientX;
-                const y = e.clientY;
-                if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) {
-                    setIsOver(false);
-                    setDragCount(0);
+            aria-disabled={undefined}
+            onKeyDown={event => {
+                if (event.target !== event.currentTarget) return;
+                if (!dragActive && (event.key === 'Enter' || (folderId === null && event.key === ' '))) {
+                    event.preventDefault();
+                    onClick();
+                } else {
+                    listeners?.onKeyDown?.(event);
                 }
             }}
-            onDrop={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setIsOver(false);
-                setDragCount(0);
-                if (onDrop) onDrop(e);
-            }}
-            onContextMenu={openContextMenu}
-            className={`group w-full flex items-center transition-all duration-150 cursor-pointer select-none ${collapsed ? 'justify-center p-2.5' : 'gap-3 px-3 py-2'} ${active
-                ? 'bg-telegram-primary/10 text-telegram-primary'
-                : isOver
-                    ? 'bg-telegram-primary/30 text-telegram-text ring-2 ring-telegram-primary scale-[1.02] shadow-lg'
-                    : 'text-telegram-subtext hover:bg-telegram-hover hover:text-telegram-text'
+            onClick={onClick}
+            title={collapsed ? label : undefined}
+            onContextMenu={openFromContextMenu}
+            className={`quiet-control group flex h-8 w-full cursor-pointer select-none items-center text-ui ${collapsed ? 'justify-center px-0' : 'gap-2.5 px-2.5'} ${active
+                ? 'bg-app-selected font-medium text-app-text'
+                : isFileDragOver
+                    ? 'bg-app-selected text-app-text ring-2 ring-app-accent'
+                    : 'text-app-text-secondary hover:text-app-text'
                 }`}
         >
-            <Icon className={`w-4 h-4 flex-shrink-0 ${isOver ? 'text-telegram-primary' : ''}`} />
-            {!collapsed && <span className="flex-1 text-left truncate">{label}</span>}
-            {isOver && dragCount > 1 && (
+            <Icon className={`h-4 w-4 flex-shrink-0 ${active || isFileDragOver ? 'text-app-accent' : ''}`} />
+            {!collapsed && <span className="flex-1 truncate text-start">{label}</span>}
+            {isFileDragOver && dragCount > 1 && (
                 <span className="flex-shrink-0 px-1.5 py-0.5 bg-telegram-primary text-white text-[10px] font-bold rounded-full leading-none min-w-[18px] text-center">
                     {dragCount}
                 </span>
@@ -170,33 +104,37 @@ export function SidebarItem({
                 <Globe className="w-3 h-3 text-emerald-400 flex-shrink-0" />
             )}
             {onDelete && !collapsed && (
-                <div
-                    ref={settingsBtnRef}
-                    onClick={openSettingsPopover}
-                    className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-telegram-hover transition-all"
+                <button
+                    type="button"
+                    ref={triggerRef}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={openFromTrigger}
+                    className="quiet-control flex h-7 w-7 items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-app-hover focus-visible:opacity-100"
                     title={t('files.folder_settings')}
+                    aria-label={t('files.folder_settings')}
                 >
                     <MoreVertical className="w-3.5 h-3.5 text-telegram-subtext hover:text-telegram-text" />
-                </div>
+                </button>
             )}
 
             {/* Folder Context Menu */}
-            {contextMenu && (
+            {menuPosition && createPortal((
                 <div
                     ref={menuRef}
-                    className="fixed z-[300] min-w-[200px] bg-telegram-surface/95 backdrop-blur-xl border border-telegram-border rounded-lg shadow-2xl p-1.5 flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100"
-                    style={{ left: contextMenu.x, top: contextMenu.y }}
+                    className="quiet-menu fixed z-[300] flex min-w-[232px] flex-col gap-1 p-1.5 animate-in fade-in duration-100"
+                    style={{ left: menuPosition.x, top: menuPosition.y }}
+                    onPointerDown={(e) => e.stopPropagation()}
                     onClick={(e) => e.stopPropagation()}
                     onContextMenu={(e) => e.preventDefault()}
                 >
-                    <div className="px-2 py-1.5 text-xs text-telegram-subtext font-medium truncate max-w-[180px] border-b border-telegram-border mb-1">
+                    <div className="mb-1 max-w-[216px] truncate border-b border-app-border-subtle px-3 py-2.5 text-ui font-medium text-app-text-secondary">
                         {label}
                     </div>
 
                     {onRename && (
                         <button
-                            onClick={() => { setContextMenu(null); onRename(); }}
-                            className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-text hover:bg-telegram-hover rounded transition-colors text-left w-full"
+                            onClick={() => runAndClose(onRename)}
+                            className="quiet-menu-item min-h-10 gap-3 px-3 py-2"
                         >
                             <Pencil className="w-4 h-4 text-blue-400" />
                             {t('files.rename')}
@@ -205,8 +143,8 @@ export function SidebarItem({
 
                     {onToggleVisibility && (
                         <button
-                            onClick={() => { setContextMenu(null); onToggleVisibility(); }}
-                            className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-text hover:bg-telegram-hover rounded transition-colors text-left w-full"
+                            onClick={() => runAndClose(onToggleVisibility)}
+                            className="quiet-menu-item min-h-10 gap-3 px-3 py-2"
                         >
                             {isPublic ? (
                                 <>
@@ -224,8 +162,8 @@ export function SidebarItem({
 
                     {onExportInvite && (
                         <button
-                            onClick={() => { setContextMenu(null); onExportInvite(); }}
-                            className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-text hover:bg-telegram-hover rounded transition-colors text-left w-full"
+                            onClick={() => runAndClose(onExportInvite)}
+                            className="quiet-menu-item min-h-10 gap-3 px-3 py-2"
                         >
                             <Link className="w-4 h-4 text-telegram-primary" />
                             {t('files.copy_link')}
@@ -234,13 +172,13 @@ export function SidebarItem({
 
                     {onAssignFolderToGroup && folderId !== null && groups && groups.length > 0 && (
                         <>
-                            <div className="h-px bg-telegram-border my-1" />
-                            <div className="px-2 py-1 text-[10px] font-semibold text-telegram-subtext uppercase tracking-wider">
+                            <div className="my-1.5 h-px bg-telegram-border" />
+                            <div className="px-3 py-1.5 text-badge font-medium text-app-text-tertiary">
                                 {t('files.move_to_group') || "Move to Group"}
                             </div>
                             <button
-                                onClick={() => { setContextMenu(null); onAssignFolderToGroup(folderId, null); }}
-                                className="flex items-center gap-2 px-3 py-1.5 text-xs text-telegram-text hover:bg-telegram-hover rounded transition-colors text-left w-full"
+                                onClick={() => runAndClose(() => onAssignFolderToGroup(folderId, null))}
+                                className="quiet-menu-item min-h-10 gap-3 px-3 py-2 text-metadata"
                             >
                                 <span className="w-1.5 h-1.5 rounded-full bg-telegram-subtext" />
                                 {t('common.unassigned') || "None (Unassigned)"}
@@ -248,8 +186,8 @@ export function SidebarItem({
                             {groups.map(group => (
                                 <button
                                     key={group.id}
-                                    onClick={() => { setContextMenu(null); onAssignFolderToGroup(folderId, group.id); }}
-                                    className="flex items-center gap-2 px-3 py-1.5 text-xs text-telegram-text hover:bg-telegram-hover rounded transition-colors text-left w-full"
+                                    onClick={() => runAndClose(() => onAssignFolderToGroup(folderId, group.id))}
+                                    className="quiet-menu-item min-h-10 gap-3 px-3 py-2 text-metadata"
                                 >
                                     <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: group.color_hex }} />
                                     {group.name}
@@ -258,17 +196,17 @@ export function SidebarItem({
                         </>
                     )}
 
-                    <div className="h-px bg-telegram-border my-1" />
+                    <div className="my-1.5 h-px bg-telegram-border" />
 
                     <button
-                        onClick={() => { setContextMenu(null); onDelete?.(); }}
-                        className="flex items-center gap-2 px-2 py-1.5 text-sm text-red-500 hover:bg-red-500/10 rounded transition-colors text-left w-full"
+                        onClick={() => runAndClose(onDelete)}
+                        className="quiet-menu-item min-h-10 gap-3 px-3 py-2 text-app-danger hover:bg-app-danger/10"
                     >
                         <Trash2 className="w-4 h-4" />
                         {t('files.delete')}
                     </button>
                 </div>
-            )}
+            ), document.body)}
         </div>
     )
 }

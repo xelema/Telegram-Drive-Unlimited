@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Pencil, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { useModalFocus } from '../../../hooks/useModalFocus';
 
 interface RenameFolderModalProps {
     folderId: number;
@@ -13,7 +14,9 @@ export function RenameFolderModal({ folderId, currentName, onRename, onClose }: 
     const [name, setName] = useState(currentName);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const inputRef = useRef<HTMLInputElement>(null);
+    const panelRef = useRef<HTMLDivElement>(null);
     const { t } = useTranslation();
+    useModalFocus(panelRef, onClose);
 
     useEffect(() => {
         inputRef.current?.focus();
@@ -52,6 +55,10 @@ export function RenameFolderModal({ folderId, currentName, onRename, onClose }: 
             onClick={onClose}
         >
             <div
+                ref={panelRef}
+                role="dialog"
+                aria-modal="true"
+                tabIndex={-1}
                 className="bg-telegram-surface border border-telegram-border rounded-xl w-[360px] shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150"
                 onClick={e => e.stopPropagation()}
             >

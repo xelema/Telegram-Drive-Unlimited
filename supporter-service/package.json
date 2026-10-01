@@ -1,0 +1,29 @@
+{
+  "name": "telegram-drive-supporter-service",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "npm run test:e2e",
+    "test:e2e": "node --test --test-concurrency=1 tests/e2e/*.e2e.mjs",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:migrate:local": "wrangler d1 migrations apply telegram-drive-supporter --local",
+    "db:migrate:remote": "wrangler d1 migrations apply telegram-drive-supporter --remote"
+  },
+  "overrides": {
+    "miniflare": {
+      "sharp": "0.35.4",
+      "undici": "7.29.1"
+    }
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260811.1",
+    "@types/node": "24.2.0",
+    "esbuild": "0.28.1",
+    "miniflare": "5.20260804.0-alpha",
+    "typescript": "~5.8.3",
+    "wrangler": "^4.30.0"
+  }
+}

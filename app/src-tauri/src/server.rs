@@ -1,9 +1,9 @@
-use actix_web::{get, web, App, HttpServer, HttpResponse, Responder};
-use actix_cors::Cors;
+use crate::commands::utils::{media_size, resolve_peer};
 use crate::commands::TelegramState;
-use crate::commands::utils::resolve_peer;
-use grammers_client::types::Media;
 use crate::transcode::TranscodeManager;
+use actix_cors::Cors;
+use actix_web::{get, web, App, HttpResponse, HttpServer, Responder};
+use grammers_client::types::Media;
 
 use std::net::TcpListener;
 use std::sync::Arc;
@@ -16,6 +16,40 @@ pub struct StreamTokenData {
 #[derive(serde::Deserialize)]
 struct StreamQuery {
     token: Option<String>,
+    credential: Option<u64>,
+}
+
+struct EncryptedStreamRecord {
+    header: Vec<u8>,
+    plaintext_size: u64,
+}
+
+const ENCRYPTED_STREAM_RESPONSE_LIMIT: u64 = 4 * 1024 * 1024;
+
+async fn encrypted_stream_record(
+    account: &crate::workspace::AccountGuard,
+    client: &grammers_client::Client,
+    folder_id: Option<i64>,
+    message_id: i32,
+    media: &Media,
+    caption: &str,
+) -> Result<Option<EncryptedStreamRecord>, String> {
+    let record = crate::commands::fs::resolve_remote_envelope(
+        account, client, folder_id, message_id, media, caption,
+    )
+    .await?;
+    record
+        .map(|record| {
+            Ok(EncryptedStreamRecord {
+                header: record
+                    .header_blob
+                    .ok_or_else(|| "Encrypted media header is unavailable".to_string())?,
+                plaintext_size: record
+                    .plaintext_size
+                    .ok_or_else(|| "Encrypted media length is unavailable".to_string())?,
+            })
+        })
+        .transpose()
 }
 
 pub fn parse_range_header(header_val: &str, total_size: u64) -> Option<(u64, u64)> {
@@ -41,6 +75,33 @@ pub fn parse_range_header(header_val: &str, total_size: u64) -> Option<(u64, u64
     }
 }
 
+/// Reject both new reads and already-awaited chunks after an account switch.
+/// The same wrapper is exercised without Telegram in account-race tests.
+fn guard_media_chunks<S>(
+    stream: S,
+    account: Option<crate::workspace::AccountGuard>,
+) -> impl futures::Stream<Item = Result<web::Bytes, actix_web::Error>>
+where
+    S: futures::Stream<Item = Result<web::Bytes, actix_web::Error>>,
+{
+    use futures::StreamExt;
+    async_stream::stream! {
+        futures::pin_mut!(stream);
+        loop {
+            if account.as_ref().is_some_and(|account| account.validate().is_err()) {
+                yield Err(actix_web::error::ErrorNotFound("The sharing account is no longer active"));
+                break;
+            }
+            let Some(chunk) = stream.next().await else { break; };
+            if account.as_ref().is_some_and(|account| account.validate().is_err()) {
+                yield Err(actix_web::error::ErrorNotFound("The sharing account is no longer active"));
+                break;
+            }
+            yield chunk;
+        }
+    }
+}
+
 /// Extra headers to inject into streaming responses (e.g. Cache-Control, Content-Disposition).
 pub struct StreamingExtras {
     pub extra_headers: Vec<(&'static str, String)>,
@@ -49,19 +110,22 @@ pub struct StreamingExtras {
 
 /// Build a streaming HTTP response for a Telegram media file with optional byte-range support.
 /// This is the single shared implementation used by the streaming server, REST API, and share routes.
-pub fn build_media_response(
+pub fn build_media_response_guarded(
     client: &grammers_client::Client,
     media: &Media,
     req: &actix_web::HttpRequest,
     mime: &str,
     filename: Option<&str>,
     extras: StreamingExtras,
+    account: Option<crate::workspace::AccountGuard>,
 ) -> HttpResponse {
-    let size = match media {
-        Media::Document(d) => d.size() as u64,
-        Media::Photo(_) => 0,
-        _ => 0,
-    };
+    if account
+        .as_ref()
+        .is_some_and(|account| account.validate().is_err())
+    {
+        return HttpResponse::NotFound().body("The sharing account is no longer active");
+    }
+    let size = media_size(media);
 
     // Parse Range header
     let mut start_byte = 0u64;
@@ -132,12 +196,16 @@ pub fn build_media_response(
         debug_assert!(
             cdn_aligned_start <= start_byte,
             "CDN alignment invariant violated: aligned {} > requested {}",
-            cdn_aligned_start, start_byte
+            cdn_aligned_start,
+            start_byte
         );
 
         log::debug!(
             "Range alignment: requested={}, cdn_aligned={}, chunk_index={}, bytes_to_skip={}",
-            start_byte, cdn_aligned_start, chunk_index, bytes_to_skip,
+            start_byte,
+            cdn_aligned_start,
+            chunk_index,
+            bytes_to_skip,
         );
     }
 
@@ -187,9 +255,14 @@ pub fn build_media_response(
         log::debug!("{} stream completed (yielded: {})", label, total_yielded);
     };
 
+    let stream = guard_media_chunks(stream, account);
+
     let mut resp = if is_range {
         let mut r = HttpResponse::PartialContent();
-        r.insert_header(("Content-Range", format!("bytes {}-{}/{}", start_byte, end_byte, size)));
+        r.insert_header((
+            "Content-Range",
+            format!("bytes {}-{}/{}", start_byte, end_byte, size),
+        ));
         r.insert_header(("Content-Length", content_length.to_string()));
         r
     } else {
@@ -215,6 +288,193 @@ pub fn build_media_response(
     resp.streaming(stream)
 }
 
+async fn fetch_media_range(
+    client: &grammers_client::Client,
+    media: &Media,
+    start: u64,
+    end: u64,
+) -> Result<Vec<u8>, String> {
+    const CHUNK_SIZE: i32 = 65_536;
+    const CDN_ALIGNMENT: u64 = 524_288;
+    let aligned_start = (start / CDN_ALIGNMENT) * CDN_ALIGNMENT;
+    let mut iterator = client
+        .iter_download(media)
+        .chunk_size(CHUNK_SIZE)
+        .skip_chunks((aligned_start / CHUNK_SIZE as u64) as i32);
+    let leading = (start - aligned_start) as usize;
+    let required = end
+        .checked_sub(start)
+        .and_then(|length| length.checked_add(1))
+        .ok_or_else(|| "Encrypted media range overflow".to_string())? as usize;
+    let mut skipped = 0usize;
+    let mut output = Vec::with_capacity(required);
+    while output.len() < required {
+        let Some(chunk) = iterator.next().await.transpose() else {
+            break;
+        };
+        let chunk = chunk.map_err(|error| format!("Encrypted stream download failed: {error}"))?;
+        let mut slice = chunk.as_slice();
+        if skipped < leading {
+            let skip = (leading - skipped).min(slice.len());
+            skipped += skip;
+            slice = &slice[skip..];
+        }
+        let take = (required - output.len()).min(slice.len());
+        output.extend_from_slice(&slice[..take]);
+    }
+    if output.len() != required {
+        return Err("Encrypted media range was truncated by Telegram".to_string());
+    }
+    Ok(output)
+}
+
+#[derive(serde::Deserialize)]
+struct EncryptedStreamMetadata {
+    mime_type: String,
+}
+
+async fn build_encrypted_media_response(
+    client: &grammers_client::Client,
+    media: &Media,
+    req: &actix_web::HttpRequest,
+    record: EncryptedStreamRecord,
+    wrapping_key: &crate::crypto::secret::SecretKey,
+    account: &crate::workspace::AccountGuard,
+) -> HttpResponse {
+    use crate::crypto::envelope::header::EnvelopeHeader;
+    use crate::crypto::envelope::range::{
+        chunk_ciphertext_offset, plaintext_range_to_ciphertext_records,
+    };
+    use crate::crypto::policy;
+
+    if account.validate().is_err() {
+        return HttpResponse::NotFound().finish();
+    }
+    if record.plaintext_size == 0 {
+        return HttpResponse::UnprocessableEntity().body("Encrypted media is empty");
+    }
+    let requested = req
+        .headers()
+        .get(actix_web::http::header::RANGE)
+        .and_then(|header| header.to_str().ok())
+        .and_then(|header| parse_range_header(header, record.plaintext_size));
+    let start = requested.map(|range| range.0).unwrap_or(0);
+    let requested_end = requested
+        .map(|range| range.1)
+        .unwrap_or(record.plaintext_size - 1);
+    let end = requested_end
+        .min(start.saturating_add(ENCRYPTED_STREAM_RESPONSE_LIMIT - 1))
+        .min(record.plaintext_size - 1);
+
+    let header = match EnvelopeHeader::parse(&record.header) {
+        Ok(header) => header,
+        Err(error) => {
+            return HttpResponse::UnprocessableEntity()
+                .body(format!("Encrypted media header is invalid: {error}"));
+        }
+    };
+    if header.core.total_plaintext_length != record.plaintext_size {
+        return HttpResponse::UnprocessableEntity()
+            .body("Encrypted media length does not match its authenticated header");
+    }
+    let decryptor = match crate::commands::fs::initialize_tdenc2_decryptor(
+        &record.header,
+        Some(wrapping_key),
+        None,
+    ) {
+        Ok(decryptor) => decryptor,
+        Err(error) => return HttpResponse::Locked().body(error),
+    };
+    let (first_chunk, last_chunk) = match plaintext_range_to_ciphertext_records(
+        start,
+        end,
+        header.core.chunk_size,
+        record.plaintext_size,
+    ) {
+        Ok(range) => range,
+        Err(error) => return HttpResponse::RangeNotSatisfiable().body(error.to_string()),
+    };
+    let body_start =
+        match chunk_ciphertext_offset(first_chunk, header.core.chunk_size, record.plaintext_size) {
+            Ok(offset) => u64::from(header.core.header_length) + offset,
+            Err(error) => return HttpResponse::UnprocessableEntity().body(error.to_string()),
+        };
+    let last_plaintext_offset = u64::from(last_chunk) * u64::from(header.core.chunk_size);
+    let last_plaintext_length = record
+        .plaintext_size
+        .saturating_sub(last_plaintext_offset)
+        .min(u64::from(header.core.chunk_size));
+    let body_end =
+        match chunk_ciphertext_offset(last_chunk, header.core.chunk_size, record.plaintext_size) {
+            Ok(offset) => {
+                u64::from(header.core.header_length)
+                    + offset
+                    + last_plaintext_length
+                    + policy::AEAD_TAG_LENGTH as u64
+                    - 1
+            }
+            Err(error) => return HttpResponse::UnprocessableEntity().body(error.to_string()),
+        };
+    let ciphertext = match fetch_media_range(client, media, body_start, body_end).await {
+        Ok(ciphertext) => ciphertext,
+        Err(error) => return HttpResponse::BadGateway().body(error),
+    };
+
+    if account.validate().is_err() {
+        return HttpResponse::NotFound().finish();
+    }
+    let mut cursor = 0usize;
+    let mut plaintext = Vec::new();
+    for chunk_index in first_chunk..=last_chunk {
+        let plaintext_offset = u64::from(chunk_index) * u64::from(header.core.chunk_size);
+        let plaintext_length = record
+            .plaintext_size
+            .saturating_sub(plaintext_offset)
+            .min(u64::from(header.core.chunk_size)) as usize;
+        let ciphertext_length = plaintext_length + policy::AEAD_TAG_LENGTH;
+        let next = cursor.saturating_add(ciphertext_length);
+        if next > ciphertext.len() {
+            return HttpResponse::BadGateway().body("Encrypted media record was truncated");
+        }
+        match decryptor.decrypt_chunk_at(chunk_index, &ciphertext[cursor..next]) {
+            Ok(chunk) => plaintext.extend_from_slice(&chunk),
+            Err(error) => {
+                return HttpResponse::UnprocessableEntity().body(format!(
+                    "Encrypted media record authentication failed: {error}"
+                ));
+            }
+        }
+        cursor = next;
+    }
+
+    let combined_start = u64::from(first_chunk) * u64::from(header.core.chunk_size);
+    let slice_start = (start - combined_start) as usize;
+    let slice_length = (end - start + 1) as usize;
+    if slice_start.saturating_add(slice_length) > plaintext.len() {
+        return HttpResponse::BadGateway().body("Decrypted media range was incomplete");
+    }
+    let body = plaintext[slice_start..slice_start + slice_length].to_vec();
+    let mime = serde_json::from_slice::<EncryptedStreamMetadata>(decryptor.metadata_plaintext())
+        .ok()
+        .map(|metadata| metadata.mime_type)
+        .filter(|mime| !mime.is_empty())
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+
+    if account.validate().is_err() {
+        return HttpResponse::NotFound().finish();
+    }
+    HttpResponse::PartialContent()
+        .insert_header(("Content-Type", mime))
+        .insert_header(("Accept-Ranges", "bytes"))
+        .insert_header((
+            "Content-Range",
+            format!("bytes {start}-{end}/{}", record.plaintext_size),
+        ))
+        .insert_header(("Content-Length", body.len().to_string()))
+        .insert_header(("Cache-Control", "no-store"))
+        .body(body)
+}
+
 #[get("/stream/{folder_id}/{message_id}")]
 async fn stream_media(
     req: actix_web::HttpRequest,
@@ -222,88 +482,105 @@ async fn stream_media(
     query: web::Query<StreamQuery>,
     data: web::Data<Arc<TelegramState>>,
     token_data: web::Data<StreamTokenData>,
+    account_root: web::Data<crate::share_routes::ShareAccountRoot>,
+    crypto_state: web::Data<crate::crypto::state::CryptoState>,
 ) -> impl Responder {
+    if query.token.as_deref() != Some(token_data.token.as_str()) {
+        return HttpResponse::Forbidden().body("Invalid or missing stream token");
+    }
     let (folder_id_str, message_id) = path.into_inner();
-
-    // Validate session token
-    match &query.token {
-        Some(t) if t == &token_data.token => {
-            log::debug!("Stream request: Token validated successfully for msg {}", message_id);
+    let folder_id = match folder_id_str.as_str() {
+        "me" | "home" | "null" => None,
+        value => match value.parse::<i64>() {
+            Ok(id) => Some(id),
+            Err(_) => return HttpResponse::BadRequest().body("Invalid folder ID"),
         },
-        _ => {
-            log::error!("Stream request failed: Invalid or missing stream token for msg {}", message_id);
-            return HttpResponse::Forbidden().body("Invalid or missing stream token")
-        },
+    };
+    let account = match crate::workspace::AccountGuard::open(&account_root.get_ref().0, None) {
+        Ok(account) => account,
+        Err(_) => return HttpResponse::NotFound().body("The streaming account is unavailable"),
+    };
+    let Some(client) = data.client.lock().await.clone() else {
+        return HttpResponse::ServiceUnavailable().body("Telegram client not connected");
+    };
+    if account.validate_client(&client).await.is_err() {
+        return HttpResponse::NotFound().finish();
     }
-    
-    // Parse folder ID
-    let folder_id = if folder_id_str == "me" || folder_id_str == "home" || folder_id_str == "null" {
-        log::debug!("Stream request: Using root folder for msg {}", message_id);
-        None
-    } else {
-        match folder_id_str.parse::<i64>() {
-            Ok(id) => {
-                log::debug!("Stream request: Parsed folder ID {} for msg {}", id, message_id);
-                Some(id)
-            },
+    let peer = match resolve_peer(&client, folder_id, &data.peer_cache).await {
+        Ok(peer) => peer,
+        Err(error) => {
+            return HttpResponse::BadRequest().body(format!("Peer resolution failed: {error}"))
+        }
+    };
+    if account.validate().is_err() {
+        return HttpResponse::NotFound().finish();
+    }
+    let messages = match client.get_messages_by_id(&peer, &[message_id]).await {
+        Ok(messages) => messages,
+        Err(error) => {
+            return HttpResponse::BadGateway().body(format!("Failed to fetch message: {error}"))
+        }
+    };
+    if account.validate().is_err() {
+        return HttpResponse::NotFound().finish();
+    }
+    let Some(message) = messages.into_iter().flatten().next() else {
+        return HttpResponse::NotFound().body("Message not found");
+    };
+    let Some(media) = message.media() else {
+        return HttpResponse::NotFound().body("Media not found");
+    };
+    let record = match encrypted_stream_record(
+        &account,
+        &client,
+        folder_id,
+        message_id,
+        &media,
+        message.text(),
+    )
+    .await
+    {
+        Ok(record) => record,
+        Err(error) => return HttpResponse::Conflict().body(error),
+    };
+    if let Some(record) = record {
+        let Some(credential) = query.credential else {
+            return HttpResponse::Locked()
+                .body("Unlock the vault before streaming protected media");
+        };
+        let key = match crypto_state.operation_wrapping_key(
+            credential,
+            crate::crypto::state::OperationClass::MediaStream,
+        ) {
+            Ok(key) => key,
             Err(_) => {
-                log::error!("Stream request failed: Invalid folder ID format '{}' for msg {}", folder_id_str, message_id);
-                return HttpResponse::BadRequest().body("Invalid folder ID")
-            },
-        }
-    };
-
-    let client_opt = {
-        data.client.lock().await.clone()
-    };
-
-    if let Some(client) = client_opt {
-        log::debug!("Stream request: Client acquired, resolving peer for msg {}...", message_id);
-        match resolve_peer(&client, folder_id, &data.peer_cache).await {
-            Ok(peer) => {
-                log::debug!("Stream request: Peer resolved, fetching message {}...", message_id);
-                // Try to fetch message efficiently
-                 match client.get_messages_by_id(peer, &[message_id]).await {
-                    Ok(messages) => {
-                        if let Some(Some(msg)) = messages.first() {
-                            if let Some(media) = msg.media() {
-                                log::debug!("Stream request: Message and media found for msg {}", message_id);
-                                let mime = mime_type_from_media(&media);
-                                return build_media_response(
-                                    &client, &media, &req, &mime, None,
-                                    StreamingExtras {
-                                        extra_headers: vec![("Cache-Control", "private, max-age=120".to_string())],
-                                        log_label: "Stream",
-                                    },
-                                );
-                            } else {
-                                log::error!("Stream request failed: Media not found in message {}", message_id);
-                            }
-                        } else {
-                            log::error!("Stream request failed: Message {} not found", message_id);
-                        }
-                        HttpResponse::NotFound().body("Message or media not found")
-                    },
-                    Err(e) => {
-                        log::error!("Stream request failed: Error fetching message {}: {}", message_id, e);
-                        HttpResponse::InternalServerError().body(format!("Failed to fetch message: {}", e))
-                    },
-                 }
-            },
-            Err(e) => {
-                log::error!("Stream request failed: Peer resolution error for msg {}: {}", message_id, e);
-                HttpResponse::BadRequest().body(format!("Peer resolution failed: {}", e))
-            },
-        }
-    } else {
-        log::error!("Stream request failed: Telegram client not connected for msg {}", message_id);
-        HttpResponse::ServiceUnavailable().body("Telegram client not connected")
+                return HttpResponse::Locked()
+                    .body("The protected-media credential expired; unlock and retry")
+            }
+        };
+        return build_encrypted_media_response(&client, &media, &req, record, &key, &account).await;
     }
+    let mime = mime_type_from_media(&media);
+    build_media_response_guarded(
+        &client,
+        &media,
+        &req,
+        &mime,
+        None,
+        StreamingExtras {
+            extra_headers: vec![("Cache-Control", "private, max-age=120".into())],
+            log_label: "Stream",
+        },
+        Some(account),
+    )
 }
 
 fn mime_type_from_media(media: &Media) -> String {
     match media {
-        Media::Document(d) => d.mime_type().unwrap_or("application/octet-stream").to_string(),
+        Media::Document(d) => d
+            .mime_type()
+            .unwrap_or("application/octet-stream")
+            .to_string(),
         _ => "application/octet-stream".to_string(),
     }
 }
@@ -314,58 +591,84 @@ pub async fn start_server(
     token: String,
     db_pool: crate::db::DbConnection,
     transcode_manager: Arc<TranscodeManager>,
+    crypto_state: crate::crypto::state::CryptoState,
+    account_root: std::path::PathBuf,
+) -> std::io::Result<actix_web::dev::Server> {
+    let listener = bind_stream_listener(port)?;
+    start_server_with_listener(
+        state,
+        token,
+        db_pool,
+        transcode_manager,
+        crypto_state,
+        account_root,
+        listener,
+    )
+}
+
+fn bind_stream_listener(port: u16) -> std::io::Result<TcpListener> {
+    // Bind the listener to 127.0.0.1 explicitly. The streaming server is only
+    // accessed from the local frontend; exposing it on all interfaces is both
+    // unnecessary and liable to trigger desktop firewall prompts.
+    let ipv4_addr = format!("127.0.0.1:{port}");
+    match TcpListener::bind(&ipv4_addr) {
+        Ok(listener) => {
+            log::info!("Streaming Server listening on {} (IPv4)", ipv4_addr);
+            Ok(listener)
+        }
+        Err(error) => {
+            log::warn!(
+                "IPv4 loopback bind failed ({}), falling back to IPv6 loopback",
+                error
+            );
+            let ipv6_addr = format!("[::1]:{port}");
+            let listener = TcpListener::bind(&ipv6_addr)?;
+            log::info!(
+                "Streaming Server listening on {} (IPv6 loopback)",
+                ipv6_addr
+            );
+            Ok(listener)
+        }
+    }
+}
+
+pub(crate) fn start_server_with_listener(
+    state: Arc<TelegramState>,
+    token: String,
+    db_pool: crate::db::DbConnection,
+    transcode_manager: Arc<TranscodeManager>,
+    crypto_state: crate::crypto::state::CryptoState,
+    account_root: std::path::PathBuf,
+    listener: TcpListener,
 ) -> std::io::Result<actix_web::dev::Server> {
     let state_data = web::Data::new(state);
     let token_data = web::Data::new(StreamTokenData { token });
     let db_data = web::Data::new(db_pool);
     let transcode_data = web::Data::new(transcode_manager);
-    
-    log::info!("Starting Streaming Server on port {}", port);
-
-    // Bind the listener to 127.0.0.1 explicitly.
-    // The streaming server is only accessed from the local frontend — binding
-    // to 0.0.0.0 is unnecessary and can trigger firewall prompts on Windows.
-    // 127.0.0.1 is the most universally reliable loopback address across all
-    // platforms (Windows, macOS, Linux) and pairs correctly with the "localhost"
-    // hostname used by the client (localhost → 127.0.0.1 is the standard mapping).
-    let ipv4_addr = format!("127.0.0.1:{}", port);
-    let listener = match TcpListener::bind(&ipv4_addr) {
-        Ok(l) => {
-            log::info!("Streaming Server listening on {} (IPv4)", ipv4_addr);
-            l
-        }
-        Err(e) => {
-            log::warn!("IPv4 loopback bind failed ({}), falling back to IPv6 loopback", e);
-            let ipv6_addr = format!("[::1]:{}", port);
-            let l = TcpListener::bind(&ipv6_addr)?;
-            log::info!("Streaming Server listening on {} (IPv6 loopback)", ipv6_addr);
-            l
-        }
-    };
+    let crypto_data = web::Data::new(crypto_state);
+    let share_root = web::Data::new(crate::share_routes::ShareAccountRoot(account_root));
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let local_addr = listener.local_addr()?;
+    log::info!("Starting Streaming Server on {}", local_addr);
 
     let server = HttpServer::new(move || {
         let cors = Cors::default()
             .allowed_origin_fn(|origin, _req_head| {
-                let origin_bytes = origin.as_bytes();
-                origin_bytes.starts_with(b"tauri://")
-                    || origin_bytes.starts_with(b"http://tauri.localhost")
-                    || origin_bytes.starts_with(b"https://tauri.localhost")
-                    || origin_bytes.starts_with(b"http://localhost")
-                    || origin_bytes.starts_with(b"http://127.0.0.1")
-                    || origin_bytes.starts_with(b"https://asset.localhost")
-                    || origin_bytes.starts_with(b"http://asset.localhost")
-                    || origin_bytes == b"null"
+                crate::local_cors::is_allowed_origin_header(origin)
             })
             .allow_any_method()
             .allow_any_header();
 
-        App::new()
+        let app = App::new()
             .wrap(cors)
             .app_data(state_data.clone())
             .app_data(token_data.clone())
             .app_data(db_data.clone())
             .app_data(transcode_data.clone())
-            .service(stream_media)
+            .app_data(crypto_data.clone())
+            .app_data(share_root.clone());
+
+        app.service(stream_media)
             .configure(crate::share_routes::configure_share_routes)
             .configure(crate::transcode::configure_hls_routes)
             .configure(crate::fmp4_remux::configure_fmp4_routes)
@@ -373,7 +676,7 @@ pub async fn start_server(
     .listen(listener)?
     .run();
 
-    log::info!("Streaming Server started successfully on port {}", port);
+    log::info!("Streaming Server started successfully on {}", local_addr);
 
     Ok(server)
 }

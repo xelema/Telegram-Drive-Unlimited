@@ -1,12 +1,17 @@
-use std::sync::Arc;
-use std::io::{Cursor, Read};
-use serde::Serialize;
-use tauri::State;
-use tokio::io::AsyncWriteExt;
-use crate::commands::TelegramState;
 use crate::commands::utils::resolve_peer;
+use crate::commands::TelegramState;
 use crate::vpn_optimizer::NetworkConfig;
 use grammers_client::types::Media;
+use serde::Serialize;
+use std::io::{Cursor, Read};
+use std::sync::Arc;
+use tauri::State;
+use tokio::io::AsyncWriteExt;
+
+const MAX_ARCHIVE_ENTRIES: usize = 10_000;
+const MAX_ARCHIVE_ENTRY_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const MAX_ARCHIVE_TOTAL_UNCOMPRESSED_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const MAX_ARCHIVE_COMPRESSION_RATIO: u64 = 1_000;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ArchiveEntry {
@@ -64,7 +69,10 @@ pub async fn cmd_list_archive_contents(
 
     match archive_type {
         ArchiveType::Zip => list_zip_contents(&client, &media, max_bytes, &filename).await,
+        #[cfg(not(target_os = "android"))]
         ArchiveType::Rar => list_rar_contents(&client, &media, max_bytes, &filename).await,
+        #[cfg(target_os = "android")]
+        ArchiveType::Rar => Err("RAR archives are not supported on Android".to_string()),
         ArchiveType::SevenZ => list_sevenz_contents(&client, &media, max_bytes, &filename).await,
     }
 }
@@ -83,11 +91,16 @@ pub async fn cmd_extract_archive_entry(
         prepare_archive_operation(message_id, folder_id, &state, &net_config).await?;
     let archive_type = detect_archive_type(&filename);
 
-    match archive_type {
+    let extracted = match archive_type {
         ArchiveType::Zip => extract_zip_entry(&client, &media, max_bytes, entry_index).await,
+        #[cfg(not(target_os = "android"))]
         ArchiveType::Rar => extract_rar_entry(&client, &media, max_bytes, entry_index).await,
+        #[cfg(target_os = "android")]
+        ArchiveType::Rar => Err("RAR archives are not supported on Android".to_string()),
         ArchiveType::SevenZ => extract_sevenz_entry(&client, &media, max_bytes, entry_index).await,
-    }
+    }?;
+    crate::temp_artifacts::register(std::path::Path::new(&extracted.temp_path))?;
+    Ok(extracted)
 }
 
 // ── Shared preparation ──────────────────────────────────────────────────
@@ -179,6 +192,11 @@ async fn list_zip_contents(
     let cursor = Cursor::new(data);
     let mut archive =
         zip::ZipArchive::new(cursor).map_err(|e| format!("Failed to parse ZIP file: {}", e))?;
+    if archive.len() > MAX_ARCHIVE_ENTRIES {
+        return Err(format!(
+            "Archive contains more than {MAX_ARCHIVE_ENTRIES} entries"
+        ));
+    }
 
     let mut entries = Vec::new();
     for i in 0..archive.len() {
@@ -192,6 +210,7 @@ async fn list_zip_contents(
             is_dir: file.is_dir(),
         });
     }
+    validate_archive_entries(&entries)?;
     check_non_empty(&entries, filename, "ZIP")?;
     Ok(entries)
 }
@@ -206,22 +225,35 @@ async fn extract_zip_entry(
 
     let (buf, safe_name, entry_size, temp_path) = {
         let cursor = Cursor::new(data);
-        let mut archive = zip::ZipArchive::new(cursor)
-            .map_err(|e| format!("Failed to parse ZIP file: {}", e))?;
-        let mut file = archive
+        let mut archive =
+            zip::ZipArchive::new(cursor).map_err(|e| format!("Failed to parse ZIP file: {}", e))?;
+        let file = archive
             .by_index(entry_index)
             .map_err(|e| format!("Failed to read ZIP entry at index {}: {}", entry_index, e))?;
         if file.is_dir() {
             return Err("Cannot extract a directory entry".to_string());
         }
+        validate_archive_entries(&[ArchiveEntry {
+            filename: file.name().to_string(),
+            size: file.size(),
+            compressed_size: file.compressed_size(),
+            is_dir: false,
+        }])?;
         let entry_name = file.name().to_string();
         let entry_size = file.size();
         let safe_name = sanitise_entry_name(&entry_name, entry_index);
-        let temp_path = std::env::temp_dir()
-            .join(format!("{}_{}", generate_unique_temp_prefix("extract"), safe_name));
-        let mut buf = Vec::with_capacity(entry_size as usize);
-        file.read_to_end(&mut buf)
+        let temp_path = std::env::temp_dir().join(format!(
+            "{}_{}",
+            generate_unique_temp_prefix("extract"),
+            safe_name
+        ));
+        let mut buf = Vec::with_capacity(entry_size.min(64 * 1024 * 1024) as usize);
+        file.take(MAX_ARCHIVE_ENTRY_BYTES + 1)
+            .read_to_end(&mut buf)
             .map_err(|e| format!("Failed to read ZIP entry bytes: {}", e))?;
+        if buf.len() as u64 > MAX_ARCHIVE_ENTRY_BYTES {
+            return Err("Archive entry exceeds the extraction size limit".to_string());
+        }
         Ok::<_, String>((buf, safe_name, entry_size, temp_path))
     }?;
 
@@ -283,6 +315,7 @@ async fn download_to_temp_file(
     Ok((archive_path, extract_dir))
 }
 
+#[cfg(not(target_os = "android"))]
 async fn list_rar_contents(
     client: &grammers_client::Client,
     media: &Media,
@@ -292,37 +325,46 @@ async fn list_rar_contents(
     let (archive_path, extract_dir) =
         download_to_temp_file(client, media, max_bytes, "RAR", "rar").await?;
     let rar_path = archive_path.clone();
-    let dir = extract_dir.clone();
 
-    let entries_result: Result<Vec<ArchiveEntry>, String> = tokio::task::spawn_blocking(move || {
-        let archive = rar::Archive::extract_all(
-            rar_path.to_str().unwrap_or(""),
-            dir.to_str().unwrap_or(""),
-            "",
-        )
-        .map_err(|e| format!("Failed to open RAR file: {}", e))?;
-        Ok(archive
-            .files
-            .iter()
-            .map(|fb| ArchiveEntry {
-                filename: fb.name.clone(),
-                size: fb.head.size,
-                compressed_size: fb.head.data_area_size,
-                is_dir: fb.name.ends_with('/') || fb.name.ends_with('\\'),
-            })
-            .collect::<Vec<_>>())
-    })
-    .await
-    .map_err(|e| format!("RAR parsing task panicked: {:?}", e))?;
+    // List-only mode: reads headers WITHOUT extracting (zero disk writes)
+    let entries_result: Result<Vec<ArchiveEntry>, String> =
+        tokio::task::spawn_blocking(move || {
+            let archive = unrar::Archive::new(rar_path.to_str().unwrap_or(""))
+                .open_for_listing()
+                .map_err(|e| format!("Failed to open RAR file for listing: {}", e))?;
+
+            let mut entries = Vec::new();
+            for result in archive {
+                if entries.len() >= MAX_ARCHIVE_ENTRIES {
+                    return Err(format!(
+                        "Archive contains more than {MAX_ARCHIVE_ENTRIES} entries"
+                    ));
+                }
+                let header: unrar::FileHeader =
+                    result.map_err(|e| format!("Failed to read RAR header: {}", e))?;
+                let name = header.filename.to_string_lossy().to_string();
+                entries.push(ArchiveEntry {
+                    filename: name,
+                    size: header.unpacked_size,
+                    compressed_size: header.unpacked_size,
+                    is_dir: header.is_directory(),
+                });
+            }
+            Ok(entries)
+        })
+        .await
+        .map_err(|e| format!("RAR listing task panicked: {:?}", e))?;
 
     let _ = tokio::fs::remove_file(&archive_path).await;
     let _ = tokio::fs::remove_dir_all(&extract_dir).await;
 
     let entries = entries_result?;
+    validate_archive_entries(&entries)?;
     check_non_empty(&entries, filename, "RAR")?;
     Ok(entries)
 }
 
+#[cfg(not(target_os = "android"))]
 async fn extract_rar_entry(
     client: &grammers_client::Client,
     media: &Media,
@@ -332,50 +374,92 @@ async fn extract_rar_entry(
     let (archive_path, extract_dir) =
         download_to_temp_file(client, media, max_bytes, "RAR", "rar").await?;
     let rar_path = archive_path.clone();
-    let dir = extract_dir.clone();
-
+    let extract_dir_cleanup = extract_dir.clone();
     let extraction_result: Result<ExtractedFile, String> = tokio::task::spawn_blocking(move || {
-        let archive = rar::Archive::extract_all(
-            rar_path.to_str().unwrap_or(""),
-            dir.to_str().unwrap_or(""),
-            "",
-        )
-        .map_err(|e| format!("Failed to open RAR file: {}", e))?;
+        use path_clean::PathClean;
 
-        if entry_index >= archive.files.len() {
-            return Err(format!(
-                "Entry index {} out of range ({} entries)",
-                entry_index,
-                archive.files.len()
+        let rar_str = rar_path.to_str().unwrap_or("").to_string();
+        let mut archive = unrar::Archive::new(&rar_str)
+            .open_for_processing()
+            .map_err(|e| format!("Failed to open RAR file for processing: {}", e))?;
+
+        let mut current_index: usize = 0;
+        while let Some(header) = archive
+            .read_header()
+            .map_err(|e| format!("Failed to read RAR header: {}", e))?
+        {
+            if current_index >= MAX_ARCHIVE_ENTRIES {
+                return Err(format!(
+                    "Archive contains more than {MAX_ARCHIVE_ENTRIES} entries"
+                ));
+            }
+            let is_target = current_index == entry_index;
+            current_index += 1;
+
+            if !is_target {
+                archive = header
+                    .skip()
+                    .map_err(|e| format!("Failed to skip RAR entry: {}", e))?;
+                continue;
+            }
+
+            if header.entry().is_directory() {
+                return Err("Cannot extract a directory entry".to_string());
+            }
+
+            if header.entry().unpacked_size > MAX_ARCHIVE_ENTRY_BYTES {
+                return Err("Archive entry exceeds the extraction size limit".to_string());
+            }
+
+            let entry_name = header.entry().filename.to_string_lossy().to_string();
+
+            // Path traversal check: validate the entry name would stay within extract_dir
+            let raw_dest = extract_dir.join(&entry_name);
+            let clean_dest = raw_dest.clean();
+            let clean_base = extract_dir.clean();
+            if !clean_dest.starts_with(&clean_base) {
+                log::error!("Path traversal attempt blocked in RAR: {}", entry_name);
+                return Err(format!(
+                    "Blocked path traversal in RAR entry: {}",
+                    entry_name
+                ));
+            }
+
+            // Read decompressed bytes into memory (no disk write in uncontrolled location)
+            let (data, _next_archive) = header
+                .read()
+                .map_err(|e| format!("Failed to read RAR entry bytes: {}", e))?;
+            if data.len() as u64 > MAX_ARCHIVE_ENTRY_BYTES {
+                return Err("Archive entry exceeds the extraction size limit".to_string());
+            }
+
+            let safe_name = sanitise_entry_name(&entry_name, entry_index);
+            let temp_path = std::env::temp_dir().join(format!(
+                "{}_{}",
+                generate_unique_temp_prefix("extract"),
+                safe_name
             ));
+            let data_len = data.len() as u64;
+            std::fs::write(&temp_path, data)
+                .map_err(|e| format!("Failed to write extracted RAR entry: {}", e))?;
+
+            return Ok(ExtractedFile {
+                temp_path: temp_path.to_string_lossy().to_string(),
+                filename: safe_name,
+                size: data_len,
+            });
         }
-        let fb = &archive.files[entry_index];
-        if fb.name.ends_with('/') || fb.name.ends_with('\\') {
-            return Err("Cannot extract a directory entry".to_string());
-        }
-        let source_path = dir.join(&fb.name);
-        if !source_path.exists() {
-            return Err(format!(
-                "Extracted file not found at: {}",
-                source_path.display()
-            ));
-        }
-        let safe_name = sanitise_entry_name(&fb.name, entry_index);
-        let temp_path = std::env::temp_dir()
-            .join(format!("{}_{}", generate_unique_temp_prefix("extract"), safe_name));
-        std::fs::copy(&source_path, &temp_path)
-            .map_err(|e| format!("Failed to copy RAR entry: {}", e))?;
-        Ok(ExtractedFile {
-            temp_path: temp_path.to_string_lossy().to_string(),
-            filename: safe_name,
-            size: fb.head.size,
-        })
+
+        Err(format!(
+            "Entry index {} not found in RAR archive ({} entries scanned)",
+            entry_index, current_index
+        ))
     })
     .await
     .map_err(|e| format!("RAR extraction task panicked: {:?}", e))?;
 
     let _ = tokio::fs::remove_file(&archive_path).await;
-    let _ = tokio::fs::remove_dir_all(&extract_dir).await;
+    let _ = tokio::fs::remove_dir_all(&extract_dir_cleanup).await;
 
     extraction_result
 }
@@ -392,30 +476,37 @@ async fn list_sevenz_contents(
         download_to_temp_file(client, media, max_bytes, "7z", "7z").await?;
     let path = archive_path.clone();
 
-    let entries_result: Result<Vec<ArchiveEntry>, String> = tokio::task::spawn_blocking(move || {
-        let archive =
-            sevenz_rust2::Archive::open(&path).map_err(|e| format!("Failed to open 7z file: {}", e))?;
-        let entries = archive
-            .files
-            .iter()
-            .map(|e| ArchiveEntry {
-                filename: e.name().to_string(),
-                size: e.size,
-                compressed_size: e.compressed_size,
-                is_dir: e.is_directory,
-            })
-            .collect::<Vec<_>>();
-        drop(archive);
-        Ok(entries)
-    })
-    .await
-    .map_err(|e| format!("7z listing task panicked: {:?}", e))?;
+    let entries_result: Result<Vec<ArchiveEntry>, String> =
+        tokio::task::spawn_blocking(move || {
+            let archive = sevenz_rust2::Archive::open(&path)
+                .map_err(|e| format!("Failed to open 7z file: {}", e))?;
+            if archive.files.len() > MAX_ARCHIVE_ENTRIES {
+                return Err(format!(
+                    "Archive contains more than {MAX_ARCHIVE_ENTRIES} entries"
+                ));
+            }
+            let entries = archive
+                .files
+                .iter()
+                .map(|e| ArchiveEntry {
+                    filename: e.name().to_string(),
+                    size: e.size,
+                    compressed_size: e.compressed_size,
+                    is_dir: e.is_directory,
+                })
+                .collect::<Vec<_>>();
+            drop(archive);
+            Ok(entries)
+        })
+        .await
+        .map_err(|e| format!("7z listing task panicked: {:?}", e))?;
 
     let _ = tokio::fs::remove_file(&archive_path).await;
     // 7z listing doesn't extract, so extract_dir is empty — clean it up.
     let _ = tokio::fs::remove_dir_all(&extract_dir).await;
 
     let entries = entries_result?;
+    validate_archive_entries(&entries)?;
     check_non_empty(&entries, filename, "7z")?;
     Ok(entries)
 }
@@ -445,19 +536,46 @@ async fn extract_sevenz_entry(
 
         reader
             .for_each_entries(|entry, entry_reader| {
+                if idx >= MAX_ARCHIVE_ENTRIES {
+                    return Err(sevenz_rust2::Error::other(format!(
+                        "Archive contains more than {MAX_ARCHIVE_ENTRIES} entries"
+                    )));
+                }
                 let current = idx;
                 idx += 1;
                 if current != entry_index {
                     return Ok(true); // continue
                 }
                 if entry.is_directory {
-                    return Err(sevenz_rust2::Error::other("Cannot extract a directory entry"));
+                    return Err(sevenz_rust2::Error::other(
+                        "Cannot extract a directory entry",
+                    ));
+                }
+                if entry.size > MAX_ARCHIVE_ENTRY_BYTES {
+                    return Err(sevenz_rust2::Error::other(
+                        "Archive entry exceeds the extraction size limit",
+                    ));
+                }
+                if entry.compressed_size > 0
+                    && entry.size / entry.compressed_size > MAX_ARCHIVE_COMPRESSION_RATIO
+                {
+                    return Err(sevenz_rust2::Error::other(
+                        "Archive entry exceeds the compression ratio limit",
+                    ));
                 }
                 let safe_name = sanitise_entry_name(entry.name(), entry_index);
                 let mut buf = Vec::new();
                 entry_reader
+                    .take(MAX_ARCHIVE_ENTRY_BYTES + 1)
                     .read_to_end(&mut buf)
-                    .map_err(|e| sevenz_rust2::Error::other(format!("Failed to read 7z entry bytes: {}", e)))?;
+                    .map_err(|e| {
+                        sevenz_rust2::Error::other(format!("Failed to read 7z entry bytes: {}", e))
+                    })?;
+                if buf.len() as u64 > MAX_ARCHIVE_ENTRY_BYTES {
+                    return Err(sevenz_rust2::Error::other(
+                        "Archive entry exceeds the extraction size limit",
+                    ));
+                }
                 found = Some((safe_name, entry.size, buf));
                 Ok(false) // stop iteration
             })
@@ -466,8 +584,11 @@ async fn extract_sevenz_entry(
         let (safe_name, size, buf) =
             found.ok_or_else(|| format!("Entry index {} not found in 7z archive", entry_index))?;
 
-        let temp_path = std::env::temp_dir()
-            .join(format!("{}_{}", generate_unique_temp_prefix("extract"), safe_name));
+        let temp_path = std::env::temp_dir().join(format!(
+            "{}_{}",
+            generate_unique_temp_prefix("extract"),
+            safe_name
+        ));
         std::fs::write(&temp_path, &buf)
             .map_err(|e| format!("Failed to write extracted 7z entry: {}", e))?;
 
@@ -501,6 +622,32 @@ fn check_non_empty(entries: &[ArchiveEntry], filename: &str, label: &str) -> Res
             "The file \"{}\" does not appear to be a valid {} archive (no entries found)",
             filename, label,
         ));
+    }
+    Ok(())
+}
+
+fn validate_archive_entries(entries: &[ArchiveEntry]) -> Result<(), String> {
+    if entries.len() > MAX_ARCHIVE_ENTRIES {
+        return Err(format!(
+            "Archive contains more than {MAX_ARCHIVE_ENTRIES} entries"
+        ));
+    }
+    let mut total = 0_u64;
+    for entry in entries.iter().filter(|entry| !entry.is_dir) {
+        if entry.size > MAX_ARCHIVE_ENTRY_BYTES {
+            return Err("Archive entry exceeds the extraction size limit".to_string());
+        }
+        total = total
+            .checked_add(entry.size)
+            .ok_or_else(|| "Archive uncompressed size overflowed".to_string())?;
+        if total > MAX_ARCHIVE_TOTAL_UNCOMPRESSED_BYTES {
+            return Err("Archive exceeds the total uncompressed size limit".to_string());
+        }
+        if entry.compressed_size > 0
+            && entry.size / entry.compressed_size > MAX_ARCHIVE_COMPRESSION_RATIO
+        {
+            return Err("Archive entry exceeds the compression ratio limit".to_string());
+        }
     }
     Ok(())
 }

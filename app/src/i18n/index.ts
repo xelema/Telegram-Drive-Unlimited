@@ -1,40 +1,26 @@
 import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
 
-import en from './locales/en.json';
-import es from './locales/es.json';
-import ru from './locales/ru.json';
-import zhCN from './locales/zh-CN.json';
-import fr from './locales/fr.json';
-import ar from './locales/ar.json';
-import ptBR from './locales/pt-BR.json';
-import de from './locales/de.json';
-import hi from './locales/hi.json';
-import id from './locales/id.json';
-import tr from './locales/tr.json';
-import ja from './locales/ja.json';
-import ko from './locales/ko.json';
+// Optional supporter copy joins the English catalog when its UI is loaded.
+import en from './locales/en.json?core';
+
+// Translation catalogs are data, not executable JavaScript. Only the selected
+// language is fetched; Vite bundles the local JSON assets into desktop/Android.
+const localeUrls = import.meta.glob<string>(['./locales/*.json', '!./locales/en.json'], {
+  eager: true, query: '?url', import: 'default',
+});
+const languageRequests = new Map<string, Promise<void>>();
 
 i18n
   .use(initReactI18next)
   .init({
     resources: {
       en: { translation: en },
-      es: { translation: es },
-      ru: { translation: ru },
-      'zh-CN': { translation: zhCN },
-      fr: { translation: fr },
-      ar: { translation: ar },
-      'pt-BR': { translation: ptBR },
-      de: { translation: de },
-      hi: { translation: hi },
-      id: { translation: id },
-      tr: { translation: tr },
-      ja: { translation: ja },
-      ko: { translation: ko },
     },
     lng: 'en',
-    fallbackLng: 'en',
+    // Every shipped locale is structurally complete and CI rejects missing keys.
+    // Do not silently mask localization regressions with English at runtime.
+    fallbackLng: false,
     interpolation: {
       escapeValue: false, // React already safeguards from XSS
     },
@@ -42,5 +28,26 @@ i18n
       useSuspense: false,
     },
   });
+
+export async function ensureLanguageResource(language: string): Promise<void> {
+  if (language === 'en' || i18n.hasResourceBundle(language, 'translation')) return;
+  const url = localeUrls[`./locales/${language}.json`];
+  if (!url) throw new Error(`Unsupported language resource: ${language}`);
+  let request = languageRequests.get(language);
+  if (!request) {
+    request = (async () => {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`Language resource unavailable: ${language}`);
+      const resource: unknown = await response.json();
+      if (!resource || typeof resource !== 'object' || Array.isArray(resource)) throw new Error(`Invalid language resource: ${language}`);
+      if (!i18n.hasResourceBundle(language, 'translation')) {
+        i18n.addResourceBundle(language, 'translation', resource, true, true);
+      }
+    })();
+    languageRequests.set(language, request);
+  }
+  try { await request; }
+  finally { if (languageRequests.get(language) === request) languageRequests.delete(language); }
+}
 
 export default i18n;

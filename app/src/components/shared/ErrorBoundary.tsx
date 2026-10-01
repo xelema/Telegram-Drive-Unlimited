@@ -1,5 +1,6 @@
 import { Component, ReactNode } from 'react';
 import { AlertTriangle, RefreshCw } from 'lucide-react';
+import { reportCrash } from '../../services/crashTelemetry';
 
 interface Props {
     children: ReactNode;
@@ -22,6 +23,8 @@ export class ErrorBoundary extends Component<Props, State> {
 
     componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
         console.error('ErrorBoundary caught an error:', error, errorInfo);
+        sessionStorage.setItem('telegram-drive-recovered-session', 'true');
+        reportCrash(error, 'react');
     }
 
     handleReload = () => {
@@ -38,7 +41,7 @@ export class ErrorBoundary extends Component<Props, State> {
                         </div>
                         <h1 className="text-xl font-semibold text-telegram-text mb-2">Something went wrong</h1>
                         <p className="text-telegram-subtext text-sm mb-6">
-                            The application encountered an unexpected error. Please try reloading.
+                            Your session and queued transfers are safe. Reload to continue where you left off.
                         </p>
 
                         {this.state.error && (
@@ -57,7 +60,7 @@ export class ErrorBoundary extends Component<Props, State> {
                             className="inline-flex items-center gap-2 px-6 py-3 bg-telegram-primary text-black font-medium rounded-lg hover:bg-telegram-primary/90 transition-colors"
                         >
                             <RefreshCw className="w-4 h-4" />
-                            Reload Application
+                            Recover Session
                         </button>
                     </div>
                 </div>

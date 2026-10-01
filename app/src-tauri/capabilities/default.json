@@ -1,6 +1,11 @@
 {
   "identifier": "default",
   "description": "Standard permissions for Telegram Drive",
+  "platforms": [
+    "linux",
+    "macOS",
+    "windows"
+  ],
   "windows": [
     "main"
   ],

@@ -1,0 +1,19 @@
+{
+  "maxInitialJavaScriptBytes": 550000,
+  "maxJavaScriptChunkBytes": 550000,
+  "maxTotalJavaScriptBytes": 3300000,
+  "maxTotalCssBytes": 140000,
+  "maxTotalLocaleDataBytes": 1800000,
+  "maxLocaleDataBytes": 125000,
+  "routeJavaScriptBudgets": {
+    "src/components/desktop/DesktopDashboard.tsx": 310000
+  },
+  "featureChunkBudgets": {
+    "src/components/desktop/dashboard/SettingsModal.tsx": 160000,
+    "src/components/desktop/dashboard/MediaPlayer.tsx": 250000,
+    "src/components/desktop/dashboard/PdfViewer.tsx": 500000,
+    "src/components/desktop/dashboard/ArchiveViewerModal.tsx": 25000,
+    "node_modules/hls.js/dist/hls.mjs": 540000
+  },
+  "policy": "JavaScript, route, feature, and CSS ceilings are unchanged. Locale-only ceilings include the existing reviewed 24-language supporter UI expansion. Further increases require a performance review."
+}

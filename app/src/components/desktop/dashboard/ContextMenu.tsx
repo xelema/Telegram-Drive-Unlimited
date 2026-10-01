@@ -1,9 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Eye, HardDrive, Trash2, FolderOpen, Pencil, Play, FileText, Link, Copy, ArrowRightLeft } from 'lucide-react';
+import { Eye, HardDrive, Trash2, FolderOpen, Pencil, Play, FileText, Link, Copy, ArrowRightLeft, Star, Pin } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { TelegramFile, TelegramFolder } from '../../../types';
-import { isMediaFile, isPdfFile } from '../../../utils';
 import { toast } from 'sonner';
+import { describeFileActions, resolvePublicFolderUsername } from './fileActionDescriptors';
+import { requestFileOrganization } from '../../../services/workspace';
 
 interface ContextMenuProps {
     x: number;
@@ -18,12 +19,15 @@ interface ContextMenuProps {
     onMove?: () => void;
     folders?: TelegramFolder[];
     activeFolderId?: number | null;
+    onToggleFavorite?: () => void;
+    onTogglePinned?: () => void;
 }
 
-export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPreview, onShare, onRename, onMove, folders, activeFolderId }: ContextMenuProps) {
+export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPreview, onShare, onRename, onMove, folders, activeFolderId, onToggleFavorite, onTogglePinned }: ContextMenuProps) {
     const [adjustedPos, setAdjustedPos] = useState({ x, y });
     const menuRef = useRef<HTMLDivElement>(null);
     const { t } = useTranslation();
+    const actions = describeFileActions(file);
 
     // Adjust position to stay in bounds
     useLayoutEffect(() => {
@@ -70,7 +74,7 @@ export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPrevi
     return (
         <div
             ref={menuRef}
-            className="fixed z-50 min-w-[200px] bg-telegram-surface/95 backdrop-blur-xl border border-telegram-border rounded-lg shadow-2xl p-1.5 animate-in fade-in zoom-in-95 duration-100 flex flex-col gap-0.5"
+            className="quiet-menu fixed z-50 flex min-w-[220px] flex-col gap-0.5 p-1.5 animate-in fade-in zoom-in-95 duration-100"
             style={{ left: adjustedPos.x, top: adjustedPos.y }}
             onClick={(e) => e.stopPropagation()}
             onContextMenu={(e) => e.preventDefault()}
@@ -79,14 +83,14 @@ export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPrevi
                 {file.name}
             </div>
 
-            {file.type !== 'folder' && (
+            {!actions.isFolder && (
                 <button onClick={onPreview} className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-text hover:bg-telegram-hover rounded transition-colors text-left w-full">
-                    {isMediaFile(file.name) ? (
+                    {actions.previewAction === 'play' ? (
                         <>
                             <Play className="w-4 h-4 text-telegram-primary" />
                             {t('common.play')}
                         </>
-                    ) : isPdfFile(file.name) ? (
+                    ) : actions.previewAction === 'view_pdf' ? (
                         <>
                             <FileText className="w-4 h-4 text-red-400" />
                             {t('files.view_pdf')}
@@ -100,7 +104,7 @@ export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPrevi
                 </button>
             )}
 
-            {file.type === 'folder' && (
+            {actions.isFolder && (
                 <button onClick={onPreview} className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-text hover:bg-telegram-hover rounded transition-colors text-left w-full">
                     <FolderOpen className="w-4 h-4 text-yellow-500" />
                     {t('files.open')}
@@ -112,17 +116,30 @@ export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPrevi
                 {t('files.download')}
             </button>
 
-            {file.type !== 'folder' && onShare && (
+            {!actions.isFolder && onToggleFavorite && (
+                <button onClick={onToggleFavorite} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-telegram-text transition-colors hover:bg-telegram-hover">
+                    <Star className={`h-4 w-4 ${file.is_favorite ? 'fill-amber-400 text-amber-400' : 'text-amber-400'}`} />
+                    {file.is_favorite ? 'Remove from Favorites' : 'Add to Favorites'}
+                </button>
+            )}
+            {!actions.isFolder && <button type="button" onClick={() => { requestFileOrganization(file, activeFolderId ?? null); onClose(); }} className="flex min-h-9 w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-telegram-text hover:bg-telegram-hover"><FolderOpen className="h-4 w-4 text-telegram-primary" />{t('workspace.organize_file')}</button>}
+            {!actions.isFolder && onTogglePinned && (
+                <button onClick={onTogglePinned} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-telegram-text transition-colors hover:bg-telegram-hover">
+                    <Pin className={`h-4 w-4 ${file.is_pinned ? 'fill-blue-400 text-blue-400' : 'text-blue-400'}`} />
+                    {file.is_pinned ? 'Unpin' : 'Pin'}
+                </button>
+            )}
+
+            {actions.canShare && onShare && (
                 <button onClick={onShare} className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-text hover:bg-telegram-hover rounded transition-colors text-left w-full">
                     <Link className="w-4 h-4 text-telegram-primary" />
                     {t('files.share_link')}
                 </button>
             )}
 
-            {file.type !== 'folder' && (
+            {!actions.isFolder && (
                 (() => {
-                    const folder = folders?.find(f => f.id === file.folder_id) || folders?.find(f => f.id === activeFolderId);
-                    const username = folder?.username || (folder as any)?.chat?.username || (folder as any)?.channel?.username;
+                    const username = resolvePublicFolderUsername(file, folders, activeFolderId);
                     
                     if (username) {
                         const handleCopyLink = async () => {
@@ -156,21 +173,21 @@ export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPrevi
                 })()
             )}
 
-            {file.type !== 'folder' && onMove && (
+            {actions.canMove && onMove && (
                 <button onClick={onMove} className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-text hover:bg-telegram-hover rounded transition-colors text-left w-full">
                     <ArrowRightLeft className="w-4 h-4 text-amber-400" />
                     {t('files.move_to_folder')}
                 </button>
             )}
 
-            {file.type !== 'folder' && onRename && (
+            {actions.canRename && onRename && (
                 <button onClick={onRename} className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-text hover:bg-telegram-hover rounded transition-colors text-left w-full">
                     <Pencil className="w-4 h-4 text-blue-400" />
                     {t('files.rename')}
                 </button>
             )}
 
-            {file.type !== 'folder' && !onRename && (
+            {actions.canRename && !onRename && (
                 <button disabled className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-subtext hover:bg-telegram-hover rounded transition-colors text-left w-full cursor-not-allowed opacity-50">
                     <Pencil className="w-4 h-4" />
                     {t('files.rename')}

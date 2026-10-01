@@ -9,11 +9,16 @@ import { isAndroidPlatform } from '../../../utils';
 
 // Use Vite's ?url suffix to get a properly bundled asset URL for the worker
 import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.mjs?url';
+import i18n from '../../../i18n';
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
+
+const PDF_CACHE_LIMIT_BYTES = 25 * 1024 * 1024;
+const PAGE_PREFETCH_ROOT_MARGIN = '1000px 0px';
 
 interface StreamInfo {
     token: string;
     base_url: string;
+    operation_token?: string | null;
 }
 
 interface PdfViewerProps {
@@ -24,9 +29,10 @@ interface PdfViewerProps {
     currentIndex?: number;
     totalItems?: number;
     activeFolderId: number | null;
+    localPath?: string;
 }
 
-export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalItems, activeFolderId }: PdfViewerProps) {
+export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalItems, activeFolderId, localPath }: PdfViewerProps) {
     const [streamInfo, setStreamInfo] = useState<StreamInfo | null>(null);
     const [pdf, setPdf] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
     const [numPages, setNumPages] = useState<number>(0);
@@ -41,7 +47,7 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
         e.stopPropagation();
         setOpeningExternal(true);
         try {
-            const path = await invoke<string>('cmd_get_preview', {
+            const path = localPath ?? await invoke<string>('cmd_get_preview', {
                 messageId: file.id,
                 folderId: activeFolderId
             });
@@ -58,129 +64,131 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
         }
     };
 
-    // Fetch stream info once
     useEffect(() => {
-        if (isAndroidPlatform) return; // skip on Android
+        if (isAndroidPlatform || localPath) return;
         invoke<StreamInfo>('cmd_get_stream_info').then(setStreamInfo).catch((err) => {
             console.error("Failed to get stream info:", err);
             setError("Failed to initialize stream");
         });
-    }, []);
+    }, [localPath]);
 
-    // Load PDF document when stream URL is ready or file changes
     useEffect(() => {
         let cancelled = false;
+        let activeLoadingTask: pdfjsLib.PDFDocumentLoadingTask | null = null;
         setLoading(true);
         setError(null);
         setPdf(null);
         setNumPages(0);
 
-        if (isAndroidPlatform) {
-            let activeLoadingTask: any = null;
-            // Android: load via converted cache file URL
+        const finishPdfLoad = (pdfDoc: pdfjsLib.PDFDocumentProxy) => {
+            if (cancelled) {
+                void pdfDoc.destroy();
+                return;
+            }
+            if (pdfRef.current) void pdfRef.current.destroy();
+            pdfRef.current = pdfDoc;
+            setPdf(pdfDoc);
+            setNumPages(pdfDoc.numPages);
+            setLoading(false);
+        };
+
+        const loadStream = () => {
+            if (!streamInfo || cancelled) {
+                if (!streamInfo) setError("Failed to initialize stream");
+                return;
+            }
+            const folderIdParam = activeFolderId !== null ? activeFolderId.toString() : 'home';
+            const credential = streamInfo.operation_token
+                ? `&credential=${encodeURIComponent(streamInfo.operation_token)}`
+                : '';
+            const streamUrl = `${streamInfo.base_url}/stream/${folderIdParam}/${file.id}?token=${encodeURIComponent(streamInfo.token)}${credential}`;
+            activeLoadingTask = pdfjsLib.getDocument(streamUrl);
+            activeLoadingTask.promise.then(finishPdfLoad, (err) => {
+                if (cancelled) return;
+                console.error("Error loading PDF stream:", err);
+                setError("Failed to load PDF document.");
+                setLoading(false);
+            });
+        };
+
+        const loadLocalFile = (filePath: string) => {
+            activeLoadingTask = pdfjsLib.getDocument({
+                url: convertFileSrc(filePath),
+                disableRange: true,
+                disableStream: true,
+                disableAutoFetch: true,
+            });
+            activeLoadingTask.promise.then(finishPdfLoad, (err) => {
+                if (cancelled) return;
+                if (localPath) {
+                    setError(i18n.t('workspace.preview_failed'));
+                    setLoading(false);
+                    return;
+                }
+                if (!isAndroidPlatform) {
+                    console.warn("Cached PDF could not be rendered; falling back to streaming:", err);
+                    loadStream();
+                    return;
+                }
+                console.error("Error loading PDF via cache URL, falling back to external opener:", err);
+                invoke('cmd_open_file_externally', { path: filePath })
+                    .then(() => {
+                        if (!cancelled) onClose();
+                    })
+                    .catch((externalError) => {
+                        if (!cancelled) {
+                            setError("Failed to render PDF in WebView or open natively: " + String(externalError));
+                            setLoading(false);
+                        }
+                    });
+            });
+        };
+
+        if (localPath) {
+            loadLocalFile(localPath);
+            return () => { cancelled = true; void activeLoadingTask?.destroy(); };
+        }
+        if (!isAndroidPlatform && !streamInfo) {
+            return;
+        }
+
+        // Small PDFs are loaded from the bounded plaintext preview cache so a
+        // recently viewed document remains available offline. Large desktop
+        // PDFs retain range-based streaming to avoid filling the cache.
+        const shouldCache = isAndroidPlatform || file.size <= PDF_CACHE_LIMIT_BYTES;
+        if (shouldCache) {
             invoke<string>('cmd_get_preview', {
                 messageId: file.id,
-                folderId: activeFolderId
+                folderId: activeFolderId,
             }).then((filePath) => {
                 if (cancelled) return;
-                if (filePath) {
-                    const url = convertFileSrc(filePath);
-                    const loadingTask = pdfjsLib.getDocument({
-                        url: url,
-                        disableRange: true,
-                        disableStream: true,
-                        disableAutoFetch: true,
-                    });
-                    activeLoadingTask = loadingTask;
-                    loadingTask.promise.then(
-                        (pdfDoc) => {
-                            if (cancelled) {
-                                pdfDoc.destroy();
-                                return;
-                            }
-                            if (pdfRef.current) {
-                                pdfRef.current.destroy();
-                            }
-                            pdfRef.current = pdfDoc;
-                            setPdf(pdfDoc);
-                            setNumPages(pdfDoc.numPages);
-                            setLoading(false);
-                        },
-                        (err) => {
-                            if (cancelled) return;
-                            console.error("Error loading PDF via cache URL, falling back to external opener:", err);
-                            invoke('cmd_open_file_externally', { path: filePath })
-                                .then(() => {
-                                    if (!cancelled) onClose();
-                                })
-                                .catch((exErr) => {
-                                    if (!cancelled) {
-                                        setError("Failed to render PDF in WebView or open natively: " + String(exErr));
-                                        setLoading(false);
-                                    }
-                                });
-                        }
-                    );
-                } else {
+                if (filePath) loadLocalFile(filePath);
+                else if (!isAndroidPlatform) loadStream();
+                else {
                     setError("Failed to fetch PDF preview path.");
                     setLoading(false);
                 }
             }).catch((err) => {
                 if (cancelled) return;
-                console.error("Error invoking PDF preview command:", err);
-                setError("Failed to load PDF.");
-                setLoading(false);
+                if (!isAndroidPlatform) {
+                    console.warn("Could not cache PDF; falling back to streaming:", err);
+                    loadStream();
+                } else {
+                    console.error("Error invoking PDF preview command:", err);
+                    setError("Failed to load PDF.");
+                    setLoading(false);
+                }
             });
-
-            return () => {
-                cancelled = true;
-                if (activeLoadingTask) {
-                    activeLoadingTask.destroy();
-                }
-                if (pdfRef.current) {
-                    pdfRef.current.destroy();
-                }
-            };
+        } else {
+            loadStream();
         }
-
-        // Desktop: stream via Actix local server
-        if (!streamInfo) return;
-
-        const folderIdParam = activeFolderId !== null ? activeFolderId.toString() : 'home';
-        const streamUrl = `${streamInfo.base_url}/stream/${folderIdParam}/${file.id}?token=${streamInfo.token}`;
-
-        const loadingTask = pdfjsLib.getDocument(streamUrl);
-
-        loadingTask.promise.then(
-             (pdfDoc) => {
-                 if (cancelled) {
-                     pdfDoc.destroy();
-                     return;
-                 }
-                 // Destroy previous document if any
-                 if (pdfRef.current) {
-                     pdfRef.current.destroy();
-                 }
-                 pdfRef.current = pdfDoc;
-                 setPdf(pdfDoc);
-                 setNumPages(pdfDoc.numPages);
-                 setLoading(false);
-             },
-             (err) => {
-                 if (cancelled) return;
-                 console.error("Error loading PDF:", err);
-                 setError("Failed to load PDF document.");
-                 setLoading(false);
-             }
-        );
 
         return () => {
             cancelled = true;
-            loadingTask.destroy();
+            void activeLoadingTask?.destroy();
         };
-    }, [streamInfo, activeFolderId, file.id]);
+    }, [streamInfo, activeFolderId, file.id, file.size, localPath]);
 
-    // Cleanup PDF document on unmount
     useEffect(() => {
         return () => {
             if (pdfRef.current) {
@@ -249,40 +257,41 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
     };
 
     return (
-        <div className="fixed inset-0 z-[200] bg-black/90 flex flex-col p-4 backdrop-blur-md animate-in fade-in duration-200" onClick={onClose}>
+        <div className="viewer-overlay fixed inset-0 z-[200] flex flex-col p-4 animate-in fade-in duration-150" onClick={onClose}>
             {/* Header / Controls */}
-            <div className="absolute top-0 left-0 right-0 flex justify-between items-center px-4 md:px-8 z-50 pointer-events-none pt-[calc(1rem+env(safe-area-inset-top))]">
-                <div className="text-white bg-black/40 backdrop-blur-md px-4 py-2 rounded-full pointer-events-auto border border-white/10 flex items-center gap-3">
-                    <h3 className="text-sm font-medium px-2 max-w-[120px] sm:max-w-xs truncate">{file.name}</h3>
+            <div className="pointer-events-none absolute inset-x-0 top-0 z-50 flex items-center justify-between px-4 pt-[calc(1rem+env(safe-area-inset-top))] md:px-6">
+                <div className="viewer-toolbar pointer-events-auto px-2">
+                    <h3 className="max-w-[120px] truncate px-1 text-metadata font-medium text-white sm:max-w-xs" title={file.name}>{file.name}</h3>
                     <button
                         onClick={handleOpenExternally}
                         disabled={openingExternal}
-                        className="text-[9px] uppercase font-extrabold tracking-wider bg-telegram-primary text-black px-2 py-1 rounded-lg hover:bg-telegram-primary/90 transition-all active:scale-95 disabled:opacity-50"
+                        className="quiet-control h-7 rounded-control bg-app-accent px-2 text-badge font-semibold text-app-accent-contrast disabled:opacity-50"
                         title="Open document in a native external app"
                     >
                         {openingExternal ? 'Opening...' : 'Open Natively'}
                     </button>
                 </div>
 
-                <div className="flex items-center gap-2 pointer-events-auto">
-                    <div className="flex items-center gap-2 bg-black/40 backdrop-blur-md p-1.5 rounded-full border border-white/10">
-                        <button onClick={handleZoomOut} className="p-2 text-white/70 hover:text-white hover:bg-white/10 rounded-full transition-colors" title="Zoom Out (-)">
+                <div className="pointer-events-auto flex items-center gap-2">
+                    <div className="viewer-toolbar">
+                        <button onClick={handleZoomOut} className="viewer-control" title="Zoom Out (-)" aria-label={i18n.t("common.zoom_out")}>
                             <ZoomOut className="w-4 h-4" />
                         </button>
-                        <span className="text-xs text-white/90 font-medium min-w-[3rem] text-center">{Math.round(scale * 100)}%</span>
-                        <button onClick={handleZoomIn} className="p-2 text-white/70 hover:text-white hover:bg-white/10 rounded-full transition-colors" title="Zoom In (+)">
+                        <span className="min-w-[3rem] text-center text-badge font-medium tabular-nums text-white/85">{Math.round(scale * 100)}%</span>
+                        <button onClick={handleZoomIn} className="viewer-control" title="Zoom In (+)" aria-label={i18n.t("common.zoom_in")}>
                             <ZoomIn className="w-4 h-4" />
                         </button>
-                        <div className="w-px h-4 bg-white/20 mx-1"></div>
-                        <button onClick={handleFitWidth} className="p-2 text-white/70 hover:text-white hover:bg-white/10 rounded-full transition-colors" title="Fit Width">
+                        <div className="mx-0.5 h-4 w-px bg-white/15"></div>
+                        <button onClick={handleFitWidth} className="viewer-control" title="Fit Width" aria-label="Fit width">
                             <Maximize className="w-4 h-4" />
                         </button>
                     </div>
 
                     <button
                         onClick={onClose}
-                        className="p-3 text-white/50 hover:text-white bg-black/40 backdrop-blur-md hover:bg-black/60 rounded-full transition-all border border-white/10"
+                        className="viewer-navigation"
                         title="Close PDF Viewer"
+                        aria-label="Close PDF"
                     >
                         <X className="w-5 h-5" />
                     </button>
@@ -292,18 +301,20 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
             {/* Navigation Buttons */}
             <button
                 onClick={(e) => { e.stopPropagation(); onPrev?.(); }}
-                className="absolute left-4 top-1/2 -translate-y-1/2 p-3 text-white/50 hover:text-white bg-black/40 backdrop-blur-md hover:bg-black/60 rounded-full transition-all z-10 border border-white/10"
+                className="viewer-navigation absolute start-4 top-1/2 z-10 -translate-y-1/2"
                 title="Previous file (ArrowLeft / J)"
+                aria-label="Previous file"
             >
-                <ChevronLeft className="w-6 h-6" />
+                <ChevronLeft className="h-5 w-5 rtl:rotate-180" />
             </button>
 
             <button
                 onClick={(e) => { e.stopPropagation(); onNext?.(); }}
-                className="absolute right-4 top-1/2 -translate-y-1/2 p-3 text-white/50 hover:text-white bg-black/40 backdrop-blur-md hover:bg-black/60 rounded-full transition-all z-10 border border-white/10"
+                className="viewer-navigation absolute end-4 top-1/2 z-10 -translate-y-1/2"
                 title="Next file (ArrowRight / L)"
+                aria-label="Next file"
             >
-                <ChevronRight className="w-6 h-6" />
+                <ChevronRight className="h-5 w-5 rtl:rotate-180" />
             </button>
 
             {/* Scrollable Document Container */}
@@ -313,21 +324,21 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
                 onClick={(e) => e.stopPropagation()}
             >
                 {loading && (
-                    <div className="flex flex-col items-center justify-center flex-1 text-white absolute inset-0">
-                        <div className="w-10 h-10 border-4 border-telegram-primary border-t-transparent rounded-full animate-spin mb-4"></div>
-                        <p>Loading document...</p>
-                        <p className="text-xs text-white/50 mt-1">Downloading from Telegram...</p>
+                    <div className="absolute inset-0 flex flex-1 flex-col items-center justify-center text-white">
+                        <div className="mb-3 h-6 w-6 animate-spin rounded-full border-2 border-white/20 border-t-app-accent"></div>
+                        <p className="text-ui font-medium">Loading document…</p>
+                        <p className="mt-1 text-badge text-white/45">Downloading from Telegram…</p>
                     </div>
                 )}
 
                 {error && (
-                    <div className="flex flex-col items-center justify-center text-white bg-red-500/20 p-6 rounded-xl border border-red-500/50 mt-20 max-w-md text-center">
-                        <p className="font-bold mb-2">Error</p>
-                        <p className="text-sm mb-6">{error}</p>
+                    <div className="viewer-panel mt-20 flex max-w-md flex-col items-center justify-center border-app-danger/30 bg-app-danger/10 p-5 text-center text-white">
+                        <p className="mb-1 text-ui font-semibold text-app-danger">Unable to open PDF</p>
+                        <p className="mb-5 text-metadata leading-relaxed text-white/60">{error}</p>
                         <button
                             onClick={handleOpenExternally}
                             disabled={openingExternal}
-                            className="px-5 py-2.5 bg-telegram-primary text-black font-semibold rounded-xl active:scale-95 transition-all duration-200 shadow-lg text-sm disabled:opacity-50 pointer-events-auto"
+                            className="quiet-control pointer-events-auto h-9 rounded-control bg-app-accent px-4 text-ui font-semibold text-app-accent-contrast disabled:opacity-50"
                         >
                             {openingExternal ? 'Opening...' : 'Open with External App'}
                         </button>
@@ -349,9 +360,9 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
             </div>
 
             {/* Footer Navigation Info */}
-            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 text-white/50 text-sm bg-black/40 backdrop-blur-md px-4 py-1.5 rounded-full pointer-events-none border border-white/10">
+            <div className="viewer-toolbar pointer-events-none absolute bottom-4 start-1/2 -translate-x-1/2 px-3 py-1.5 text-metadata text-white/50 rtl:translate-x-1/2">
                 {typeof currentIndex === 'number' && typeof totalItems === 'number' && totalItems > 0 && (
-                    <span className="mr-3 border-r border-white/20 pr-3">File {currentIndex + 1} of {totalItems}</span>
+                    <span className="me-3 border-e border-white/20 pe-3">{i18n.t("settings.video_upload_file")} {currentIndex + 1} of {totalItems}</span>
                 )}
                 <span>{numPages} {numPages === 1 ? 'page' : 'pages'}</span>
             </div>
@@ -367,7 +378,6 @@ function PdfPage({ pageNumber, pdf, scale }: { pageNumber: number; pdf: pdfjsLib
     const containerRef = useRef<HTMLDivElement>(null);
     const [page, setPage] = useState<pdfjsLib.PDFPageProxy | null>(null);
 
-    // Intersection Observer — load page data when within 1000px of viewport
     useEffect(() => {
         const el = containerRef.current;
         if (!el) return;
@@ -376,7 +386,7 @@ function PdfPage({ pageNumber, pdf, scale }: { pageNumber: number; pdf: pdfjsLib
             (entries) => {
                 setIsVisible(entries[0].isIntersecting);
             },
-            { rootMargin: '1000px 0px' }
+            { rootMargin: PAGE_PREFETCH_ROOT_MARGIN }
         );
 
         observer.observe(el);
@@ -459,7 +469,7 @@ function PdfPage({ pageNumber, pdf, scale }: { pageNumber: number; pdf: pdfjsLib
     return (
         <div
             ref={containerRef}
-            className="relative flex flex-col items-center my-2 shadow-[0_10px_40px_rgba(0,0,0,0.5)] rounded-lg overflow-hidden bg-white/5 transition-shadow"
+            className="relative my-2 flex flex-col items-center overflow-hidden rounded-control bg-white/5 shadow-[0_8px_28px_rgba(0,0,0,0.32)]"
             style={{
                 minHeight: !page ? `${estimatedHeight}px` : undefined,
                 minWidth: !page ? `${estimatedWidth}px` : undefined,

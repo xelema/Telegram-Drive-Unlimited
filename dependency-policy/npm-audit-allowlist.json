@@ -1,0 +1,22 @@
+{
+  "expires": "2026-09-30",
+  "advisories": {
+    "GHSA-4x5r-pxfx-6jf8": "Build-only Babel source-map advisory; retained temporarily while the toolchain update is tested.",
+    "GHSA-28wg-ghj8-5hjv": "Transitive nanoid path is not used for untrusted generator sizes; awaiting the next compatible lockfile refresh.",
+    "GHSA-2v37-7h3g-55p8": "Transitive nanoid path is not used for custom zero-sized generators; awaiting the next compatible lockfile refresh.",
+    "GHSA-hq66-cqwq-w95j": "PDF.js 6 is a major upgrade. PDF execution remains constrained by the Tauri CSP while the compatibility update is tested separately.",
+    "GHSA-3v7f-55p6-f55p": "Build/test glob dependency only; awaiting compatible upstream refresh.",
+    "GHSA-c2c7-rcm5-vvqj": "Build/test glob dependency only; no attacker-controlled glob patterns are accepted.",
+    "GHSA-qx2v-qp2m-jg93": "Build-time PostCSS path; application CSS is repository-controlled.",
+    "GHSA-6g55-p6wh-862q": "Build-time PostCSS path; application CSS and source maps are repository-controlled.",
+    "GHSA-fxqj-rqcc-2cmp": "Build-time PostCSS path; application CSS and source maps are repository-controlled.",
+    "GHSA-r28c-9q8g-f849": "Build-time PostCSS path; application CSS and source maps are repository-controlled.",
+    "GHSA-mw96-cpmx-2vgc": "Build-time Rollup input paths are repository-controlled; awaiting compatible upstream refresh.",
+    "GHSA-4w7w-66w2-5vf9": "Development-server advisory; production Tauri assets are prebuilt and local.",
+    "GHSA-v2wj-q39q-566r": "Development-server advisory; CI binds Vite to loopback with repository-controlled inputs.",
+    "GHSA-p9ff-h696-f583": "Development-server advisory; CI binds Vite to loopback with repository-controlled inputs.",
+    "GHSA-v6wh-96g9-6wx3": "Development-server editor integration is not exposed by the packaged application.",
+    "GHSA-fx2h-pf6j-xcff": "Development-server advisory; the packaged application does not ship the Vite dev server."
+  },
+  "policy": "Temporary reviewed baseline only. New advisories fail. Remove entries as compatible fixes land; do not extend the expiry without explicit review."
+}
