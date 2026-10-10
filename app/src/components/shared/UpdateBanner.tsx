@@ -39,9 +39,9 @@ export function UpdateBanner({
 
                         <span className="text-white font-medium">
                             {downloading ? (
-                                <>{phase === 'verifying' ? 'Verifying signed update…' : phase === 'installing' ? 'Installing update…' : `Downloading update… ${progress}%`}</>
+                                <>{phase === 'verifying' ? t('runtime.update_verifying') : phase === 'installing' ? t('runtime.update_installing') : t('runtime.update_downloading', {percent: progress})}</>
                             ) : (
-                                <>A new version ({version}) is available!</>
+                                <>{t('runtime.update_available', {version})}</>
                             )}
                         </span>
 

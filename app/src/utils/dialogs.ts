@@ -1,3 +1,4 @@
+import i18n from '../i18n';
 import { toast } from 'sonner';
 
 export interface FileDialogFallbackOptions {
@@ -33,7 +34,7 @@ export async function pickWithFallback<T>(
         description: String(error),
         duration: 8000,
         action: {
-          label: 'Retry',
+          label: i18n.t('common.retry'),
           onClick: () => {
             done(null);
             onRetry();
@@ -49,7 +50,7 @@ export async function pickWithFallback<T>(
 
       if (options.onBrowserPicker) {
         toastOptions.cancel = {
-          label: 'Browser Picker',
+          label: i18n.t('common.browser_picker'),
           onClick: async () => {
             browserPickerClicked = true;
             const pickedValue = await options.onBrowserPicker!();

@@ -1,5 +1,6 @@
 use crate::crypto::error::{CryptoError, CryptoResult};
 use crate::crypto::policy::CryptoFeatureFlags;
+use crate::crypto::preparation::{self, Kind, Operation, Value};
 use crate::crypto::secret::{SecretBytes, SecretKey};
 use crate::crypto::vault::CryptoVault;
 use std::collections::HashMap;
@@ -20,9 +21,15 @@ pub type OperationHandle = u64;
 pub struct CryptoState {
     inner: Arc<Mutex<CryptoStateInner>>,
     auto_lock_changed: Arc<tokio::sync::Notify>,
+    #[cfg(feature = "native-e2e")]
+    prepare_gate: PrepareGate,
 }
 
+#[cfg(feature = "native-e2e")]
+type PrepareGate = Arc<Mutex<Option<(std::path::PathBuf, std::path::PathBuf)>>>;
+
 struct CryptoStateInner {
+    revision: u64,
     vault: Box<dyn CryptoVault>,
     current_session: Option<UnlockSessionId>,
     sessions: HashMap<UnlockSessionId, SessionInfo>,
@@ -69,6 +76,7 @@ impl CryptoState {
     pub fn new(vault: Box<dyn CryptoVault>) -> Self {
         Self {
             inner: Arc::new(Mutex::new(CryptoStateInner {
+                revision: 0,
                 vault,
                 current_session: None,
                 sessions: HashMap::new(),
@@ -80,7 +88,39 @@ impl CryptoState {
                 locked: true,
             })),
             auto_lock_changed: Arc::new(tokio::sync::Notify::new()),
+            #[cfg(feature = "native-e2e")]
+            prepare_gate: Arc::new(Mutex::new(None)),
         }
+    }
+
+    #[cfg(feature = "native-e2e")]
+    pub fn test_cleanup_failure(&self, fail: bool) {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .vault
+            .test_cleanup_failure(fail);
+    }
+    #[cfg(feature = "native-e2e")]
+    pub fn install_prepare_gate(&self, started: std::path::PathBuf, release: std::path::PathBuf) {
+        *self.prepare_gate.lock().unwrap_or_else(|e| e.into_inner()) = Some((started, release));
+    }
+
+    #[cfg(feature = "native-e2e")]
+    fn hold_preparation(gate: &PrepareGate) -> CryptoResult<Option<std::path::PathBuf>> {
+        let gate = gate.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some((started, release)) = gate {
+            std::fs::write(&started, b"preparing")?;
+            let deadline = Instant::now() + Duration::from_secs(120);
+            while !release.is_file() {
+                if Instant::now() >= deadline {
+                    return Err(CryptoError::internal("Preparation fixture timed out"));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            return Ok(Some(started.with_extension("finished")));
+        }
+        Ok(None)
     }
 
     fn signal_auto_lock_change(&self) {
@@ -90,6 +130,7 @@ impl CryptoState {
     }
 
     fn lock_inner(inner: &mut CryptoStateInner) {
+        inner.revision = inner.revision.wrapping_add(1);
         inner.vault.lock();
         inner.current_session = None;
         inner.sessions.clear();
@@ -98,49 +139,119 @@ impl CryptoState {
         inner.locked = true;
     }
 
-    /// Create a new vault and immediately make it available.
-    pub fn create_vault(&self, passphrase: &[u8]) -> CryptoResult<UnlockSessionId> {
+    async fn run_vault_operation(&self, operation: Operation) -> CryptoResult<Value> {
+        let requires_unlocked = operation.requires_unlocked();
+        let kind = operation.kind();
+        let disk_access = operation.disk_access();
+        let (revision, session, mut snapshot) = {
+            let inner = self
+                .inner
+                .lock()
+                .map_err(|_| CryptoError::internal("Lock poisoned"))?;
+            if requires_unlocked && inner.locked {
+                if matches!(kind, Kind::Import) {
+                    return Err(CryptoError::new(crate::crypto::error::CryptoErrorCode::KeyRequired, "[RECOVERY_VAULT_PASSPHRASE_REQUIRED] Choose the passphrase that will unlock the restored vault"));
+                }
+                return Err(CryptoError::vault_locked());
+            }
+            (
+                inner.revision,
+                inner.current_session,
+                inner.vault.preparation_snapshot()?,
+            )
+        };
+        #[cfg(feature = "native-e2e")]
+        let gate = self.prepare_gate.clone();
+        let mut prepared = crate::crypto::kdf::blocking(move || {
+            snapshot.capture_preparation_files(disk_access)?;
+            #[cfg(feature = "native-e2e")]
+            let completed = Self::hold_preparation(&gate)?;
+            let outcome = preparation::prepare(snapshot, operation);
+            #[cfg(feature = "native-e2e")]
+            if let Some(completed) = completed {
+                std::fs::write(completed, b"prepared")?;
+            }
+            outcome
+        })
+        .await
+        .map_err(CryptoError::internal)??;
         let mut inner = self
             .inner
             .lock()
             .map_err(|_| CryptoError::internal("Lock poisoned"))?;
-        inner.vault.create(passphrase)?;
-        let session_id = Self::new_unique_handle(&inner.sessions);
-        let wrapping_key = inner.vault.wrapping_key()?.clone();
-        inner
-            .sessions
-            .insert(session_id, SessionInfo { wrapping_key });
-        inner.current_session = Some(session_id);
-        inner.locked = false;
+        if inner.revision != revision
+            || inner.current_session != session
+            || (requires_unlocked && inner.locked)
+        {
+            return Err(CryptoError::new(
+                crate::crypto::error::CryptoErrorCode::PolicyRejected,
+                "VAULT_CHANGED: Vault state changed during preparation",
+            ));
+        }
+        if requires_unlocked
+            && inner
+                .auto_lock_timeout
+                .is_some_and(|timeout| inner.last_activity.elapsed() >= timeout)
+        {
+            Self::lock_inner(&mut inner);
+            drop(inner);
+            crate::local_search::invalidate();
+            self.signal_auto_lock_change();
+            return Err(CryptoError::vault_locked());
+        }
+        if !matches!(kind, Kind::Export | Kind::Verify) {
+            prepared.vault.commit_prepared()?;
+        }
+        let value = match kind {
+            Kind::Create | Kind::Unlock | Kind::Import => {
+                let session_id = Self::new_unique_handle(&inner.sessions);
+                let wrapping_key = prepared.vault.wrapping_key()?.clone();
+                if matches!(kind, Kind::Import) {
+                    inner.sessions.clear();
+                }
+                inner
+                    .sessions
+                    .insert(session_id, SessionInfo { wrapping_key });
+                inner.current_session = Some(session_id);
+                inner.locked = false;
+                inner.vault = prepared.vault;
+                inner.revision = inner.revision.wrapping_add(1);
+                Value::Session(session_id)
+            }
+            Kind::Change => {
+                inner.vault = prepared.vault;
+                inner.revision = inner.revision.wrapping_add(1);
+                Value::Unit
+            }
+            Kind::Export | Kind::Verify => prepared.value,
+        };
         inner.last_activity = Instant::now();
         drop(inner);
+        if matches!(kind, Kind::Create | Kind::Unlock | Kind::Import) {
+            crate::local_search::invalidate();
+        }
         self.signal_auto_lock_change();
-        Ok(session_id)
+        Ok(value)
     }
 
-    /// Unlock the vault and return an opaque session handle.
-    pub fn unlock(&self, passphrase: &[u8]) -> CryptoResult<UnlockSessionId> {
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|_| CryptoError::internal("Lock poisoned"))?;
-
-        inner.vault.unlock(passphrase)?;
-
-        let session_id = Self::new_unique_handle(&inner.sessions);
-
-        let wrapping_key = inner.vault.wrapping_key()?.clone();
-
-        inner
-            .sessions
-            .insert(session_id, SessionInfo { wrapping_key });
-
-        inner.current_session = Some(session_id);
-        inner.locked = false;
-        inner.last_activity = Instant::now();
-        drop(inner);
-        self.signal_auto_lock_change();
-        Ok(session_id)
+    /// Derive outside async workers/state, then publish only if the ticket survives.
+    pub async fn create_vault(&self, passphrase: &[u8]) -> CryptoResult<UnlockSessionId> {
+        match self
+            .run_vault_operation(Operation::Create(SecretBytes::from_slice(passphrase)))
+            .await?
+        {
+            Value::Session(id) => Ok(id),
+            _ => Err(CryptoError::internal("Invalid create outcome")),
+        }
+    }
+    pub async fn unlock(&self, passphrase: &[u8]) -> CryptoResult<UnlockSessionId> {
+        match self
+            .run_vault_operation(Operation::Unlock(SecretBytes::from_slice(passphrase)))
+            .await?
+        {
+            Value::Session(id) => Ok(id),
+            _ => Err(CryptoError::internal("Invalid unlock outcome")),
+        }
     }
 
     /// Lock the vault and invalidate all handles.
@@ -151,6 +262,7 @@ impl CryptoState {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         Self::lock_inner(&mut inner);
         drop(inner);
+        crate::local_search::invalidate();
         self.signal_auto_lock_change();
     }
 
@@ -251,6 +363,32 @@ impl CryptoState {
         Ok(key)
     }
 
+    /// Revalidate an in-flight capability without renewing vault activity.
+    pub fn validate_operation(
+        &self,
+        handle: OperationHandle,
+        class: OperationClass,
+    ) -> CryptoResult<()> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| CryptoError::internal("Lock poisoned"))?;
+        let operation = inner
+            .operation_handles
+            .get(&handle)
+            .ok_or_else(CryptoError::vault_locked)?;
+        if inner.locked
+            || operation.operation_class != class
+            || inner.current_session != Some(operation.session_id)
+            || !inner.sessions.contains_key(&operation.session_id)
+            || (class == OperationClass::MediaStream
+                && operation.created_at.elapsed() > MEDIA_OPERATION_TTL)
+        {
+            return Err(CryptoError::vault_locked());
+        }
+        Ok(())
+    }
+
     pub fn revoke_operation_handle(&self, handle: OperationHandle) {
         if let Ok(mut inner) = self.inner.lock() {
             inner.operation_handles.remove(&handle);
@@ -276,6 +414,11 @@ impl CryptoState {
     /// Get the wrapping key for the currently authorized session without
     /// exposing or guessing its opaque identifier at transfer call sites.
     pub fn get_current_wrapping_key(&self) -> CryptoResult<SecretKey> {
+        self.current_credential().map(|(_, key)| key)
+    }
+
+    /// Capture the key and its revocable session under the same vault lock.
+    pub fn current_credential(&self) -> CryptoResult<(UnlockSessionId, SecretKey)> {
         let inner = self
             .inner
             .lock()
@@ -289,8 +432,28 @@ impl CryptoState {
         inner
             .sessions
             .get(&session_id)
-            .map(|session| session.wrapping_key.clone())
+            .map(|session| (session_id, session.wrapping_key.clone()))
             .ok_or_else(CryptoError::vault_locked)
+    }
+
+    /// Hold only the final synchronous publication against vault revocation.
+    /// No database or network work belongs inside this callback.
+    pub fn with_current_session<T>(
+        &self,
+        session_id: UnlockSessionId,
+        operation: impl FnOnce() -> T,
+    ) -> CryptoResult<T> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| CryptoError::internal("Lock poisoned"))?;
+        if inner.locked
+            || inner.current_session != Some(session_id)
+            || !inner.sessions.contains_key(&session_id)
+        {
+            return Err(CryptoError::vault_locked());
+        }
+        Ok(operation())
     }
 
     pub fn current_session(&self) -> Option<UnlockSessionId> {
@@ -361,51 +524,88 @@ impl CryptoState {
         Ok(entry.secret)
     }
 
-    /// Export a recovery bundle.
-    pub fn export_recovery(&self, recovery_passphrase: &[u8]) -> CryptoResult<Vec<u8>> {
-        let inner = self
+    pub async fn export_recovery(&self, passphrase: &[u8]) -> CryptoResult<Vec<u8>> {
+        match self
+            .run_vault_operation(Operation::Export(SecretBytes::from_slice(passphrase)))
+            .await?
+        {
+            Value::Bundle(bytes) => Ok(bytes),
+            _ => Err(CryptoError::internal("Invalid export outcome")),
+        }
+    }
+    pub async fn verify_recovery(
+        &self,
+        bundle: &[u8],
+        passphrase: &[u8],
+    ) -> CryptoResult<crate::crypto::vault::RecoveryVerification> {
+        match self
+            .run_vault_operation(Operation::Verify {
+                bundle: bundle.to_vec(),
+                passphrase: SecretBytes::from_slice(passphrase),
+            })
+            .await?
+        {
+            Value::Verification(value) => Ok(value),
+            _ => Err(CryptoError::internal("Invalid verification outcome")),
+        }
+    }
+
+    /// Stores a profile wrapping key in the unlocked vault. Only the native
+    /// E2E driver needs this today, to model a bundle exported before a key
+    /// was added.
+    #[cfg(feature = "native-e2e")]
+    pub fn save_profile(&self, profile_id: &str, wrapping_key: SecretKey) -> CryptoResult<()> {
+        let mut inner = self
             .inner
             .lock()
             .map_err(|_| CryptoError::internal("Lock poisoned"))?;
         if inner.locked {
             return Err(CryptoError::vault_locked());
         }
-        inner.vault.export_bundle(recovery_passphrase)
-    }
-
-    /// Import a recovery bundle.
-    pub fn import_recovery(&self, bundle: &[u8], recovery_passphrase: &[u8]) -> CryptoResult<()> {
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|_| CryptoError::internal("Lock poisoned"))?;
-        inner.vault.import_bundle(bundle, recovery_passphrase)?;
-        let session_id = Self::new_unique_handle(&inner.sessions);
-        let wrapping_key = inner.vault.wrapping_key()?.clone();
-        inner.sessions.clear();
-        inner
-            .sessions
-            .insert(session_id, SessionInfo { wrapping_key });
-        inner.current_session = Some(session_id);
-        inner.locked = false;
-        inner.last_activity = Instant::now();
-        drop(inner);
-        self.signal_auto_lock_change();
+        inner.vault.save_profile(profile_id, wrapping_key)?;
+        inner.revision = inner.revision.wrapping_add(1);
         Ok(())
     }
 
-    pub fn change_vault_passphrase(&self, new_passphrase: &[u8]) -> CryptoResult<()> {
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|_| CryptoError::internal("Lock poisoned"))?;
+    /// Non-secret identifier of the unlocked vault, or `None` while locked.
+    pub fn vault_identity(&self) -> Option<String> {
+        let inner = self.inner.lock().ok()?;
         if inner.locked {
-            return Err(CryptoError::vault_locked());
+            return None;
         }
-        inner.vault.change_passphrase(new_passphrase)?;
-        inner.last_activity = Instant::now();
-        drop(inner);
-        self.signal_auto_lock_change();
+        inner.vault.identity().ok()
+    }
+
+    /// Import a recovery bundle. See [`CryptoVault::import_bundle`] for the
+    /// passphrase and key-replacement rules.
+    pub async fn import_recovery(
+        &self,
+        bundle: &[u8],
+        recovery_passphrase: &[u8],
+        vault_passphrase: Option<&[u8]>,
+        allow_key_replacement: bool,
+        replace_existing: bool,
+    ) -> CryptoResult<()> {
+        self.run_vault_operation(Operation::Import {
+            bundle: bundle.to_vec(),
+            recovery: SecretBytes::from_slice(recovery_passphrase),
+            vault_passphrase: vault_passphrase.map(SecretBytes::from_slice),
+            allow_replacement: allow_key_replacement,
+            replace_existing,
+        })
+        .await?;
+        Ok(())
+    }
+    pub async fn change_vault_passphrase(
+        &self,
+        current_passphrase: &[u8],
+        new_passphrase: &[u8],
+    ) -> CryptoResult<()> {
+        self.run_vault_operation(Operation::Change {
+            current: SecretBytes::from_slice(current_passphrase),
+            replacement: SecretBytes::from_slice(new_passphrase),
+        })
+        .await?;
         Ok(())
     }
 
@@ -416,6 +616,7 @@ impl CryptoState {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         inner.features = features;
+        inner.revision = inner.revision.wrapping_add(1);
     }
 
     /// Get feature flags.
@@ -494,6 +695,7 @@ impl CryptoState {
         }
         drop(inner);
         if due {
+            crate::local_search::invalidate();
             self.signal_auto_lock_change();
         }
         due
@@ -519,6 +721,9 @@ impl CryptoState {
             inner.last_activity = Instant::now();
         }
         drop(inner);
+        if auto_locked {
+            crate::local_search::invalidate();
+        }
         self.signal_auto_lock_change();
         auto_locked
     }

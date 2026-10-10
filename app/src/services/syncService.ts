@@ -3,6 +3,7 @@ import type { ConflictResolution, SyncConflict, SyncPair, SyncPairSaveOptions, S
 
 export const getSyncSettings = (ownerId: string) => invoke<SyncSettings>('cmd_get_sync_settings', { ownerId });
 export const toggleSync = (enabled: boolean, ownerId: string) => invoke<SyncSettings>('cmd_toggle_sync', { enabled, ownerId });
+export const setSyncScanner = (scanner: NonNullable<SyncSettings['scanner']>, ownerId: string) => invoke<SyncSettings>('cmd_set_sync_scanner', { scanner, ownerId });
 export const getSyncPairs = (ownerId: string) => invoke<SyncPair[]>('cmd_get_sync_pairs', { ownerId });
 export const addSyncPair = (localPath: string, channelId: number, label: string | undefined, options: SyncPairSaveOptions, ownerId: string) => invoke<SyncPair>('cmd_add_sync_pair', {
   localPath,

@@ -191,6 +191,15 @@ pub async fn cmd_get_proxy_status(
 /// Unlike cmd_is_network_available (which only TCP-pings the proxy host:port),
 /// this creates a temporary grammers session and attempts a real API call.
 /// Returns true only if the Telegram API responds successfully through the proxy.
+pub(crate) async fn proxy_transport_works<T>(
+    request: impl std::future::Future<Output = Result<T, grammers_mtsender::InvocationError>>,
+) -> bool {
+    matches!(
+        tokio::time::timeout(Duration::from_secs(10), request).await,
+        Ok(Ok(_)) | Ok(Err(grammers_mtsender::InvocationError::Rpc(_)))
+    )
+}
+
 #[tauri::command]
 pub async fn cmd_test_proxy_traffic(
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
@@ -215,7 +224,9 @@ pub async fn cmd_test_proxy_traffic(
     );
 
     // Create a temporary session in a temp directory
-    let temp_dir = std::env::temp_dir().join("telegram_drive_proxy_test");
+    let temp_dir = crate::temp_artifacts::staging_root()
+        .map_err(|error| format!("Could not prepare private staging storage: {error}"))?
+        .join("telegram_drive_proxy_test");
     let _ = std::fs::create_dir_all(&temp_dir);
     let session_path = temp_dir.join("test.session");
     let session_path_str = session_path.to_string_lossy().to_string();
@@ -241,12 +252,8 @@ pub async fn cmd_test_proxy_traffic(
 
             let pool = grammers_mtsender::SenderPool::with_configuration(
                 session.clone(),
-                // Use a hardcoded test app ID (telegram.org test credentials won't work,
-                // but with a real session the API ID doesn't matter for get_me).
-                // We just need the transport to work. Use API ID 0 as a sentinel —
-                // grammers will still establish the TCP+TLS tunnel.
-                // NOTE: grammers requires a non-zero API ID for connection params.
-                // We use a minimal valid value; the session will still try to connect.
+                // A placeholder API ID can receive an authenticated RPC error.
+                // Such a response proves transport, not account authorization.
                 12345,
                 conn_params,
             );
@@ -260,8 +267,7 @@ pub async fn cmd_test_proxy_traffic(
             });
 
             // Try get_me() with a timeout
-            let result =
-                tokio::time::timeout(std::time::Duration::from_secs(10), client.get_me()).await;
+            let result = proxy_transport_works(client.get_me()).await;
 
             // Abort runner regardless of outcome
             runner_handle.abort();
@@ -271,17 +277,7 @@ pub async fn cmd_test_proxy_traffic(
             let _ = std::fs::remove_file(format!("{}-wal", session_path_str));
             let _ = std::fs::remove_file(format!("{}-shm", session_path_str));
 
-            match result {
-                Ok(Ok(_me)) => Ok(true),
-                Ok(Err(e)) => {
-                    log::warn!("Proxy traffic test failed (API error): {}", e);
-                    Ok(false)
-                }
-                Err(_timeout) => {
-                    log::warn!("Proxy traffic test timed out after 10s");
-                    Ok(false)
-                }
-            }
+            Ok(result)
         })
     })
     .await
@@ -433,7 +429,9 @@ pub async fn cmd_detect_vpn() -> Result<bool, String> {
         #[cfg(target_os = "windows")]
         {
             // Windows: run ipconfig and check output for common VPN adapter keywords
-            match std::process::Command::new("ipconfig").output() {
+            let mut ipconfig = std::process::Command::new("ipconfig");
+            crate::process_util::hide_console_blocking(&mut ipconfig);
+            match ipconfig.output() {
                 Ok(output) => {
                     let stdout = String::from_utf8_lossy(&output.stdout).to_lowercase();
                     let vpn_keywords = [

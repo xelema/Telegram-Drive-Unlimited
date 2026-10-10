@@ -83,3 +83,23 @@ pub mod domains {
     pub const SEARCH_INDEX: &[u8] = b"telegram-drive:search-index:v1";
     pub const RECOVERY_EXPORT: &[u8] = b"telegram-drive:recovery-export:v2";
 }
+
+/// Share two blocking-worker permits across vault and per-file Argon2 work.
+/// The permit stays with a detached worker until derivation finishes.
+pub(crate) async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, String> {
+    static SLOTS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+        std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(2)));
+    let permit = SLOTS
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| "Crypto workers stopped".to_string())?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        work()
+    })
+    .await
+    .map_err(|_| "Crypto worker was interrupted".to_string())
+}

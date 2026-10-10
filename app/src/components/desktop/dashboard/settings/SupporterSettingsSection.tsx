@@ -214,7 +214,7 @@ export function SupporterSettingsSection() {
           <summary className="cursor-pointer text-xs font-medium text-app-text">{t('supporter_license.restore_heading_desktop')}</summary>
           <p className="mt-2 text-xs leading-5 text-app-text-secondary">{t('supporter_license.restore_description_desktop')}</p>
           <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-            <input dir="ltr" aria-label={t('supporter_license.recovery_code_label')} value={recoveryCode} onChange={event => setRecoveryCode(event.target.value)} placeholder="XXXXX-XXXXX-XXXXX-XXXXX" autoComplete="off" spellCheck={false} className="min-w-0 flex-1 rounded-control border border-app-border bg-app-surface px-3 py-2 text-xs text-app-text outline-none focus:border-app-accent" />
+            <input dir="ltr" aria-label={t('supporter_license.recovery_code_label')} value={recoveryCode} onChange={event => setRecoveryCode(event.target.value)} placeholder={t('supporter_license.recovery_example')} autoComplete="off" spellCheck={false} className="min-w-0 flex-1 rounded-control border border-app-border bg-app-surface px-3 py-2 text-xs text-app-text outline-none focus:border-app-accent" />
             <button type="button" disabled={!acceptedTerms || !recoveryCode.trim() || busy} onClick={() => void recoverPurchase()} className="quiet-control px-4 py-2 text-xs font-medium text-app-text disabled:opacity-50">{t('supporter_license.restore_action_desktop')}</button>
           </div>
           <p className="mt-2 text-xs leading-5 text-app-text-tertiary">{t('supporter_license.restore_help')}</p>

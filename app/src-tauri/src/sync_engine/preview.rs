@@ -205,7 +205,16 @@ pub async fn preview_pair(
         account_owner: Some(account.owner.to_string()),
         preferences: request.preferences.clone(),
     };
-    let mut local = super::scan_local(&pair.local_path, &pair.preferences).await?;
+    // A preview always reads every file: it is what the user reviews before
+    // any change is allowed, so it never relies on recorded hashes.
+    let mut local = super::scan_local(
+        &pair.local_path,
+        &pair.preferences,
+        super::LocalScanMode::HashEveryFile,
+        None,
+    )
+    .await?
+    .tree;
     let mut synced = if let Some(pair_id) = request.pair_id {
         super::load_synced_tree(db, pair_id).await?
     } else {
@@ -217,6 +226,11 @@ pub async fn preview_pair(
     let mut remote = super::scan_remote(app, &pair, &synced, shutdown, &account).await?;
     account.validate()?;
     super::retain_tree_paths(&mut local, &mut remote, &mut synced, &pair.preferences);
+    // Mirror what execution will do, without persisting anything.
+    planner::resume_interrupted_uploads(&local, &remote, &mut synced);
+    if pair.preferences.adopt_matching_files {
+        planner::adopt_matching_files(&local, &remote, &mut synced);
+    }
     let operations = planner::operations_for_policy(
         &local,
         &remote,

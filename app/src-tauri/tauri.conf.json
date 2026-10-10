@@ -2,17 +2,18 @@
   "$schema": "https://schema.tauri.app/config/2",
   "plugins": {
     "shell": {
-      "open": true
+      "open": "(?:https?://[^\\s]+|mailto:[^\\s]+)"
     },
     "updater": {
       "endpoints": [
-        "https://github.com/caamer20/Telegram-Drive/releases/latest/download/latest.json"
+        "https://github.com/caamer20/Telegram-Drive/releases/latest/download/latest.json",
+        "https://telegram-drive.com/updates/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDUwN0I3MDBFMzQ5Nzk2M0MKUldROGxwYzBEbkI3VUwwOE13MURPOUtGWWVNTGNkaFZ3WEg0MHFoR0JMSlVjNXBwYksxWEhNMkoK"
     }
   },
   "productName": "Telegram Drive",
-  "version": "3.9.9",
+  "version": "4.0.0",
   "identifier": "com.cameronamer.telegramdrive",
   "build": {
     "beforeDevCommand": "npm run dev",

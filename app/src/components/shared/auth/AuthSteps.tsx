@@ -52,14 +52,15 @@ export function AuthSetupStep({
   onShowHelp,
   onDevLogin,
 }: AuthSetupStepProps) {
+  const { t } = useTranslation();
   return (
     <motion.form key="setup" initial={{ x: 20, opacity: 0 }} animate={{ x: 0, opacity: 1 }} exit={{ x: -20, opacity: 0 }} onSubmit={onSubmit} className="space-y-4">
       <div className="rounded-container border border-app-accent/20 bg-app-accent/5 p-4 text-center">
         <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-app-selected text-app-accent"><QrCode className="h-5 w-5" /></div>
-        <h2 className="mt-3 text-sm font-semibold text-app-text">QR-first secure sign in</h2>
-        <p className="mt-1 text-xs leading-5 text-app-text-secondary">Desktop sign-in uses Telegram's QR device flow. A one-time API ID and hash are still required by Telegram to identify this open-source client.</p>
+        <h2 className="mt-3 text-sm font-semibold text-app-text">{t('auth_copy.qr_title')}</h2>
+        <p className="mt-1 text-xs leading-5 text-app-text-secondary">{t('auth_copy.qr_description')}</p>
       </div>
-      <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-app-text-tertiary"><span className="h-px flex-1 bg-app-border-subtle" />Advanced client credentials<span className="h-px flex-1 bg-app-border-subtle" /></div>
+      <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-app-text-tertiary"><span className="h-px flex-1 bg-app-border-subtle" />{t('auth_copy.advanced')}<span className="h-px flex-1 bg-app-border-subtle" /></div>
       <div className="space-y-3">
         <div>
           <label htmlFor="telegram-api-id" className="auth-label">{i18n.t("auth.api_id")}</label>
@@ -72,12 +73,12 @@ export function AuthSetupStep({
           <label htmlFor="telegram-api-hash" className="auth-label">{i18n.t("auth.api_hash")}</label>
           <div className="relative">
             <Key className="auth-input-icon" />
-            <input type="text" id="telegram-api-hash" value={apiHash} onChange={event => onApiHashChange(event.target.value)} placeholder="abcdef123456..." className="auth-input font-mono" />
+            <input type="text" id="telegram-api-hash" value={apiHash} onChange={event => onApiHashChange(event.target.value)} placeholder={t('auth_copy.hash_example')} className="auth-input font-mono" />
           </div>
         </div>
       </div>
       <button type="submit" className="quiet-control auth-primary-action">
-        {isMobile ? 'Continue to phone sign in' : 'Continue to QR sign in'} <ArrowRight className="h-4 w-4 rtl:rotate-180" />
+        {isMobile ? t('auth_copy.continue_phone') : t('auth_copy.continue_qr')} <ArrowRight className="h-4 w-4 rtl:rotate-180" />
       </button>
       <button type="button" onClick={onShowHelp} className="quiet-control auth-secondary-action w-full">
         <HelpCircle className="w-3 h-3" /> {i18n.t("auth.how_to_get_credentials")}
@@ -142,7 +143,7 @@ export function AuthMethodStep({
           </div>
           <div className="flex flex-col gap-3">
             <button type="submit" disabled={loading} className="quiet-control auth-primary-action disabled:opacity-45">
-              {loading ? 'Connecting...' : <>{i18n.t("auth.continue")} <ArrowRight className="h-4 w-4 rtl:rotate-180" /></>}
+              {loading ? i18n.t('auth_copy.connecting') : <>{i18n.t("auth.continue")} <ArrowRight className="h-4 w-4 rtl:rotate-180" /></>}
             </button>
             <button type="button" onClick={onBack} className="quiet-control auth-secondary-action w-full">{i18n.t("auth.back_to_config")}</button>
           </div>
@@ -161,7 +162,7 @@ export function AuthMethodStep({
               </div>
               <div className="text-center space-y-1">
                 <p className="text-ui text-app-text">{i18n.t("auth.scan_qr")}</p>
-                <p className="text-metadata text-app-text-tertiary">Settings &gt; Devices &gt; Link Desktop Device</p>
+                <p className="text-metadata text-app-text-tertiary">{i18n.t('auth_copy.qr_path')}</p>
               </div>
               {qrPolling && (
                 <div className="flex items-center gap-2 text-metadata text-app-accent">
@@ -270,6 +271,7 @@ interface AuthPasswordStepProps {
 }
 
 export function AuthPasswordStep({ password, loading, onPasswordChange, onSubmit, onBack }: AuthPasswordStepProps) {
+    useTranslation();
   return (
     <motion.form key="password" initial={{ x: 20, opacity: 0 }} animate={{ x: 0, opacity: 1 }} exit={{ x: -20, opacity: 0 }} onSubmit={onSubmit} className="space-y-5">
       <div className="space-y-2">
@@ -283,7 +285,7 @@ export function AuthPasswordStep({ password, loading, onPasswordChange, onSubmit
         </div>
       </div>
       <div className="flex flex-col gap-3">
-        <button type="submit" disabled={loading || !password} className="quiet-control auth-primary-action disabled:opacity-45">{loading ? 'Verifying...' : 'Unlock'}</button>
+        <button type="submit" disabled={loading || !password} className="quiet-control auth-primary-action disabled:opacity-45">{loading ? i18n.t("auth.verifying") : i18n.t('auth_copy.unlock')}</button>
         <button type="button" onClick={onBack} className="quiet-control auth-secondary-action w-full">{i18n.t("auth.back_to_code")}</button>
       </div>
     </motion.form>

@@ -1,7 +1,7 @@
 use crate::crypto::state::{CryptoState, UnlockSessionId};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 const CRYPTO_CONTRACT_VERSION: u16 = 2;
 const CRYPTO_BACKEND_BUILD_ID: &str = concat!(env!("CARGO_PKG_VERSION"), "-tdenc2");
@@ -88,6 +88,9 @@ pub struct VaultStatus {
     pub session_id: Option<UnlockSessionId>,
     pub has_recovery: bool,
     pub created_at: Option<String>,
+    /// Non-secret identifier of the unlocked vault; `None` while locked. Lets
+    /// the interface bind the recovery drill to the vault it was run against.
+    pub vault_id: Option<String>,
 }
 
 /// File encryption info for the frontend.
@@ -253,16 +256,18 @@ pub async fn cmd_update_encryption_settings(
 /// Create a new vault.
 #[tauri::command]
 pub async fn cmd_create_vault(
-    mut passphrase: String,
+    passphrase: String,
     crypto_state: State<'_, CryptoState>,
     app_handle: tauri::AppHandle,
 ) -> Result<UnlockSessionId, String> {
+    let mut passphrase = Zeroizing::new(passphrase);
     if !crypto_state.get_features().core_available {
         passphrase.zeroize();
         return Err("[ENCRYPTION_BLOCKED] Vault creation is disabled until the production vault and TDENC2 format are ready.".to_string());
     }
     let result = crypto_state
         .create_vault(passphrase.as_bytes())
+        .await
         .map_err(|e| e.to_string());
     passphrase.zeroize();
     if result.is_ok() {
@@ -274,12 +279,14 @@ pub async fn cmd_create_vault(
 /// Unlock the vault and get a session handle.
 #[tauri::command]
 pub async fn cmd_unlock_vault(
-    mut passphrase: String,
+    passphrase: String,
     crypto_state: State<'_, CryptoState>,
     app_handle: tauri::AppHandle,
 ) -> Result<UnlockSessionId, String> {
+    let mut passphrase = Zeroizing::new(passphrase);
     let result = crypto_state
         .unlock(passphrase.as_bytes())
+        .await
         .map_err(|e| e.to_string());
     passphrase.zeroize();
     if result.is_ok() {
@@ -290,12 +297,17 @@ pub async fn cmd_unlock_vault(
 
 #[tauri::command]
 pub async fn cmd_change_vault_passphrase(
-    mut new_passphrase: String,
+    current_passphrase: String,
+    new_passphrase: String,
     crypto_state: State<'_, CryptoState>,
 ) -> Result<(), String> {
+    let mut current_passphrase = Zeroizing::new(current_passphrase);
+    let mut new_passphrase = Zeroizing::new(new_passphrase);
     let result = crypto_state
-        .change_vault_passphrase(new_passphrase.as_bytes())
+        .change_vault_passphrase(current_passphrase.as_bytes(), new_passphrase.as_bytes())
+        .await
         .map_err(|error| error.to_string());
+    current_passphrase.zeroize();
     new_passphrase.zeroize();
     result
 }
@@ -360,21 +372,24 @@ pub async fn cmd_get_vault_status(
         session_id: None,
         has_recovery: false,
         created_at: None,
+        vault_id: crypto_state.vault_identity(),
     })
 }
 
 /// Export a recovery bundle.
 #[tauri::command]
 pub async fn cmd_export_vault_recovery(
-    mut recovery_passphrase: String,
+    recovery_passphrase: String,
     crypto_state: State<'_, CryptoState>,
 ) -> Result<String, String> {
+    let mut recovery_passphrase = Zeroizing::new(recovery_passphrase);
     if !crypto_state.get_features().core_available {
         recovery_passphrase.zeroize();
         return Err("[RECOVERY_UNAVAILABLE] Recovery export is disabled because the current implementation cannot produce a valid recovery bundle.".to_string());
     }
     let bundle_result = crypto_state
         .export_recovery(recovery_passphrase.as_bytes())
+        .await
         .map_err(|e| e.to_string());
     recovery_passphrase.zeroize();
     let bundle = bundle_result?;
@@ -384,36 +399,118 @@ pub async fn cmd_export_vault_recovery(
     ))
 }
 
-/// Import a recovery bundle.
+/// Result of checking a recovery bundle against the unlocked vault.
+#[derive(Debug, Clone, Serialize)]
+pub struct RecoveryVerificationResult {
+    pub matches_vault: bool,
+    pub missing_profiles: usize,
+    pub complete: bool,
+}
+
+/// Prove that a saved recovery bundle can restore the unlocked vault. Nothing
+/// is written: the vault file, its passphrase and its keys stay untouched.
 #[tauri::command]
-pub async fn cmd_import_vault_recovery(
+pub async fn cmd_verify_vault_recovery(
     mut bundle_base64: String,
-    mut recovery_passphrase: String,
-    replace_existing: Option<bool>,
+    recovery_passphrase: String,
     crypto_state: State<'_, CryptoState>,
-) -> Result<(), String> {
+) -> Result<RecoveryVerificationResult, String> {
+    let mut recovery_passphrase = Zeroizing::new(recovery_passphrase);
     if !crypto_state.get_features().core_available {
         bundle_base64.zeroize();
         recovery_passphrase.zeroize();
+        return Err("[RECOVERY_UNAVAILABLE] Recovery verification is unavailable.".to_string());
+    }
+    let decoded = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        bundle_base64.trim(),
+    )
+    .map_err(|e| format!("Invalid base64: {}", e));
+    bundle_base64.zeroize();
+    let mut bundle = match decoded {
+        Ok(bundle) => bundle,
+        Err(error) => {
+            recovery_passphrase.zeroize();
+            return Err(error);
+        }
+    };
+    let outcome = crypto_state
+        .verify_recovery(&bundle, recovery_passphrase.as_bytes())
+        .await
+        .map_err(|e| e.to_string());
+    bundle.zeroize();
+    recovery_passphrase.zeroize();
+    let result = outcome?;
+    Ok(RecoveryVerificationResult {
+        matches_vault: result.matches_vault_key,
+        missing_profiles: result.missing_profiles,
+        complete: result.is_complete(),
+    })
+}
+
+/// Import a recovery bundle.
+///
+/// `vault_passphrase` becomes the passphrase of the restored vault. It may be
+/// omitted only while the vault is unlocked, in which case the current
+/// passphrase is kept. `allow_key_replacement` must be set to replace an
+/// unlocked vault with a bundle that lacks keys the vault currently holds.
+#[tauri::command]
+pub async fn cmd_import_vault_recovery(
+    mut bundle_base64: String,
+    recovery_passphrase: String,
+    vault_passphrase: Option<String>,
+    replace_existing: Option<bool>,
+    allow_key_replacement: Option<bool>,
+    crypto_state: State<'_, CryptoState>,
+) -> Result<(), String> {
+    let mut recovery_passphrase = Zeroizing::new(recovery_passphrase);
+    let mut vault_passphrase = vault_passphrase
+        .filter(|value| !value.is_empty())
+        .map(Zeroizing::new);
+    if !crypto_state.get_features().core_available {
+        bundle_base64.zeroize();
+        recovery_passphrase.zeroize();
+        vault_passphrase.zeroize();
         return Err("[RECOVERY_UNAVAILABLE] Recovery import is disabled until authenticated recovery bundles are implemented.".to_string());
     }
     if crypto_state.vault_exists() && replace_existing != Some(true) {
         bundle_base64.zeroize();
         recovery_passphrase.zeroize();
+        vault_passphrase.zeroize();
         return Err(
             "[RECOVERY_CONFIRMATION_REQUIRED] Import would replace the existing vault".to_string(),
         );
     }
-    let mut bundle =
-        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &bundle_base64)
-            .map_err(|e| format!("Invalid base64: {}", e))?;
+    let decoded = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        bundle_base64.trim(),
+    )
+    .map_err(|e| format!("Invalid base64: {}", e));
+    bundle_base64.zeroize();
+    let mut bundle = match decoded {
+        Ok(bundle) => bundle,
+        Err(error) => {
+            recovery_passphrase.zeroize();
+            vault_passphrase.zeroize();
+            return Err(error);
+        }
+    };
 
     let result = crypto_state
-        .import_recovery(&bundle, recovery_passphrase.as_bytes())
+        .import_recovery(
+            &bundle,
+            recovery_passphrase.as_bytes(),
+            vault_passphrase
+                .as_ref()
+                .map(|passphrase| passphrase.as_bytes()),
+            allow_key_replacement == Some(true),
+            replace_existing == Some(true),
+        )
+        .await
         .map_err(|e| e.to_string());
     bundle.zeroize();
-    bundle_base64.zeroize();
     recovery_passphrase.zeroize();
+    vault_passphrase.zeroize();
     result
 }
 

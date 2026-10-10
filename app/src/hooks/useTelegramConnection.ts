@@ -1,3 +1,4 @@
+import i18n from '../i18n';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { load, type Store } from '@tauri-apps/plugin-store';
@@ -5,7 +6,7 @@ import { toast } from 'sonner';
 import { useConfirm } from '../context/ConfirmContext';
 import { TelegramFolder, FolderInviteInfo, FolderGroup } from '../types';
 import { useNetworkStatus } from './useNetworkStatus';
-import { clearImageMemoryCaches } from '../services/imagePreviewCache';
+import { clearImageMemoryCaches, setImageCacheAccount } from '../services/imagePreviewCache';
 import { userFacingError } from '../services/userFacingError';
 import { useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
@@ -35,10 +36,12 @@ export function useTelegramConnection(onLogoutParent: () => void) {
             try {
                 const id = await getCurrentAccountId();
                 if (generation !== accountGeneration.current) return null;
+                setImageCacheAccount(id);
                 setAccountId(id);
                 return id;
             } catch (error) {
                 if (generation !== accountGeneration.current) return null;
+                setImageCacheAccount(null);
                 setAccountId(null);
                 // A busy session database must not disable every file query
                 // until a window visibility change. Never infer an owner or
@@ -190,15 +193,23 @@ export function useTelegramConnection(onLogoutParent: () => void) {
         let progress: string | number | undefined;
         let signedOut = false;
         try {
-            if (!await confirm({ title: "Sign Out", message: "Are you sure you want to sign out? This will disconnect your active session.", confirmText: "Sign Out", variant: 'danger' })) return;
+            if (!await confirm({ title: i18n.t('common.sign_out'), message: "Are you sure you want to sign out? This will disconnect your active session.", confirmText: i18n.t('common.sign_out'), variant: 'danger' })) return;
             progress = toast.loading(t('common.logout'), { description: t('common.loading') });
             // Ignore an account lookup that was already running when sign-out
             // began, but retain the current identity unless native logout succeeds.
             accountGeneration.current++;
             window.clearTimeout(accountRetryTimer.current);
-            if (await invoke<boolean>('cmd_logout') !== true) throw new Error('Logout did not complete');
+            const outcome = await invoke<boolean | { signed_out?: boolean; remote_session_revoked?: boolean }>('cmd_logout');
+            const completed = outcome === true || (typeof outcome === 'object' && outcome?.signed_out === true);
+            if (!completed) throw new Error('Logout did not complete');
             signedOut = true;
+            if (typeof outcome === 'object' && outcome?.remote_session_revoked === false) {
+                // Local data is cleared either way; the user has to end the
+                // session from another Telegram client when Telegram did not confirm.
+                toast.warning(t('common.signout_remote_unconfirmed'), { duration: 12_000 });
+            }
             accountGeneration.current++;
+            setImageCacheAccount(null);
             setAccountId(null);
             queryClient.clear();
             clearImageMemoryCaches();
@@ -273,7 +284,7 @@ export function useTelegramConnection(onLogoutParent: () => void) {
         if (!await confirm({
             title: "Delete Folder",
             message: `Are you sure you want to delete "${folderName}"?\nThis will delete the channel on Telegram.`,
-            confirmText: "Delete",
+            confirmText: i18n.t("files.delete"),
             variant: 'danger'
         })) return;
 
@@ -331,9 +342,9 @@ export function useTelegramConnection(onLogoutParent: () => void) {
     const handleFolderToggleVisibility = async (folderId: number, makePublic: boolean, desiredUsername?: string) => {
         if (!makePublic) {
             const confirmed = await confirm({
-                title: "Make Private",
+                title: i18n.t("files.make_private"),
                 message: "Making this channel private will remove its public username. Any shared t.me links will stop working immediately.",
-                confirmText: "Make Private",
+                confirmText: i18n.t("files.make_private"),
                 variant: 'danger'
             });
             if (!confirmed) return;

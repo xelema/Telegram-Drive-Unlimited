@@ -52,6 +52,13 @@ pub struct WorkspaceFile {
     pub tags: Vec<String>,
     pub collection_ids: Vec<String>,
 }
+pub(crate) struct SearchOverlay {
+    pub favorite: bool,
+    pub pinned: bool,
+    pub hidden: bool,
+    pub tags: Vec<String>,
+    pub collections: Vec<String>,
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -63,12 +70,84 @@ pub struct Snapshot {
     pub scans: Vec<serde_json::Value>,
 }
 
+struct IdleConnection {
+    path: PathBuf,
+    identity: Option<(u64, u64)>,
+    connection: Connection,
+}
+static IDLE_CONNECTIONS: std::sync::LazyLock<std::sync::Mutex<Vec<IdleConnection>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
+const MAX_IDLE_CONNECTIONS: usize = 32;
+const MAX_IDLE_PER_PATH: usize = 2;
+
+#[cfg(unix)]
+fn database_identity(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::metadata(path).ok()?;
+    Some((metadata.dev(), metadata.ino()))
+}
+#[cfg(windows)]
+fn database_identity(path: &Path) -> Option<(u64, u64)> {
+    super::account::session_file_identity(path).ok()
+}
+
+/// An exclusive connection lease for the entire Store operation. Transaction
+/// callbacks use this same connection without re-locking individual methods.
+/// Registry locking never encloses SQLite work or an async suspension.
+pub struct ConnectionLease {
+    connection: Option<Connection>,
+    path: PathBuf,
+    identity: Option<(u64, u64)>,
+}
+impl std::ops::Deref for ConnectionLease {
+    type Target = Connection;
+    fn deref(&self) -> &Connection {
+        self.connection.as_ref().expect("Live connection lease")
+    }
+}
+impl Drop for ConnectionLease {
+    fn drop(&mut self) {
+        let Some(connection) = self.connection.take() else {
+            return;
+        };
+        // Never return a failed transaction or an abandoned pagination read to
+        // another operation. ROLLBACK outside a transaction is harmless.
+        let _ = connection.execute("ROLLBACK");
+        if self.identity.is_none() || database_identity(&self.path) != self.identity {
+            return;
+        }
+        let mut discarded = Vec::new();
+        if let Ok(mut idle) = IDLE_CONNECTIONS.lock() {
+            while idle.iter().filter(|entry| entry.path == self.path).count() >= MAX_IDLE_PER_PATH {
+                let index = idle
+                    .iter()
+                    .position(|entry| entry.path == self.path)
+                    .unwrap();
+                discarded.push(idle.remove(index));
+            }
+            if idle.len() >= MAX_IDLE_CONNECTIONS {
+                discarded.push(idle.remove(0));
+            }
+            idle.push(IdleConnection {
+                path: self.path.clone(),
+                identity: self.identity,
+                connection,
+            });
+        }
+        // Closing an evicted SQLite handle can checkpoint WAL: do it only
+        // after releasing the registry lock.
+        drop(discarded);
+    }
+}
+
 /// A database per verified Telegram account. Additional feature modules use
 /// typed records in the same transaction-capable store, not browser storage.
 pub struct Store {
-    pub db: Connection,
+    pub db: ConnectionLease,
     pub root: PathBuf,
     pub owner: i64,
+    metadata_transaction: std::sync::atomic::AtomicBool,
+    metadata_fence: std::sync::Mutex<Option<crate::local_search::MetadataMutation>>,
 }
 impl Store {
     pub fn open(data: &Path, owner: i64) -> Result<Self> {
@@ -77,10 +156,78 @@ impl Store {
         }
         let root = data.join("workspace").join(owner.to_string());
         std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
-        let mut db = sqlite::open(root.join("workspace.db")).map_err(|e| e.to_string())?;
-        db.set_busy_timeout(5000).map_err(|e| e.to_string())?;
-        db.execute(
-            "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
+        let root = root.canonicalize().map_err(|error| error.to_string())?;
+        let path = root.join("workspace.db");
+        let identity = database_identity(&path);
+        let (cached, discarded) = {
+            let mut idle = IDLE_CONNECTIONS
+                .lock()
+                .map_err(|_| "Workspace connection cache unavailable")?;
+            let mut discarded = Vec::new();
+            let mut index = 0;
+            while index < idle.len() {
+                if idle[index].path == path && idle[index].identity != identity {
+                    discarded.push(idle.remove(index));
+                } else {
+                    index += 1;
+                }
+            }
+            let cached = idle
+                .iter()
+                .rposition(|entry| entry.path == path && identity.is_some())
+                .map(|index| idle.remove(index).connection);
+            (cached, discarded)
+        };
+        drop(discarded);
+        let connection = match cached {
+            Some(connection) => connection,
+            None => Self::open_connection(&path)?,
+        };
+        {
+            let mut version = connection
+                .prepare("PRAGMA user_version")
+                .map_err(|error| error.to_string())?;
+            version.next().map_err(|error| error.to_string())?;
+            if version
+                .read::<i64, _>(0)
+                .map_err(|error| error.to_string())?
+                > 1
+            {
+                return Err("Workspace database is newer than this application".into());
+            }
+        }
+        let db = ConnectionLease {
+            connection: Some(connection),
+            identity: database_identity(&path),
+            path,
+        };
+        Ok(Self {
+            db,
+            root,
+            owner,
+            metadata_transaction: std::sync::atomic::AtomicBool::new(false),
+            metadata_fence: std::sync::Mutex::new(None),
+        })
+    }
+    fn open_connection(path: &Path) -> Result<Connection> {
+        let mut db = sqlite::open(path).map_err(|error| error.to_string())?;
+        db.set_busy_timeout(5000)
+            .map_err(|error| error.to_string())?;
+        let version = {
+            let mut query = db
+                .prepare("PRAGMA user_version")
+                .map_err(|error| error.to_string())?;
+            query.next().map_err(|error| error.to_string())?;
+            query.read::<i64, _>(0).map_err(|error| error.to_string())?
+        };
+        if version > 1 {
+            return Err("Workspace database is newer than this application".into());
+        }
+        db.execute("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
+            .map_err(|error| error.to_string())?;
+        if version == 0 {
+            db.execute(
+                "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
             CREATE TABLE IF NOT EXISTS workspace_files (
               key TEXT PRIMARY KEY, folder TEXT NOT NULL, metadata TEXT NOT NULL,
               folder_name TEXT NOT NULL, scan TEXT NOT NULL DEFAULT '');
@@ -92,11 +239,31 @@ impl Store {
             CREATE TABLE IF NOT EXISTS workspace_tags (
               file TEXT NOT NULL, tag TEXT NOT NULL COLLATE NOCASE, PRIMARY KEY(file,tag));
             PRAGMA user_version=1;",
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(Self { db, root, owner })
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(db)
     }
     pub fn execute(&self, sql: &str, args: &[Value]) -> Result<()> {
+        let relevant = crate::local_search::relevant_metadata(sql, args);
+        let _mutation = if relevant {
+            if self
+                .metadata_transaction
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                self.metadata_fence
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get_or_insert_with(|| {
+                        crate::local_search::MetadataMutation::begin(&self.root)
+                    });
+                None
+            } else {
+                Some(crate::local_search::MetadataMutation::begin(&self.root))
+            }
+        } else {
+            None
+        };
         let mut statement = self.db.prepare(sql).map_err(|e| e.to_string())?;
         statement.bind(args).map_err(|e| e.to_string())?;
         statement.next().map_err(|e| e.to_string())?;
@@ -106,11 +273,30 @@ impl Store {
         self.db
             .execute("BEGIN IMMEDIATE")
             .map_err(|e| e.to_string())?;
-        match action() {
-            Ok(value) => {
-                self.db.execute("COMMIT").map_err(|e| e.to_string())?;
-                Ok(value)
+        self.metadata_transaction
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        struct Finish<'a>(&'a Store);
+        impl Drop for Finish<'_> {
+            fn drop(&mut self) {
+                // Also rolls back panicking callbacks or failed COMMITs before releasing the fence.
+                let _ = self.0.db.execute("ROLLBACK");
+                self.0
+                    .metadata_transaction
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                self.0
+                    .metadata_fence
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take();
             }
+        }
+        let _finish = Finish(self);
+        match action() {
+            Ok(value) => self
+                .db
+                .execute("COMMIT")
+                .map(|_| value)
+                .map_err(|e| e.to_string()),
             Err(error) => {
                 let _ = self.db.execute("ROLLBACK");
                 Err(error)
@@ -346,6 +532,236 @@ impl Store {
         }
         Ok(result)
     }
+    pub(crate) fn search_overlays(
+        &self,
+        keys: &[String],
+    ) -> Result<std::collections::HashMap<String, SearchOverlay>> {
+        if keys.len() > 512 {
+            return Err("SEARCH_INDEX_LIMIT".into());
+        }
+        if keys.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let values = vec!["(?)"; keys.len()].join(",");
+        let sql=format!("WITH keys(key) AS (VALUES {values}) SELECT key,
+            COALESCE((SELECT value FROM workspace_records WHERE kind='favorite' AND id=key),(SELECT CASE WHEN json_extract(metadata,'$.is_favorite') THEN 'true' ELSE 'false' END FROM workspace_files WHERE workspace_files.key=keys.key)),
+            COALESCE((SELECT value FROM workspace_records WHERE kind='pin' AND id=key),(SELECT CASE WHEN json_extract(metadata,'$.is_pinned') THEN 'true' ELSE 'false' END FROM workspace_files WHERE workspace_files.key=keys.key)),
+            EXISTS(SELECT 1 FROM workspace_records WHERE kind='removal' AND id=key AND json_extract(value,'$.status') IN ('pending','deleting','deleted')),
+            (SELECT json_group_array(tag) FROM workspace_tags WHERE file=key),
+            (SELECT json_group_array(collection) FROM workspace_membership WHERE file=key) FROM keys");
+        let mut query = self.db.prepare(sql).map_err(|e| e.to_string())?;
+        query
+            .bind(
+                keys.iter()
+                    .cloned()
+                    .map(Value::String)
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+            )
+            .map_err(|e| e.to_string())?;
+        let mut result = std::collections::HashMap::new();
+        let mut bytes = 0usize;
+        while query.next().map_err(|e| e.to_string())? == State::Row {
+            let key = query.read::<String, _>(0).map_err(|e| e.to_string())?;
+            let tags = query.read::<String, _>(4).map_err(|e| e.to_string())?;
+            let collections = query.read::<String, _>(5).map_err(|e| e.to_string())?;
+            bytes = bytes.saturating_add(key.len() + tags.len() + collections.len());
+            if bytes > 32 * 1024 * 1024 {
+                return Err("SEARCH_INDEX_LIMIT".into());
+            }
+            let flag = |index| -> Result<bool> {
+                query
+                    .read::<Option<String>, _>(index)
+                    .map_err(|e| e.to_string())?
+                    .map(|value| serde_json::from_str(&value).map_err(|e| e.to_string()))
+                    .transpose()
+                    .map(|value| value.unwrap_or(false))
+            };
+            result.insert(
+                key,
+                SearchOverlay {
+                    favorite: flag(1)?,
+                    pinned: flag(2)?,
+                    hidden: query.read::<i64, _>(3).map_err(|e| e.to_string())? != 0,
+                    tags: serde_json::from_str(&tags).map_err(|e| e.to_string())?,
+                    collections: serde_json::from_str(&collections).map_err(|e| e.to_string())?,
+                },
+            );
+        }
+        Ok(result)
+    }
+    /// Search reads only verified folders and Saved Messages. Bound raw metadata
+    /// before decoding it and return hidden keys for filtering fresh Telegram rows.
+    pub(crate) fn search_rows(
+        &self,
+        folders: &[i64],
+        folder: Option<&str>,
+    ) -> Result<(Vec<WorkspaceFile>, std::collections::HashSet<String>)> {
+        let mut args: Vec<Value> = folders
+            .iter()
+            .map(|id| Value::String(id.to_string()))
+            .collect();
+        let mut scope = format!(
+            "(f.folder='saved' OR f.folder IN ({}))",
+            vec!["?"; args.len()].join(",")
+        );
+        if let Some(folder) = folder {
+            scope.push_str(" AND f.folder=?");
+            args.push(folder.into());
+        }
+        let sql=format!("SELECT f.key,f.metadata,f.folder_name,r.value,p.value,
+            (SELECT json_group_array(tag) FROM workspace_tags WHERE file=f.key),
+            (SELECT json_group_array(collection) FROM workspace_membership WHERE file=f.key),
+            EXISTS (SELECT 1 FROM workspace_records hidden WHERE hidden.kind='removal' AND hidden.id=f.key AND json_extract(hidden.value,'$.status') IN ('pending','deleting','deleted'))
+            FROM workspace_files f LEFT JOIN workspace_records r ON r.kind='favorite' AND r.id=f.key LEFT JOIN workspace_records p ON p.kind='pin' AND p.id=f.key WHERE {scope} ORDER BY json_extract(f.metadata,'$.created_at') DESC,f.key LIMIT 100001");
+        let mut query = self.db.prepare(sql).map_err(|e| e.to_string())?;
+        query.bind(args.as_slice()).map_err(|e| e.to_string())?;
+        let mut rows = Vec::new();
+        let mut hidden = std::collections::HashSet::new();
+        let mut bytes = 0usize;
+        let mut count = 0usize;
+        while query.next().map_err(|e| e.to_string())? == State::Row {
+            count += 1;
+            let cells: Vec<String> = (0..7)
+                .map(|i| {
+                    query
+                        .read::<Option<String>, _>(i)
+                        .map(|v| v.unwrap_or_default())
+                        .map_err(|e| e.to_string())
+                })
+                .collect::<Result<_>>()?;
+            bytes = bytes
+                .saturating_add(cells.iter().map(String::len).sum::<usize>())
+                .saturating_add(std::mem::size_of::<WorkspaceFile>());
+            if count > 100_000 || bytes > 32 * 1024 * 1024 {
+                return Err("SEARCH_INDEX_LIMIT: Narrow the search to a folder".into());
+            }
+            if query.read::<i64, _>(7).map_err(|e| e.to_string())? != 0 {
+                hidden.insert(cells[0].clone());
+                continue;
+            }
+            let mut file: FileMetadata =
+                serde_json::from_str(&cells[1]).map_err(|e| e.to_string())?;
+            if !cells[3].is_empty() {
+                file.is_favorite = serde_json::from_str(&cells[3]).map_err(|e| e.to_string())?;
+            }
+            if !cells[4].is_empty() {
+                file.is_pinned = serde_json::from_str(&cells[4]).map_err(|e| e.to_string())?;
+            }
+            rows.push(WorkspaceFile {
+                key: cells[0].clone(),
+                file,
+                folder_name: cells[2].clone(),
+                tags: serde_json::from_str(&cells[5]).map_err(|e| e.to_string())?,
+                collection_ids: serde_json::from_str(&cells[6]).map_err(|e| e.to_string())?,
+            });
+        }
+        Ok((rows, hidden))
+    }
+    /// A bounded page inside the caller's read transaction. Hidden removals are
+    /// excluded before LIMIT; tag and membership reads cover only this page.
+    pub fn snapshot_page(&self, offset: usize, limit: usize) -> Result<(Snapshot, usize)> {
+        const VISIBLE: &str = "NOT EXISTS (SELECT 1 FROM workspace_records hidden WHERE hidden.kind='removal' AND hidden.id=f.key AND json_extract(hidden.value,'$.status') IN ('pending','deleting','deleted'))";
+        let total = {
+            let mut statement = self
+                .db
+                .prepare(format!(
+                    "SELECT COUNT(*) FROM workspace_files f WHERE {VISIBLE}"
+                ))
+                .map_err(|error| error.to_string())?;
+            statement.next().map_err(|error| error.to_string())?;
+            usize::try_from(
+                statement
+                    .read::<i64, _>(0)
+                    .map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?
+        };
+        let mut statement = self.db.prepare(format!("SELECT f.key,f.metadata,f.folder_name,r.value,p.value FROM workspace_files f LEFT JOIN workspace_records r ON r.kind='favorite' AND r.id=f.key LEFT JOIN workspace_records p ON p.kind='pin' AND p.id=f.key WHERE {VISIBLE} ORDER BY json_extract(f.metadata,'$.created_at') DESC,f.key LIMIT ? OFFSET ?")).map_err(|error| error.to_string())?;
+        statement
+            .bind(&[Value::Integer(limit as i64), Value::Integer(offset as i64)][..])
+            .map_err(|error| error.to_string())?;
+        let mut files = Vec::new();
+        while statement.next().map_err(|error| error.to_string())? == State::Row {
+            let mut file: FileMetadata = serde_json::from_str(
+                &statement
+                    .read::<String, _>(1)
+                    .map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
+            if let Some(value) = statement
+                .read::<Option<String>, _>(3)
+                .map_err(|error| error.to_string())?
+            {
+                file.is_favorite =
+                    serde_json::from_str(&value).map_err(|error| error.to_string())?;
+            }
+            if let Some(value) = statement
+                .read::<Option<String>, _>(4)
+                .map_err(|error| error.to_string())?
+            {
+                file.is_pinned = serde_json::from_str(&value).map_err(|error| error.to_string())?;
+            }
+            files.push(WorkspaceFile {
+                file,
+                key: statement.read(0).map_err(|error| error.to_string())?,
+                folder_name: statement.read(2).map_err(|error| error.to_string())?,
+                tags: Vec::new(),
+                collection_ids: Vec::new(),
+            });
+        }
+        drop(statement);
+        if !files.is_empty() {
+            let args: Vec<Value> = files.iter().map(|file| file.key.clone().into()).collect();
+            let placeholders = vec!["?"; files.len()].join(",");
+            for (table, column, membership) in [
+                ("workspace_tags", "tag", false),
+                ("workspace_membership", "collection", true),
+            ] {
+                let mut query = self.db.prepare(format!("SELECT file,{column} FROM {table} WHERE file IN ({placeholders}) ORDER BY file,{column}")).map_err(|error| error.to_string())?;
+                query
+                    .bind(args.as_slice())
+                    .map_err(|error| error.to_string())?;
+                let mut groups = std::collections::HashMap::<String, Vec<String>>::new();
+                while query.next().map_err(|error| error.to_string())? == State::Row {
+                    groups
+                        .entry(query.read(0).map_err(|error| error.to_string())?)
+                        .or_default()
+                        .push(query.read(1).map_err(|error| error.to_string())?);
+                }
+                for file in &mut files {
+                    let values = groups.remove(&file.key).unwrap_or_default();
+                    if membership {
+                        file.collection_ids = values;
+                    } else {
+                        file.tags = values;
+                    }
+                }
+            }
+        }
+        Ok((
+            Snapshot {
+                owner_id: self.owner.to_string(),
+                files,
+                collections: if offset == 0 {
+                    self.records("collection")?
+                } else {
+                    Vec::new()
+                },
+                searches: if offset == 0 {
+                    self.records("search")?
+                } else {
+                    Vec::new()
+                },
+                scans: if offset == 0 {
+                    self.records("scan")?
+                } else {
+                    Vec::new()
+                },
+            },
+            total,
+        ))
+    }
     pub fn snapshot(&self) -> Result<Snapshot> {
         let removals = self.records::<serde_json::Value>("removal")?;
         let hidden: std::collections::HashSet<_> = removals
@@ -477,6 +893,13 @@ impl Store {
             {
                 return Err(format!("Invalid search {field}"));
             }
+        }
+        if value.filters.get("protection").is_some_and(|value| {
+            !value.as_str().is_some_and(|value| {
+                ["any", "plain", "protected", "locked", "unlocked"].contains(&value)
+            })
+        }) {
+            return Err("Invalid search protection".into());
         }
         self.put_record("search", &value.id, value)
     }

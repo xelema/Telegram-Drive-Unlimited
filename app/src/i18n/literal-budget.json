@@ -1,32 +1,61 @@
 {
-  "maxFindings": 486,
+  "maxFindings": 298,
   "areaBudgets": {
     "supporterAndSponsors": {
-      "maxFindings": 28,
-      "patterns": ["Supporter", "AdBanner", "Adsterra"]
+      "maxFindings": 1,
+      "patterns": [
+        "Supporter",
+        "AdBanner",
+        "Adsterra"
+      ]
     },
     "encryptionAndAccess": {
-      "maxFindings": 37,
-      "patterns": ["Encryption", "AccessTransparency"]
+      "maxFindings": 0,
+      "patterns": [
+        "Encryption",
+        "AccessTransparency"
+      ]
     },
     "authentication": {
-      "maxFindings": 27,
-      "patterns": ["/Auth", "/auth/"]
+      "maxFindings": 0,
+      "patterns": [
+        "/Auth",
+        "/auth/"
+      ]
     },
     "sync": {
       "maxFindings": 0,
-      "patterns": ["Sync"]
+      "patterns": [
+        "Sync"
+      ]
     },
     "transfersAndLocalServices": {
-      "maxFindings": 148,
-      "patterns": ["TransferCenter", "ShareDialog", "SettingsModal", "SettingsTabs", "UploadChoiceContext", "BandwidthWidget", "RemoteUploadModal"]
+      "maxFindings": 90,
+      "patterns": [
+        "TransferCenter",
+        "ShareDialog",
+        "SettingsModal",
+        "SettingsTabs",
+        "UploadChoiceContext",
+        "BandwidthWidget",
+        "RemoteUploadModal"
+      ]
     },
     "mediaAndHelp": {
-      "maxFindings": 102,
-      "patterns": ["AdaptiveMediaPlayer", "MediaPlayer", "PdfViewer", "ArchiveViewer", "PreviewModal", "HelpCenter", "KeyboardShortcuts", "QualitySelector"]
+      "maxFindings": 69,
+      "patterns": [
+        "AdaptiveMediaPlayer",
+        "MediaPlayer",
+        "PdfViewer",
+        "ArchiveViewer",
+        "PreviewModal",
+        "HelpCenter",
+        "KeyboardShortcuts",
+        "QualitySelector"
+      ]
     },
     "other": {
-      "maxFindings": 144,
+      "maxFindings": 138,
       "patterns": []
     }
   },

@@ -1,9 +1,10 @@
+import {useTranslation} from 'react-i18next';
 import { sourceFolder } from '../../../services/fileIdentity';
-import { useCallback, useState, useEffect } from 'react';
+import { useCallback, useState, useEffect, useSyncExternalStore } from 'react';
 import { Folder, Eye, Trash2, Link, Check } from 'lucide-react';
 import { useDraggable, useDroppable } from '@dnd-kit/core';
 import { TelegramFile } from '../../../types';
-import { forgetThumbnail, getCachedThumbnail, loadThumbnail } from '../../../services/imagePreviewCache';
+import { forgetThumbnail, getCachedThumbnail, loadThumbnail, subscribeImageCache, imageCacheVersion } from '../../../services/imagePreviewCache';
 import { FileTypeIcon } from '../../shared/FileTypeIcon';
 import { useVideoMetadata } from '../../../hooks/useVideoMetadata';
 import { useCachedVariants } from '../../../hooks/useCachedVariants';
@@ -30,14 +31,16 @@ interface FileCardProps {
 }
 
 // Check if file is an image type that can have a thumbnail
-function isImageFile(filename: string): boolean {
+function hasThumbnail(filename: string): boolean {
     const ext = filename.split('.').pop()?.toLowerCase() || '';
-    return ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].includes(ext);
+    return ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'mp4', 'mkv', 'webm', 'mov', 'avi', 'm4v'].includes(ext);
 }
 
 
 export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSelected, onClick, onContextMenu, activeFolderId, height, onToggleSelection, selectedIds, disableDrag = false }: FileCardProps) {
+    useTranslation();
     const sourceFolderId = sourceFolder(file, activeFolderId ?? null);
+    const thumbnailVersion = useSyncExternalStore(subscribeImageCache, imageCacheVersion, imageCacheVersion);
     const actions = describeFileActions(file);
     const { isFolder } = actions;
     const [thumbnail, setThumbnail] = useState<string | null>(null);
@@ -86,7 +89,7 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
 
     // Lazy load thumbnail for image files
     useEffect(() => {
-        if (isFolder || !isImageFile(file.name)) return;
+        if (isFolder || !hasThumbnail(file.name)) return;
 
         let cancelled = false;
         const cached = getCachedThumbnail(file.id, sourceFolderId);
@@ -106,7 +109,7 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
         });
 
         return () => { cancelled = true; };
-    }, [file.id, file.name, sourceFolderId, isFolder]);
+    }, [file, sourceFolderId, isFolder, thumbnailVersion]);
 
     return (
         <div
@@ -151,7 +154,7 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
                     <div className="file-card-icon absolute inset-x-0 bottom-12 top-0 flex items-center justify-center p-3">
                         {isFolder ? (
                             <Folder className="h-10 w-10 max-h-full max-w-full shrink-0 text-app-accent" strokeWidth={1.6} />
-                        ) : thumbnailLoading && isImageFile(file.name) ? (
+                        ) : thumbnailLoading && hasThumbnail(file.name) ? (
                             <Skeleton className="h-10 w-10 shrink-0" />
                         ) : (
                             <FileTypeIcon filename={file.name} size="lg" className="h-10 w-10 max-h-full max-w-full shrink-0" />
@@ -164,6 +167,7 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
                     type="button"
                     aria-label={isSelected ? `Deselect ${file.name}` : `Select ${file.name}`}
                     aria-pressed={isSelected}
+                    disabled={!onToggleSelection}
                     onClick={(e) => {
                         e.stopPropagation();
                         if (onToggleSelection) onToggleSelection();
@@ -195,18 +199,18 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
 
                 {/* Quick actions on hover */}
                 <div className="file-card-actions absolute end-2 top-2 z-10 flex max-w-[calc(100%-2.75rem)] gap-0.5 overflow-hidden rounded-control border border-white/10 bg-black/55 p-0.5 opacity-0 backdrop-blur-md transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-                    <button type="button" aria-label={`Preview ${file.name}`} onClick={(e) => { e.stopPropagation(); if (onPreview) onPreview() }} className="quiet-control file-action-btn flex h-7 w-7 items-center justify-center text-white/80 hover:text-white" title={i18n.t("files.preview")}>
+                    <button type="button" aria-label={i18n.t('common.action_name',{action:i18n.t('files.preview'),name:file.name})} onClick={(e) => { e.stopPropagation(); if (onPreview) onPreview() }} className="quiet-control file-action-btn flex h-7 w-7 items-center justify-center text-white/80 hover:text-white" title={i18n.t("files.preview")}>
                         <Eye className="h-3.5 w-3.5" />
                     </button>
-                    <button type="button" aria-label={`Download ${file.name}`} onClick={(e) => { e.stopPropagation(); onDownload() }} className="quiet-control file-action-btn flex h-7 w-7 items-center justify-center text-white/80 hover:text-white" title={i18n.t("files.download")}>
+                    <button type="button" aria-label={i18n.t('common.action_name',{action:i18n.t('files.download'),name:file.name})} onClick={(e) => { e.stopPropagation(); onDownload() }} className="quiet-control file-action-btn flex h-7 w-7 items-center justify-center text-white/80 hover:text-white" title={i18n.t("files.download")}>
                         <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-3 h-3"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
                     </button>
                     {actions.canShare && onShare && (
-                        <button type="button" aria-label={`Share ${file.name}`} onClick={(e) => { e.stopPropagation(); onShare() }} className="quiet-control file-action-btn flex h-7 w-7 items-center justify-center text-white/80 hover:text-white" title={i18n.t("files.share")}>
+                        <button type="button" aria-label={i18n.t('common.action_name',{action:i18n.t('files.share'),name:file.name})} onClick={(e) => { e.stopPropagation(); onShare() }} className="quiet-control file-action-btn flex h-7 w-7 items-center justify-center text-white/80 hover:text-white" title={i18n.t("files.share")}>
                             <Link className="h-3.5 w-3.5" />
                         </button>
                     )}
-                    <button type="button" aria-label={`Delete ${file.name}`} onClick={(e) => { e.stopPropagation(); onDelete() }} className="quiet-control file-action-btn flex h-7 w-7 items-center justify-center text-white/80 hover:bg-red-500/70 hover:text-white" title="Delete">
+                    <button type="button" aria-label={i18n.t('common.action_name',{action:i18n.t('files.delete'),name:file.name})} onClick={(e) => { e.stopPropagation(); onDelete() }} className="quiet-control file-action-btn flex h-7 w-7 items-center justify-center text-white/80 hover:bg-red-500/70 hover:text-white" title={i18n.t("files.delete")}>
                         <Trash2 className="h-3.5 w-3.5" />
                     </button>
                 </div>

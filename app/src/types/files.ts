@@ -31,6 +31,7 @@ export interface OfflineCacheStatus {
 
 export interface StorageInsightResult {
   files: TelegramFile[];
+  complete: boolean;
   scanned_count: number;
   duplicate_groups: number;
 }

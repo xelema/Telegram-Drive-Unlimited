@@ -42,20 +42,43 @@ function normalize(snapshot: WorkspaceSnapshot, ownerId: string): WorkspaceSnaps
         })),
     };
 }
+interface WorkspacePage extends WorkspaceSnapshot { nextCursor?: string | null; totalFiles?: number }
+async function collectPages(ownerId: string, first: WorkspacePage): Promise<WorkspaceSnapshot> {
+    const snapshot = normalize(first, ownerId);
+    let cursor = first.nextCursor;
+    const seen = new Set<string>();
+    while (cursor) {
+        if (seen.has(cursor)) throw new Error('WORKSPACE_PAGE_INVALID');
+        seen.add(cursor);
+        const page = await invoke<WorkspacePage>('cmd_workspace_read', { ownerId, cursor, limit: 256 });
+        if (page.ownerId !== ownerId || (first.totalFiles !== undefined && page.totalFiles !== first.totalFiles)) throw new Error('ACCOUNT_CHANGED');
+        if (page.nextCursor && page.files.length === 0) throw new Error('WORKSPACE_PAGE_INVALID');
+        snapshot.files.push(...normalize(page, ownerId).files);
+        cursor = page.nextCursor;
+    }
+    if (first.totalFiles !== undefined && snapshot.files.length !== first.totalFiles) throw new Error('WORKSPACE_PAGE_INVALID');
+    return snapshot;
+}
+async function freshWorkspace(ownerId: string): Promise<WorkspaceSnapshot> {
+    for (let attempt = 0; ; attempt++) {
+        try { return await collectPages(ownerId, await invoke<WorkspacePage>('cmd_workspace_read', { ownerId, limit: 256 })); }
+        catch (error) { if (attempt > 0 || !String(error).includes('WORKSPACE_PAGE_EXPIRED')) throw error; }
+    }
+}
 const mutations = new Map<string, Promise<WorkspaceSnapshot>>();
 export async function readWorkspace(ownerId: string): Promise<WorkspaceSnapshot> {
     await mutations.get(ownerId)?.catch(() => undefined);
-    return normalize(await invoke<WorkspaceSnapshot>('cmd_workspace_read', { ownerId }), ownerId);
+    return freshWorkspace(ownerId);
 }
 export function mutateWorkspace(ownerId: string, mutation: WorkspaceMutation): Promise<WorkspaceSnapshot> {
     const operation = (mutations.get(ownerId) ?? Promise.resolve()).catch(() => undefined)
-        .then(async () => normalize(await invoke<WorkspaceSnapshot>('cmd_workspace_mutate', { ownerId, mutation }), ownerId));
+        .then(async () => collectPages(ownerId, await invoke<WorkspacePage>('cmd_workspace_mutate', { ownerId, mutation })));
     mutations.set(ownerId, operation);
     void operation.finally(() => { if (mutations.get(ownerId) === operation) mutations.delete(ownerId); }).catch(() => undefined);
     return operation;
 }
 export async function indexWorkspace(ownerId: string, folderIds: (number | null)[]): Promise<WorkspaceSnapshot> {
-    return normalize(await invoke<WorkspaceSnapshot>('cmd_workspace_index', { ownerId, folderIds }), ownerId);
+    return collectPages(ownerId, await invoke<WorkspacePage>('cmd_workspace_index', { ownerId, folderIds }));
 }
 export function savedSearchFolder(search: SavedSearch): number | null | 'all' {
     if (search.folderKey === 'saved') return null;

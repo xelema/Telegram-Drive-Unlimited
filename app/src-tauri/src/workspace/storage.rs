@@ -123,6 +123,7 @@ fn add(category: &mut Category, entry: &Entry, reclaimable: bool) {
 /// survive clearing the legacy preview cache.
 pub fn clear_legacy_previews(cache: &Path) -> Result<u64, String> {
     let mutation = crate::commands::preview::legacy_preview_mutation();
+    let _shared = super::cache_core::state();
     let directory = private_subdir(cache, "previews")?;
     remove_files(
         inventory(&directory, false)?
@@ -216,7 +217,9 @@ fn collect(
         (format!("previews/workspace/{owner}/thumbnails"), true),
     ] {
         for entry in inventory(&private_subdir(cache, &suffix)?, true)? {
-            if is_temporary(&entry.path) {
+            if pinned(&entry.path) {
+                add(&mut kept, &entry, false);
+            } else if is_temporary(&entry.path) {
                 add(
                     &mut staging,
                     &entry,
@@ -243,8 +246,11 @@ fn collect(
         );
     }
     let native_status = crate::workspace::device_cache::status(data, cache)?;
+    kept.bytes = kept.bytes.saturating_add(native_status.kept_bytes);
     native.bytes = native_status.total_bytes;
-    native.reclaimable_bytes = native_status.total_bytes;
+    native.reclaimable_bytes = native_status
+        .total_bytes
+        .saturating_sub(native_status.partial_bytes);
     native.file_count = native_status.file_count;
     for suffix in [
         format!("workspace/{owner}/offline"),
@@ -314,12 +320,9 @@ fn collect(
 }
 
 pub async fn apply_limits(app: &tauri::AppHandle, limits: &StorageLimits) {
-    // The preview slider is an aggregate allowance split across the legacy,
-    // workspace and native caches. Deliberately kept files are outside it.
-    let share = (limits.previews / 3).max(1);
-    assets::configure_limits(share, limits.thumbnails / 2);
-    crate::workspace::device_cache::set_limit_bytes(share);
-    crate::commands::preview::configure_limits(share, limits.thumbnails / 2);
+    // One aggregate policy includes retained legacy and native disposable previews.
+    assets::configure_limits(limits.previews, limits.thumbnails);
+    crate::commands::preview::configure_limits(limits.previews, limits.thumbnails);
     if let Some(manager) = app.try_state::<Arc<crate::transcode::TranscodeManager>>() {
         manager.set_max_cache_bytes(limits.converted).await;
     }
@@ -449,6 +452,7 @@ pub async fn cmd_storage_clear(
             }
             "thumbnails" => {
                 let mutation = crate::commands::preview::legacy_preview_mutation();
+                let _shared = super::cache_core::state();
                 remove_files(
                     inventory(&private_subdir(&data, "thumbnails")?, true)?
                         .into_iter()

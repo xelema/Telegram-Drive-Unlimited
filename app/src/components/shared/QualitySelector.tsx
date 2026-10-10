@@ -1,4 +1,5 @@
-import { StreamingQuality, QUALITY_LABELS, HLS_QUALITIES, QUALITY_THROTTLE_MAP, TranscodeCapabilities, TranscodeJobPhase } from '../../types';
+import { useTranslation } from 'react-i18next';
+import { StreamingQuality, qualityLabel, HLS_QUALITIES, QUALITY_THROTTLE_MAP, TranscodeCapabilities, TranscodeJobPhase } from '../../types';
 import { Zap, Wifi, Loader2, AlertTriangle, Check, Gauge } from 'lucide-react';
 import i18n from '../../i18n';
 
@@ -25,6 +26,7 @@ export function QualitySelector({
     variantStates = {},
     sourceHeight = null,
 }: QualitySelectorProps) {
+    const { t } = useTranslation();
     const handleManualQuality = (quality: StreamingQuality) => {
         if (adaptiveMode) onToggleAdaptive();
         onChange(quality);
@@ -34,7 +36,7 @@ export function QualitySelector({
 
     // Human-readable throttle label (e.g. "500k", "1M", "2.5M")
     const throttleLabel = (quality: StreamingQuality): string => {
-        if (quality === 'original') return QUALITY_LABELS[quality];
+        if (quality === 'original') return qualityLabel(quality, t('settings.original'));
         const kbps = QUALITY_THROTTLE_MAP[quality];
         if (kbps >= 1000) return `${(kbps / 1000).toFixed(kbps % 1000 === 0 ? 0 : 1)}M`;
         return `${kbps}k`;
@@ -125,9 +127,9 @@ export function QualitySelector({
                         disabled={isDisabled}
                     >
                         {statusIcon}
-                        <span>{canTranscode ? QUALITY_LABELS[quality] : throttleLabel(quality)}</span>
+                        <span>{canTranscode ? qualityLabel(quality, t('settings.original')) : throttleLabel(quality)}</span>
                         {isHls && !canTranscode && !isUpscale && (
-                            <span className="text-[8px] text-amber-400/60 ml-0.5">cap</span>
+                            <span className="text-[8px] text-amber-400/60 ml-0.5">{t('viewer.cap')}</span>
                         )}
                         {isUpscale && (
                             <span className="text-[8px] text-white/20 ml-0.5">N/A</span>

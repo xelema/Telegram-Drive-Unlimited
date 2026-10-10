@@ -87,7 +87,7 @@ fn session_file_identity(path: &Path) -> std::io::Result<(u64, u64)> {
 }
 
 #[cfg(target_os = "windows")]
-fn session_file_identity(path: &Path) -> std::io::Result<(u64, u64)> {
+pub(crate) fn session_file_identity(path: &Path) -> std::io::Result<(u64, u64)> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
         GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
@@ -264,6 +264,9 @@ pub fn suspend() {
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     LIFECYCLE.suspend();
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    drop(_sessions);
+    crate::local_search::invalidate();
 }
 
 pub fn resume() {
@@ -350,8 +353,22 @@ pub fn current_owner(root: &Path) -> Result<i64, String> {
     }
 }
 
+#[cfg(feature = "native-e2e")]
+static FALLBACK_READS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "native-e2e")]
+static ACCOUNT_VALIDATIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "native-e2e")]
+pub(crate) fn test_account_validation_counts() -> (u64, u64) {
+    (
+        FALLBACK_READS.load(Ordering::SeqCst),
+        ACCOUNT_VALIDATIONS.load(Ordering::SeqCst),
+    )
+}
+
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn read_session_identity(path: &Path) -> Result<Option<i64>, String> {
+    #[cfg(feature = "native-e2e")]
+    FALLBACK_READS.fetch_add(1, Ordering::SeqCst);
     const UNAVAILABLE: &str = "ACCOUNT_UNAVAILABLE: The saved account is temporarily unavailable";
     let unsupported = || sqlite::Error {
         code: None,
@@ -401,6 +418,11 @@ pub struct AccountGuard {
 }
 
 impl AccountGuard {
+    /// Compare captured sessions without opening SQLite under another lock.
+    pub(crate) fn same_session(&self, other: &Self) -> bool {
+        self.root == other.root && self.owner == other.owner && self.generation == other.generation
+    }
+
     pub fn open(root: &Path, expected: Option<&str>) -> Result<Self, String> {
         let generation = LIFECYCLE.generation.load(Ordering::SeqCst);
         let owner = current_owner(root)?;
@@ -416,6 +438,8 @@ impl AccountGuard {
         })
     }
     pub fn validate(&self) -> Result<(), String> {
+        #[cfg(feature = "native-e2e")]
+        ACCOUNT_VALIDATIONS.fetch_add(1, Ordering::SeqCst);
         if self.generation != LIFECYCLE.generation.load(Ordering::SeqCst)
             || current_owner(&self.root)? != self.owner
         {

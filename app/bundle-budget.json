@@ -1,19 +1,19 @@
 {
-  "maxInitialJavaScriptBytes": 550000,
+  "maxInitialJavaScriptBytes": 513000,
   "maxJavaScriptChunkBytes": 550000,
   "maxTotalJavaScriptBytes": 3300000,
   "maxTotalCssBytes": 140000,
-  "maxTotalLocaleDataBytes": 1800000,
-  "maxLocaleDataBytes": 125000,
+  "maxTotalLocaleDataBytes": 1952434,
+  "maxLocaleDataBytes": 138790,
   "routeJavaScriptBudgets": {
-    "src/components/desktop/DesktopDashboard.tsx": 310000
+    "src/components/desktop/DesktopDashboard.tsx": 302000
   },
   "featureChunkBudgets": {
-    "src/components/desktop/dashboard/SettingsModal.tsx": 160000,
+    "src/components/desktop/dashboard/SettingsModal.tsx": 159000,
     "src/components/desktop/dashboard/MediaPlayer.tsx": 250000,
-    "src/components/desktop/dashboard/PdfViewer.tsx": 500000,
+    "src/components/desktop/dashboard/PdfViewer.tsx": 510000,
     "src/components/desktop/dashboard/ArchiveViewerModal.tsx": 25000,
     "node_modules/hls.js/dist/hls.mjs": 540000
   },
-  "policy": "JavaScript, route, feature, and CSS ceilings are unchanged. Locale-only ceilings include the existing reviewed 24-language supporter UI expansion. Further increases require a performance review."
+  "policy": "Initial JavaScript, desktop route and Settings ceilings were lowered after measured P2 reductions. Other reviewed ceilings remain unchanged. The PDF viewer feature ceiling rose from 500000 to 510000 for the PDF.js 6 security upgrade (GHSA-hq66-cqwq-w95j); the chunk loads only when a PDF is opened. Locale-only ceilings include the existing reviewed 24-language supporter UI expansion, the shared key dictionary and every canonical translated value. Further increases require a performance review."
 }

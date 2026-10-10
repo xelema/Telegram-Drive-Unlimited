@@ -161,7 +161,7 @@ export function MobileMediaPlayer({ file, activeFolderId, onClose, preferences }
           <p className="truncate text-sm font-semibold">{file.name}</p>
           <p className="mt-0.5 text-[10px] text-white/55">Secure in-app playback</p>
         </div>
-        <button type="button" onClick={onClose} className="rounded-full p-2 text-white/75 hover:bg-white/10 hover:text-white" aria-label="Close media player">
+        <button type="button" onClick={onClose} className="rounded-full p-2 text-white/75 hover:bg-white/10 hover:text-white" aria-label={i18n.t('viewer.close_player')}>
           <X className="h-5 w-5" aria-hidden="true" />
         </button>
       </header>

@@ -348,7 +348,28 @@ pub async fn publish_download_file(
     policy: DownloadCollisionPolicy,
     account: Option<crate::workspace::AccountGuard>,
 ) -> Result<DownloadPublication, String> {
-    tokio::task::spawn_blocking(move || publish(&source, &destination, policy, account.as_ref()))
-        .await
-        .map_err(|error| format!("Download publish task failed: {error}"))?
+    let registration_account = account.clone();
+    let publication = tokio::task::spawn_blocking(move || {
+        publish(&source, &destination, policy, account.as_ref())
+    })
+    .await
+    .map_err(|error| format!("Download publish task failed: {error}"))??;
+    #[cfg(not(target_os = "android"))]
+    if publication.outcome == DownloadOutcome::Saved {
+        if let Some(account) = registration_account {
+            // Publication lock has been released. Registration shares the file
+            // worker bound and cannot turn an already saved download into a retry.
+            if let Err(error) = crate::external_files::register_async(
+                account,
+                PathBuf::from(&publication.save_path),
+            )
+            .await
+            {
+                log::warn!("External opening registration failed: {error}");
+            }
+        }
+    }
+    #[cfg(target_os = "android")]
+    let _ = registration_account;
+    Ok(publication)
 }

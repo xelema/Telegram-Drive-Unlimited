@@ -39,6 +39,8 @@ export interface DesktopTransferJob {
     protectMetadata?: boolean;
     videoUploadMode?: VideoUploadMode;
     tempZipPath?: string;
+    /** Set when another part of the app, such as Folder Sync, runs the transfer. */
+    origin?: string;
     progress: number;
     transferredBytes: number;
     totalBytes: number;

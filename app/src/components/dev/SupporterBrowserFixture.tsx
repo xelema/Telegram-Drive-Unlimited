@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
+import {Toaster} from 'sonner';
 import { SupporterOfferDialog } from '../shared/SupporterOfferDialog';
 import { SettingsModal } from '../desktop/dashboard/SettingsModal';
+import { MobileSupporterCard } from '../mobile/MobileSupporterCard';
 import i18n, { ensureLanguageResource } from '../../i18n';
 import { getLanguageInfo } from '../../i18n/languages';
 
@@ -24,9 +26,10 @@ export function SupporterBrowserFixture() {
   if (!ready) return null;
   return (
     <main className="min-h-screen bg-app-canvas p-4 text-app-text" data-supporter-fixture-ready={language}>
+      <Toaster theme="dark" position="bottom-center" />
       <h1 className="sr-only">Supporter presentation fixture</h1>
       {offer && <SupporterOfferDialog trigger="weekly" onClose={() => setOffer(false)} onOpenSupporter={() => { setOffer(false); setDetails(true); }} />}
-      {details && (<SettingsModal ownerId={null} isOpen initialTab="license" focusSupporter onClose={() => setDetails(false)} />)}
+      {details && (params.get('purchase')==='mobile' ? <MobileSupporterCard /> : <SettingsModal ownerId={null} isOpen initialTab="license" focusSupporter onClose={() => setDetails(false)} />)}
     </main>
   );
 }

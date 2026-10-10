@@ -8,6 +8,11 @@ pub struct SyncPreferences {
     pub ignore_patterns: Vec<String>,
     pub propagate_deletions: bool,
     pub pause_on_conflicts: bool,
+    /// When a mapping is first reviewed over a folder that already holds the
+    /// same files as its Telegram folder, treat same-path, same-size files as
+    /// already in sync instead of reporting every one as a conflict. Contents
+    /// cannot be compared without downloading, so this is opt-in.
+    pub adopt_matching_files: bool,
 }
 
 impl Default for SyncPreferences {
@@ -16,6 +21,7 @@ impl Default for SyncPreferences {
             ignore_patterns: vec![".git/".into(), "node_modules/".into(), ".DS_Store".into()],
             propagate_deletions: false,
             pause_on_conflicts: true,
+            adopt_matching_files: false,
         }
     }
 }

@@ -42,6 +42,8 @@ export function applyVpnSettings(settings: Settings): Promise<string> {
             peer_cache_size: settings.peerCacheSize,
             bandwidth_limit_up_kbs: settings.bandwidthLimitUpKBs,
             bandwidth_limit_down_kbs: settings.bandwidthLimitDownKBs,
+            bandwidth_schedule: settings.bandwidth_schedule,
+            bandwidth_windows: settings.bandwidthWindows,
             chunk_size_kb: settings.chunkSizeKb,
             keep_alive_interval_sec: settings.keepAliveIntervalSec,
             auto_detect_vpn: settings.autoDetectVpn,

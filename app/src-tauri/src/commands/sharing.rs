@@ -151,7 +151,7 @@ pub async fn cmd_create_share(
     }).await?;
 
     account.validate()?;
-    let link = format!("http://127.0.0.1:{}/d/{}", crate::STREAM_PORT, token);
+    let link = format!("http://127.0.0.1:{}/d/{}", crate::stream_port(), token);
 
     Ok(ShareInfo {
         id: token,
@@ -219,7 +219,7 @@ fn list_shares_for_account(
         let created_at = stmt
             .read::<i64, _>("created_at")
             .map_err(|e| e.to_string())?;
-        let link = format!("http://127.0.0.1:{}/d/{}", crate::STREAM_PORT, id);
+        let link = format!("http://127.0.0.1:{}/d/{}", crate::stream_port(), id);
 
         shares.push(ShareInfo {
             id,

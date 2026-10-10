@@ -1,3 +1,5 @@
+import i18n from '../i18n';
+import { searchLocal } from '../services/localSearch';
 import { sourceFolder } from '../services/fileIdentity';
 import { useCallback, useRef } from 'react';
 import { useActionScope } from './useActionScope';
@@ -42,13 +44,13 @@ export function useFileOperations(
         if (!file) { toast.error(t('common.operation_failed')); return; }
         const id = file.id;
         const sourceFolderId = sourceFolder(file, activeFolderId);
-        if (!await confirm({ title: "Delete File", message: "Are you sure you want to delete this file?", confirmText: "Delete", variant: 'danger' }) || !isCurrent()) return;
+        if (!await confirm({ title: t('operations.delete_file'), message: t('operations.delete_file_question'), confirmText: i18n.t("files.delete"), variant: 'danger' }) || !isCurrent()) return;
         try {
             await invoke('cmd_delete_file', { messageId: id, folderId: sourceFolderId, ownerId });
             if (!isCurrent()) return;
             updateFileQueryData(queryClient, sourceFolderId, new Set([id]), () => null, ownerId);
             void invalidateOwnedFileQueries(queryClient, ownerId);
-            toast.success("File deleted");
+            toast.success(t('operations.file_deleted'));
         } catch (error) {
             if (isCurrent()) toast.error(userFacingError(error, t));
         }
@@ -63,7 +65,7 @@ export function useFileOperations(
             .filter((file): file is TelegramFile => Boolean(file))
             .map(file => ({ id: file.id, folderId: sourceFolder(file, activeFolderId) }));
         if (targets.length !== ids.length) { toast.error(t('common.operation_failed')); return; }
-        if (!await confirm({ title: "Delete Files", message: `Are you sure you want to delete ${ids.length} files?`, confirmText: "Delete All", variant: 'danger' }) || !isCurrent()) return;
+        if (!await confirm({ title: t('operations.delete_files'), message: t('operations.delete_files_question',{count:ids.length}), confirmText: t('operations.delete_all'), variant: 'danger' }) || !isCurrent()) return;
         let success = 0;
         let fail = 0;
         const deletedByFolder = new Map<number | null, number[]>();
@@ -85,8 +87,8 @@ export function useFileOperations(
             updateFileQueryData(queryClient, folderId, new Set(deletedIds), () => null, ownerId);
         }
         void invalidateOwnedFileQueries(queryClient, ownerId);
-        if (success > 0) toast.success(`Deleted ${success} files.`);
-        if (fail > 0) toast.error(`Failed to delete ${fail} files.`);
+        if (success > 0) toast.success(t('operations.deleted_count',{count:success}));
+        if (fail > 0) toast.error(t('operations.delete_failed_count',{count:fail}));
     }, [activeFolderId, capture, confirm, ownerId, queryClient, setSelectedIds, t]);
 
     const handleRenameFile = useCallback(async (file: TelegramFile, newName: string) => {
@@ -99,7 +101,7 @@ export function useFileOperations(
             if (!isCurrent()) return false;
             updateFileQueryData(queryClient, folderId, new Set([id]), item => ({ ...item, name: newName }), ownerId);
             void invalidateOwnedFileQueries(queryClient, ownerId);
-            toast.success(`Renamed to "${newName}"`);
+            toast.success(t('operations.renamed',{name:newName}));
             return true;
         } catch (error) {
             if (isCurrent()) toast.error(userFacingError(error, t));
@@ -112,11 +114,11 @@ export function useFileOperations(
         if (!ownerId || !isCurrent() || !files.length) return false;
         const ids = [...new Set(files.map(file => file.id))];
         const sourceFolders = new Set(files.map(file => sourceFolder(file, activeFolderId)));
-        if (sourceFolders.size !== 1) { toast.info('Move files from one source folder at a time.'); return false; }
+        if (sourceFolders.size !== 1) { toast.info(t('operations.move_one_source')); return false; }
         const sourceFolderId = sourceFolders.values().next().value!;
-        if (sourceFolderId === targetFolderId) { toast.info('File is already in this folder'); return false; }
+        if (sourceFolderId === targetFolderId) { toast.info(t('operations.already_in_folder')); return false; }
         if (confirmLarge && ids.length >= 10) {
-            const accepted = await confirm({ title: 'Bulk Move Confirmation', message: `You are about to move ${ids.length} files. Are you sure?`, confirmText: `Move ${ids.length} Files`, variant: 'info' });
+            const accepted = await confirm({ title: t('operations.bulk_move'), message: t('operations.move_question',{count:ids.length}), confirmText: t('operations.move_action',{count:ids.length}), variant: 'info' });
             if (!accepted || !isCurrent()) return false;
         }
         try {
@@ -124,7 +126,7 @@ export function useFileOperations(
             if (!isCurrent()) return false;
             updateFileQueryData(queryClient, sourceFolderId, new Set(ids), () => null, ownerId);
             void invalidateOwnedFileQueries(queryClient, ownerId);
-            toast.success(`Moved ${ids.length} files.`);
+            toast.success(t('operations.moved_count',{count:ids.length}));
             onSuccess?.();
             return true;
         } catch (error) {
@@ -155,12 +157,12 @@ export function useFileOperations(
                     successCount++;
                 } catch { }
             }
-            toast.success(`Downloaded ${successCount} files.`);
+            toast.success(t('operations.downloaded_count',{count:successCount}));
             setSelectedIds([]);
         };
         try {
             const dirPath = await pickWithFallback(
-                () => open({ directory: true, multiple: false, title: "Select Download Destination" }),
+                () => open({ directory: true, multiple: false, title: i18n.t('common.download_destination') }),
                 () => handleBulkDownload(),
                 {
                     errorTitle: 'Folder picker failed',
@@ -175,9 +177,9 @@ export function useFileOperations(
             if (!dirPath) return;
             await downloadToDir(dirPath);
         } catch (e) {
-            toast.error(`Bulk download failed: ${e}`);
+            toast.error(t('operations.bulk_download_failed',{error:String(e)}));
         }
-    }, [activeFolderId, setSelectedIds, queueBulkDownload]);
+    }, [activeFolderId, setSelectedIds, queueBulkDownload, t]);
 
     const handleBulkMove = useCallback(async (targetFolderId: number | null, onSuccess?: () => void) => {
         const ids = [...selectedIdsRef.current];
@@ -189,7 +191,7 @@ export function useFileOperations(
     const handleDownloadFolder = useCallback(async () => {
         const files = displayedFilesRef.current;
         if (files.length === 0) {
-            toast.info("Folder is empty.");
+            toast.info(t('operations.folder_empty'));
             return;
         }
         if (queueBulkDownload) {
@@ -198,7 +200,7 @@ export function useFileOperations(
         }
         const downloadToDir = async (dirPath: string) => {
             let successCount = 0;
-            toast.info(`Downloading folder contents (${files.length} files)...`);
+            toast.info(t('operations.folder_downloading',{count:files.length}));
             const sep = dirPath.includes('\\') ? '\\' : '/';
             for (const file of files) {
                 const sanitizedName = sanitizeFilename(file.name);
@@ -208,12 +210,12 @@ export function useFileOperations(
                     successCount++;
                 } catch { }
             }
-            toast.success(`Folder Download Complete: ${successCount} files.`);
+            toast.success(t('operations.folder_download_complete',{count:successCount}));
         };
         try {
             const dirPath = await pickWithFallback(
                 () => open({
-                    directory: true, multiple: false, title: "Download Folder To..."
+                    directory: true, multiple: false, title: i18n.t('common.download_folder_to')
                 }),
                 () => handleDownloadFolder(),
                 {
@@ -231,14 +233,14 @@ export function useFileOperations(
         } catch (e) {
             toast.error(userFacingError(e, t));
         }
-    }, [activeFolderId, queueBulkDownload]);
+    }, [activeFolderId, queueBulkDownload, t]);
 
     const handleGlobalSearch = useCallback(async (query: string) => {
         const isCurrent = capture();
         if (!ownerId || !isCurrent()) return [];
         try {
-            const files = await invoke<TelegramFile[]>('cmd_search_global', { query, ownerId });
-            return isCurrent() ? files : [];
+            const result = await searchLocal(ownerId, { query }, isCurrent);
+            return isCurrent() ? result.files : [];
         } catch {
             return [];
         }

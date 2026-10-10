@@ -10,7 +10,7 @@ export function SyncPlanPreview({ preview }: { preview: SyncPreview }) {
   const [page, setPage] = useState(0);
   useEffect(() => { setPage(0); setFilter('all'); }, [preview]);
   const labels: Record<SyncPreviewAction, string> = {
-    upload: t('syncPreview.uploads'), download: t('syncPreview.downloads'),
+    upload: t('activity.uploads'), download: t('activity.downloads'),
     delete_local: t('syncPreview.delete_local'), delete_remote: t('syncPreview.delete_remote'),
     conflict: t('syncPreview.conflicts'), skip: t('syncPreview.skipped'),
   };

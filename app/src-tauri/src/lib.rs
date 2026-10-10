@@ -1,3 +1,4 @@
+pub mod app_log;
 pub mod crypto;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod desktop_lifecycle;
@@ -15,6 +16,7 @@ pub mod models;
 #[cfg(feature = "native-e2e")]
 #[doc(hidden)]
 pub mod native_e2e;
+pub mod native_localization;
 #[cfg(not(target_os = "android"))]
 mod network_keepalive;
 
@@ -61,9 +63,20 @@ fn init_com_on_worker_thread() {
 
 pub mod bandwidth;
 pub mod commands;
+mod external_files;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+mod heic;
+mod legacy_external;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+mod process_budget;
+pub mod process_util;
 pub mod proxy_secret;
+pub mod resumable_upload;
 pub mod socks5_bridge;
+pub mod startup_failure;
+mod startup_smoke;
 pub mod temp_artifacts;
+mod traffic;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod transfer_engine;
 pub mod vpn_optimizer;
@@ -78,14 +91,18 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 pub mod android_security;
+pub mod api_catalog;
 pub mod api_routes;
 pub mod api_secret;
 pub mod crypto_commands;
 pub mod db;
 mod db_migrations;
+pub mod file_inventory;
 pub mod fmp4_remux;
+pub mod folder_layout;
 pub mod jni_cache;
 mod local_cors;
+pub(crate) mod local_search;
 pub mod mp4_utils;
 pub mod server;
 mod server_lifecycle;
@@ -103,6 +120,20 @@ pub mod workspace;
 /// Referenced in lib.rs (server startup) and exposed to the frontend
 /// via cmd_get_stream_info so no component ever hardcodes the port.
 pub const STREAM_PORT: u16 = 14201;
+
+/// Port the loopback media server actually bound. It equals `STREAM_PORT`
+/// unless that port was unavailable when the application started.
+static ACTIVE_STREAM_PORT: std::sync::atomic::AtomicU16 =
+    std::sync::atomic::AtomicU16::new(STREAM_PORT);
+
+/// The loopback port serving streams, share pages and the sponsor frame.
+pub fn stream_port() -> u16 {
+    ACTIVE_STREAM_PORT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub(crate) fn set_stream_port(port: u16) {
+    ACTIVE_STREAM_PORT.store(port, std::sync::atomic::Ordering::Relaxed);
+}
 
 /// Generate a random 32-character hex token for streaming server auth
 fn generate_stream_token() -> String {
@@ -185,17 +216,6 @@ pub async fn restart_api_server(app: &tauri::AppHandle) -> Result<(), String> {
         let sys = actix_rt::System::new();
         sys.block_on(async move {
             let mut startup_sender = Some(startup_sender);
-            let api_state_data = actix_web::web::Data::new(tg_state);
-            let api_state = actix_web::web::Data::new(api_routes::ApiState { key_hash });
-            let cache_dirs = actix_web::web::Data::new(api_routes::CacheDirs {
-                account_root: api_account_root,
-                thumbnail_dir,
-                preview_dir,
-            });
-            let api_bw = actix_web::web::Data::new(bw_manager);
-            let api_net = actix_web::web::Data::new(net_config);
-            let api_db = actix_web::web::Data::new(db_pool);
-
             log::info!("Starting REST API server on port {}", api_port);
             let listener = match server_lifecycle::bind_loopback_with_retry(
                 api_port,
@@ -218,27 +238,22 @@ pub async fn restart_api_server(app: &tauri::AppHandle) -> Result<(), String> {
                 }
             };
 
-            let server = match actix_web::HttpServer::new(move || {
-                let cors = actix_cors::Cors::default()
-                    .allowed_origin_fn(|origin, _req_head| {
-                        local_cors::is_allowed_origin_header(origin)
-                    })
-                    .allow_any_method()
-                    .allow_any_header();
-
-                actix_web::App::new()
-                    .wrap(cors)
-                    .app_data(api_state_data.clone())
-                    .app_data(api_state.clone())
-                    .app_data(cache_dirs.clone())
-                    .app_data(api_bw.clone())
-                    .app_data(api_net.clone())
-                    .app_data(api_db.clone())
-                    .configure(api_routes::configure_api)
-            })
-            .listen(listener)
-            {
-                Ok(bound) => bound.run(),
+            let server = match api_routes::serve(
+                listener,
+                api_routes::ApiServerParts {
+                    telegram: tg_state,
+                    key_hash,
+                    cache_dirs: api_routes::CacheDirs {
+                        account_root: api_account_root,
+                        thumbnail_dir,
+                        preview_dir,
+                    },
+                    bandwidth: bw_manager,
+                    network: net_config,
+                    database: db_pool,
+                },
+            ) {
+                Ok(server) => server,
                 Err(error) => {
                     let message = format!("Could not start REST API on port {api_port}: {error}");
                     log::error!("{message}");
@@ -320,7 +335,6 @@ pub async fn restart_webdav_server(app: &tauri::AppHandle) -> Result<(), String>
         .state::<Arc<vpn_optimizer::NetworkConfig>>()
         .inner()
         .clone();
-    let database = app.state::<db::DbConnection>().inner().clone();
     let webdav_account_root = app
         .path()
         .app_data_dir()
@@ -367,15 +381,10 @@ pub async fn restart_webdav_server(app: &tauri::AppHandle) -> Result<(), String>
                 telegram_state,
                 bandwidth,
                 network,
-                database,
                 write_enabled,
                 staging_dir,
                 webdav_account_root,
             );
-            let (handler, auth) = webdav::build_handler(filesystem, token_hash);
-            let handler = actix_web::web::Data::new(handler);
-            let auth = actix_web::web::Data::new(auth);
-
             log::info!("Starting WebDAV server on 127.0.0.1:{port}");
             let listener = match server_lifecycle::bind_loopback_with_retry(
                 port,
@@ -398,15 +407,8 @@ pub async fn restart_webdav_server(app: &tauri::AppHandle) -> Result<(), String>
                 }
             };
 
-            let server = match actix_web::HttpServer::new(move || {
-                actix_web::App::new()
-                    .app_data(handler.clone())
-                    .app_data(auth.clone())
-                    .service(actix_web::web::resource("/{tail:.*}").to(webdav::webdav_handler))
-            })
-            .listen(listener)
-            {
-                Ok(bound) => bound.run(),
+            let server = match webdav::serve(listener, filesystem, token_hash) {
+                Ok(server) => server,
                 Err(error) => {
                     let message = format!("Could not start WebDAV on port {port}: {error}");
                     log::error!("{message}");
@@ -448,7 +450,10 @@ pub async fn restart_webdav_server(_app: &tauri::AppHandle) -> Result<(), String
 }
 
 #[tauri::command]
-fn cmd_open_file_externally(path: String, _app_handle: tauri::AppHandle) -> Result<(), String> {
+async fn cmd_open_file_externally(
+    path: String,
+    _app_handle: tauri::AppHandle,
+) -> Result<(), String> {
     #[cfg(target_os = "android")]
     {
         let ctx = ndk_context::android_context();
@@ -522,10 +527,26 @@ fn cmd_open_file_externally(path: String, _app_handle: tauri::AppHandle) -> Resu
     }
     #[cfg(not(target_os = "android"))]
     {
+        use tauri::Manager;
         use tauri_plugin_opener::OpenerExt;
+        let root = _app_handle
+            .path()
+            .app_data_dir()
+            .map_err(|e| e.to_string())?;
+        let account = crate::workspace::AccountGuard::open(&root, None)?;
+        let authenticated = crate::external_files::open_async(
+            account.clone(),
+            _app_handle
+                .path()
+                .app_cache_dir()
+                .map_err(|e| e.to_string())?,
+            std::path::PathBuf::from(path),
+        )
+        .await?;
+        let path = authenticated.checked(&account)?;
         _app_handle
             .opener()
-            .open_path(&path, None::<&str>)
+            .open_path(path.to_string_lossy().into_owned(), None::<&str>)
             .map_err(|e| e.to_string())
     }
 }
@@ -885,6 +906,10 @@ fn cmd_get_system_diagnostics(app: tauri::AppHandle) -> Result<String, String> {
         if let Ok(dir) = app.path().app_data_dir() {
             lines.push(format!("App Data: {}", dir.display()));
         }
+        match app_log::file_path() {
+            Some(path) => lines.push(format!("Log File: {}", path.display())),
+            None => lines.push("Log File: unavailable".to_string()),
+        }
 
         // Check for FFmpeg
         #[cfg(unix)]
@@ -908,7 +933,12 @@ fn cmd_get_system_diagnostics(app: tauri::AppHandle) -> Result<String, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    env_logger::init();
+    let mut context = tauri::generate_context!();
+    if let Err(error) = startup_smoke::configure(&mut context) {
+        eprintln!("Packaged startup smoke refused: {error}");
+        return;
+    }
+    app_log::init();
 
     let stream_token = generate_stream_token();
 
@@ -958,6 +988,18 @@ pub fn run() {
 
     let app = builder
         .setup(move |app| {
+            startup_smoke::validate_profile(app.handle())?;
+            // Attach the log file first so every later setup failure is
+            // recorded where the startup dialog can point to it.
+            match app.path().app_log_dir() {
+                Ok(log_directory) => {
+                    if let Err(error) = app_log::attach_file(&log_directory) {
+                        log::warn!("The log file could not be opened: {error}");
+                    }
+                }
+                Err(error) => log::warn!("The log directory is unavailable: {error}"),
+            }
+
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             {
                 let preferences = desktop_preferences::DesktopPreferencesState::load(app.handle())
@@ -966,6 +1008,8 @@ pub fn run() {
                         error
                     })?;
                 app.manage(preferences);
+                let system_language = tauri_plugin_os::locale();
+                app.manage(native_localization::NativeLanguageState::load(&app.path().app_data_dir()?, system_language.as_deref()));
                 app.manage(desktop_lifecycle::DesktopLifecycleState::default());
 
                 match desktop_tray::initialize(app.handle()) {
@@ -1079,7 +1123,22 @@ pub fn run() {
                 cancelled_transfers: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
             });
             app.manage(Arc::new(bandwidth::BandwidthManager::new(app.handle())));
-            app.manage(StreamConfig { token: stream_token.clone(), port: STREAM_PORT });
+            // Bind before the UI asks for stream URLs so the published port is
+            // the one that is really listening. A zero port marks the local
+            // media server as unavailable in the startup health report.
+            let stream_listener = match server::bind_stream_listener(STREAM_PORT) {
+                Ok(listener) => Some(listener),
+                Err(error) => {
+                    log::error!("Local media server could not bind a loopback port: {error}");
+                    None
+                }
+            };
+            let bound_stream_port = stream_listener
+                .as_ref()
+                .and_then(|listener| listener.local_addr().ok())
+                .map(|address| address.port())
+                .unwrap_or(0);
+            app.manage(StreamConfig { token: stream_token.clone(), port: bound_stream_port });
 
             // Initialize the passphrase-protected persistent production vault.
             // Test-only MemoryVault must never be constructed by the app.
@@ -1111,6 +1170,10 @@ pub fn run() {
             app.manage(ApiServerLifecycle(server_lifecycle::LocalServerLifecycle::new()));
             app.manage(WebDavServerLifecycle(server_lifecycle::LocalServerLifecycle::new()));
 
+            let loaded_config = vpn_optimizer::load_network_config(app.handle());
+            let net_config = Arc::new(vpn_optimizer::NetworkConfig::new_with_config(loaded_config));
+            app.manage(net_config.clone());
+
             // Initialize TranscodeManager for HLS streaming
             let app_data_dir = app.path().app_data_dir().map_err(|e| {
                 log::error!("Failed to get app data dir: {}", e);
@@ -1119,7 +1182,7 @@ pub fn run() {
             let cache_root = app_data_dir.join("streaming");
             let cache_limit = transcode::persisted_cache_limit_bytes(&app_data_dir);
             let transcode_manager =
-                transcode::TranscodeManager::new_with_max_cache_bytes(cache_root, cache_limit);
+                transcode::TranscodeManager::new_with_max_cache_bytes(cache_root, cache_limit).with_transport(net_config.clone(),app.state::<Arc<bandwidth::BandwidthManager>>().inner().clone());
             // Detect FFmpeg (non-blocking spawn)
             let app_handle = app.handle().clone();
             let ffmpeg_path_arc = transcode_manager.ffmpeg_path.clone();
@@ -1132,9 +1195,6 @@ pub fn run() {
             transcode_arc.start_cache_reconciliation(true);
             app.manage(transcode_arc.clone());
             app.manage(fmp4_remux::Fmp4RemuxState::new());
-            let loaded_config = vpn_optimizer::load_network_config(app.handle());
-            let net_config = Arc::new(vpn_optimizer::NetworkConfig::new_with_config(loaded_config));
-            app.manage(net_config.clone());
 
             // Auto-start SOCKS5 bridge on startup if HTTP/HTTPS proxy is configured
             {
@@ -1194,19 +1254,24 @@ pub fn run() {
             let db_pool_for_server = db_pool.clone();
             let transcode_for_server = transcode_arc.clone();
             let crypto_for_server = app.state::<crypto::state::CryptoState>().inner().clone();
+            let network_for_server=net_config.clone();
+            let bandwidth_for_server=app.state::<Arc<bandwidth::BandwidthManager>>().inner().clone();
             let share_account_root = app.path().app_data_dir()?;
             tauri::async_runtime::spawn(async move {
-                match server::start_server(
+                let Some(listener) = stream_listener else {
+                    return;
+                };
+                match server::start_server_with_listener(
                     state,
-                    STREAM_PORT,
                     token_for_server,
                     db_pool_for_server,
                     transcode_for_server,
                     crypto_for_server,
                     share_account_root,
-                )
-                .await
-                {
+                    network_for_server,
+                    bandwidth_for_server,
+                    listener,
+                ) {
                     Ok(server) => {
                         let server_handle = server.handle();
                         let handle_was_stored = match handle_for_runtime.lock() {
@@ -1273,10 +1338,15 @@ pub fn run() {
                 });
             }
 
+            // Clear staging leftovers from crashed or abandoned transfers.
+            tauri::async_runtime::spawn_blocking(temp_artifacts::sweep_stale_staging);
+
             workspace::start_background(app.handle().clone());
+            file_inventory::start_background(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            file_inventory::cmd_touch_file_inventory,
             workspace::storage::cmd_storage_read,
             workspace::storage::cmd_storage_limits,
             workspace::storage::cmd_storage_clear,
@@ -1326,8 +1396,10 @@ pub fn run() {
             commands::cmd_rename_folder,
             commands::cmd_rename_file,
             commands::cmd_get_bandwidth,
+            commands::cmd_set_weekly_quota,
             commands::cmd_delete_preview_for_message,
             commands::cmd_get_preview,
+            commands::cmd_get_display_preview,
             commands::cmd_clean_preview_cache,
             commands::cmd_get_offline_cache_status,
             commands::cmd_get_offline_files,
@@ -1336,6 +1408,8 @@ pub fn run() {
             commands::cmd_logout,
             commands::cmd_scan_folders,
             commands::cmd_search_global,
+            commands::search::cmd_search_local,
+            commands::search::cmd_search_saved,
             commands::cmd_record_file_opened,
             commands::cmd_set_file_activity_flag,
             commands::cmd_get_file_activity,
@@ -1347,6 +1421,7 @@ pub fn run() {
             commands::cmd_download_settings_sync,
             commands::cmd_get_sync_settings,
             commands::cmd_toggle_sync,
+            commands::cmd_set_sync_scanner,
             commands::cmd_add_sync_pair,
             commands::cmd_get_sync_pairs,
             commands::cmd_remove_sync_pair,
@@ -1413,6 +1488,8 @@ pub fn run() {
             desktop_preferences::cmd_set_desktop_lock_on_sleep,
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             desktop_notifications::cmd_get_notification_permission,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            native_localization::cmd_set_native_language,
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             desktop_notifications::cmd_request_notification_permission,
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -1489,11 +1566,20 @@ pub fn run() {
             crypto_commands::cmd_get_vault_status,
             crypto_commands::cmd_export_vault_recovery,
             crypto_commands::cmd_import_vault_recovery,
+            crypto_commands::cmd_verify_vault_recovery,
             crypto_commands::cmd_generate_recovery_key,
             crypto_commands::cmd_get_file_encryption_info,
         ])
-        .build(tauri::generate_context!())
-        .expect("error while building tauri application");
+        .build(context);
+    let app = match app {
+        Ok(app) => app,
+        Err(error) => {
+            // Explain the failure instead of exiting without a trace. Local
+            // data is left exactly as it was; nothing here tries to repair it.
+            startup_failure::report(&error.to_string());
+            std::process::exit(1);
+        }
+    };
 
     let graceful_sync_exit_started = Arc::new(std::sync::atomic::AtomicBool::new(false));
     app.run(move |app_handle, event| {

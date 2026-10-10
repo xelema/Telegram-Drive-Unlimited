@@ -8,22 +8,52 @@ pub fn folder_key(folder_id: Option<i64>) -> String {
         .unwrap_or_else(|| "home".to_string())
 }
 
+async fn scoped_connection<T, F>(
+    database: DbConnection,
+    publication: Option<crate::file_inventory::Publication>,
+    operation: F,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(&sqlite::Connection) -> Result<T, String> + Send + 'static,
+{
+    if let Some(publication) = publication {
+        tokio::task::spawn_blocking(move || {
+            publication.persist(|| {
+                let connection = database.lock().map_err(|_| "Database lock poisoned")?;
+                operation(&connection)
+            })
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    } else {
+        db::with_connection(database, operation).await
+    }
+}
+
 pub async fn upsert_inventory_chunk(
     database: DbConnection,
     folder_key: String,
     scan_id: String,
     files: Vec<FileMetadata>,
+    publication: Option<crate::file_inventory::Publication>,
 ) -> Result<(), String> {
     if files.is_empty() {
         return Ok(());
     }
     let updated_at = chrono::Utc::now().timestamp();
-    db::with_connection(database, move |connection| {
+    scoped_connection(database, publication, move |connection| {
         connection
             .execute("BEGIN IMMEDIATE")
             .map_err(|error| error.to_string())?;
         let result = (|| {
-            for file in files {
+            for mut file in files {
+                if file.encryption_state != "plain" {
+                    file.name = "Protected file".into();
+                    file.mime_type = Some("application/octet-stream".into());
+                    file.file_ext = None;
+                    file.encryption_state = "encrypted_locked".into();
+                }
                 let mut statement = connection
                     .prepare(
                         "INSERT INTO file_inventory (
@@ -101,9 +131,10 @@ pub async fn complete_inventory_scan(
     database: DbConnection,
     folder_key: String,
     scan_id: String,
+    publication: Option<crate::file_inventory::Publication>,
 ) -> Result<(), String> {
     let completed_at = chrono::Utc::now().timestamp();
-    db::with_connection(database, move |connection| {
+    scoped_connection(database, publication, move |connection| {
         connection
             .execute("BEGIN IMMEDIATE")
             .map_err(|error| error.to_string())?;

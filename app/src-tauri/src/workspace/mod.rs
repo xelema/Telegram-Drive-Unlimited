@@ -1,9 +1,13 @@
 mod account;
+#[cfg(feature = "native-e2e")]
+pub(crate) use account::test_account_validation_counts;
 pub mod assets;
+pub(crate) mod cache_core;
 pub mod cleanup;
 pub mod device_cache;
 pub mod envelope_cache;
 pub mod packs;
+mod pagination;
 pub mod playback;
 pub(crate) mod remote_changes;
 pub mod storage;
@@ -31,12 +35,10 @@ pub fn start_background(app: tauri::AppHandle) {
                 continue;
             };
             if configured_owner != Some(owner) {
-                if let Ok(store) = Store::open(&root, owner) {
-                    if let Ok(Some(limits)) =
-                        store.record::<storage::StorageLimits>("storage", "limits")
-                    {
-                        storage::apply_limits(&app, &limits).await;
-                    }
+                let limits = Store::open(&root, owner)
+                    .and_then(|store| store.record::<storage::StorageLimits>("storage", "limits"));
+                if let Ok(Some(limits)) = limits {
+                    storage::apply_limits(&app, &limits).await;
                 }
                 configured_owner = Some(owner);
             }
@@ -52,49 +54,41 @@ pub fn start_background(app: tauri::AppHandle) {
 }
 
 pub async fn record_chunk(
-    account: &AccountGuard,
+    publication: &crate::file_inventory::Publication,
     files: &[FileMetadata],
     peer: &Peer,
     scan: &str,
 ) -> Result<(), String> {
-    account.validate()?;
-    let account = account.clone();
+    let publication = publication.clone();
     let files = files.to_vec();
     let scan = scan.to_string();
     let name = match peer {
         Peer::Channel(channel) => channel.title().replace(" [TD]", ""),
         _ => "Saved Messages".into(),
     };
-    tokio::task::spawn_blocking(move || {
-        account.validate()?;
-        let store=Store::open(&account.root,account.owner)?;
+    tokio::task::spawn_blocking(move||publication.persist(|| {
+        let account=&publication.account;let store=Store::open(&account.root,account.owner)?;
         store.remember_files(&files,&name,&scan)?;
-        if let Some(file)=files.first() {
-            let key=file.folder_id.map(|id| id.to_string()).unwrap_or_else(|| "saved".into());
-            store.put_record("scan",&key,&serde_json::json!({"folderId":file.folder_id,"folderName":name,"complete":false,"updatedAt":chrono::Utc::now().timestamp_millis()}))?;
-        }
+        if let Some(file)=files.first() {let key=file.folder_id.map(|id|id.to_string()).unwrap_or_else(||"saved".into());store.put_record("scan",&key,&serde_json::json!({"folderId":file.folder_id,"folderName":name,"complete":false,"updatedAt":chrono::Utc::now().timestamp_millis()}))?;}
         account.validate()
-    }).await.map_err(|e| e.to_string())?
+    })).await.map_err(|error|error.to_string())?
 }
-
 pub async fn complete_scan(
-    account: &AccountGuard,
+    publication: &crate::file_inventory::Publication,
     folder: Option<i64>,
     scan: &str,
 ) -> Result<(), String> {
-    let account = account.clone();
+    let publication = publication.clone();
     let scan = scan.to_string();
-    tokio::task::spawn_blocking(move || {
-        account.validate()?;
-        let store=Store::open(&account.root,account.owner)?;
+    tokio::task::spawn_blocking(move||publication.persist(|| {
+        let account=&publication.account;let store=Store::open(&account.root,account.owner)?;
         store.transaction(|| {
             store.complete_scan(folder,&scan)?;
-            let key=folder.map(|id| id.to_string()).unwrap_or_else(|| "saved".into());
-            let old=store.record::<serde_json::Value>("scan",&key)?.unwrap_or_default();
-            store.put_record("scan",&key,&serde_json::json!({"folderId":folder,"folderName":old.get("folderName").and_then(|v|v.as_str()).unwrap_or("Saved Messages"),"complete":true,"updatedAt":chrono::Utc::now().timestamp_millis()}))?;
+            let key=folder.map(|id|id.to_string()).unwrap_or_else(||"saved".into());let old=store.record::<serde_json::Value>("scan",&key)?.unwrap_or_default();
+            store.put_record("scan",&key,&serde_json::json!({"folderId":folder,"folderName":old.get("folderName").and_then(|value|value.as_str()).unwrap_or("Saved Messages"),"complete":true,"updatedAt":chrono::Utc::now().timestamp_millis()}))?;
             account.validate()
         })
-    }).await.map_err(|e| e.to_string())?
+    })).await.map_err(|error|error.to_string())?
 }
 
 #[derive(Deserialize)]
@@ -140,16 +134,15 @@ pub async fn cmd_workspace_account(app: tauri::AppHandle) -> Result<String, Stri
 pub async fn cmd_workspace_read(
     app: tauri::AppHandle,
     owner_id: String,
-) -> Result<Snapshot, String> {
+    cursor: Option<String>,
+    limit: Option<usize>,
+) -> Result<WorkspacePage, String> {
     let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
     tokio::task::spawn_blocking(move || {
-        let account = AccountGuard::open(&root, Some(&owner_id))?;
-        let result = Store::open(&root, account.owner)?.snapshot()?;
-        account.validate()?;
-        Ok(result)
+        read_page_at(&root, &owner_id, cursor, limit.unwrap_or(256))
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -157,11 +150,12 @@ pub async fn cmd_workspace_mutate(
     app: tauri::AppHandle,
     owner_id: String,
     mutation: Mutation,
-) -> Result<Snapshot, String> {
+) -> Result<WorkspacePage, String> {
     let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
     tokio::task::spawn_blocking(move || {
         let account = AccountGuard::open(&root, Some(&owner_id))?;
         let store = Store::open(&root, account.owner)?;
+        account.validate()?;
         match mutation {
             Mutation::SaveCollection { collection } => store.save_collection(&collection)?,
             Mutation::RemoveCollection { id } => store.remove_collection(&id)?,
@@ -176,7 +170,8 @@ pub async fn cmd_workspace_mutate(
             Mutation::Favorite { key, value } => store.put_record("favorite", &key, &value)?,
         }
         account.validate()?;
-        store.snapshot()
+        drop(store);
+        read_page_at(&root, &owner_id, None, 256)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -187,7 +182,7 @@ pub async fn cmd_workspace_index(
     app: tauri::AppHandle,
     owner_id: String,
     folder_ids: Vec<Option<i64>>,
-) -> Result<Snapshot, String> {
+) -> Result<WorkspacePage, String> {
     let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let account = AccountGuard::open(&root, Some(&owner_id))?;
     if folder_ids.len() > 1000 {
@@ -198,10 +193,10 @@ pub async fn cmd_workspace_index(
         let scan = crate::commands::cmd_get_files(
             folder,
             Some(format!("workspace-{}", uuid::Uuid::new_v4())),
+            None,
             Some(owner_id.clone()),
             app.clone(),
             app.state::<TelegramState>(),
-            app.state::<crate::db::DbConnection>(),
             app.state::<crate::crypto::state::CryptoState>(),
         )
         .await?;
@@ -209,5 +204,23 @@ pub async fn cmd_workspace_index(
             return Err("The folder scan was interrupted before it completed; try again".into());
         }
     }
-    cmd_workspace_read(app, owner_id).await
+    cmd_workspace_read(app, owner_id, None, None).await
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspacePage {
+    #[serde(flatten)]
+    pub snapshot: Snapshot,
+    pub next_cursor: Option<String>,
+    pub total_files: usize,
+}
+
+pub(crate) fn read_page_at(
+    root: &std::path::Path,
+    owner_id: &str,
+    cursor: Option<String>,
+    limit: usize,
+) -> Result<WorkspacePage, String> {
+    pagination::read(root, owner_id, cursor, limit)
 }

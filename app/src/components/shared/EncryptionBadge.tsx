@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { useState } from 'react';
 import { Lock, Unlock, ShieldAlert, ShieldX, AlertTriangle, Loader2 } from 'lucide-react';
 import type { EncryptionState } from '../../types';
@@ -9,20 +10,22 @@ interface EncryptionBadgeProps {
     showLabel?: boolean;
 }
 
-const stateConfig: Record<EncryptionState, { icon: typeof Lock; color: string; label: string }> = {
-    plain: { icon: Lock, color: 'text-gray-400', label: 'Plain' },
-    encrypted_unlocked: { icon: Unlock, color: 'text-emerald-400', label: 'Decrypted' },
-    encrypted_locked: { icon: Lock, color: 'text-amber-400', label: 'Encrypted' },
-    encrypted_key_missing: { icon: ShieldAlert, color: 'text-red-400', label: 'Key Missing' },
-    encrypted_unsupported_version: { icon: ShieldX, color: 'text-red-400', label: 'Needs a newer app version' },
-    encrypted_corrupt: { icon: AlertTriangle, color: 'text-red-500', label: 'Corrupt' },
-    encrypted_verifying: { icon: Loader2, color: 'text-blue-400', label: 'Verifying' },
+const stateConfig: Record<EncryptionState, { icon: typeof Lock; color: string; labelKey: string }> = {
+    plain: { icon: Lock, color: 'text-gray-400', labelKey: 'workspace.protection_plain' },
+    encrypted_unlocked: { icon: Unlock, color: 'text-emerald-400', labelKey: 'protection_labels.decrypted' },
+    encrypted_locked: { icon: Lock, color: 'text-amber-400', labelKey: 'protection_labels.encrypted' },
+    encrypted_key_missing: { icon: ShieldAlert, color: 'text-red-400', labelKey: 'protection_labels.key_missing' },
+    encrypted_unsupported_version: { icon: ShieldX, color: 'text-red-400', labelKey: 'protection_labels.newer_version' },
+    encrypted_corrupt: { icon: AlertTriangle, color: 'text-red-500', labelKey: 'protection_labels.corrupt' },
+    encrypted_verifying: { icon: Loader2, color: 'text-blue-400', labelKey: 'protection_labels.verifying' },
 };
 
 export function EncryptionBadge({ state, className = '', showLabel = false }: EncryptionBadgeProps) {
+    const { t } = useTranslation();
     const [showExplanation, setShowExplanation] = useState(false);
     const config = stateConfig[state];
     const Icon = config.icon;
+    const label = t(config.labelKey);
     const isVerifying = state === 'encrypted_verifying';
 
     if (state === 'plain') {
@@ -34,8 +37,8 @@ export function EncryptionBadge({ state, className = '', showLabel = false }: En
         <button
             type="button"
             className={`inline-flex items-center gap-1 ${className}`}
-            title={`${config.label} — learn why this file is protected`}
-            aria-label={`${config.label}. Explain file protection`}
+            title={t('protection_labels.learn', { state: label })}
+            aria-label={t('protection_labels.explain', { state: label })}
             onClick={(event) => { event.preventDefault(); event.stopPropagation(); setShowExplanation(true); }}
         >
             <Icon
@@ -43,7 +46,7 @@ export function EncryptionBadge({ state, className = '', showLabel = false }: En
             />
             {showLabel && (
                 <span className={`text-[10px] font-medium ${config.color}`}>
-                    {config.label}
+                    {label}
                 </span>
             )}
         </button>

@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { Activity, Copy, Pause, Play, RefreshCw, RotateCcw } from 'lucide-react';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { usePlatform } from '../../hooks/usePlatform';
+import { useConfirm } from '../../context/ConfirmContext';
 import { invoke } from '@tauri-apps/api/core';
 import type { VaultStatus } from '../../types';
 import { supplyTransferPromptToken, transferItemAction } from '../../services/desktopTransferEngine';
@@ -16,6 +17,7 @@ const attention = (job: ActivityJob) => job.persistencePending || ['failed', 'pa
 
 export function ActivityPanel({ ownerId }: { ownerId: string }) {
   const { t } = useTranslation();
+  const { promptSecret } = useConfirm();
   const { isDesktop } = usePlatform();
   const query = useQuery({ queryKey: ['transfer-activity', ownerId], queryFn: () => readTransferActivity(ownerId), enabled: isDesktop, refetchInterval: 5_000 });
   const [filter, setFilter] = useState('all');
@@ -59,7 +61,7 @@ export function ActivityPanel({ ownerId }: { ownerId: string }) {
         throw new Error('VAULT_LOCKED');
       }
       if (mode === 'passphrase' || (mode === 'vault_and_passphrase' && (job.direction === 'upload' || !vault?.is_unlocked))) {
-        const secret = window.prompt(t('settings.encryption_mode_passphrase'));
+        const secret = await promptSecret({ title: t('settings.encryption_mode_passphrase') });
         if (!secret) return;
         const token = await invoke<number>('cmd_stage_file_passphrase', { passphrase: secret });
         if (owner.current !== ownerId) throw new Error('ACCOUNT_CHANGED');

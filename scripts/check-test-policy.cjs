@@ -53,6 +53,7 @@ for (const file of [
   'app/playwright.config.ts',
   'app/src-tauri/tests/native_e2e.rs',
   'scripts/e2e/assurance.e2e.cjs',
+  'scripts/e2e/supporter-token.e2e.mjs',
 ]) {
   if (!exists(file)) problems.push(`${file}: required E2E entrypoint is missing.`);
 }

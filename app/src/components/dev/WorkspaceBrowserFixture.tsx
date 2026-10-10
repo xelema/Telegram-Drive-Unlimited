@@ -6,7 +6,7 @@ import { WorkspaceHub } from '../workspace/WorkspaceHub';
 import { MediaTimeline } from '../workspace/MediaTimeline';
 import { PhotoSlideshow } from '../workspace/PhotoSlideshow';
 import type { WorkspaceFile } from '../../services/workspace';
-import '../../i18n';
+import {ensureLanguageResource,i18nInitialized} from '../../i18n';
 import '../../App.css';
 
 // A Playwright-only entry served directly by Vite. It mounts the real feature
@@ -35,5 +35,5 @@ function WorkspaceBrowserFixture() {
 
 if (import.meta.env.DEV) {
     const target = document.getElementById('workspace-browser-fixture');
-    if (target) createRoot(target).render(<WorkspaceBrowserFixture />);
+    if (target) void i18nInitialized.then(()=>ensureLanguageResource('en')).then(()=>createRoot(target).render(<WorkspaceBrowserFixture />));
 }

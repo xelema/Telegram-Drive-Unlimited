@@ -1,3 +1,4 @@
+import {useTranslation} from 'react-i18next';
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { X, ChevronLeft, ChevronRight, Maximize2, Minimize2 } from 'lucide-react';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
@@ -36,6 +37,7 @@ function isMp4Video(name: string): boolean {
 }
 
 export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, totalItems, activeFolderId, ownerId, restart, onPlayFile, localPath }: MediaPlayerProps) {
+    useTranslation();
     const [streamInfo, setStreamInfo] = useState<StreamInfo | null>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const [isFullscreen, setIsFullscreen] = useState(false);
@@ -180,16 +182,16 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
                     <button
                         onClick={toggleFullscreen}
                         className="viewer-control"
-                        title={isFullscreen ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}
-                        aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+                        title={isFullscreen ? i18n.t('viewer.exit_fullscreen_shortcut') : i18n.t('viewer.fullscreen_shortcut')}
+                        aria-label={isFullscreen ? i18n.t("workspace.exit_fullscreen") : i18n.t('viewer.enter_fullscreen')}
                     >
                         {isFullscreen ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
                     </button>
                     <button
                         onClick={onClose}
                         className="viewer-control"
-                        title="Close (Esc)"
-                        aria-label="Close media player"
+                        title={i18n.t('viewer.close_shortcut')}
+                        aria-label={i18n.t('viewer.close_player')}
                     >
                         <X className="w-5 h-5" />
                     </button>
@@ -197,8 +199,8 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
                 <button
                     onClick={onPrev}
                     className={`viewer-navigation absolute start-2 top-1/2 z-10 -translate-y-1/2 ${isFullscreen ? 'start-4' : ''}`}
-                    title="Previous (ArrowLeft / J)"
-                    aria-label="Previous file"
+                    title={i18n.t('viewer.previous_shortcut')}
+                    aria-label={i18n.t('viewer.previous_file')}
                 >
                     <ChevronLeft className="h-5 w-5 rtl:rotate-180" />
                 </button>
@@ -206,8 +208,8 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
                 <button
                     onClick={onNext}
                     className={`viewer-navigation absolute end-2 top-1/2 z-10 -translate-y-1/2 ${isFullscreen ? 'end-4' : ''}`}
-                    title="Next (ArrowRight / L)"
-                    aria-label="Next file"
+                    title={i18n.t('viewer.next_shortcut')}
+                    aria-label={i18n.t('viewer.next_file')}
                 >
                     <ChevronRight className="h-5 w-5 rtl:rotate-180" />
                 </button>
@@ -216,7 +218,7 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
                     {!streamUrl ? (
                         <div className="flex flex-col items-center gap-4 text-white">
                             <div className="w-10 h-10 border-4 border-telegram-primary border-t-transparent rounded-full animate-spin"></div>
-                            <p>Preparing stream...</p>
+                            <p>{i18n.t('viewer.preparing_stream')}</p>
                         </div>
                     ) : isVideo ? (
                         <video
@@ -235,7 +237,7 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
                             <audio ref={playback.attachMedia} src={streamUrl} controls autoPlay className="w-full max-w-md" />
                         </div>
                     ) : (
-                        <div className="text-white">Unsupported media type</div>
+                        <div className="text-white">{i18n.t('viewer.unsupported_media')}</div>
                     )}
                 </div>
 
@@ -254,19 +256,19 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
                 {/* Keyboard shortcut hints */}
                 {!isFullscreen && <div className="mt-2 flex items-center gap-4 text-[10px] text-white/25 select-none">
                     <span className="flex items-center gap-1">
-                        <kbd className="px-1 py-0.5 rounded bg-white/10 text-white/40 text-[9px] font-mono">← →</kbd> Navigate
+                        <kbd className="px-1 py-0.5 rounded bg-white/10 text-white/40 text-[9px] font-mono">← →</kbd> {i18n.t('viewer.navigate')}
                     </span>
                     <span className="flex items-center gap-1">
-                        <kbd className="px-1 py-0.5 rounded bg-white/10 text-white/40 text-[9px] font-mono">Space</kbd> Play/Pause
+                        <kbd className="px-1 py-0.5 rounded bg-white/10 text-white/40 text-[9px] font-mono">{i18n.t('viewer.space')}</kbd> {i18n.t('viewer.play_pause')}
                     </span>
                     <span className="flex items-center gap-1">
-                        <kbd className="px-1 py-0.5 rounded bg-white/10 text-white/40 text-[9px] font-mono">F</kbd> Fullscreen
+                        <kbd className="px-1 py-0.5 rounded bg-white/10 text-white/40 text-[9px] font-mono">F</kbd> {i18n.t("workspace.fullscreen")}
                     </span>
                     <span className="flex items-center gap-1">
                         <kbd className="px-1 py-0.5 rounded bg-white/10 text-white/40 text-[9px] font-mono">Esc</kbd> {i18n.t("common.close")}
                     </span>
                     <span className="flex items-center gap-1">
-                        <kbd className="px-1 py-0.5 rounded bg-white/10 text-white/40 text-[9px] font-mono">M</kbd> Mute
+                        <kbd className="px-1 py-0.5 rounded bg-white/10 text-white/40 text-[9px] font-mono">M</kbd> {i18n.t('viewer.mute')}
                     </span>
                 </div>}
             </div>

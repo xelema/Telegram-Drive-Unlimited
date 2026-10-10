@@ -1,4 +1,3 @@
-import '../../i18n/supporterTranslations';
 import { useRef } from 'react';
 import { ArrowRight, CheckCircle2, Heart, MegaphoneOff, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';

@@ -23,7 +23,7 @@ The port is configurable. Replace `8550` in examples if a different port is sele
 
 ## Authentication
 
-All endpoints except `/health` require an API key passed in the request headers.
+All endpoints except `/health` and `/openapi.json` require an API key passed in the request headers. The key is checked before the request body, query, or path is read.
 
 | Header | Type | Description |
 | :--- | :--- | :--- |
@@ -35,6 +35,27 @@ All endpoints except `/health` require an API key passed in the request headers.
 curl -H "X-API-Key: YOUR_API_KEY" \
   http://127.0.0.1:8550/api/v1/files
 ```
+
+---
+
+## Machine-readable contract
+
+An OpenAPI 3.1 description of every route, parameter, and response is served at `/api/v1/openapi.json` (no key required) and kept in the repository at `app/src-tauri/api/openapi-v1.json`. A repository check fails when a route and the contract disagree.
+
+```bash
+curl http://127.0.0.1:8550/api/v1/openapi.json
+```
+
+## Conventions
+
+- **File identifiers** are Telegram message identifiers: positive 32-bit integers, unique within their folder. Pass `folder_id` together with a file identifier unless the file is in Saved Messages. An identifier outside that range is refused with `400 INVALID_FILE_ID`.
+- **Folder identifiers** are 64-bit integers. `folder_id` is `null` for Saved Messages.
+- **Timestamps** are RFC 3339 in UTC, for example `2026-06-05T10:00:00Z`.
+- **Listing scope.** A cold folder read walks history once and retains the newest 50,000 files. Larger folders return `"complete": false`; totals, pages and reports describe the retained subset. Incomplete desktop and WebDAV snapshots do not authorize removal of older cached files.
+- **Freshness.** A recent snapshot can be reused for 30 seconds. A scheduled tick performs catch-up every 30 seconds for folders used in the last ten minutes. Verified uploads from desktop, REST, WebDAV and Folder Sync dirty only their destination; the next listing catches up without a full audit. Verified renames and deletions check their affected identifiers. `refresh=true` requests catch-up even inside the reuse window.
+- **External edits and deletion.** A rotating audit shares at most 25 lookup batches per rolling minute across monitored folders. Retention is bounded by 100,000 rows and 1,000 cross-folder audit batches, with up to 1,024 metadata entries. Healthy folders finish a shared sweep before starting another; failed folders retain stale status and retry after four minutes without blocking later healthy rounds. A sweep waits at most four minutes before starting and has a nominal 40-minute request allowance plus scheduling and request time. Offline periods, failed requests and Telegram FLOOD waits suspend that detection bound. Idle or evicted folders perform one cold walk on their next read. A mutation during a cold walk may require a later audit to repair; cold reads no longer immediately verify the entire result a second time.
+- **Cost and memory.** Unchanged identifier cursors are not rewritten. Message snapshots share immutable references across listing readers. The retained-row limit is a cache bound; at most two reconciliations fetch or clone maps concurrently, and consumer snapshots can temporarily retain additional rows. Active search generations pin included folders. When a new folder cannot fit, global search returns an explicitly partial answer from retained folders; alternating global and folder search scopes can rebuild the cached index. Folder discovery is rechecked independently about every four minutes for active accounts; its dialog requests are additional to the file-history and lookup counters. Whole-library reports still copy their response data and may cost one cold walk per folder outside the retained set.
+- **First request.** Reading every folder of a large library takes time and is subject to Telegram's rate limits. Pass `folder_id` when one folder is enough.
 
 ---
 
@@ -69,29 +90,63 @@ Retrieve metadata for files stored in Telegram Drive.
 | Parameter | Type | Description |
 | :--- | :--- | :--- |
 | `page` | Integer | Page number (default: `1`) |
-| `limit` | Integer | Items per page (default: `20`) |
-| `folder_id` | Integer | Filter files inside a specific folder |
-| `search` | String | Filter files by matching search term in filename |
-| `offset_id` | Integer | Message ID offset for pagination |
-| `sort` | String | Field to sort by: `name`, `size`, or `created_at` |
-| `order` | String | Sort order: `asc` or `desc` |
-| `mime_type` | String | Filter files by a specific MIME type |
-| `created_after` | String | Include files created after this timestamp; use the same format returned by `created_at` |
-| `created_before` | String | Include files created before this timestamp; use the same format returned by `created_at` |
+| `limit` | Integer | Items per page, `1`–`100` (default: `20`) |
+| `folder_id` | Integer | Read one folder. Omit to read every folder. An empty value, `null`, `none`, or `home` reads Saved Messages |
+| `search` | String | Case-insensitive match on the file name |
+| `offset_id` | Integer | Include only files whose identifier is lower than this one |
+| `sort` | String | Field to sort by: `name`, `size`, or `created_at` (default) |
+| `order` | String | Sort order: `asc` (default) or `desc` |
+| `mime_type` | String | Case-insensitive match on the MIME type |
+| `created_after` | String | Include files created at or after this time. RFC 3339; a plain date (`2026-06-05`) and Unix seconds are also accepted |
+| `created_before` | String | Include files created at or before this time |
 | `size_min` | Integer | Minimum file size in bytes |
 | `size_max` | Integer | Maximum file size in bytes |
 | `fields` | String | Comma-separated response fields when a reduced representation is needed |
+| `refresh` | Boolean | `true` reads Telegram again instead of reusing a recent reading |
+
+A value that cannot be read as a timestamp returns `400 INVALID_TIMESTAMP`; a non-numeric `folder_id` returns `400 INVALID_FOLDER_ID`.
 
 #### Response (200 OK)
 ```json
 {
-  "data": [],
-  "files": [],
+  "data": [
+    {
+      "id": 123,
+      "folder_id": 456,
+      "name": "document.pdf",
+      "size": 102400,
+      "mime_type": "application/pdf",
+      "created_at": "2026-06-05T10:00:00Z",
+      "encrypted": false
+    }
+  ],
+  "files": [
+    {
+      "id": 123,
+      "folder_id": 456,
+      "name": "document.pdf",
+      "size": 102400,
+      "mime_type": "application/pdf",
+      "created_at": "2026-06-05T10:00:00Z",
+      "encrypted": false
+    }
+  ],
   "page": 1,
   "limit": 20,
-  "total": 0
+  "total": 1,
+  "complete": true,
+  "pagination": {
+    "page": 1,
+    "limit": 20,
+    "total": 1,
+    "total_pages": 1,
+    "has_next": false,
+    "has_prev": false
+  }
 }
 ```
+
+`files` repeats `data` for earlier clients. `total` counts every file that matches the filters, not only the returned page.
 
 ---
 
@@ -110,9 +165,12 @@ Retrieve detailed metadata for a specific file.
   "name": "document.pdf",
   "size": 102400,
   "mime_type": "application/pdf",
-  "created_at": "2026-06-05T10:00:00Z"
+  "created_at": "2026-06-05T10:00:00Z",
+  "encrypted": false
 }
 ```
+
+`encrypted` is `true` for a file stored as an encrypted envelope. Its name, type, and size then describe the envelope, not the original file.
 
 ---
 
@@ -136,7 +194,11 @@ Search files by filename with optional filtering.
 
 | Parameter | Type | Description |
 | :--- | :--- | :--- |
-| `q` | String | **Required.** Search query string |
+| `q` | String | **Required.** Case-insensitive text to find in file names |
+| `folder_id` | Integer | Search one folder. Omit to search every folder |
+| `refresh` | Boolean | `true` reads Telegram again instead of reusing a recent reading |
+
+The response is an array of every matching file, in the same shape as **Get File Details**.
 
 ---
 
@@ -174,7 +236,8 @@ The endpoint returns `400` for invalid multipart fields, `413` for an oversized 
   "name": "uploaded_file.txt",
   "size": 1024,
   "mime_type": "text/plain",
-  "created_at": "2026-06-16T01:00:00Z"
+  "created_at": "2026-06-16T01:00:00Z",
+  "encrypted": false
 }
 ```
 
@@ -189,6 +252,8 @@ Delete a specific file.
 
 #### Query Parameters
 * `folder_id` (Optional): ID of folder containing the file
+
+Encrypted files can be deleted. Nothing is decrypted, and the app's record of the envelope is removed with the file.
 
 ---
 
@@ -206,6 +271,8 @@ Forward a file/message to another folder.
   "source_folder_id": 456
 }
 ```
+
+An encrypted file is copied as stored, still encrypted, and the copy is registered so the app can open it.
 
 ---
 
@@ -261,6 +328,7 @@ Retrieve total storage consumed, file counts, and breakdown by folders and MIME 
 {
   "total_storage_used_bytes": 10485760,
   "total_file_count": 12,
+  "complete": true,
   "folders": [
     { "id": 456, "name": "Documents", "file_count": 5, "size_bytes": 5242880 }
   ],
@@ -271,12 +339,12 @@ Retrieve total storage consumed, file counts, and breakdown by folders and MIME 
 ```
 
 #### Duplicate Files Finder
-List groups of files with identical filenames and sizes.
+List groups of files with identical uploaded filenames and sizes. A file renamed in Telegram Drive is still matched by the name it was uploaded with.
 * **URL:** `/storage/duplicates`
 * **Method:** `GET`
 
 #### Empty Folders
-List folders that do not contain any files.
+List folders that contain no file anywhere in their history.
 * **URL:** `/folders/empty`
 * **Method:** `GET`
 
@@ -306,7 +374,7 @@ Perform action operations (such as move, delete, or archive) across multiple fil
 * **Auth Required:** Yes
 
 #### Bulk Archive (Zip Download)
-Download selected files as a zip archive stream.
+Download selected files as a zip archive. The selection is checked first (missing, unsupported, and encrypted files, and the 256 MiB archive limit), then each file is written to the archive as it downloads, so memory use does not grow with the selection. Files that share a name are stored as `name (2).ext`, `name (3).ext`, and so on.
 ```json
 {
   "action": "archive",
@@ -343,7 +411,8 @@ Download selected files as a zip archive stream.
 - The API listens only on `127.0.0.1` and is intended for trusted software running on the same computer.
 - Treat the API key as a password. Any local process or user with the key can use the enabled operations.
 - Telegram Drive stores only a hash of the key and does not write the plaintext key to application logs.
-- Encrypted files fail closed for plaintext REST access, including download, thumbnail, media-info, rename/move, copy, and delete operations that are not safely supported for encrypted objects.
+- Encrypted files fail closed wherever plaintext would be exposed or the envelope's record could be lost: download, thumbnail, media-info, rename, move, bulk move, and bulk archive return `409`, or `503` when the encryption state cannot be determined. Delete, bulk delete, and copy are permitted because they neither decrypt the file nor separate it from its record.
+- Every request acts for the account that was signed in when it started. If the account changes before the response is ready, the request returns `409 ACCOUNT_CHANGED` and no data from either account.
 - Telegram service limits, channel permissions, proxy/VPN settings, bandwidth limits, and flood waits still apply.
 - Folder Sync, WebDAV, and the REST API operate on the same Telegram channels. Allow one operation to finish before changing the same file through another integration.
 - Disabling the server or regenerating its key revokes access. The server is unavailable when the desktop app is closed or signed out.
@@ -364,3 +433,25 @@ The API returns standardized JSON error formats on failure:
   }
 }
 ```
+
+| Status | Codes | Meaning |
+| :--- | :--- | :--- |
+| `400` | `INVALID_QUERY`, `INVALID_BODY`, `INVALID_TIMESTAMP`, `INVALID_FOLDER_ID`, `INVALID_FILE_ID`, `INVALID_FILE_IDS`, `INVALID_ACTION`, `PEER_ERROR` | The request could not be understood |
+| `401` | `UNAUTHORIZED`, `NO_KEY_CONFIGURED` | Missing or wrong API key |
+| `404` | `NOT_FOUND`, `MESSAGE_NOT_FOUND`, `ARCHIVE_FILE_MISSING` | No such file or route |
+| `409` | `ACCOUNT_CHANGED`, `ENCRYPTED_ROUTE_UNAVAILABLE`, `ENCRYPTED_UPDATE_UNAVAILABLE`, `ENCRYPTED_BULK_ACTION_UNAVAILABLE` | The account changed, or the operation is not available for an encrypted file |
+| `413` | `FILE_TOO_LARGE`, `ARCHIVE_TOO_LARGE` | Over a size limit |
+| `502` | `FETCH_ERROR`, `ARCHIVE_DOWNLOAD_FAILED`, `ARCHIVE_DOWNLOAD_INCOMPLETE`, `MOVE_COPY_INCOMPLETE` | Telegram did not return a complete result; nothing partial is reported as complete |
+| `503` | `NOT_CONNECTED`, `ACCOUNT_UNAVAILABLE`, `ENCRYPTION_STATE_UNKNOWN` | The app is not connected or not signed in |
+
+---
+
+## Changes in 4.0
+
+- `created_at` is RFC 3339 (`2026-06-05T10:00:00Z`). Earlier releases returned `2026-06-05 10:00:00 UTC`; both forms are accepted by `created_after` and `created_before`.
+- List, search, statistics, duplicates, and empty folders cover each folder's whole history. Earlier releases read only the newest 100–200 messages per folder, so totals and reports were understated.
+- `/files/search` now answers. Earlier releases returned `404` because the path was read as a file identifier.
+- File objects carry `encrypted`; list and statistics responses carry `complete`.
+- An unreadable Telegram listing returns `502` instead of a shorter list.
+- A file identifier outside the 32-bit range returns `400` instead of addressing a different file.
+- Every endpoint is bound to the signed-in account, and the API key is checked before any input is parsed.

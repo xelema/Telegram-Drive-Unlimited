@@ -1,3 +1,4 @@
+import i18n from '../i18n';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { toast } from 'sonner';
 
@@ -33,7 +34,7 @@ export async function nativeShareOrCopy(
       });
       return;
     } catch (error: unknown) {
-      if (!isAbortError(error)) toast.error('Share failed, but link has been copied');
+      if (!isAbortError(error)) toast.error(i18n.t('operations.share_failed_copied'));
     }
   }
 
@@ -41,6 +42,6 @@ export async function nativeShareOrCopy(
     onCopy(link);
   } else {
     navigator.clipboard.writeText(link);
-    toast.success('Link copied to clipboard');
+    toast.success(i18n.t('operations.link_copied'));
   }
 }

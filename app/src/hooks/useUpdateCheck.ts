@@ -3,6 +3,8 @@ import type { Update } from '@tauri-apps/plugin-updater';
 import type { UpdateInstallPhase } from '../services/updateReliability';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { getInstallationInfo, RELEASES_URL } from '../services/installationInfo';
+import { useSettings } from '../context/SettingsContext';
+import { INITIAL_UPDATE_CHECK_DELAY_MS, UPDATE_RECHECK_INTERVAL_MS } from '../services/updatePolicy';
 
 interface UpdateState {
     checking: boolean;
@@ -40,12 +42,16 @@ export function useUpdateCheck() {
     const installPromise = useRef<Promise<UpdateInstallResult> | null>(null);
     const currentVersion = useRef<string | null>(null);
     const checkGeneration = useRef(0);
+    const lastCheckAt = useRef(0);
+    const { settings, isLoaded } = useSettings();
+    const automaticChecks = isLoaded && settings.autoUpdate !== false;
 
     const checkForUpdates = useCallback((): Promise<UpdateCheckResult> => {
         if (checkPromise.current) return checkPromise.current;
         if (installPromise.current) return Promise.resolve({ version: currentVersion.current, error: null });
 
         const generation = ++checkGeneration.current;
+        lastCheckAt.current = Date.now();
         const superseded = () => generation !== checkGeneration.current;
         const operation = (async (): Promise<UpdateCheckResult> => {
             setState(s => ({ ...s, checking: true, error: null }));
@@ -128,12 +134,25 @@ export function useUpdateCheck() {
         setUpdate(null);
     }, []);
 
+    // Automatic checks: shortly after launch, then periodically and whenever a
+    // long-hidden window is shown again. A manual check from Settings always
+    // works, including when automatic checks are turned off.
     useEffect(() => {
-        const timer = setTimeout(() => {
-            checkForUpdates().catch(console.error);
-        }, 5000);
-        return () => clearTimeout(timer);
-    }, [checkForUpdates]);
+        if (!automaticChecks) return;
+        const check = () => { checkForUpdates().catch(console.error); };
+        const checkWhenStale = () => {
+            if (document.visibilityState !== 'visible') return;
+            if (Date.now() - lastCheckAt.current >= UPDATE_RECHECK_INTERVAL_MS) check();
+        };
+        const initial = setTimeout(check, INITIAL_UPDATE_CHECK_DELAY_MS);
+        const periodic = setInterval(check, UPDATE_RECHECK_INTERVAL_MS);
+        document.addEventListener('visibilitychange', checkWhenStale);
+        return () => {
+            clearTimeout(initial);
+            clearInterval(periodic);
+            document.removeEventListener('visibilitychange', checkWhenStale);
+        };
+    }, [automaticChecks, checkForUpdates]);
 
     return {
         ...state,

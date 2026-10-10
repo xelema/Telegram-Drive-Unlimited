@@ -1,3 +1,4 @@
+import {useTranslation} from 'react-i18next';
 import { FormEvent, useCallback, useRef, useState } from 'react';
 import { FolderPlus, Info, X } from 'lucide-react';
 import { useModalFocus } from '../../../hooks/useModalFocus';
@@ -9,6 +10,7 @@ interface CreateFolderDialogProps {
 }
 
 export function CreateFolderDialog({ onClose, onCreate }: CreateFolderDialogProps) {
+    useTranslation();
     const [name, setName] = useState('');
     const [saving, setSaving] = useState(false);
     const panelRef = useRef<HTMLFormElement>(null);
@@ -34,7 +36,7 @@ export function CreateFolderDialog({ onClose, onCreate }: CreateFolderDialogProp
         <div className="fixed inset-0 z-[210] flex items-center justify-center bg-app-overlay p-4 backdrop-blur-sm" onMouseDown={onClose}>
             <form ref={panelRef} role="dialog" aria-modal="true" aria-labelledby="create-folder-title" tabIndex={-1} onSubmit={submit} onMouseDown={(event) => event.stopPropagation()} className="quiet-raised w-[min(440px,calc(100vw-2rem))] overflow-hidden">
                 <header className="flex items-center justify-between border-b border-app-border-subtle px-5 py-4">
-                    <h2 id="create-folder-title" className="flex items-center gap-2 text-base font-semibold text-app-text"><FolderPlus className="h-4 w-4 text-app-accent" />Create a folder</h2>
+                    <h2 id="create-folder-title" className="flex items-center gap-2 text-base font-semibold text-app-text"><FolderPlus className="h-4 w-4 text-app-accent" />{i18n.t('common.create_folder')}</h2>
                     <button type="button" onClick={onClose} className="quiet-control p-2 text-app-text-secondary hover:text-app-text" aria-label={i18n.t("common.close")}><X className="h-4 w-4" /></button>
                 </header>
                 <div className="space-y-4 p-5">
@@ -49,7 +51,7 @@ export function CreateFolderDialog({ onClose, onCreate }: CreateFolderDialogProp
                 </div>
                 <footer className="flex justify-end gap-3 border-t border-app-border-subtle px-5 py-4">
                     <button type="button" onClick={onClose} className="quiet-control px-4 py-2.5 text-sm font-medium text-app-text-secondary hover:text-app-text">{i18n.t("common.cancel")}</button>
-                    <button type="submit" disabled={!name.trim() || saving} className="quiet-control bg-app-accent px-4 py-2.5 text-sm font-medium text-app-accent-contrast hover:bg-app-accent-hover disabled:opacity-50">{saving ? 'Creating…' : 'Create private folder'}</button>
+                    <button type="submit" disabled={!name.trim() || saving} className="quiet-control bg-app-accent px-4 py-2.5 text-sm font-medium text-app-accent-contrast hover:bg-app-accent-hover disabled:opacity-50">{saving ? i18n.t('ui_copy.creating') : i18n.t('ui_copy.create_private_folder')}</button>
                 </footer>
             </form>
         </div>

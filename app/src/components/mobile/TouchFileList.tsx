@@ -1,3 +1,4 @@
+import {useTranslation} from 'react-i18next';
 import { useRef, useState, useCallback, useEffect, useMemo, type RefObject } from 'react';
 import { useVirtualizer, type VirtualItem } from '@tanstack/react-virtual';
 import { DownloadCloud, Trash2, Pencil, CheckSquare, X, Check, FolderInput, MoreVertical, Eye, Link, Copy, Pin, PinOff } from 'lucide-react';
@@ -32,6 +33,7 @@ interface TouchFileListProps {
 }
 
 export function TouchFileList({ files, isLoading, onDownload, onDelete, onPreview, onRename, selectedIds, onToggleSelection, onSelectAll, onClearSelection, onBulkDelete, onBulkDownload, onBulkMove, onBulkShare, onShare, onCopyTelegramLink, onKeepOffline, onRemoveOffline, folders, activeFolderId, scrollElementRef, disableVirtualization = false }: TouchFileListProps) {
+    useTranslation();
   const [selectionMode, setSelectionMode] = useState(false);
   const [showMovePicker, setShowMovePicker] = useState(false);
   const [actionMenuFile, setActionMenuFile] = useState<TelegramFile | null>(null);
@@ -232,7 +234,7 @@ export function TouchFileList({ files, isLoading, onDownload, onDelete, onPrevie
             <div className="flex items-center gap-2 mt-1">
               <span className="text-[10px] text-telegram-subtext/80 font-medium font-mono">{file.sizeStr}</span>
               <span className="w-1 h-1 bg-telegram-border rounded-full" />
-              <span className="text-[10px] text-telegram-subtext/80 font-medium">{file.created_at || 'Sync'}</span>
+              <span className="text-[10px] text-telegram-subtext/80 font-medium">{file.created_at || i18n.t("common.sync")}</span>
             </div>
           </div>
         </div>
@@ -245,7 +247,7 @@ export function TouchFileList({ files, isLoading, onDownload, onDelete, onPrevie
               setActionMenuFile(file);
             }}
             className="flex-shrink-0 p-2 rounded-xl hover:bg-telegram-hover/40 active:bg-telegram-hover/60 text-telegram-subtext/60 hover:text-telegram-subtext transition-all duration-200"
-            aria-label={`Actions for ${file.name}`}
+            aria-label={i18n.t('common.action_name', { action: i18n.t('ui_copy.file_actions'), name: file.name })}
           >
             <MoreVertical className="w-4 h-4" aria-hidden="true" />
           </button>
@@ -268,7 +270,7 @@ export function TouchFileList({ files, isLoading, onDownload, onDelete, onPrevie
           <div className="p-4 rounded-2xl bg-telegram-hover/10 text-telegram-subtext border border-telegram-border/10">
             📁
           </div>
-          <h4 className="text-sm font-bold text-telegram-text">This folder is empty</h4>
+          <h4 className="text-sm font-bold text-telegram-text">{i18n.t('transfer_copy.folder_empty')}</h4>
           <p className="text-xs text-telegram-subtext max-w-xs leading-relaxed">
             Upload files or synchronise folders to begin managing content.
           </p>
@@ -293,7 +295,7 @@ export function TouchFileList({ files, isLoading, onDownload, onDelete, onPrevie
               }`}
             >
               <CheckSquare className="w-3.5 h-3.5" />
-              {isSelectionActive ? `${selectedIds.length} selected` : 'Select'}
+              {isSelectionActive ? i18n.t('files.items_selected', { count: selectedIds.length }) : 'Select'}
             </button>
             {isSelectionActive && (
               <>
@@ -309,7 +311,7 @@ export function TouchFileList({ files, isLoading, onDownload, onDelete, onPrevie
                   className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-[10px] font-semibold bg-telegram-hover/20 text-telegram-subtext border border-telegram-border/30 active:scale-95 transition-all duration-200"
                 >
                   <X className="w-3 h-3" />
-                  Clear
+                  {i18n.t("files.clear_selection")}
                 </button>
               </>
             )}
@@ -323,14 +325,14 @@ export function TouchFileList({ files, isLoading, onDownload, onDelete, onPrevie
                 className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold bg-telegram-primary/20 text-telegram-primary border border-telegram-primary/30 active:scale-95 transition-all duration-200"
               >
                 <DownloadCloud className="w-3.5 h-3.5" />
-                Download ({selectedIds.length})
+                {i18n.t('common.action_count', { action: i18n.t('files.download'), count: selectedIds.length })}
               </button>
               <button
                 onClick={() => setShowMovePicker(true)}
                 className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 active:scale-95 transition-all duration-200"
               >
                 <FolderInput className="w-3.5 h-3.5" />
-                Move ({selectedIds.length})
+                {i18n.t('common.action_count', { action: i18n.t('files.move'), count: selectedIds.length })}
               </button>
               {onBulkShare && (
                 <button
@@ -338,7 +340,7 @@ export function TouchFileList({ files, isLoading, onDownload, onDelete, onPrevie
                   className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold bg-teal-500/20 text-teal-400 border border-teal-500/30 active:scale-95 transition-all duration-200"
                 >
                   <Link className="w-3.5 h-3.5" />
-                  Share ({selectedIds.length})
+                  {i18n.t('common.action_count', { action: i18n.t('files.share'), count: selectedIds.length })}
                 </button>
               )}
               <button
@@ -394,7 +396,7 @@ export function TouchFileList({ files, isLoading, onDownload, onDelete, onPrevie
                       </button>
                     ))}
                   {folders.filter(f => f.id !== activeFolderId).length === 0 && (
-                    <p className="text-xs text-telegram-subtext/60 text-center py-4">No other folders available</p>
+                    <p className="text-xs text-telegram-subtext/60 text-center py-4">{i18n.t('files.no_other_folders')}</p>
                   )}
                 </div>
               </div>

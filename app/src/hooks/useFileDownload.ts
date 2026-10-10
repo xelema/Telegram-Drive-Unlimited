@@ -1,3 +1,4 @@
+import i18n from '../i18n';
 import { useState, useEffect, useRef } from 'react';
 import { useActionScope } from './useActionScope';
 import { invoke } from '@tauri-apps/api/core';
@@ -68,7 +69,7 @@ export function useFileDownload(
     downloadQueueRef.current = downloadQueue;
     androidNetworkAvailableRef.current = androidNetworkAvailable;
     const { settings, updateSetting } = useSettings();
-    const { confirm, chooseDownloadCollision } = useConfirm();
+    const { confirm, chooseDownloadCollision, promptSecret } = useConfirm();
     const lastDownloadDirectoryRef = useRef<string | null>(null);
     const webDavTipShownRef = useRef(settings.downloadWebdavTipSeen);
 
@@ -139,30 +140,31 @@ export function useFileDownload(
             setDownloadQueue(queue => queue.some(candidate => candidate.id === item.id)
                 ? queue.map(candidate => candidate.id === item.id ? item : candidate)
                 : [...queue, item]);
-            if (notifyTransition && previousStatus !== job.status) {
+            // Folder Sync downloads into its mapped folder and reports there.
+            if (notifyTransition && previousStatus !== job.status && !job.origin) {
                 if (job.status === 'completed' && job.downloadOutcome === 'skipped') {
                     toast.info(t('downloadCollision.skipped'));
                 } else if (job.status === 'completed') {
                     triggerHaptic('success');
                     announceSupporterValueMoment('download_completed');
-                    toast.success(`Downloaded: ${job.filename}`, job.savePath ? {
+                    toast.success(i18n.t('transfer_copy.downloaded',{name:job.filename}), job.savePath ? {
                         action: {
-                            label: 'Show in folder',
+                            label: i18n.t('common.show_in_folder'),
                             onClick: () => { void revealItemInDir(job.savePath as string); },
                         },
                     } : undefined);
                     if (!webDavTipShownRef.current) {
                         webDavTipShownRef.current = true;
                         updateSetting('downloadWebdavTipSeen', true);
-                        window.setTimeout(() => toast.info('Tip: browse the same files directly in Finder or File Explorer with WebDAV.', {
+                        window.setTimeout(() => toast.info(i18n.t('transfer_copy.download_tip'), {
                             action: {
-                                label: 'WebDAV settings',
+                                label: i18n.t('common.webdav_settings'),
                                 onClick: () => window.dispatchEvent(new CustomEvent('telegram-drive-open-settings', { detail: { tab: 'webdav' } })),
                             },
                         }), 900);
                     }
                 } else if (job.status === 'failed') {
-                    toast.error(`Download failed: ${job.filename}`);
+                    toast.error(i18n.t('transfer_copy.download_failed',{name:job.filename}));
                 } else if (job.status === 'waiting_for_unlock') {
                     toast.warning(t('settings.encryption_mode_passphrase'));
                 }
@@ -184,7 +186,7 @@ export function useFileDownload(
         }).catch(error => {
             if (disposed || !isCurrent()) return;
             console.error('[Download] Could not attach to the desktop transfer engine:', error);
-            toast.error('The desktop transfer queue could not be loaded.');
+            toast.error(i18n.t('transfer_copy.queue_load_error'));
         });
         return () => {
             disposed = true;
@@ -219,12 +221,12 @@ export function useFileDownload(
                 await store.set('downloadQueue', unresolved);
                 await store.save();
                 if (prepared.length > 0) {
-                    toast.info(`Migrated ${prepared.length} downloads to the durable desktop queue`);
+                    toast.info(i18n.t('transfer_copy.migrated_downloads',{count:prepared.length}));
                 }
                 setInitialized(true);
             }).catch(error => {
                 console.error('[Download] Could not migrate the desktop recovery queue:', error);
-                toast.error('Could not migrate the saved download queue. It was left intact.');
+                toast.error(i18n.t('transfer_copy.download_migrate_failed'));
                 setInitialized(true);
             });
             return;
@@ -238,7 +240,7 @@ export function useFileDownload(
                         ...previous,
                     ]);
                     const visibleCount = pending.filter(item => ownerRef.current && item.ownerId === ownerRef.current).length;
-                    if (visibleCount) toast.info(`Restored ${visibleCount} pending downloads`);
+                    if (visibleCount) toast.info(i18n.t('transfer_copy.restored_downloads',{count:visibleCount}));
                 }
             }
             setInitialized(true);
@@ -356,7 +358,21 @@ export function useFileDownload(
         });
     };
 
-    const prepareDesktopCredential = async (messageId: number, folderId: number | null) => {
+    /** Masked request for a per-file passphrase; never uses a native prompt. */
+    const requestFilePassphrase = (protectionMode: FileEncryptionInfo['protection_mode']) => promptSecret({
+        title: t('settings.encryption_mode_passphrase'),
+        message: protectionMode === 'vault_and_passphrase' ? t('settings.vault_is_locked') : undefined,
+    });
+
+    /**
+     * `batch` lets a multi-file download ask for the passphrase once and reuse
+     * it for every protected file; each file still gets its own single-use token.
+     */
+    const prepareDesktopCredential = async (
+        messageId: number,
+        folderId: number | null,
+        batch?: { passphrase?: string; declined?: boolean },
+    ) => {
         requireCurrent();
         const encryptionInfo = await invoke<FileEncryptionInfo>('cmd_get_file_encryption_info', {
             messageId,
@@ -384,12 +400,13 @@ export function useFileDownload(
             needsPassphrase = !vault?.is_unlocked;
         }
         if (!needsPassphrase) return { protectionMode, promptToken: undefined };
-        const passphrase = window.prompt(
-            protectionMode === 'vault_and_passphrase'
-                ? `${t('settings.vault_is_locked')}\n${t('settings.encryption_mode_passphrase')}`
-                : t('settings.encryption_mode_passphrase'),
-        );
-        if (!passphrase) return null;
+        if (batch?.declined) return null;
+        const passphrase = batch?.passphrase ?? await requestFilePassphrase(protectionMode);
+        if (!passphrase) {
+            if (batch) batch.declined = true;
+            return null;
+        }
+        if (batch) batch.passphrase = passphrase;
         requireCurrent();
         const promptToken = await invoke<number>('cmd_stage_file_passphrase', { passphrase });
         requireCurrent();
@@ -439,11 +456,7 @@ export function useFileDownload(
             }
             if (needsPassphrase && !promptToken) {
                 if (!isCurrent()) return;
-                const passphrase = window.prompt(
-                    protectionMode === 'vault_and_passphrase'
-                        ? `${t('settings.vault_is_locked')}\n${t('settings.encryption_mode_passphrase')}`
-                        : t('settings.encryption_mode_passphrase'),
-                );
+                const passphrase = await requestFilePassphrase(protectionMode);
                 if (!isCurrent()) return;
                 if (!passphrase) {
                     setDownloadQueue(q => q.map(i => i.id === item.id ? {
@@ -485,9 +498,9 @@ export function useFileDownload(
 
             if (!isAndroidPlatform && selectedSavePathNow && savePath) {
                 const accepted = await confirm({
-                    title: 'Confirm download',
-                    message: `1 file · ${formatBytes(item.totalBytes || 0)} → ${directoryFromPath(savePath)}`,
-                    confirmText: 'Download',
+                    title: i18n.t('transfer_copy.confirm_download'),
+                    message: i18n.t('transfer_copy.selection_summary',{count:1,size:formatBytes(item.totalBytes||0),destination:directoryFromPath(savePath)}),
+                    confirmText: i18n.t('files.download'),
                     variant: 'info',
                 });
                 if (!accepted) {
@@ -528,18 +541,18 @@ export function useFileDownload(
                 setDownloadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'success', progress: 100 } : i));
                 triggerHaptic('success');
                 announceSupporterValueMoment('download_completed');
-                toast.success(`Downloaded: ${item.filename}`, !isAndroidPlatform && savePath ? {
+                toast.success(i18n.t('transfer_copy.downloaded',{name:item.filename}), !isAndroidPlatform && savePath ? {
                     action: {
-                        label: 'Show in folder',
+                        label: i18n.t('common.show_in_folder'),
                         onClick: () => { void revealItemInDir(savePath as string); },
                     },
                 } : undefined);
                 if (!isAndroidPlatform && !webDavTipShownRef.current) {
                     webDavTipShownRef.current = true;
                     updateSetting('downloadWebdavTipSeen', true);
-                    window.setTimeout(() => toast.info('Tip: browse the same files directly in Finder or File Explorer with WebDAV.', {
+                    window.setTimeout(() => toast.info(i18n.t('transfer_copy.download_tip'), {
                         action: {
-                            label: 'WebDAV settings',
+                            label: i18n.t('common.webdav_settings'),
                             onClick: () => window.dispatchEvent(new CustomEvent('telegram-drive-open-settings', { detail: { tab: 'webdav' } })),
                         },
                     }), 900);
@@ -582,7 +595,7 @@ export function useFileDownload(
                     } : i));
                 } else {
                     setDownloadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'error', error: errMsg } : i));
-                    toast.error(`Download failed: ${item.filename}`);
+                    toast.error(i18n.t('transfer_copy.download_failed',{name:item.filename}));
                 }
             } else if (cancelledRef.current.has(item.id)) {
                 cancelledRef.current.delete(item.id);
@@ -609,10 +622,10 @@ export function useFileDownload(
         if (!isAndroidPlatform && lastDownloadDirectoryRef.current) {
             const destination = lastDownloadDirectoryRef.current;
             const accepted = await confirm({
-                title: 'Download file',
-                message: `1 file · ${formatBytes(fileSize || 0)} → ${destination}`,
-                confirmText: 'Download',
-                cancelText: 'Choose another location',
+                title: i18n.t('transfer_copy.download_file'),
+                message: i18n.t('transfer_copy.selection_summary',{count:1,size:formatBytes(fileSize||0),destination}),
+                confirmText: i18n.t('files.download'),
+                cancelText: i18n.t('transfer_copy.choose_location'),
                 variant: 'info',
             });
             if (accepted) savePath = joinPath(destination, cleanName);
@@ -625,9 +638,9 @@ export function useFileDownload(
             );
             if (!selected) return;
             const accepted = await confirm({
-                title: 'Confirm download',
-                message: `1 file · ${formatBytes(fileSize || 0)} → ${directoryFromPath(selected)}`,
-                confirmText: 'Download',
+                title: i18n.t('transfer_copy.confirm_download'),
+                message: i18n.t('transfer_copy.selection_summary',{count:1,size:formatBytes(fileSize||0),destination:directoryFromPath(selected)}),
+                confirmText: i18n.t('files.download'),
                 variant: 'info',
             });
             if (!accepted) return;
@@ -643,7 +656,7 @@ export function useFileDownload(
             : undefined;
         if (!isAndroidPlatform && !credential) return;
         const newItem: DownloadItem = {
-            id: Math.random().toString(36).substr(2, 9),
+            id: crypto.randomUUID(),
             ownerId: actionOwnerId,
             messageId,
             filename: cleanName,
@@ -666,7 +679,7 @@ export function useFileDownload(
         // falls through to item.filename.
         if (isAndroidPlatform) {
             const newItems: DownloadItem[] = files.map(file => ({
-                id: Math.random().toString(36).substr(2, 9),
+                id: crypto.randomUUID(),
                 ownerId: actionOwnerId,
                 messageId: file.id,
                 filename: sanitizeFilename(file.name),
@@ -674,7 +687,7 @@ export function useFileDownload(
                 status: 'pending' as const,
             }));
             await enqueueDownloadItems(newItems);
-            toast.info(`Downloading ${files.length} file${files.length !== 1 ? 's' : ''} to Downloads`);
+            toast.info(i18n.t('transfer_copy.downloading_to_downloads',{count:files.length}));
             return;
         }
 
@@ -687,7 +700,7 @@ export function useFileDownload(
             const newItems: DownloadItem[] = files.map(file => {
                 const sanitizedName = sanitizeFilename(file.name);
                 return {
-                    id: Math.random().toString(36).substr(2, 9),
+                    id: crypto.randomUUID(),
                     ownerId: actionOwnerId,
                     messageId: file.id,
                     filename: sanitizedName,
@@ -698,9 +711,10 @@ export function useFileDownload(
                 };
             });
             const prepared: DownloadItem[] = [];
+            const batch: { passphrase?: string; declined?: boolean } = {};
             for (const item of newItems) {
                 if (!isCurrent() || ownerRef.current !== actionOwnerId) throw new Error("ACCOUNT_CHANGED");
-                const credential = await prepareDesktopCredential(item.messageId, item.folderId);
+                const credential = await prepareDesktopCredential(item.messageId, item.folderId, batch);
                 requireCurrent();
                 if (credential) prepared.push({
                     ...item,
@@ -708,18 +722,19 @@ export function useFileDownload(
                     promptToken: credential.promptToken,
                 });
             }
+            batch.passphrase = undefined;
             await enqueueDownloadItems(prepared);
-            toast.info(`Queued ${prepared.length} file${prepared.length === 1 ? '' : 's'} for download`);
+            toast.info(i18n.t('transfer_copy.queued_downloads',{count:prepared.length}));
         };
 
         const totalSize = files.reduce((sum, file) => sum + (file.size || 0), 0);
         if (lastDownloadDirectoryRef.current) {
             const destination = lastDownloadDirectoryRef.current;
             const accepted = await confirm({
-                title: 'Download files',
-                message: `${files.length} file${files.length === 1 ? '' : 's'} · ${formatBytes(totalSize)} → ${destination}`,
-                confirmText: 'Download',
-                cancelText: 'Choose another location',
+                title: i18n.t('transfer_copy.download_files'),
+                message: i18n.t('transfer_copy.selection_summary',{count:files.length,size:formatBytes(totalSize),destination}),
+                confirmText: i18n.t('files.download'),
+                cancelText: i18n.t('transfer_copy.choose_location'),
                 variant: 'info',
             });
             if (accepted) {
@@ -729,7 +744,7 @@ export function useFileDownload(
         }
 
         const dirPath = await pickWithFallback(
-            () => open({ directory: true, multiple: false, title: "Select Download Destination" }),
+            () => open({ directory: true, multiple: false, title: i18n.t('common.download_destination') }),
             () => queueBulkDownload(files, folderId),
             {
                 errorTitle: 'Folder picker failed',
@@ -743,9 +758,9 @@ export function useFileDownload(
         );
         if (!dirPath) return;
         const accepted = await confirm({
-            title: 'Confirm download',
-            message: `${files.length} file${files.length === 1 ? '' : 's'} · ${formatBytes(totalSize)} → ${dirPath}`,
-            confirmText: 'Download',
+            title: i18n.t('transfer_copy.confirm_download'),
+            message: i18n.t('transfer_copy.selection_summary',{count:files.length,size:formatBytes(totalSize),destination:dirPath}),
+            confirmText: i18n.t('files.download'),
             variant: 'info',
         });
         if (!accepted) return;
@@ -756,7 +771,7 @@ export function useFileDownload(
     const clearFinished = () => {
         if (!isCurrent()) return;
         if (!isAndroidPlatform) {
-            void clearTerminalTransfers('download', false, ownerId).catch(error => { if (isCurrent()) toast.error(userFacingError(error, t)); });
+            void clearTerminalTransfers('download', true, ownerId).catch(error => { if (isCurrent()) toast.error(userFacingError(error, t)); });
             return;
         }
         setDownloadQueue(q => q.filter(i => !ownsItem(i) || i.status !== 'success'));
@@ -766,7 +781,7 @@ export function useFileDownload(
         if (!isCurrent()) return;
         if (!isAndroidPlatform) {
             void transferBulkAction('cancel', 'download', ownerId).catch(error => { if (isCurrent()) toast.error(userFacingError(error, t)); });
-            toast.info('All downloads cancelled');
+            toast.info(i18n.t('transfer_copy.downloads_cancelled'));
             return;
         }
         setDownloadQueue(q => {
@@ -780,14 +795,14 @@ export function useFileDownload(
                 .filter(i => !removable.some(candidate => candidate.id === i.id))
                 .map(i => active.some(activeItem => activeItem.id === i.id) ? { ...i, status: 'cancelled' as const } : i);
         });
-        toast.info('All downloads cancelled');
+        toast.info(i18n.t('transfer_copy.downloads_cancelled'));
     };
 
     const pauseAll = () => {
         if (!isCurrent()) return;
         if (!isAndroidPlatform) {
             void transferBulkAction('pause', 'download', ownerId).catch(error => { if (isCurrent()) toast.error(userFacingError(error, t)); });
-            toast.info('Downloads paused. Active items will restart safely when resumed.');
+            toast.info(i18n.t('transfer_copy.downloads_paused'));
             return;
         }
         setDownloadQueue(q => q.map(item => {
@@ -801,20 +816,20 @@ export function useFileDownload(
                 ? { ...item, status: 'paused' as const, error: undefined }
                 : item;
         }));
-        toast.info('Downloads paused. Active items will restart safely when resumed.');
+        toast.info(i18n.t('transfer_copy.downloads_paused'));
     };
 
     const resumeAll = () => {
         if (!isCurrent()) return;
         if (!isAndroidPlatform) {
             void transferBulkAction('resume', 'download', ownerId).catch(error => { if (isCurrent()) toast.error(userFacingError(error, t)); });
-            toast.info('Downloads resumed');
+            toast.info(i18n.t('transfer_copy.downloads_resumed'));
             return;
         }
         setDownloadQueue(q => q.map(item => ownsItem(item) && item.status === 'paused'
             ? { ...item, status: 'pending' as const, error: undefined }
             : item));
-        toast.info('Downloads resumed');
+        toast.info(i18n.t('transfer_copy.downloads_resumed'));
     };
 
     const cancelItem = (id: string) => {

@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
-async function fixture(page: Page, mode: 'hub' | 'gallery') {
-    await page.addInitScript(() => {
+async function fixture(page: Page, mode: 'hub' | 'gallery', pageSize = 256) {
+    await page.addInitScript(({ pageSize }) => {
         const oneDay = 86_400_000;
         const file = (id: number, folder: number | null, name: string) => ({
             id, folder_id: folder, key: `${folder ?? 'saved'}:${id}`, name,
@@ -12,11 +12,23 @@ async function fixture(page: Page, mode: 'hub' | 'gallery') {
         const initial = { ownerId: '1', collections: [], searches: [], scans: [], files: [file(42, null, 'Saved photo.jpg'), file(42, 9, 'Travel photo.jpg'), { ...file(7, 9, 'Invoice.pdf'), mime_type: 'application/pdf', file_ext: 'pdf' }] };
         const state = {
             snapshot: JSON.parse(localStorage.getItem('workspace-ui-test') || JSON.stringify(initial)),
+            liveFiles: [] as any[],
             calls: [] as { command: string; args: any }[],
             galleryFiles: Array.from({ length: 5000 }, (_, index) => ({
                 ...file(index % 2500 + 1, index < 2500 ? null : 9, `Photo ${String(index).padStart(5, '0')}.jpg`),
                 created_at: new Date(Date.UTC(2026, 8 - Math.floor(index / 500), 15, 12)).toISOString(),
             })),
+        };
+        const pages = new Map<string, typeof initial>();
+        const pageReply = (cursor?: string) => {
+            const id = cursor?.split(':')[0] ?? crypto.randomUUID();
+            const offset = cursor ? Number(cursor.split(':')[1]) : 0;
+            if (!cursor) pages.set(id, structuredClone(state.snapshot));
+            const snapshot = pages.get(id)!;
+            const nextOffset = offset + pageSize;
+            const nextCursor = nextOffset < snapshot.files.length ? `${id}:${nextOffset}` : null;
+            if (!nextCursor) pages.delete(id);
+            return { ...structuredClone(snapshot), files: structuredClone(snapshot.files.slice(offset, nextOffset)), nextCursor, totalFiles: snapshot.files.length };
         };
         const image = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600"><rect width="800" height="600" fill="#1e3a5f"/><circle cx="400" cy="300" r="170" fill="#58a6cc"/></svg>')}`;
         Object.assign(window, {
@@ -33,7 +45,17 @@ async function fixture(page: Page, mode: 'hub' | 'gallery') {
                     if (command === 'cmd_workspace_account') return '1';
                     if (command === 'cmd_workspace_asset') return image;
                     if (command === 'cmd_workspace_cancel_asset') return;
-                    if (command === 'cmd_workspace_read' || command === 'cmd_workspace_index') return structuredClone(state.snapshot);
+                    if (command === 'cmd_workspace_index') { state.snapshot.files=[...state.snapshot.files,...state.liveFiles.filter(file=>args.folderIds.includes(file.folder_id))];state.liveFiles=[];return pageReply(); }
+                    if (command === 'cmd_workspace_read') return pageReply(args.cursor);
+                    if (command === 'cmd_search_local') {
+                        const query=args.query;
+                        const files=[...state.snapshot.files,...state.liveFiles].filter((file:any)=>(!query.query || file.name.toLowerCase().includes(query.query.toLowerCase()))
+                            && (!query.folderKey || query.folderKey===String(file.folder_id??'saved')) && (!query.collectionId || file.collectionIds.includes(query.collectionId))
+                            && (!query.favoritesOnly || file.is_favorite) && (query.tags??[]).every((tag:string)=>file.tags.some((value:string)=>value.toLowerCase()===tag.toLowerCase()))
+                            && (!query.type || query.type==='all' || (query.type==='image'?file.file_ext==='jpg':query.type==='document'?file.file_ext==='pdf':false)));
+                        return {files:structuredClone(files.slice(query.offset??0,(query.offset??0)+(query.limit??256))),total:files.length,indexId:'fixture',nextOffset:null,indexed:true,complete:true,offline:false};
+                    }
+
                     if (command === 'cmd_workspace_mutate') {
                         const mutation = args.mutation;
                         if (mutation.type === 'save_collection') state.snapshot.collections = [...state.snapshot.collections.filter((item: any) => item.id !== mutation.collection.id), mutation.collection];
@@ -51,14 +73,14 @@ async function fixture(page: Page, mode: 'hub' | 'gallery') {
                         if (mutation.type === 'remove_search') state.snapshot.searches = state.snapshot.searches.filter((item: any) => item.id !== mutation.id);
                         if (mutation.type === 'favorite') state.snapshot.files.find((file: any) => file.key === mutation.key).is_favorite = mutation.value;
                         localStorage.setItem('workspace-ui-test', JSON.stringify(state.snapshot));
-                        return structuredClone(state.snapshot);
+                        return pageReply();
                     }
                     if (command === 'cmd_playback_read') return { ownerId: '1', items: [], queue: [], preferences: { volume: 1, speed: 1 } };
                     return null;
                 },
             },
         });
-    });
+    }, { pageSize });
     await page.route('**/__workspace_browser**', route => route.fulfill({
         contentType: 'text/html', body: '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1" /></head><body><div id="workspace-browser-fixture"></div><script type="module">import RefreshRuntime from "/@react-refresh";RefreshRuntime.injectIntoGlobalHook(window);window.$RefreshReg$=()=>{};window.$RefreshSig$=()=>(type)=>type;window.__vite_plugin_react_preamble_installed__=true;</script><script type="module" src="/src/components/dev/WorkspaceBrowserFixture.tsx"></script></body></html>',
     }));
@@ -185,4 +207,43 @@ test('narrow gallery and image fullscreen keep controls usable', async ({ page }
     await page.screenshot({ path: testInfo.outputPath('workspace-mobile-viewer.png') });
     await viewer.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(first).toBeFocused();
+});
+
+test('library paging keeps later files available after organization and indexing', async ({ page }) => {
+    await fixture(page, 'hub', 2);
+    await page.getByRole('button', { name: 'All', exact: true }).click();
+    const invoice = page.getByRole('button', { name: 'Open Invoice.pdf', exact: true });
+    await expect(invoice).toBeVisible();
+    await page.getByRole('button', { name: 'Select Invoice.pdf', exact: true }).click();
+    await page.getByLabel('Tag name', { exact: true }).fill('Later page');
+    await page.getByRole('button', { name: 'Add tag', exact: true }).click();
+    await expect(invoice).toBeVisible();
+    await expect.poll(() => page.evaluate(() => (window as any).__workspaceTest.snapshot.files.find((file: any) => file.name === 'Invoice.pdf').tags)).toContain('Later page');
+    await page.getByRole('button', { name: 'Scan my folders', exact: true }).click();
+    await expect(invoice).toBeVisible();
+    await page.getByRole('searchbox').fill('Invoice');
+    await expect(invoice).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Open Travel photo.jpg', exact: true })).toHaveCount(0);
+    const calls = await page.evaluate(() => (window as any).__workspaceTest.calls);
+    expect(calls.filter((call: any) => call.command === 'cmd_workspace_read' && call.args.cursor).length).toBeGreaterThanOrEqual(3);
+    expect(calls.some((call: any) => call.command === 'cmd_workspace_mutate')).toBe(true);
+    expect(calls.some((call: any) => call.command === 'cmd_workspace_index')).toBe(true);
+});
+
+
+test('a live-only search result remains selectable and opens its slideshow', async ({ page }) => {
+    await fixture(page,'hub');
+    await page.evaluate(()=>{const state=(window as any).__workspaceTest;state.liveFiles=[{...state.snapshot.files[1],id:99,key:'9:99',name:'Live photo.jpg'}];});
+    await page.getByRole('searchbox').fill('Live');
+    await expect(page.getByRole('button',{name:'Open Live photo.jpg',exact:true})).toBeVisible();
+    await page.getByRole('button',{name:'Select Live photo.jpg',exact:true}).click();
+    await expect(page.getByText('1 file selected',{exact:true})).toBeVisible();
+    await page.getByRole('button',{name:'Photo slideshow',exact:true}).click();
+    await expect(page.getByRole('dialog',{name:'Photo slideshow',exact:true}).getByRole('img',{name:'Live photo.jpg',exact:true})).toBeVisible();
+    expect(await page.evaluate(()=>(window as any).__workspaceTest.snapshot.files.some((file:any)=>file.key==='9:99'))).toBe(false);
+    await page.getByRole('dialog',{name:'Photo slideshow',exact:true}).getByRole('button',{name:'Close',exact:true}).click();
+    await page.getByRole('button',{name:'Prepare offline pack',exact:true}).click();
+    await expect.poll(()=>page.evaluate(()=>(window as any).__workspaceTest.calls.filter((call:any)=>call.command==='cmd_workspace_index').length)).toBe(1);
+    expect(await page.evaluate(()=>(window as any).__workspaceTest.calls.find((call:any)=>call.command==='cmd_workspace_index').args.folderIds)).toEqual([9]);
+
 });

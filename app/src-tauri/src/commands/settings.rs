@@ -22,35 +22,23 @@ pub async fn cmd_apply_proxy_settings(
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
-    let password = if req.password.is_empty() {
-        net_config
-            .proxy
-            .read()
-            .map_err(|error| error.to_string())?
-            .password
-            .clone()
-    } else {
-        crate::proxy_secret::store_password(&req.password)?;
-        req.password
-    };
-    let config = ProxyConfig {
-        enabled: req.enabled,
-        proxy_type: req.proxy_type,
-        host: req.host,
-        port: req.port,
-        username: req.username,
-        password,
-    };
-
-    log::info!(
-        "Applying proxy settings: enabled={}, type={}, host={}:{}",
-        config.enabled,
-        config.proxy_type,
-        config.host,
-        config.port
-    );
-
-    *net_config.proxy.write().map_err(|e| e.to_string())? = config.clone();
+    let change = (!req.password.is_empty()).then_some(Some(req.password));
+    net_config.update_credentials(
+        &app,
+        move |snapshot| {
+            snapshot.proxy = ProxyConfig {
+                enabled: req.enabled,
+                proxy_type: req.proxy_type,
+                host: req.host,
+                port: req.port,
+                username: req.username,
+                password: snapshot.proxy.password.clone(),
+            };
+            Ok(())
+        },
+        change,
+    )?;
+    let config = net_config.snapshot().proxy;
 
     // Start or stop local SOCKS5 bridge as needed
     if config.enabled && (config.proxy_type == "http" || config.proxy_type == "https") {
@@ -60,11 +48,6 @@ pub async fn cmd_apply_proxy_settings(
         }
     } else {
         net_config.stop_http_bridge();
-    }
-
-    let snapshot = net_config.snapshot();
-    if let Err(e) = crate::vpn_optimizer::save_network_config(&app, &snapshot) {
-        log::error!("Failed to save proxy settings to disk: {}", e);
     }
 
     Ok("Proxy settings applied".into())
@@ -81,13 +64,7 @@ pub async fn cmd_migrate_proxy_secret(
     if password.is_empty() {
         return Ok(());
     }
-    crate::proxy_secret::store_password(&password)?;
-    net_config
-        .proxy
-        .write()
-        .map_err(|error| error.to_string())?
-        .password = password;
-    crate::vpn_optimizer::save_network_config(&app, &net_config.snapshot())
+    net_config.update_credentials(&app, |_| Ok(()), Some(Some(password)))
 }
 
 #[tauri::command]
@@ -95,14 +72,7 @@ pub async fn cmd_clear_proxy_secret(
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    crate::proxy_secret::delete_password()?;
-    net_config
-        .proxy
-        .write()
-        .map_err(|error| error.to_string())?
-        .password
-        .clear();
-    crate::vpn_optimizer::save_network_config(&app, &net_config.snapshot())
+    net_config.update_credentials(&app, |_| Ok(()), Some(None))
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -120,6 +90,10 @@ pub struct VpnSettingsRequest {
     flood_wait_respect: bool,
     peer_cache_size: usize,
     bandwidth_limit_up_kbs: u32,
+    #[serde(default)]
+    bandwidth_schedule: bool,
+    #[serde(default)]
+    bandwidth_windows: Vec<crate::traffic::Window>,
     bandwidth_limit_down_kbs: u32,
     chunk_size_kb: u32,
     keep_alive_interval_sec: u32,
@@ -149,6 +123,8 @@ pub async fn cmd_apply_vpn_settings(
         flood_wait_respect: req.flood_wait_respect,
         peer_cache_size: req.peer_cache_size.clamp(100, 2000),
         bandwidth_limit_up_kbs: req.bandwidth_limit_up_kbs,
+        bandwidth_schedule: req.bandwidth_schedule,
+        bandwidth_windows: req.bandwidth_windows,
         bandwidth_limit_down_kbs: req.bandwidth_limit_down_kbs,
         chunk_size_kb: req.chunk_size_kb.clamp(64, 512),
         keep_alive_interval_sec: if req.keep_alive_interval_sec == 0 {
@@ -168,12 +144,10 @@ pub async fn cmd_apply_vpn_settings(
         config.flood_wait_respect
     );
 
-    *net_config.vpn.write().map_err(|e| e.to_string())? = config;
-
-    let snapshot = net_config.snapshot();
-    if let Err(e) = crate::vpn_optimizer::save_network_config(&app, &snapshot) {
-        log::error!("Failed to save VPN settings to disk: {}", e);
-    }
+    net_config.update(&app, move |snapshot| {
+        snapshot.vpn = config;
+        Ok(())
+    })?;
 
     Ok("VPN settings applied".into())
 }

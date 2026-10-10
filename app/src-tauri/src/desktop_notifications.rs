@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Listener, Manager};
@@ -44,9 +44,61 @@ struct NotificationCandidate {
     filename: String,
 }
 
+/// Delivery and desktop-state boundaries around the shared notification lifecycle.
+pub(crate) trait NotificationHost: Send + Sync {
+    fn preferences(&self) -> crate::desktop_preferences::DesktopPreferences;
+    fn language(&self) -> &'static str;
+    fn visible_and_focused(&self) -> bool;
+    fn update_tray(&self, summary: TransferSummary, revision: u64);
+    fn deliver(&self, title: String, body: String) -> Result<(), String>;
+    #[cfg(feature = "native-e2e")]
+    fn pending_drained(&self) {}
+    #[cfg(feature = "native-e2e")]
+    fn before_receipt_write(&self, _count: usize) {}
+    #[cfg(feature = "native-e2e")]
+    fn after_receipt_write(&self, _count: usize) {}
+    #[cfg(feature = "native-e2e")]
+    fn flush_complete(&self) {}
+}
+
+struct TauriNotificationHost(AppHandle);
+impl NotificationHost for TauriNotificationHost {
+    fn language(&self) -> &'static str {
+        self.0
+            .state::<crate::native_localization::NativeLanguageState>()
+            .get()
+    }
+    fn preferences(&self) -> crate::desktop_preferences::DesktopPreferences {
+        self.0
+            .try_state::<DesktopPreferencesState>()
+            .map(|state| state.get())
+            .unwrap_or_default()
+    }
+    fn visible_and_focused(&self) -> bool {
+        is_main_window_visible_and_focused(&self.0)
+    }
+    fn update_tray(&self, summary: TransferSummary, revision: u64) {
+        if let Some(tray) = self.0.try_state::<DesktopTrayState>() {
+            tray.update(summary, revision);
+        }
+    }
+    fn deliver(&self, title: String, body: String) -> Result<(), String> {
+        self.0
+            .notification()
+            .builder()
+            .title(title)
+            .body(body)
+            .show()
+            .map_err(|error| error.to_string())
+    }
+}
+
 pub struct DesktopNotificationCoordinator {
-    app: AppHandle,
+    app: Option<AppHandle>,
+    host: Arc<dyn NotificationHost>,
     jobs: Mutex<HashMap<String, TransferJob>>,
+    tray_revision: AtomicU64,
+    receipt_writer: Mutex<()>,
     receipts: Mutex<VecDeque<NotificationReceipt>>,
     receipt_index: Mutex<HashSet<NotificationReceipt>>,
     receipts_path: PathBuf,
@@ -62,33 +114,74 @@ impl DesktopNotificationCoordinator {
             .app_data_dir()
             .map_err(|error| error.to_string())?
             .join(RECEIPTS_FILE);
+        Ok(Self::create(
+            Some(app.clone()),
+            Arc::new(TauriNotificationHost(app.clone())),
+            receipts_path,
+        ))
+    }
+
+    #[cfg(feature = "native-e2e")]
+    pub(crate) fn with_host(host: Arc<dyn NotificationHost>, receipts_path: PathBuf) -> Arc<Self> {
+        Self::create(None, host, receipts_path)
+    }
+
+    fn create(
+        app: Option<AppHandle>,
+        host: Arc<dyn NotificationHost>,
+        receipts_path: PathBuf,
+    ) -> Arc<Self> {
         let receipts = load_receipts(&receipts_path);
         let receipt_index = receipts.iter().cloned().collect();
-        Ok(Arc::new(Self {
-            app: app.clone(),
+        Arc::new(Self {
+            app,
+            host,
             jobs: Mutex::new(HashMap::new()),
+            tray_revision: AtomicU64::new(0),
+            receipt_writer: Mutex::new(()),
             receipts: Mutex::new(receipts),
             receipt_index: Mutex::new(receipt_index),
             receipts_path,
             pending: Mutex::new(Vec::new()),
             flush_scheduled: AtomicBool::new(false),
             listener_installed: AtomicBool::new(false),
-        }))
+        })
     }
 
     pub fn seed(&self, jobs: Vec<TransferJob>) {
-        if let Ok(mut current) = self.jobs.lock() {
+        let summary = self.jobs.lock().ok().map(|mut current| {
             current.extend(jobs.into_iter().map(|job| (job.id.clone(), job)));
-            self.update_tray_locked(&current);
+            (
+                TransferSummary::from_jobs(current.values()),
+                self.tray_revision.fetch_add(1, Ordering::Relaxed) + 1,
+            )
+        });
+        if let Some((summary, revision)) = summary {
+            self.host.update_tray(summary, revision);
+        }
+    }
+
+    pub(crate) fn refresh_tray(&self) {
+        let summary = self.jobs.lock().ok().map(|jobs| {
+            (
+                TransferSummary::from_jobs(jobs.values()),
+                self.tray_revision.load(Ordering::Relaxed),
+            )
+        });
+        if let Some((summary, revision)) = summary {
+            self.host.update_tray(summary, revision);
         }
     }
 
     pub fn start(self: &Arc<Self>) {
+        let Some(app) = self.app.as_ref() else {
+            return;
+        };
         if self.listener_installed.swap(true, Ordering::AcqRel) {
             return;
         }
         let coordinator = self.clone();
-        self.app.listen(
+        app.listen(
             "transfer-upserted",
             move |event| match serde_json::from_str::<TransferJob>(event.payload()) {
                 Ok(job) => coordinator.record(job),
@@ -96,17 +189,25 @@ impl DesktopNotificationCoordinator {
             },
         );
         let coordinator = self.clone();
-        self.app.listen("transfer-removed", move |event| {
+        app.listen("transfer-removed", move |event| {
             if let Ok(id) = serde_json::from_str::<String>(event.payload()) {
                 coordinator.remove(&id);
             }
         });
     }
 
-    fn record(self: &Arc<Self>, job: TransferJob) {
+    pub(crate) fn record(self: &Arc<Self>, job: TransferJob) {
+        // Folder Sync reports its own work; its transfers do not also raise
+        // a notification each.
+        if job.origin.is_some() {
+            return;
+        }
         let previous = if let Ok(mut jobs) = self.jobs.lock() {
             let previous = jobs.insert(job.id.clone(), job.clone());
-            self.update_tray_locked(&jobs);
+            let summary = TransferSummary::from_jobs(jobs.values());
+            let revision = self.tray_revision.fetch_add(1, Ordering::Relaxed) + 1;
+            drop(jobs);
+            self.host.update_tray(summary, revision);
             previous
         } else {
             None
@@ -145,16 +246,16 @@ impl DesktopNotificationCoordinator {
         }
     }
 
-    fn remove(&self, id: &str) {
-        if let Ok(mut jobs) = self.jobs.lock() {
+    pub(crate) fn remove(&self, id: &str) {
+        let summary = self.jobs.lock().ok().map(|mut jobs| {
             jobs.remove(id);
-            self.update_tray_locked(&jobs);
-        }
-    }
-
-    fn update_tray_locked(&self, jobs: &HashMap<String, TransferJob>) {
-        if let Some(tray) = self.app.try_state::<DesktopTrayState>() {
-            tray.update(TransferSummary::from_jobs(jobs.values()));
+            (
+                TransferSummary::from_jobs(jobs.values()),
+                self.tray_revision.fetch_add(1, Ordering::Relaxed) + 1,
+            )
+        });
+        if let Some((summary, revision)) = summary {
+            self.host.update_tray(summary, revision);
         }
     }
 
@@ -169,12 +270,9 @@ impl DesktopNotificationCoordinator {
     }
 
     fn enqueue(self: &Arc<Self>, candidate: NotificationCandidate) {
-        let Some(preferences) = self.app.try_state::<DesktopPreferencesState>() else {
-            return;
-        };
-        let preferences = preferences.get();
+        let preferences = self.host.preferences();
         if !notification_category_enabled(&preferences, candidate.receipt.category)
-            || (!preferences.notify_while_visible && is_main_window_visible_and_focused(&self.app))
+            || (!preferences.notify_while_visible && self.host.visible_and_focused())
         {
             return;
         }
@@ -205,9 +303,16 @@ impl DesktopNotificationCoordinator {
         let candidates = self
             .pending
             .lock()
-            .map(|mut pending| pending.drain(..).collect::<Vec<_>>())
+            .map(|mut pending| {
+                let candidates = pending.drain(..).collect::<Vec<_>>();
+                // Release ownership while the queue is locked: an arrival after
+                // this drain must be able to schedule its own delivery.
+                self.flush_scheduled.store(false, Ordering::Release);
+                candidates
+            })
             .unwrap_or_default();
-        self.flush_scheduled.store(false, Ordering::Release);
+        #[cfg(feature = "native-e2e")]
+        self.host.pending_drained();
         if candidates.is_empty() {
             return;
         }
@@ -220,6 +325,12 @@ impl DesktopNotificationCoordinator {
                 .push(candidate);
         }
         for (category, candidates) in grouped {
+            let preferences = self.host.preferences();
+            if !notification_category_enabled(&preferences, category)
+                || (!preferences.notify_while_visible && self.host.visible_and_focused())
+            {
+                continue;
+            }
             let claimed: Vec<_> = candidates
                 .into_iter()
                 .filter(|candidate| self.claim_receipt(candidate.receipt.clone()))
@@ -227,26 +338,30 @@ impl DesktopNotificationCoordinator {
             if claimed.is_empty() {
                 continue;
             }
-            let preferences = self
-                .app
-                .try_state::<DesktopPreferencesState>()
-                .map(|state| state.get())
-                .unwrap_or_default();
-            let (title, body) = notification_copy(category, &claimed, &preferences);
-            if let Err(error) = self
-                .app
-                .notification()
-                .builder()
-                .title(title)
-                .body(body)
-                .show()
+            // Durable receipt writes can wait. Respect the current privacy
+            // choices and foreground state at the actual delivery boundary.
+            let preferences = self.host.preferences();
+            if !notification_category_enabled(&preferences, category)
+                || (!preferences.notify_while_visible && self.host.visible_and_focused())
             {
+                continue;
+            }
+            let (title, body) =
+                notification_copy(category, &claimed, &preferences, self.host.language());
+            if let Err(error) = self.host.deliver(title, body) {
                 log::warn!("Desktop notification service is unavailable: {error}");
             }
         }
+        #[cfg(feature = "native-e2e")]
+        self.host.flush_complete();
     }
 
     fn claim_receipt(&self, receipt: NotificationReceipt) -> bool {
+        // Serialize the mutation and durable snapshot, without holding this
+        // guard during GUI or notification delivery.
+        let Ok(_receipt_write) = self.receipt_writer.lock() else {
+            return false;
+        };
         let Ok(mut index) = self.receipt_index.lock() else {
             return false;
         };
@@ -265,9 +380,13 @@ impl DesktopNotificationCoordinator {
             return false;
         };
         drop(index);
+        #[cfg(feature = "native-e2e")]
+        self.host.before_receipt_write(snapshot.len());
         if let Err(error) = persist_json_atomically(&self.receipts_path, &snapshot) {
             log::warn!("Could not persist notification deduplication state: {error}");
         }
+        #[cfg(feature = "native-e2e")]
+        self.host.after_receipt_write(snapshot.len());
         true
     }
 }
@@ -307,58 +426,64 @@ fn notification_copy(
     category: NotificationCategory,
     candidates: &[NotificationCandidate],
     preferences: &crate::desktop_preferences::DesktopPreferences,
+    language: &str,
 ) -> (String, String) {
-    let count = candidates.len();
-    let title = match category {
-        NotificationCategory::Completed => "Transfer complete",
-        NotificationCategory::Failed => "Transfer failed",
-        NotificationCategory::Paused => "Transfer paused",
-        NotificationCategory::Attention => "Transfer needs attention",
-    }
-    .to_string();
-    if count > 1 {
-        let body = match category {
-            NotificationCategory::Completed => format!("{count} transfers completed."),
-            NotificationCategory::Failed => {
-                format!("{count} transfers failed. Open Transfers for details.")
-            }
-            NotificationCategory::Paused => format!("{count} transfers were paused."),
-            NotificationCategory::Attention => format!("{count} transfers need attention."),
-        };
-        return (title, body);
+    use crate::native_localization::{format, text};
+    let category_name = match category {
+        NotificationCategory::Completed => "completed",
+        NotificationCategory::Failed => "failed",
+        NotificationCategory::Paused => "paused",
+        NotificationCategory::Attention => "attention",
+    };
+    let title = text(
+        language,
+        &format!("native_notifications.title_{category_name}"),
+    )
+    .to_owned();
+    if candidates.len() > 1 {
+        let count = candidates.len().to_string();
+        return (
+            title,
+            format(
+                language,
+                &format!("native_notifications.many_{category_name}"),
+                &[("count", &count)],
+            ),
+        );
     }
     let candidate = &candidates[0];
-    let display_name = preferences
-        .show_filenames_in_notifications
-        .then_some(candidate.filename.as_str());
-    let body = match (category, display_name) {
-        (NotificationCategory::Completed, Some(name)) => format!("{name} completed."),
+    let display_name = preferences.show_filenames_in_notifications.then(|| {
+        if candidate.filename.is_empty() {
+            text(language, "native_notifications.unnamed_file")
+        } else {
+            candidate.filename.as_str()
+        }
+    });
+    let key = match (category, display_name) {
+        (NotificationCategory::Completed, Some(_)) => "name_completed",
+        (NotificationCategory::Failed, Some(_)) => "name_failed",
+        (NotificationCategory::Paused, Some(_)) => "name_paused",
         (NotificationCategory::Completed, None) => match candidate.direction {
-            TransferDirection::Upload => "An upload completed.".to_string(),
-            TransferDirection::Download => "A download completed.".to_string(),
+            TransferDirection::Upload => "upload_completed",
+            TransferDirection::Download => "download_completed",
         },
-        (NotificationCategory::Failed, Some(name)) => {
-            format!("{name} failed. Open Transfers for details.")
-        }
-        (NotificationCategory::Failed, None) => {
-            "A transfer failed. Open Transfers for details.".to_string()
-        }
-        (NotificationCategory::Paused, Some(name)) => format!("{name} was paused."),
-        (NotificationCategory::Paused, None) => "A transfer was paused.".to_string(),
+        (NotificationCategory::Failed, None) => "failed",
+        (NotificationCategory::Paused, None) => "paused",
         (NotificationCategory::Attention, _) => match candidate.status {
-            TransferStatus::WaitingForUnlock => {
-                "Unlock the encryption vault to continue a transfer.".to_string()
-            }
-            TransferStatus::WaitingForNetwork => {
-                "A transfer is waiting for the network.".to_string()
-            }
-            TransferStatus::Cooldown => {
-                "A transfer is waiting for Telegram to become available.".to_string()
-            }
-            _ => "A transfer needs attention.".to_string(),
+            TransferStatus::WaitingForUnlock => "unlock",
+            TransferStatus::WaitingForNetwork => "network",
+            TransferStatus::Cooldown => "telegram",
+            _ => "attention",
         },
     };
-    (title, body)
+    (
+        title,
+        format(
+            language,
+            &format!("native_notifications.{key}"),
+            &[("name", display_name.unwrap_or_default())],
+        ),
+    )
 }
 
 fn safe_filename(value: &str) -> String {
@@ -366,17 +491,13 @@ fn safe_filename(value: &str) -> String {
         .rsplit(['/', '\\'])
         .next()
         .filter(|name| !name.is_empty())
-        .unwrap_or("file");
+        .unwrap_or_default();
     let sanitized: String = basename
         .chars()
         .filter(|character| !character.is_control())
         .take(80)
         .collect();
-    if sanitized.is_empty() {
-        "file".to_string()
-    } else {
-        sanitized
-    }
+    sanitized
 }
 
 fn load_receipts(path: &Path) -> VecDeque<NotificationReceipt> {

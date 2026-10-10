@@ -1,8 +1,6 @@
-import { englishTranslationChunks } from './scripts/english-translation-chunks';
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import { readFile } from "node:fs/promises";
-import { basename } from "node:path";
+import { localeCatalogPacking } from "./scripts/locale-catalog-packing";
 
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
@@ -10,19 +8,7 @@ const host = process.env.TAURI_DEV_HOST;
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   plugins: [
-    englishTranslationChunks(),
-    {
-      name: "compact-local-translation-data",
-      enforce: "pre",
-      apply: "build",
-      async load(id) {
-        if (!/[\\/]src[\\/]i18n[\\/]locales[\\/][^\\/]+\.json\?url$/.test(id)) return;
-        const filename = id.slice(0, -4);
-        const source = JSON.stringify(JSON.parse(await readFile(filename, "utf8")));
-        const reference = this.emitFile({ type: "asset", name: basename(filename), source });
-        return `export default import.meta.ROLLUP_FILE_URL_${reference};`;
-      },
-    },
+    localeCatalogPacking(),
     react(),
   ],
 

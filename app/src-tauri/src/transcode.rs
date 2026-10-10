@@ -225,6 +225,8 @@ fn bounded_source_prefix(path: &Path) -> std::io::Result<Vec<u8>> {
 
 #[derive(Clone)]
 pub struct TranscodeManager {
+    pub network: Arc<crate::vpn_optimizer::NetworkConfig>,
+    pub bandwidth: Arc<crate::bandwidth::BandwidthManager>,
     pub cache_root: PathBuf,
     pub ffmpeg_path: Arc<Mutex<Option<PathBuf>>>,
     jobs: Arc<Mutex<HashMap<String, Arc<Mutex<TranscodeJob>>>>>,
@@ -253,6 +255,10 @@ impl TranscodeManager {
         let _ = std::fs::create_dir_all(cache_root.join(HLS_DIR));
 
         Self {
+            network: Arc::new(crate::vpn_optimizer::NetworkConfig::new()),
+            bandwidth: Arc::new(crate::bandwidth::BandwidthManager::at(
+                cache_root.parent().unwrap_or(&cache_root),
+            )),
             cache_root,
             ffmpeg_path: Arc::new(Mutex::new(None)),
             jobs: Arc::new(Mutex::new(HashMap::new())),
@@ -261,6 +267,16 @@ impl TranscodeManager {
             cache_scan_in_flight: Arc::new(AtomicBool::new(false)),
             cache_scan_pending: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    pub fn with_transport(
+        mut self,
+        network: Arc<crate::vpn_optimizer::NetworkConfig>,
+        bandwidth: Arc<crate::bandwidth::BandwidthManager>,
+    ) -> Self {
+        self.network = network;
+        self.bandwidth = bandwidth;
+        self
     }
 
     /// Reconcile the detailed cache inventory once on the blocking pool. The
@@ -652,6 +668,10 @@ pub async fn detect_ffmpeg(app_handle: &tauri::AppHandle) -> Option<PathBuf> {
     }
 
     // 2. Fallback to PATH
+    detect_path_ffmpeg().await
+}
+
+pub(crate) async fn detect_path_ffmpeg() -> Option<PathBuf> {
     match test_ffmpeg(Path::new("ffmpeg")).await {
         Ok(true) => {
             log::info!("Transcode: Found FFmpeg on PATH");
@@ -669,10 +689,13 @@ pub async fn detect_ffmpeg(app_handle: &tauri::AppHandle) -> Option<PathBuf> {
 }
 
 async fn test_ffmpeg(path: &Path) -> Result<bool, String> {
-    let output = tokio::process::Command::new(path)
+    let mut command = tokio::process::Command::new(path);
+    command
         .arg("-version")
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    crate::process_util::hide_console(&mut command);
+    let output = command
         .output()
         .await
         .map_err(|e| format!("Failed to run ffmpeg: {}", e))?;
@@ -698,6 +721,7 @@ pub async fn cache_original(
     cancel_rx: &mut tokio::sync::oneshot::Receiver<()>,
     progress_callback: impl Fn(f32),
     account: &AccountGuard,
+    transport: &TranscodeManager,
 ) -> Result<u64, String> {
     account.validate()?;
     let total_size = match media {
@@ -705,6 +729,8 @@ pub async fn cache_original(
         _ => return Err("Not a document".to_string()),
     };
 
+    let mut reservation =
+        crate::bandwidth::BandwidthReservation::download(transport.bandwidth.clone(), total_size)?;
     // Ensure parent directory exists
     if let Some(parent) = dest_path.parent() {
         std::fs::create_dir_all(parent)
@@ -733,6 +759,7 @@ pub async fn cache_original(
             result = download_iter.next() => {
                 match result {
                     Ok(Some(chunk)) => {
+                        tokio::select! {result=transport.network.pacer.wait(&transport.network,crate::traffic::Direction::Download,chunk.len(),||account.validate())=>result?,_=&mut *cancel_rx=>return Err("Cancelled".into())}
                         account.validate()?;
                         if downloaded.saturating_add(chunk.len() as u64) > total_size { return Err("Incomplete download: source exceeded expected size".into()); }
                         file.write_all(&chunk).await.map_err(|e| format!("Write error: {}", e))?;
@@ -779,6 +806,7 @@ pub async fn cache_original(
         .await
         .map_err(|e| format!("Rename error: {}", e))?;
 
+    reservation.commit();
     log::info!(
         "Transcode: Cached original to {:?} ({} bytes)",
         dest_path,
@@ -857,6 +885,7 @@ pub async fn run_transcode(
     let segment_pattern = output_dir.join("segment_%03d.ts");
 
     let mut cmd = tokio::process::Command::new(ffmpeg_path);
+    crate::process_util::hide_console(&mut cmd);
     cmd.arg("-y") // Overwrite
         .arg("-i")
         .arg(input_path)
@@ -1083,6 +1112,7 @@ pub async fn execute_transcode_pipeline(
                 });
             },
             &account,
+            manager,
         )
         .await
         {

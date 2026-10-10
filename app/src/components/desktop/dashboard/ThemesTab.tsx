@@ -1,3 +1,4 @@
+import i18n from '../../../i18n';
 import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { Check, Monitor, Moon, Palette, Plus, RotateCcw, Sparkles, Sun, Trash2 } from 'lucide-react';
@@ -7,19 +8,34 @@ import { useTheme } from '../../../context/ThemeContext';
 import { CustomTheme, ThemeColorPalette, generateThemeId } from '../../../theme/themeEngine';
 import { getDefaultPalette } from '../../../theme/presets';
 
-const PALETTE_KEYS: { key: keyof ThemeColorPalette; labelKey: string; defaultLabel: string }[] = [
-    { key: 'bg', labelKey: 'settings.color_bg', defaultLabel: 'Canvas' },
-    { key: 'surface', labelKey: 'settings.color_surface', defaultLabel: 'Surface' },
-    { key: 'primary', labelKey: 'settings.color_primary', defaultLabel: 'Accent' },
-    { key: 'secondary', labelKey: 'settings.color_secondary', defaultLabel: 'Information' },
-    { key: 'text', labelKey: 'settings.color_text', defaultLabel: 'Text' },
-    { key: 'subtext', labelKey: 'settings.color_subtext', defaultLabel: 'Secondary text' },
-    { key: 'border', labelKey: 'settings.color_border', defaultLabel: 'Border' },
-    { key: 'hover', labelKey: 'settings.color_hover', defaultLabel: 'Hover' },
+const builtinThemeLabelKeys: Record<string, string> = {
+    'default-dark': 'theme_names.default_dark',
+    'charcoal': 'theme_names.charcoal',
+    'cyber-teal': 'theme_names.cyber_teal',
+    'default-light': 'theme_names.default_light',
+    'ocean': 'theme_names.ocean',
+    'forest': 'theme_names.forest',
+    'plum': 'theme_names.plum',
+    'paper': 'theme_names.paper',
+    'rose': 'theme_names.rose',
+    'mint': 'theme_names.mint',
+    'sky': 'theme_names.sky',
+};
+
+const PALETTE_KEYS: { key: keyof ThemeColorPalette; labelKey: string }[] = [
+    { key: 'bg', labelKey: 'settings.color_bg' },
+    { key: 'surface', labelKey: 'settings.color_surface' },
+    { key: 'primary', labelKey: 'settings.color_primary' },
+    { key: 'secondary', labelKey: 'settings.color_secondary' },
+    { key: 'text', labelKey: 'settings.color_text' },
+    { key: 'subtext', labelKey: 'settings.color_subtext' },
+    { key: 'border', labelKey: 'settings.color_border' },
+    { key: 'hover', labelKey: 'settings.color_hover' },
 ];
 
 export function ThemesTab() {
     const { t } = useTranslation();
+    const themeName = (theme: CustomTheme) => theme.isBuiltin && builtinThemeLabelKeys[theme.id] ? t(builtinThemeLabelKeys[theme.id]) : theme.name;
     const {
         customThemes,
         themePreference,
@@ -108,8 +124,8 @@ export function ThemesTab() {
                 </h3>
                 <div className="grid grid-cols-4 gap-2 rounded-container border border-app-border-subtle bg-app-surface-sunken/30 p-2">
                     {([
-                        ['default', Sparkles, t('common.default', { defaultValue: 'Default' })],
-                        ['system', Monitor, 'System'],
+                        ['default', Sparkles, t('common.default')],
+                        ['system', Monitor, t('common.system')],
                         ['light', Sun, t('common.light_mode')],
                         ['dark', Moon, t('common.dark_mode')],
                     ] as const).map(([preference, Icon, label]) => (
@@ -147,7 +163,7 @@ export function ThemesTab() {
                                     ? 'border-app-accent bg-app-selected'
                                     : 'border-app-border-subtle hover:border-app-border-strong'
                             }`}
-                            title={theme.name}
+                            title={themeName(theme)}
                         >
                             <div className="flex h-12 overflow-hidden rounded-control">
                                 <div className="flex-1" style={{ background: theme.palette.bg }} />
@@ -155,7 +171,7 @@ export function ThemesTab() {
                                 <div className="flex-1" style={{ background: theme.palette.primary }} />
                             </div>
                             <p className="mt-1.5 truncate text-center text-[10px] text-app-text-secondary">
-                                {theme.name}
+                                {themeName(theme)}
                             </p>
                             {activeCustomThemeId === theme.id && (
                                 <div className="absolute -end-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-app-accent">
@@ -184,7 +200,7 @@ export function ThemesTab() {
                                         ? 'border-app-accent bg-app-selected'
                                         : 'border-app-border-subtle hover:border-app-border-strong'
                                 }`}
-                                title={theme.name}
+                                title={themeName(theme)}
                             >
                                 <div className="flex h-12 overflow-hidden rounded-control">
                                     <div className="flex-1" style={{ background: theme.palette.bg }} />
@@ -192,7 +208,7 @@ export function ThemesTab() {
                                     <div className="flex-1" style={{ background: theme.palette.primary }} />
                                 </div>
                                 <p className="mt-1.5 truncate text-center text-[10px] text-app-text-secondary">
-                                    {theme.name}
+                                    {themeName(theme)}
                                 </p>
                                 {activeCustomThemeId === theme.id && (
                                     <div className="absolute -end-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-app-accent">
@@ -220,7 +236,7 @@ export function ThemesTab() {
                     </h3>
 
                     <div className="flex items-center gap-2">
-                        <label className="text-xs text-telegram-subtext w-16 shrink-0">{t('settings.theme_name')}</label>
+                        <label className="text-xs text-telegram-subtext w-16 shrink-0">{t('common.name')}</label>
                         <input
                             type="text"
                             value={editingTheme.name}
@@ -241,7 +257,7 @@ export function ThemesTab() {
                                         : 'bg-telegram-hover text-telegram-subtext hover:text-telegram-text'
                                 }`}
                             >
-                                Dark
+                                {i18n.t('ui_copy.dark')}
                             </button>
                             <button
                                 onClick={() => handleBaseToggle(false)}
@@ -251,15 +267,15 @@ export function ThemesTab() {
                                         : 'bg-telegram-hover text-telegram-subtext hover:text-telegram-text'
                                 }`}
                             >
-                                Light
+                                {i18n.t('ui_copy.light')}
                             </button>
                         </div>
                     </div>
 
                     <div className="space-y-2">
-                        {PALETTE_KEYS.map(({ key, labelKey, defaultLabel }) => (
+                        {PALETTE_KEYS.map(({ key, labelKey }) => (
                             <div key={key} className="flex items-center gap-2">
-                                <label className="w-24 shrink-0 text-xs text-telegram-subtext">{t(labelKey, { defaultValue: defaultLabel })}</label>
+                                <label className="w-24 shrink-0 text-xs text-telegram-subtext">{t(labelKey)}</label>
                                 <div className="flex items-center gap-1.5 flex-1">
                                     <input
                                         type="color"

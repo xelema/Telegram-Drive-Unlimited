@@ -1,0 +1,57 @@
+{
+  "sourceTag": "v3.9.8",
+  "sourceCommit": "10f470617fd24d955acfda00350d535e1551be48",
+  "dependencies": {
+    "serde": "1.0.228",
+    "serde_json": "1.0.150",
+    "tokio": "1.52.3",
+    "chrono": "0.4.44",
+    "chacha20poly1305": "0.10.1",
+    "argon2": "0.5.3",
+    "hkdf": "0.12.4",
+    "hmac": "0.12.1",
+    "sha2": "0.10.9",
+    "zeroize": "1.8.2"
+  },
+  "harness": "Unmodified tag encoders with public deterministic entropy and a fixed vault-material fixture constructor.",
+  "inputs": {
+    "plaintextLength": 1048593,
+    "plaintextPattern": "byte[i] = i % 251",
+    "masterKey": "0707070707070707070707070707070707070707070707070707070707070707",
+    "dek": "1717171717171717171717171717171717171717171717171717171717171717",
+    "uuid": "11111111111111111111111111111111",
+    "noncePrefix": "13131313131313131313131313131313",
+    "slotSalt": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+    "wrapNonce": "0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d",
+    "chunkSize": 1048576,
+    "vaultCreatedAt": 1700000000,
+    "profileId": "fixture-profile-v1",
+    "profileKey": "1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d",
+    "vaultPassphrase": "public v3.9.8 vault fixture passphrase",
+    "recoveryPassphrase": "public v3.9.8 recovery fixture passphrase",
+    "metadata": {
+      "schema_version": 1,
+      "original_name": "fixed-answer.bin",
+      "mime_type": "application/octet-stream"
+    },
+    "currentSyncPath": "docs/2026/fixed-answer.bin"
+  },
+  "files": {
+    "current-envelope.tdenc": {
+      "bytes": 1049046,
+      "sha256": "1f927ac04ea873c753d5c5275ef46ffc4b6b955282eb1cccc6b9a0be13fe86ae"
+    },
+    "v3.9.8-envelope.tdenc": {
+      "bytes": 1049005,
+      "sha256": "48bd35ac7475f8c9da165b9801ff9b65d788ab39afb0a7993c11dba1488ab841"
+    },
+    "v3.9.8-recovery.bin": {
+      "bytes": 180,
+      "sha256": "0c0d9cdf1e6b1145a17c01762c24ca8ffec0bab86f1662f253437766fc9a1e6a"
+    },
+    "v3.9.8-vault.bin": {
+      "bytes": 180,
+      "sha256": "8bea2226a5dc5b568e0e57d859924cb70c8040d250bbafe68cb047591f9676b3"
+    }
+  }
+}

@@ -1,3 +1,5 @@
+import {useTranslation} from 'react-i18next';
+import i18n from '../../../i18n';
 import { useCallback } from 'react';
 import { Folder, MoreVertical, Check } from 'lucide-react';
 import { useDraggable, useDroppable } from '@dnd-kit/core';
@@ -21,6 +23,7 @@ interface FileListItemProps {
 export function FileListItem({
     file, selectedIds, onFileClick, handleContextMenu, disableDrag = false
 }: FileListItemProps) {
+    useTranslation();
     const { isFolder } = describeFileActions(file);
     const fileIds = selectedIds.includes(file.id) ? selectedIds : [file.id];
     const {
@@ -72,6 +75,8 @@ export function FileListItem({
             {...(!isFolder ? attributes : {})}
             {...(!isFolder ? listeners : {})}
             aria-disabled={undefined}
+            role="group"
+            aria-label={file.name}
             className={`group grid h-10 cursor-pointer grid-cols-[1.75rem_minmax(0,1fr)_2rem] items-center gap-3 border-b border-app-border-subtle px-3 transition-colors hover:bg-app-hover sm:grid-cols-[1.75rem_minmax(0,2fr)_6rem_8rem_2rem]
                 ${selectedIds.includes(file.id) ? 'bg-app-selected' : ''}
                 ${isFileDragOver ? 'bg-app-selected ring-2 ring-inset ring-app-accent' : ''}
@@ -106,7 +111,7 @@ export function FileListItem({
                         handleContextMenu(e, file);
                     }}
                     className="quiet-control flex h-7 w-7 items-center justify-center border border-transparent text-app-text-secondary opacity-0 group-hover:opacity-100 hover:text-app-text focus-visible:opacity-100"
-                    aria-label="File actions"
+                    aria-label={i18n.t('ui_copy.file_actions')}
                 >
                     <MoreVertical className="h-3.5 w-3.5" />
                 </button>

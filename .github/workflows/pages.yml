@@ -6,6 +6,9 @@ on:
     paths:
       - "Docs/**"
       - ".github/workflows/pages.yml"
+  # Republish after a desktop release so the secondary updater manifest follows it.
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -34,6 +37,25 @@ jobs:
           cp Docs/robots.txt Docs/sitemap.xml _site/
           cp -R Docs/assets _site/assets
           touch _site/.nojekyll
+
+      # Secondary updater endpoint. The manifest is only a pointer: every
+      # artifact it names is still verified against the minisign public key
+      # embedded in the application, so mirroring it here adds no trust.
+      - name: Mirror the signed updater manifest
+        run: |
+          mkdir -p _site/updates
+          manifest="_site/updates/latest.json"
+          if curl --fail --silent --show-error --location --max-time 60 \
+            "https://github.com/${{ github.repository }}/releases/latest/download/latest.json" \
+            --output "${manifest}" \
+            && node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); if(typeof m.version!=="string"||!m.platforms||!Object.keys(m.platforms).length) process.exit(1)' "${manifest}"; then
+            echo "Mirrored updater manifest."
+          else
+            # Never publish a missing or malformed manifest; the primary
+            # endpoint remains authoritative.
+            rm -f "${manifest}"
+            echo "::warning::Updater manifest was not mirrored for this deployment."
+          fi
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5

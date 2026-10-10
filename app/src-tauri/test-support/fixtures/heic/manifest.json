@@ -1,0 +1,61 @@
+{
+  "provenance": "Synthetic FFmpeg 8.1.2 testsrc2 patterns, converted to HEIC and reference JPEG with /usr/bin/sips version316; no photographs.",
+  "generation": [
+    "ffmpeg -f lavfi -i testsrc2=size=240x180:rate=1 -frames:v 1 -threads 1 small.png",
+    "ffmpeg -f lavfi -i testsrc2=size=4032x3024:rate=1 -frames:v 1 -threads 1 tiled-12mp.png",
+    "sips -s format heic input.png --out output.heic",
+    "sips -s format jpeg input.heic --out reference.jpg"
+  ],
+  "dimensions": {
+    "small.heic": [
+      240,
+      180
+    ],
+    "tiled-12mp.heic": [
+      4032,
+      3024
+    ]
+  },
+  "mutations": {
+    "corrupt.heic": "First160bytes of small.heic",
+    "oversized.heic": "First ispe width replaced by2147483647"
+  },
+  "files": {
+    "corrupt.heic": {
+      "bytes": 160,
+      "sha256": "e26b9d97fde38ee2d8d63b7a1aea981cbafb917346b1d7a4c11fc5e111abe53a"
+    },
+    "oversized.heic": {
+      "bytes": 4655,
+      "sha256": "d6a46a0cd39a5e52f9c7977a1343a74ce97a257623d63f750fefe313d21f8e05"
+    },
+    "small-reference.jpg": {
+      "bytes": 16316,
+      "sha256": "801d39047f797da4dd1473e8b5b1343ec0c1a5358b46672a2294c68814dddcb5"
+    },
+    "small.heic": {
+      "bytes": 4655,
+      "sha256": "a1c2daa2dfcfd30818711793ef90ff77b6f81b5177d00a3b159962cc5131c5be"
+    },
+    "tiled-12mp-reference.jpg": {
+      "bytes": 741161,
+      "sha256": "3b9882958dff7a3ab0b05ec776019b27aee6137b8f915a9f02066d6bd87b6a19"
+    },
+    "tiled-12mp.heic": {
+      "bytes": 411508,
+      "sha256": "f31b4989c8d8b29be857224008fe4d4d9b549c029bec2fb306286c70592bb08c"
+    },
+    "rotated.heic": {
+      "bytes": 4655,
+      "sha256": "13e14388f7b6d321a90a75c6f59f77d57f954a77d2955da2f727ba0804c716a2"
+    },
+    "mirrored.heic": {
+      "bytes": 4655,
+      "sha256": "6b055814ad1f7ddd07cfdf4673e4cd9c35ab8e749bd7c32c17f503f8e1e25a84"
+    }
+  },
+  "orientation_fixtures": {
+    "rotated.heic": "small.heic irot value changed from 0 to 1 (90 degrees counterclockwise)",
+    "mirrored.heic": "small.heic irot box changed to imir value 0; FFmpeg applies vertical reflection"
+  }
+}

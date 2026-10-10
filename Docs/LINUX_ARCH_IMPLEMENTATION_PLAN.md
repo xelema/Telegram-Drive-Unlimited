@@ -102,11 +102,11 @@ flowchart TD
 
 Automated gates:
 
-- frontend unit tests and coverage;
+- browser end-to-end journeys;
 - production frontend build and bundle ceilings;
 - localization structure, variables, copied-English baseline, and literal-debt ceiling;
-- Rust format, strict Clippy, full native library tests, and supporter-focused tests;
-- Worker type-check, tests, and Wrangler dry-run;
+- Rust format, strict Clippy, and the native process/HTTP/storage end-to-end journeys;
+- Worker type-check, HTTP/local-D1 end-to-end journeys, and Wrangler dry-run;
 - Playwright visual and Axe accessibility tests;
 - PKGBUILD checksum/source validation, `.SRCINFO`, `namcap`, `desktop-file-validate`, package metadata/content checks, unresolved-library detection, clean pacman install/reinstall, Xvfb startup, SBOM generation, final checksums, and attestations.
 

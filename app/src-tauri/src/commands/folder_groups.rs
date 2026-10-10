@@ -1,13 +1,49 @@
 use crate::db::DbConnection;
 use crate::models::{FolderGroup, FolderMetadata};
-use tauri::State;
+use std::path::PathBuf;
+use tauri::{Manager, State};
+
+/// Application data root and the signed-in account, when there is one.
+pub(crate) fn layout_scope(app: &tauri::AppHandle) -> Option<(PathBuf, Option<i64>)> {
+    let root = app.path().app_data_dir().ok()?;
+    let owner = crate::workspace::current_owner(&root).ok();
+    Some((root, owner))
+}
+
+/// Bring the signed-in account's folders and groups into the shared tables.
+/// Returns whether the tables may be read for this session: after another
+/// account's sign-out, or while nobody is signed in, they are not.
+pub(crate) fn prepare_layout(
+    conn: &sqlite::Connection,
+    scope: Option<&(PathBuf, Option<i64>)>,
+) -> Result<bool, String> {
+    let Some((root, owner)) = scope else {
+        return Ok(true);
+    };
+    if let Some(owner) = owner {
+        crate::folder_layout::activate(conn, root, *owner)?;
+    }
+    Ok(crate::folder_layout::readable_by(root, *owner))
+}
 
 #[tauri::command]
 pub async fn cmd_get_enriched_folders(
+    app: tauri::AppHandle,
     db_pool: State<'_, DbConnection>,
 ) -> Result<Vec<FolderMetadata>, String> {
     let database = db_pool.inner().clone();
-    crate::db::with_connection(database, |conn| {
+    let scope = layout_scope(&app);
+    crate::db::with_connection(database, move |conn| {
+        if !prepare_layout(conn, scope.as_ref())? {
+            return Ok(Vec::new());
+        }
+        enriched_folders(conn)
+    })
+    .await
+}
+
+pub(crate) fn enriched_folders(conn: &sqlite::Connection) -> Result<Vec<FolderMetadata>, String> {
+    {
         let query = "
         SELECT fm.channel_id, fm.name, fm.username, fm.is_public, fm.display_order, fm.group_id 
         FROM folder_metadata fm
@@ -52,8 +88,7 @@ pub async fn cmd_get_enriched_folders(
         }
 
         Ok(folders)
-    })
-    .await
+    }
 }
 
 #[tauri::command]
@@ -83,7 +118,15 @@ pub async fn cmd_create_group(
     db_pool: State<'_, DbConnection>,
 ) -> Result<i32, String> {
     let database = db_pool.inner().clone();
-    crate::db::with_connection(database, move |conn| {
+    crate::db::with_connection(database, move |conn| create_group(conn, &name, &color_hex)).await
+}
+
+pub(crate) fn create_group(
+    conn: &sqlite::Connection,
+    name: &str,
+    color_hex: &str,
+) -> Result<i32, String> {
+    {
         // Determine max display order to append new group
         let mut max_stmt = conn
             .prepare("SELECT MAX(display_order) FROM groups")
@@ -101,9 +144,8 @@ pub async fn cmd_create_group(
         let mut stmt = conn
             .prepare("INSERT INTO groups (name, color_hex, display_order) VALUES (?, ?, ?)")
             .map_err(|e| e.to_string())?;
-        stmt.bind((1, name.as_str())).map_err(|e| e.to_string())?;
-        stmt.bind((2, color_hex.as_str()))
-            .map_err(|e| e.to_string())?;
+        stmt.bind((1, name)).map_err(|e| e.to_string())?;
+        stmt.bind((2, color_hex)).map_err(|e| e.to_string())?;
         stmt.bind((3, display_order)).map_err(|e| e.to_string())?;
         stmt.next().map_err(|e| e.to_string())?;
 
@@ -117,8 +159,7 @@ pub async fn cmd_create_group(
         }
 
         Ok(last_id)
-    })
-    .await
+    }
 }
 
 #[tauri::command]
@@ -180,6 +221,17 @@ pub async fn cmd_assign_folder_to_group(
 ) -> Result<(), String> {
     let database = db_pool.inner().clone();
     crate::db::with_connection(database, move |conn| {
+        assign_folder_to_group(conn, channel_id, group_id)
+    })
+    .await
+}
+
+pub(crate) fn assign_folder_to_group(
+    conn: &sqlite::Connection,
+    channel_id: i64,
+    group_id: Option<i32>,
+) -> Result<(), String> {
+    {
         let mut stmt = conn
             .prepare("UPDATE folder_metadata SET group_id = ? WHERE channel_id = ?")
             .map_err(|e| e.to_string())?;
@@ -192,8 +244,7 @@ pub async fn cmd_assign_folder_to_group(
         stmt.bind((2, channel_id)).map_err(|e| e.to_string())?;
         stmt.next().map_err(|e| e.to_string())?;
         Ok(())
-    })
-    .await
+    }
 }
 
 #[tauri::command]
@@ -217,9 +268,23 @@ pub async fn cmd_update_group_order(
 }
 
 #[tauri::command]
-pub async fn cmd_get_groups(db_pool: State<'_, DbConnection>) -> Result<Vec<FolderGroup>, String> {
+pub async fn cmd_get_groups(
+    app: tauri::AppHandle,
+    db_pool: State<'_, DbConnection>,
+) -> Result<Vec<FolderGroup>, String> {
     let database = db_pool.inner().clone();
-    crate::db::with_connection(database, |conn| {
+    let scope = layout_scope(&app);
+    crate::db::with_connection(database, move |conn| {
+        if !prepare_layout(conn, scope.as_ref())? {
+            return Ok(Vec::new());
+        }
+        list_groups(conn)
+    })
+    .await
+}
+
+pub(crate) fn list_groups(conn: &sqlite::Connection) -> Result<Vec<FolderGroup>, String> {
+    {
         let mut stmt = conn
             .prepare(
                 "SELECT id, name, color_hex, display_order FROM groups ORDER BY display_order ASC",
@@ -246,8 +311,7 @@ pub async fn cmd_get_groups(db_pool: State<'_, DbConnection>) -> Result<Vec<Fold
         }
 
         Ok(groups)
-    })
-    .await
+    }
 }
 
 pub fn get_enriched_folders_internal(

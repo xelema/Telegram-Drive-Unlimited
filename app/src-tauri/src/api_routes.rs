@@ -1,3 +1,4 @@
+use crate::api_catalog::{self, ApiFile, CatalogError};
 use crate::bandwidth::{BandwidthManager, BandwidthReservation};
 use crate::commands::fs::verify_forwarded_messages;
 use crate::commands::preview::THUMBNAIL_EXTS;
@@ -7,6 +8,7 @@ use crate::commands::{create_folder_inner, delete_folder_inner, rename_folder_in
 use crate::crypto::policy::TELEGRAM_MAX_FILE_SIZE;
 use crate::models::FolderMetadata;
 use crate::vpn_optimizer::NetworkConfig;
+use crate::workspace::AccountGuard;
 use actix_multipart::Multipart;
 use actix_web::web::Bytes;
 use actix_web::{delete, get, patch, post, web, HttpRequest, HttpResponse, Responder};
@@ -15,7 +17,7 @@ use grammers_client::types::{Media, Peer};
 use grammers_client::InputMessage;
 use grammers_tl_types as tl;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -121,6 +123,83 @@ async fn api_account_client(
         .ok_or("Telegram client is not connected")?;
     account.validate_client(&client).await?;
     Ok((account, client))
+}
+
+fn catalog_error(error: CatalogError) -> HttpResponse {
+    match error {
+        CatalogError::NotConnected => {
+            json_error("NOT_CONNECTED", "Telegram client is not connected", 503)
+        }
+        CatalogError::Account(error) => json_error("ACCOUNT_UNAVAILABLE", &error, 503),
+        CatalogError::Folder(error) => json_error("PEER_ERROR", &error, 400),
+        // A partial walk would be reported as a complete, shorter library.
+        CatalogError::Remote(error) => json_error(
+            "FETCH_ERROR",
+            &format!("Telegram did not return the complete listing: {error}"),
+            502,
+        ),
+    }
+}
+
+/// The account this request acts for. Every endpoint checks it again before
+/// answering, so a response never crosses an account switch.
+fn api_account(root: &std::path::Path) -> Result<AccountGuard, HttpResponse> {
+    AccountGuard::open(root, None).map_err(|error| json_error("ACCOUNT_UNAVAILABLE", &error, 503))
+}
+
+async fn api_session(
+    root: &std::path::Path,
+    state: &TelegramState,
+) -> Result<(AccountGuard, grammers_client::Client), HttpResponse> {
+    let account = api_account(root)?;
+    let client = api_catalog::client(&account, state)
+        .await
+        .map_err(catalog_error)?;
+    Ok((account, client))
+}
+
+/// File identifiers are Telegram message identifiers: positive and 32-bit.
+/// Anything else is rejected rather than truncated to a different file.
+fn message_id(value: i64) -> Result<i32, HttpResponse> {
+    i32::try_from(value)
+        .ok()
+        .filter(|id| *id > 0)
+        .ok_or_else(|| {
+            json_error(
+                "INVALID_FILE_ID",
+                "File identifiers are positive 32-bit integers",
+                400,
+            )
+        })
+}
+
+/// `folder_id` as a query gives it: absent means every folder; an empty
+/// value, `null`, `none` or `home` means Saved Messages.
+fn folder_scope(value: Option<&str>) -> Result<Option<Option<i64>>, HttpResponse> {
+    match value.map(str::trim) {
+        None => Ok(None),
+        Some("" | "null" | "none" | "None" | "home") => Ok(Some(None)),
+        Some(value) => value.parse::<i64>().map(|id| Some(Some(id))).map_err(|_| {
+            json_error(
+                "INVALID_FOLDER_ID",
+                "folder_id must be an integer, or null for Saved Messages",
+                400,
+            )
+        }),
+    }
+}
+
+fn time_bound(value: Option<&str>, name: &str) -> Result<Option<i64>, HttpResponse> {
+    match value {
+        None => Ok(None),
+        Some(value) => api_catalog::parse_time(value).map(Some).ok_or_else(|| {
+            json_error(
+                "INVALID_TIMESTAMP",
+                &format!("{name} must be an RFC 3339 timestamp such as 2026-06-05T10:00:00Z"),
+                400,
+            )
+        }),
+    }
 }
 
 fn api_scope_error(account: &crate::workspace::AccountGuard) -> Option<HttpResponse> {
@@ -231,34 +310,65 @@ fn peer_to_input_peer(peer: &Peer) -> Result<tl::enums::InputPeer, String> {
 /// for the given message IDs in the given source folder.
 /// Best-effort: failures are silently ignored since cache cleanup is non-critical.
 fn spawn_cache_cleanup(
+    account: AccountGuard,
     thumb_dir: std::path::PathBuf,
     prev_dir: std::path::PathBuf,
     ids: Vec<i32>,
     folder_key: String,
 ) {
-    tokio::task::spawn_blocking(move || {
-        for mid in &ids {
-            for ext in THUMBNAIL_EXTS {
-                let path = thumb_dir.join(format!("{}_{}.{}", folder_key, mid, ext));
-                if path.exists() {
-                    let _ = std::fs::remove_file(&path);
+    tokio::spawn(async move {
+        if let Some(cache) = prev_dir.parent() {
+            let folder = folder_key.parse::<i64>().ok();
+            for id in &ids {
+                for thumbnail in [false, true] {
+                    let _ = crate::workspace::assets::delete_cached_at(
+                        cache.to_path_buf(),
+                        account.clone(),
+                        crate::workspace::store::file_key(folder, i64::from(*id)),
+                        thumbnail,
+                    )
+                    .await;
                 }
             }
-            let prefix = format!("{}_{}.", folder_key, mid);
-            if let Ok(entries) = std::fs::read_dir(&prev_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if !path.is_file() {
-                        continue;
+        }
+        tokio::task::spawn_blocking(move || {
+            if account.validate().is_err() {
+                return;
+            }
+            let legacy = crate::commands::preview::legacy_preview_mutation();
+            let _shared = crate::workspace::cache_core::state();
+            for mid in &ids {
+                for ext in THUMBNAIL_EXTS {
+                    let path =
+                        thumb_dir.join(format!("{}_{}_{}.{}", account.owner, folder_key, mid, ext));
+                    if path.exists()
+                        && !legacy.is_active(&path)
+                        && !crate::workspace::cache_core::kept(&path)
+                    {
+                        let _ = std::fs::remove_file(&path);
                     }
-                    if let Some(fname) = path.file_name().and_then(|n| n.to_str()) {
-                        if fname.starts_with(&prefix) {
-                            let _ = std::fs::remove_file(&path);
+                }
+                let prefix = format!("{}_{}_{}.", account.owner, folder_key, mid);
+                if let Ok(entries) = std::fs::read_dir(&prev_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if !path.is_file()
+                            || legacy.is_active(&path)
+                            || crate::workspace::cache_core::kept(&path)
+                        {
+                            continue;
+                        }
+                        if let Some(fname) = path.file_name().and_then(|n| n.to_str()) {
+                            if fname.starts_with(&prefix) {
+                                let _ = std::fs::remove_file(&path);
+                            }
                         }
                     }
                 }
             }
-        }
+        })
+        .await
+        .ok();
     });
 }
 
@@ -300,14 +410,23 @@ async fn api_health() -> impl Responder {
     })
 }
 
+/// The machine-readable contract for every route below.
+pub const OPENAPI_DOCUMENT: &str = include_str!("../api/openapi-v1.json");
+
+#[get("/api/v1/openapi.json")]
+async fn api_openapi() -> impl Responder {
+    HttpResponse::Ok()
+        .content_type("application/json")
+        .body(OPENAPI_DOCUMENT)
+}
+
 #[derive(serde::Deserialize, Clone)]
 struct FilesQuery {
-    #[allow(dead_code)]
     folder_id: Option<String>,
     page: Option<u32>,
     limit: Option<u32>,
     search: Option<String>,
-    offset_id: Option<i32>,
+    offset_id: Option<i64>,
     sort: Option<String>,
     order: Option<String>,
     mime_type: Option<String>,
@@ -316,6 +435,12 @@ struct FilesQuery {
     size_min: Option<u64>,
     size_max: Option<u64>,
     fields: Option<String>,
+    refresh: Option<bool>,
+}
+
+#[derive(serde::Deserialize)]
+struct RefreshQuery {
+    refresh: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -325,6 +450,8 @@ struct FilesResponse {
     page: u32,
     limit: u32,
     total: usize,
+    /// False when a folder holds more files than one listing covers.
+    complete: bool,
     pagination: PaginationInfo,
 }
 
@@ -338,14 +465,13 @@ struct PaginationInfo {
     has_prev: bool,
 }
 
-#[derive(Serialize, Clone)]
-struct ApiFile {
-    id: i64,
-    folder_id: Option<i64>,
-    name: String,
-    size: u64,
-    mime_type: Option<String>,
-    created_at: String,
+/// One file as JSON, limited to the requested fields when any were named.
+fn project_file(file: &ApiFile, fields: Option<&[String]>) -> serde_json::Value {
+    let mut value = serde_json::to_value(file).unwrap_or_default();
+    if let (Some(fields), Some(map)) = (fields, value.as_object_mut()) {
+        map.retain(|key, _| fields.iter().any(|field| field == key));
+    }
+    value
 }
 
 #[get("/api/v1/files")]
@@ -354,238 +480,117 @@ async fn api_list_files(
     query: web::Query<FilesQuery>,
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
+    cache_dirs: web::Data<CacheDirs>,
 ) -> impl Responder {
     if let Err(e) = check_auth(&req, &api_state) {
         return e;
     }
 
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
+    let scope = match folder_scope(query.folder_id.as_deref()) {
+        Ok(scope) => scope,
+        Err(error) => return error,
+    };
+    let created_after = match time_bound(query.created_after.as_deref(), "created_after") {
+        Ok(bound) => bound,
+        Err(error) => return error,
+    };
+    let created_before = match time_bound(query.created_before.as_deref(), "created_before") {
+        Ok(bound) => bound,
+        Err(error) => return error,
     };
 
-    let query_string = req.query_string();
-    let has_folder_id = query_string
-        .split('&')
-        .any(|p| p.starts_with("folder_id=") || p == "folder_id");
-
-    let mut peers_to_scan = Vec::new();
-    if !has_folder_id {
-        // Return files from ALL folders: scan dialogs + root folder
-        if let Ok(me_peer) = resolve_peer(&client, None, &tg_state.peer_cache).await {
-            peers_to_scan.push((None, me_peer));
-        }
-        let mut dialogs = client.iter_dialogs();
-        while let Some(dialog) = dialogs.next().await.ok().flatten() {
-            if let Peer::Channel(ref c) = dialog.peer {
-                let name = c.raw.title.clone();
-                if name.to_lowercase().contains("[td]") {
-                    peers_to_scan.push((Some(c.raw.id), dialog.peer.clone()));
-                }
-            }
-        }
-    } else {
-        // Parse folder_id value
-        let mut parsed_id: Option<i64> = None;
-        for pair in query_string.split('&') {
-            let mut parts = pair.split('=');
-            if let Some(key) = parts.next() {
-                if key == "folder_id" {
-                    if let Some(val) = parts.next() {
-                        if !val.is_empty() && val != "null" && val != "none" && val != "None" {
-                            if let Ok(id) = val.parse::<i64>() {
-                                parsed_id = Some(id);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        let resolved = match resolve_peer(&client, parsed_id, &tg_state.peer_cache).await {
-            Ok(p) => p,
-            Err(e) => return json_error("PEER_ERROR", &e, 400),
-        };
-        peers_to_scan.push((parsed_id, resolved));
+    let account = match api_account(&cache_dirs.account_root) {
+        Ok(account) => account,
+        Err(error) => return error,
+    };
+    if query.refresh == Some(true) {
+        api_catalog::invalidate(account.owner);
     }
+    let (files, complete) = match api_catalog::files(&account, tg_state.get_ref(), scope).await {
+        Ok(listing) => listing,
+        Err(error) => return catalog_error(error),
+    };
 
-    let mut all_files: Vec<ApiFile> = Vec::new();
-    for (fid, peer) in &peers_to_scan {
-        let mut msgs = client.iter_messages(peer);
-        if let Some(offset_id) = query.offset_id {
-            msgs = msgs.offset_id(offset_id);
-        }
-
-        // When listing all, limit scan per folder to prevent rate limit timeouts
-        if !has_folder_id {
-            msgs = msgs.limit(100);
-        } else if query.search.is_none() {
-            let page = query.page.unwrap_or(1).clamp(1, u32::MAX);
-            let limit = query.limit.unwrap_or(20).clamp(1, 100);
-            if query.offset_id.is_some() {
-                msgs = msgs.limit(limit as usize * 2);
-            } else {
-                msgs = msgs.limit(page as usize * limit as usize * 2);
-            }
-        } else {
-            msgs = msgs.limit(2000);
-        }
-
-        while let Some(msg) = msgs.next().await.ok().flatten() {
-            if let Some(doc) = msg.media() {
-                let size = media_size(&doc);
-                let (name, mime) = match doc {
-                    Media::Document(d) => {
-                        let doc_name = d.name().to_string();
-                        // Prefer the message caption (set by rename via EditMessage)
-                        let caption = msg.text();
-                        let display_name = if caption.is_empty() {
-                            doc_name
-                        } else {
-                            caption.to_string()
-                        };
-                        (display_name, d.mime_type().map(|s| s.to_string()))
-                    }
-                    Media::Photo(_) => ("Photo.jpg".to_string(), Some("image/jpeg".into())),
-                    _ => ("Unknown".to_string(), None),
-                };
-
-                all_files.push(ApiFile {
-                    id: msg.id() as i64,
-                    folder_id: *fid,
-                    name,
-                    size,
-                    mime_type: mime,
-                    created_at: msg.date().to_string(),
-                });
-            }
-        }
-    }
-
-    // Apply filters
-    let mut filtered_files: Vec<ApiFile> = Vec::new();
-    for file in all_files {
-        if let Some(ref search) = query.search {
-            if !file.name.to_lowercase().contains(&search.to_lowercase()) {
-                continue;
-            }
-        }
-        if let Some(ref mt) = query.mime_type {
-            if let Some(ref fmt) = file.mime_type {
-                if !fmt.to_lowercase().contains(&mt.to_lowercase()) {
-                    continue;
-                }
-            } else {
-                continue;
-            }
-        }
-        if let Some(min) = query.size_min {
-            if file.size < min {
-                continue;
-            }
-        }
-        if let Some(max) = query.size_max {
-            if file.size > max {
-                continue;
-            }
-        }
-        if let Some(ref after) = query.created_after {
-            if file.created_at < *after {
-                continue;
-            }
-        }
-        if let Some(ref before) = query.created_before {
-            if file.created_at > *before {
-                continue;
-            }
-        }
-        filtered_files.push(file);
-    }
-
-    // Sort
-    let sort_field = query.sort.as_deref().unwrap_or("created_at");
-    let sort_order = query.order.as_deref().unwrap_or("asc");
-    filtered_files.sort_by(|a, b| {
-        let cmp = match sort_field {
-            "name" => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-            "size" => a.size.cmp(&b.size),
-            _ => a.created_at.cmp(&b.created_at),
-        };
-        if sort_order.to_lowercase() == "desc" {
-            cmp.reverse()
-        } else {
-            cmp
-        }
-    });
-
-    // Pagination
-    let page = query.page.unwrap_or(1).max(1);
-    let limit = query.limit.unwrap_or(20).clamp(1, 100);
-    let total = filtered_files.len();
-    let total_pages = (total.div_ceil(limit as usize)) as u32;
-    let start = ((page - 1) * limit) as usize;
-
-    let paginated_files: Vec<ApiFile> = filtered_files
+    let search = query.search.as_ref().map(|search| search.to_lowercase());
+    let mime_type = query.mime_type.as_ref().map(|mime| mime.to_lowercase());
+    let mut filtered: Vec<ApiFile> = files
         .into_iter()
-        .skip(start)
-        .take(limit as usize)
+        .filter(|file| {
+            search
+                .as_ref()
+                .is_none_or(|search| file.name.to_lowercase().contains(search))
+                && mime_type.as_ref().is_none_or(|wanted| {
+                    file.mime_type
+                        .as_ref()
+                        .is_some_and(|mime| mime.to_lowercase().contains(wanted))
+                })
+                && query.size_min.is_none_or(|minimum| file.size >= minimum)
+                && query.size_max.is_none_or(|maximum| file.size <= maximum)
+                && created_after.is_none_or(|after| file.timestamp >= after)
+                && created_before.is_none_or(|before| file.timestamp <= before)
+                // Files older than a known one, for cursor-style clients.
+                && query.offset_id.is_none_or(|offset| file.id < offset)
+        })
         .collect();
 
-    let has_next = page < total_pages;
-    let has_prev = page > 1;
+    let sort_field = query.sort.as_deref().unwrap_or("created_at");
+    let descending = query
+        .order
+        .as_deref()
+        .is_some_and(|order| order.eq_ignore_ascii_case("desc"));
+    filtered.sort_by(|a, b| {
+        let ordering = match sort_field {
+            "name" => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+            "size" => a.size.cmp(&b.size),
+            _ => a.timestamp.cmp(&b.timestamp),
+        };
+        let ordering = if descending {
+            ordering.reverse()
+        } else {
+            ordering
+        };
+        // Equal keys keep one order, so pages never repeat or skip a file.
+        ordering.then_with(|| (a.folder_id, a.id).cmp(&(b.folder_id, b.id)))
+    });
 
-    // Sparse fieldsets
-    let mut final_data = Vec::new();
-    let fields_list: Option<Vec<String>> = query
-        .fields
-        .as_ref()
-        .map(|f| f.split(',').map(|s| s.trim().to_string()).collect());
+    let page = query.page.unwrap_or(1).max(1);
+    let limit = query.limit.unwrap_or(20).clamp(1, 100);
+    let total = filtered.len();
+    let total_pages = u32::try_from(total.div_ceil(limit as usize)).unwrap_or(u32::MAX);
+    let start = (page as usize - 1).saturating_mul(limit as usize);
 
-    for file in paginated_files {
-        let mut map = serde_json::Map::new();
-        let include_all = fields_list.is_none();
-        let fields = fields_list.as_ref();
+    let fields: Option<Vec<String>> = query.fields.as_ref().map(|fields| {
+        fields
+            .split(',')
+            .map(|field| field.trim().to_string())
+            .collect()
+    });
+    let data: Vec<serde_json::Value> = filtered
+        .iter()
+        .skip(start)
+        .take(limit as usize)
+        .map(|file| project_file(file, fields.as_deref()))
+        .collect();
 
-        if include_all || fields.unwrap().contains(&"id".to_string()) {
-            map.insert("id".to_string(), serde_json::json!(file.id));
-        }
-        if include_all || fields.unwrap().contains(&"folder_id".to_string()) {
-            map.insert("folder_id".to_string(), serde_json::json!(file.folder_id));
-        }
-        if include_all || fields.unwrap().contains(&"name".to_string()) {
-            map.insert("name".to_string(), serde_json::json!(file.name));
-        }
-        if include_all || fields.unwrap().contains(&"size".to_string()) {
-            map.insert("size".to_string(), serde_json::json!(file.size));
-        }
-        if include_all || fields.unwrap().contains(&"mime_type".to_string()) {
-            map.insert("mime_type".to_string(), serde_json::json!(file.mime_type));
-        }
-        if include_all || fields.unwrap().contains(&"created_at".to_string()) {
-            map.insert("created_at".to_string(), serde_json::json!(file.created_at));
-        }
-
-        final_data.push(serde_json::Value::Object(map));
-    }
-
-    let res_body = FilesResponse {
-        data: final_data.clone(),
-        files: final_data,
-        page,
-        limit,
-        total,
-        pagination: PaginationInfo {
+    account_response(
+        &account,
+        HttpResponse::Ok().json(FilesResponse {
+            files: data.clone(),
+            data,
             page,
             limit,
             total,
-            total_pages,
-            has_next,
-            has_prev,
-        },
-    };
-
-    HttpResponse::Ok().json(res_body)
+            complete,
+            pagination: PaginationInfo {
+                page,
+                limit,
+                total,
+                total_pages,
+                has_next: page < total_pages,
+                has_prev: page > 1,
+            },
+        }),
+    )
 }
 
 #[derive(serde::Deserialize)]
@@ -600,56 +605,39 @@ async fn api_get_file(
     query: web::Query<FolderQuery>,
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
+    cache_dirs: web::Data<CacheDirs>,
 ) -> impl Responder {
     if let Err(e) = check_auth(&req, &api_state) {
         return e;
     }
-
-    let message_id = path.into_inner() as i32;
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
+    let message_id = match message_id(path.into_inner()) {
+        Ok(id) => id,
+        Err(error) => return error,
     };
-
-    let peer = match resolve_peer(&client, query.folder_id, &tg_state.peer_cache).await {
-        Ok(p) => p,
-        Err(e) => return json_error("PEER_ERROR", &e, 400),
+    let (account, client) = match api_session(&cache_dirs.account_root, tg_state.get_ref()).await {
+        Ok(session) => session,
+        Err(error) => return error,
     };
-
-    match client.get_messages_by_id(peer, &[message_id]).await {
-        Ok(messages) => {
-            if let Some(Some(msg)) = messages.first() {
-                if let Some(doc) = msg.media() {
-                    let size = media_size(&doc);
-                    let (name, mime) = match doc {
-                        Media::Document(d) => {
-                            let doc_name = d.name().to_string();
-                            let caption = msg.text();
-                            let display_name = if caption.is_empty() {
-                                doc_name
-                            } else {
-                                caption.to_string()
-                            };
-                            (display_name, d.mime_type().map(|s| s.to_string()))
-                        }
-                        Media::Photo(_) => ("Photo.jpg".to_string(), Some("image/jpeg".into())),
-                        _ => ("Unknown".to_string(), None),
-                    };
-                    return HttpResponse::Ok().json(ApiFile {
-                        id: msg.id() as i64,
-                        folder_id: query.folder_id,
-                        name,
-                        size,
-                        mime_type: mime,
-                        created_at: msg.date().to_string(),
-                    });
-                }
-            }
-            json_error("NOT_FOUND", "File not found", 404)
+    let response = async {
+        let peer = match resolve_peer(&client, query.folder_id, &tg_state.peer_cache).await {
+            Ok(p) => p,
+            Err(e) => return json_error("PEER_ERROR", &e, 400),
+        };
+        match client.get_messages_by_id(peer, &[message_id]).await {
+            Ok(messages) => match messages
+                .into_iter()
+                .flatten()
+                .next()
+                .and_then(|message| api_catalog::file_from_message(&message, query.folder_id))
+            {
+                Some(file) => HttpResponse::Ok().json(file),
+                None => json_error("NOT_FOUND", "File not found", 404),
+            },
+            Err(e) => json_error("FETCH_ERROR", &format!("Failed to fetch file: {}", e), 500),
         }
-        Err(e) => json_error("FETCH_ERROR", &format!("Failed to fetch file: {}", e), 500),
     }
+    .await;
+    account_response(&account, response)
 }
 
 #[get("/api/v1/files/{message_id}/download")]
@@ -665,16 +653,16 @@ async fn api_download_file(
         return e;
     }
 
+    let message_id = match message_id(path.into_inner()) {
+        Ok(id) => id,
+        Err(error) => return error,
+    };
     let (account, client) =
         match api_account_client(&cache_dirs.account_root, tg_state.get_ref()).await {
             Ok(value) => value,
             Err(error) => return json_error("ACCOUNT_UNAVAILABLE", &error, 503),
         };
     let response = async {
-
-    let message_id = path.into_inner() as i32;
-
-
 
     let peer = match resolve_peer(&client, query.folder_id, &tg_state.peer_cache).await {
         Ok(p) => p,
@@ -706,6 +694,8 @@ async fn api_download_file(
                         &mime,
                         Some(&filename),
                         crate::server::StreamingExtras {
+                            bandwidth:req.app_data::<web::Data<Arc<crate::bandwidth::BandwidthManager>>>().expect("Shared bandwidth accounting").get_ref().clone(),
+                            network:req.app_data::<web::Data<Arc<crate::vpn_optimizer::NetworkConfig>>>().expect("Shared network state").get_ref().clone(),
                             extra_headers: vec![],
                             log_label: "API download",
                         },
@@ -759,53 +749,117 @@ fn parse_bulk_file_ids(values: &[serde_json::Value]) -> Result<Vec<i32>, String>
         .collect()
 }
 
+enum ArchivePart {
+    File { name: String, large: bool },
+    Data(Vec<u8>),
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum ArchiveDownloadError {
     Remote(String),
-    Incomplete { expected: u64, actual: u64 },
-    TooLarge,
+    Incomplete {
+        expected: u64,
+        actual: u64,
+    },
+    /// The archive writer stopped; its own error says why.
+    Writer,
 }
 
-/// Collect a selected file only if every remote read succeeds and its byte
-/// length matches Telegram's declaration. ZIP integrity alone cannot detect a
-/// truncated input because the ZIP writer would checksum those partial bytes.
-async fn collect_archive_file<S>(
+/// Hand one selected file to the archive writer as it downloads, so memory use
+/// does not grow with the selection. The file counts only if every remote read
+/// succeeds and its byte length matches Telegram's declaration: ZIP integrity
+/// alone cannot detect a truncated input, because the writer would checksum
+/// those partial bytes.
+async fn stream_archive_file<S>(
     chunks: S,
     expected_size: u64,
-    previous_bytes: u64,
-    max_bytes: u64,
-) -> Result<Vec<u8>, ArchiveDownloadError>
+    writer: &tokio::sync::mpsc::Sender<ArchivePart>,
+) -> Result<(), ArchiveDownloadError>
 where
     S: futures::Stream<Item = Result<Vec<u8>, String>>,
 {
-    let total = previous_bytes
-        .checked_add(expected_size)
-        .ok_or(ArchiveDownloadError::TooLarge)?;
-    if max_bytes > 0 && total > max_bytes {
-        return Err(ArchiveDownloadError::TooLarge);
-    }
     futures::pin_mut!(chunks);
-    let mut data = Vec::new();
+    let mut actual = 0_u64;
     while let Some(chunk) = chunks.next().await {
         let chunk = chunk.map_err(ArchiveDownloadError::Remote)?;
-        let actual = (data.len() as u64)
-            .checked_add(chunk.len() as u64)
-            .ok_or(ArchiveDownloadError::TooLarge)?;
+        actual = actual.saturating_add(chunk.len() as u64);
         if actual > expected_size {
             return Err(ArchiveDownloadError::Incomplete {
                 expected: expected_size,
                 actual,
             });
         }
-        data.extend_from_slice(&chunk);
+        writer
+            .send(ArchivePart::Data(chunk))
+            .await
+            .map_err(|_| ArchiveDownloadError::Writer)?;
     }
-    if data.len() as u64 != expected_size {
+    if actual != expected_size {
         return Err(ArchiveDownloadError::Incomplete {
             expected: expected_size,
-            actual: data.len() as u64,
+            actual,
         });
     }
-    Ok(data)
+    Ok(())
+}
+
+/// ZIP entries need distinct names; two selected files may share one.
+fn archive_entry_name(name: String, used: &mut HashSet<String>) -> String {
+    if used.insert(name.clone()) {
+        return name;
+    }
+    let path = std::path::Path::new(&name);
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("file")
+        .to_string();
+    let extension = path.extension().and_then(|extension| extension.to_str());
+    let mut copy = 2_u32;
+    loop {
+        let candidate = match extension {
+            Some(extension) => format!("{stem} ({copy}).{extension}"),
+            None => format!("{stem} ({copy})"),
+        };
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+        copy += 1;
+    }
+}
+
+/// All ZIP I/O runs on a blocking thread and never touches Actix workers.
+fn spawn_archive_writer(
+    path: std::path::PathBuf,
+    mut parts: tokio::sync::mpsc::Receiver<ArchivePart>,
+) -> tokio::task::JoinHandle<Result<(), String>> {
+    tokio::task::spawn_blocking(move || {
+        // `create_new` refuses to reuse an existing name instead of truncating it.
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|e| format!("ZIP_CREATE_FAILED: {}", e))?;
+        let mut zip = zip::ZipWriter::new(file);
+        while let Some(part) = parts.blocking_recv() {
+            match part {
+                ArchivePart::File { name, large } => zip
+                    .start_file(
+                        name,
+                        zip::write::SimpleFileOptions::default()
+                            .compression_method(zip::CompressionMethod::Deflated)
+                            .large_file(large),
+                    )
+                    .map_err(|e| format!("ZIP_ADD_FAILED: {}", e))?,
+                ArchivePart::Data(bytes) => zip
+                    .write_all(&bytes)
+                    .map_err(|e| format!("ZIP_WRITE_FAILED: {}", e))?,
+            }
+        }
+        zip.finish()
+            .map_err(|e| format!("ZIP_FINISH_FAILED: {}", e))?;
+        Ok(())
+    })
 }
 
 #[post("/api/v1/files/bulk")]
@@ -889,6 +943,7 @@ async fn api_bulk_files(
                 .map(|id| id.to_string())
                 .unwrap_or_else(|| "home".to_string());
             spawn_cache_cleanup(
+                account.clone(),
                 cache_dirs.thumbnail_dir.clone(),
                 cache_dirs.preview_dir.clone(),
                 ids.clone(),
@@ -946,6 +1001,7 @@ async fn api_bulk_files(
                     .map(|id| id.to_string())
                     .unwrap_or_else(|| "home".to_string());
                 spawn_cache_cleanup(
+                    account.clone(),
                     cache_dirs.thumbnail_dir.clone(),
                     cache_dirs.preview_dir.clone(),
                     ids.clone(),
@@ -959,12 +1015,11 @@ async fn api_bulk_files(
                 Err(e) => return json_error("PEER_ERROR", &e, 400),
             };
 
-            // Download all files in async context, then delegate zip I/O
-            // to spawn_blocking so we never block an Actix worker thread.
-            let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
-            let mut total_bytes: u64 = 0;
+            // Check the whole selection before downloading any of it.
             let max_bytes = net_config.archive_max_bytes();
-
+            let mut total_bytes: u64 = 0;
+            let mut names = HashSet::new();
+            let mut selected = Vec::new();
             for mid in &ids {
                 let messages = match client.get_messages_by_id(&peer, &[*mid]).await {
                     Ok(m) => m,
@@ -1002,78 +1057,89 @@ async fn api_bulk_files(
                     }
                 };
                 let expected_size = media_size(&media);
-                let mut download_iter = client.iter_download(&media);
+                total_bytes = match total_bytes.checked_add(expected_size) {
+                    Some(total) if max_bytes == 0 || total <= max_bytes => total,
+                    _ => {
+                        return json_error(
+                            "ARCHIVE_TOO_LARGE",
+                            &format!("Archive exceeds the {} MiB limit", max_bytes / (1024 * 1024)),
+                            413,
+                        )
+                    }
+                };
+                selected.push((*mid, media, archive_entry_name(filename, &mut names), expected_size));
+            }
+
+            let staging = match crate::temp_artifacts::staging_root() {
+                Ok(staging) => staging,
+                Err(error) => {
+                    return json_error("TEMP_FILE_CREATE_FAILED", &error.to_string(), 500)
+                }
+            };
+            let temp_zip_path = staging.join(format!(
+                "archive_{}_{}.zip",
+                rand::random::<u64>(),
+                rand::random::<u64>()
+            ));
+
+            let mut reservation=match BandwidthReservation::download(req.app_data::<web::Data<Arc<BandwidthManager>>>().expect("Shared bandwidth accounting").get_ref().clone(),total_bytes) {
+                Ok(hold)=>hold,Err(error)=>return json_error("BANDWIDTH_LIMIT",&error,429)
+            };
+
+            // Each file goes from Telegram to the ZIP on disk in chunks; the
+            // selection is never held in memory.
+            let (parts, receiver) = tokio::sync::mpsc::channel(8);
+            let writer = spawn_archive_writer(temp_zip_path.clone(), receiver);
+            let mut failure = None;
+            for (mid, media, filename, expected_size) in &selected {
+                let entry = ArchivePart::File {
+                    name: filename.clone(),
+                    large: *expected_size >= u64::from(u32::MAX),
+                };
+                if parts.send(entry).await.is_err() {
+                    break;
+                }
+                let mut download_iter = client.iter_download(media);
                 let chunk_account = account.clone();
+                let chunk_network=net_config.clone();
                 let chunks = async_stream::try_stream! {
                     while let Some(chunk) = download_iter.next().await.map_err(|error| error.to_string())? {
                         chunk_account.validate()?;
+                        chunk_network.pacer.wait(&chunk_network,crate::traffic::Direction::Download,chunk.len(),||chunk_account.validate()).await?;
                         yield chunk;
                     }
                 };
-                let data = match collect_archive_file(chunks, expected_size, total_bytes, max_bytes).await {
-                    Ok(data) => data,
-                    Err(ArchiveDownloadError::TooLarge) => return json_error(
-                        "ARCHIVE_TOO_LARGE",
-                        &format!("Archive exceeds the {} MiB limit", max_bytes / (1024 * 1024)),
-                        413,
-                    ),
-                    Err(ArchiveDownloadError::Remote(error)) => return json_error(
-                        "ARCHIVE_DOWNLOAD_FAILED",
-                        &format!("Could not finish selected file {mid}: {error}"),
-                        502,
-                    ),
-                    Err(ArchiveDownloadError::Incomplete { expected, actual }) => return json_error(
-                        "ARCHIVE_DOWNLOAD_INCOMPLETE",
-                        &format!("Selected file {mid} has {actual} downloaded bytes; expected {expected}"),
-                        502,
-                    ),
-                };
-                total_bytes += data.len() as u64;
-                entries.push((filename, data));
-            }
-
-            let temp_zip_path = std::env::temp_dir().join(format!(
-                "archive_{}_{}.zip",
-                rand::random::<u32>(),
-                rand::random::<u32>()
-            ));
-            let zip_path_for_task = temp_zip_path.clone();
-
-            // All zip I/O runs on a blocking thread — never touches Actix workers.
-            let archive_result = tokio::task::spawn_blocking(move || -> Result<(), String> {
-                let write_zip = || -> Result<(), String> {
-                    let zip_file = std::fs::File::create(&zip_path_for_task)
-                        .map_err(|e| format!("ZIP_CREATE_FAILED: {}", e))?;
-                    let mut zip = zip::ZipWriter::new(zip_file);
-                    let options = zip::write::SimpleFileOptions::default()
-                        .compression_method(zip::CompressionMethod::Deflated);
-
-                    for (filename, data) in &entries {
-                        zip.start_file(filename, options)
-                            .map_err(|e| format!("ZIP_ADD_FAILED: {}", e))?;
-                        zip.write_all(data)
-                            .map_err(|e| format!("ZIP_WRITE_FAILED: {}", e))?;
+                match stream_archive_file(chunks, *expected_size, &parts).await {
+                    Ok(()) => {}
+                    Err(ArchiveDownloadError::Writer) => break,
+                    Err(ArchiveDownloadError::Remote(error)) => {
+                        failure = Some(json_error(
+                            "ARCHIVE_DOWNLOAD_FAILED",
+                            &format!("Could not finish selected file {mid}: {error}"),
+                            502,
+                        ));
+                        break;
                     }
-
-                    zip.finish()
-                        .map_err(|e| format!("ZIP_FINISH_FAILED: {}", e))?;
-                    Ok(())
-                };
-
-                match write_zip() {
-                    Ok(()) => Ok(()),
-                    Err(e) => {
-                        let _ = std::fs::remove_file(&zip_path_for_task);
-                        Err(e)
+                    Err(ArchiveDownloadError::Incomplete { expected, actual }) => {
+                        failure = Some(json_error(
+                            "ARCHIVE_DOWNLOAD_INCOMPLETE",
+                            &format!("Selected file {mid} has {actual} downloaded bytes; expected {expected}"),
+                            502,
+                        ));
+                        break;
                     }
                 }
-            })
-            .await;
-
-            match archive_result {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => return json_error("ARCHIVE_FAILED", &e, 500),
-                Err(e) => return json_error("ARCHIVE_PANIC", &e.to_string(), 500),
+            }
+            drop(parts);
+            let written = writer.await;
+            let failure = failure.or_else(|| match written {
+                Ok(Ok(())) => None,
+                Ok(Err(e)) => Some(json_error("ARCHIVE_FAILED", &e, 500)),
+                Err(e) => Some(json_error("ARCHIVE_PANIC", &e.to_string(), 500)),
+            });
+            if let Some(failure) = failure {
+                let _ = tokio::fs::remove_file(&temp_zip_path).await;
+                return failure;
             }
 
             let file = match tokio::fs::File::open(&temp_zip_path).await {
@@ -1081,6 +1147,8 @@ async fn api_bulk_files(
                 Err(e) => return json_error("OPEN_ZIP_FAILED", &e.to_string(), 500),
             };
 
+            if let Some(error)=api_scope_error(&account){return error;}
+            reservation.commit();
             let stream = CleanupStream {
                 account: account.clone(),
                 file,
@@ -1098,6 +1166,7 @@ async fn api_bulk_files(
         _ => return json_error("INVALID_ACTION", "Unsupported bulk action", 400),
     }
 
+    api_catalog::invalidate_cached(account.owner);
     HttpResponse::Ok().json(BulkResponse {
         success: true,
         count: ids.len(),
@@ -1109,10 +1178,8 @@ async fn api_bulk_files(
 #[derive(serde::Deserialize)]
 struct SearchQuery {
     q: Option<String>,
-    #[allow(dead_code)]
     folder_id: Option<String>,
-    #[allow(dead_code)]
-    recursive: Option<bool>,
+    refresh: Option<bool>,
 }
 
 #[get("/api/v1/files/search")]
@@ -1121,19 +1188,14 @@ async fn api_search_files(
     query: web::Query<SearchQuery>,
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
+    cache_dirs: web::Data<CacheDirs>,
 ) -> impl Responder {
     if let Err(e) = check_auth(&req, &api_state) {
         return e;
     }
 
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
-    };
-
-    let search_q = match query.q.as_deref() {
-        Some(q) if !q.trim().is_empty() => q,
+    let search = match query.q.as_deref().map(str::trim) {
+        Some(q) if !q.is_empty() => q.to_lowercase(),
         _ => {
             return json_error(
                 "INVALID_QUERY",
@@ -1142,92 +1204,34 @@ async fn api_search_files(
             )
         }
     };
+    let scope = match folder_scope(query.folder_id.as_deref()) {
+        Ok(scope) => scope,
+        Err(error) => return error,
+    };
 
-    let query_string = req.query_string();
-    let has_folder_id = query_string
-        .split('&')
-        .any(|p| p.starts_with("folder_id=") || p == "folder_id");
-
-    let mut peers_to_scan = Vec::new();
-    if !has_folder_id {
-        if let Ok(me_peer) = resolve_peer(&client, None, &tg_state.peer_cache).await {
-            peers_to_scan.push((None, me_peer));
-        }
-        let mut dialogs = client.iter_dialogs();
-        while let Some(dialog) = dialogs.next().await.ok().flatten() {
-            if let Peer::Channel(ref c) = dialog.peer {
-                let name = c.raw.title.clone();
-                if name.to_lowercase().contains("[td]") {
-                    peers_to_scan.push((Some(c.raw.id), dialog.peer.clone()));
-                }
-            }
-        }
-    } else {
-        let mut parsed_id: Option<i64> = None;
-        for pair in query_string.split('&') {
-            let mut parts = pair.split('=');
-            if let Some(key) = parts.next() {
-                if key == "folder_id" {
-                    if let Some(val) = parts.next() {
-                        if !val.is_empty() && val != "null" && val != "none" && val != "None" {
-                            if let Ok(id) = val.parse::<i64>() {
-                                parsed_id = Some(id);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        let resolved = match resolve_peer(&client, parsed_id, &tg_state.peer_cache).await {
-            Ok(p) => p,
-            Err(e) => return json_error("PEER_ERROR", &e, 400),
-        };
-        peers_to_scan.push((parsed_id, resolved));
+    let account = match api_account(&cache_dirs.account_root) {
+        Ok(account) => account,
+        Err(error) => return error,
+    };
+    if query.refresh == Some(true) {
+        api_catalog::invalidate(account.owner);
     }
+    let (files, _) = match api_catalog::files(&account, tg_state.get_ref(), scope).await {
+        Ok(listing) => listing,
+        Err(error) => return catalog_error(error),
+    };
+    let matching: Vec<ApiFile> = files
+        .into_iter()
+        .filter(|file| file.name.to_lowercase().contains(&search))
+        .collect();
 
-    let mut matching_files = Vec::new();
-    for (fid, peer) in &peers_to_scan {
-        let mut msgs = client.iter_messages(peer).limit(200);
-        while let Some(msg) = msgs.next().await.ok().flatten() {
-            if let Some(doc) = msg.media() {
-                let size = media_size(&doc);
-                let (name, mime) = match doc {
-                    Media::Document(d) => {
-                        let doc_name = d.name().to_string();
-                        let caption = msg.text();
-                        let display_name = if caption.is_empty() {
-                            doc_name
-                        } else {
-                            caption.to_string()
-                        };
-                        (display_name, d.mime_type().map(|s| s.to_string()))
-                    }
-                    Media::Photo(_) => ("Photo.jpg".to_string(), Some("image/jpeg".into())),
-                    _ => ("Unknown".to_string(), None),
-                };
-
-                if name.to_lowercase().contains(&search_q.to_lowercase()) {
-                    matching_files.push(ApiFile {
-                        id: msg.id() as i64,
-                        folder_id: *fid,
-                        name,
-                        size,
-                        mime_type: mime,
-                        created_at: msg.date().to_string(),
-                    });
-                }
-            }
-        }
-    }
-
-    HttpResponse::Ok().json(matching_files)
+    account_response(&account, HttpResponse::Ok().json(matching))
 }
 
 #[delete("/api/v1/files/{message_id}")]
 async fn api_delete_file(
     req: HttpRequest,
-    path: web::Path<i32>,
+    path: web::Path<i64>,
     query: web::Query<FolderQuery>,
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
@@ -1236,7 +1240,10 @@ async fn api_delete_file(
     if let Err(e) = check_auth(&req, &api_state) {
         return e;
     }
-    let message_id = path.into_inner();
+    let message_id = match message_id(path.into_inner()) {
+        Ok(id) => id,
+        Err(error) => return error,
+    };
     let folder_id = query.folder_id;
 
     let (account, client) =
@@ -1266,6 +1273,7 @@ async fn api_delete_file(
             {
                 return json_error("LOCAL_UPDATE_FAILED", &error, 500);
             }
+            api_catalog::invalidate_cached(account.owner);
             account_response(
                 &account,
                 HttpResponse::Ok().json(serde_json::json!({ "success": true })),
@@ -1284,7 +1292,7 @@ struct CopyRequest {
 #[post("/api/v1/files/{message_id}/copy")]
 async fn api_copy_file(
     req: HttpRequest,
-    path: web::Path<i32>,
+    path: web::Path<i64>,
     body: web::Json<CopyRequest>,
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
@@ -1293,6 +1301,10 @@ async fn api_copy_file(
     if let Err(e) = check_auth(&req, &api_state) {
         return e;
     }
+    let message_id = match message_id(path.into_inner()) {
+        Ok(id) => id,
+        Err(error) => return error,
+    };
 
     let (account, client) =
         match api_account_client(&cache_dirs.account_root, tg_state.get_ref()).await {
@@ -1300,7 +1312,6 @@ async fn api_copy_file(
             Err(error) => return json_error("ACCOUNT_UNAVAILABLE", &error, 503),
         };
     let response = async {
-        let message_id = path.into_inner();
         let source_folder_id = body.source_folder_id;
         let target_folder_id = body.folder_id;
 
@@ -1339,6 +1350,11 @@ async fn api_copy_file(
             .await
         {
             Ok(forwarded) => {
+                if let Err(error) = crate::file_inventory::changed(&account, target_folder_id, &[])
+                {
+                    return json_error("ACCOUNT_CHANGED", &error, 409);
+                }
+                api_catalog::invalidate_cached(account.owner);
                 if source_is_encrypted {
                     let new_id = forwarded
                         .first()
@@ -1389,7 +1405,7 @@ struct UpdateFileRequest {
 #[patch("/api/v1/files/{message_id}")]
 async fn api_update_file(
     req: HttpRequest,
-    path: web::Path<i32>,
+    path: web::Path<i64>,
     body: web::Json<UpdateFileRequest>,
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
@@ -1398,6 +1414,10 @@ async fn api_update_file(
     if let Err(e) = check_auth(&req, &api_state) {
         return e;
     }
+    let message_id = match message_id(path.into_inner()) {
+        Ok(id) => id,
+        Err(error) => return error,
+    };
 
     let (account, client) =
         match api_account_client(&cache_dirs.account_root, tg_state.get_ref()).await {
@@ -1405,7 +1425,16 @@ async fn api_update_file(
             Err(error) => return json_error("ACCOUNT_UNAVAILABLE", &error, 503),
         };
     let response = async {
-    let message_id = path.into_inner();
+    // Reconcile the two mutation scopes even if a remote reply is uncertain.
+    if let Err(error) = crate::file_inventory::changed(&account, body.source_folder_id, &[message_id]) {
+        return json_error("ACCOUNT_CHANGED", &error, 409);
+    }
+    if let Some(target) = body.folder_id {
+        if let Err(error) = crate::file_inventory::changed(&account, Some(target), &[]) {
+            return json_error("ACCOUNT_CHANGED", &error, 409);
+        }
+    }
+    api_catalog::invalidate_cached(account.owner);
     match api_registered_encrypted(&account, &client, tg_state.get_ref(), body.source_folder_id, message_id).await {
         Ok(true) => return json_error(
             "ENCRYPTED_UPDATE_UNAVAILABLE",
@@ -1523,6 +1552,7 @@ async fn api_update_file(
                 .map(|id| id.to_string())
                 .unwrap_or_else(|| "home".to_string());
             spawn_cache_cleanup(
+                account.clone(),
                 cache_dirs.thumbnail_dir.clone(),
                 cache_dirs.preview_dir.clone(),
                 vec![message_id],
@@ -1544,23 +1574,33 @@ async fn api_upload_file(
     api_state: web::Data<ApiState>,
     bw_manager: web::Data<Arc<BandwidthManager>>,
     net_config: web::Data<Arc<NetworkConfig>>,
+    cache_dirs: web::Data<CacheDirs>,
 ) -> impl Responder {
     if let Err(e) = check_auth(&req, &api_state) {
         return e;
     }
 
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
+    let (account, client) = match api_session(&cache_dirs.account_root, tg_state.get_ref()).await {
+        Ok(session) => session,
+        Err(error) => return error,
     };
 
-    let temp_path = std::env::temp_dir().join(format!(
+    let staging = match crate::temp_artifacts::staging_root() {
+        Ok(staging) => staging,
+        Err(error) => return json_error("TEMP_FILE_CREATE_FAILED", &error.to_string(), 500),
+    };
+    let temp_path = staging.join(format!(
         "upload_{}_{}",
-        rand::random::<u32>(),
-        rand::random::<u32>()
+        rand::random::<u64>(),
+        rand::random::<u64>()
     ));
-    let mut file = match tokio::fs::File::create(&temp_path).await {
+    // `create_new` refuses to reuse an existing name instead of truncating it.
+    let mut file = match tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp_path)
+        .await
+    {
         Ok(f) => f,
         Err(e) => return json_error("TEMP_FILE_CREATE_FAILED", &e.to_string(), 500),
     };
@@ -1705,7 +1745,7 @@ async fn api_upload_file(
         }
     };
 
-    let mut open_file = match tokio::fs::File::open(&temp_path).await {
+    let open_file = match tokio::fs::File::open(&temp_path).await {
         Ok(f) => f,
         Err(e) => {
             let _ = tokio::fs::remove_file(&temp_path).await;
@@ -1713,6 +1753,19 @@ async fn api_upload_file(
         }
     };
 
+    // The request body took time to arrive; the account may have changed.
+    if let Some(error) = api_scope_error(&account) {
+        let _ = tokio::fs::remove_file(&temp_path).await;
+        return error;
+    }
+    let mut open_file = crate::traffic::Reader::new(
+        open_file,
+        crate::traffic::Traffic {
+            network: net_config.get_ref().clone(),
+            account: account.clone(),
+            direction: crate::traffic::Direction::Upload,
+        },
+    );
     let upload_res = client
         .upload_stream(&mut open_file, file_size as usize, filename.clone())
         .await;
@@ -1734,8 +1787,16 @@ async fn api_upload_file(
     let mut sent_msg = None;
 
     for attempt in 0..=max_retries {
+        // Never publish into a folder after the account that asked is gone.
+        if let Some(error) = api_scope_error(&account) {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            return error;
+        }
         match client.send_message(&peer, message.clone()).await {
             Ok(msg) => {
+                if let Err(error) = crate::file_inventory::changed(&account, folder_id, &[]) {
+                    return json_error("ACCOUNT_CHANGED", &error, 409);
+                }
                 sent_msg = Some(msg);
                 break;
             }
@@ -1777,14 +1838,19 @@ async fn api_upload_file(
     };
 
     let response_file = ApiFile {
-        id: msg.id() as i64,
+        id: i64::from(msg.id()),
         folder_id,
+        document_name: filename.clone(),
         name: filename,
         size: file_size,
         mime_type: field_mime,
-        created_at: msg.date().to_string(),
+        created_at: api_catalog::rfc3339(msg.date()),
+        encrypted: false,
+        timestamp: msg.date().timestamp(),
+        is_document: true,
     };
     reservation.commit();
+    api_catalog::invalidate_cached(account.owner);
 
     HttpResponse::Ok().json(response_file)
 }
@@ -1794,55 +1860,20 @@ async fn api_list_folders(
     req: HttpRequest,
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
+    cache_dirs: web::Data<CacheDirs>,
 ) -> impl Responder {
     if let Err(e) = check_auth(&req, &api_state) {
         return e;
     }
 
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
+    let (account, client) = match api_session(&cache_dirs.account_root, tg_state.get_ref()).await {
+        Ok(session) => session,
+        Err(error) => return error,
     };
-
-    let mut folders = Vec::new();
-    let mut dialogs = client.iter_dialogs();
-    let mut discovered = HashMap::new();
-
-    while let Some(dialog) = dialogs.next().await.ok().flatten() {
-        if let Peer::Channel(ref c) = dialog.peer {
-            let id = c.raw.id;
-            discovered.insert(id, dialog.peer.clone());
-            let name = c.raw.title.clone();
-            if name.to_lowercase().contains("[td]") {
-                let display_name = name
-                    .replace(" [TD]", "")
-                    .replace(" [td]", "")
-                    .replace("[TD]", "")
-                    .replace("[td]", "")
-                    .trim()
-                    .to_string();
-                let username = c.raw.username.clone();
-                let is_public = username.is_some();
-                folders.push(FolderMetadata {
-                    id,
-                    name: display_name,
-                    parent_id: None,
-                    username,
-                    is_public,
-                    group_id: None,
-                    display_order: 0,
-                });
-            }
-        }
+    match api_catalog::discover_folders(&account, &client, tg_state.get_ref()).await {
+        Ok(folders) => account_response(&account, HttpResponse::Ok().json(folders)),
+        Err(error) => catalog_error(error),
     }
-
-    {
-        let mut cache = tg_state.peer_cache.write().await;
-        cache.extend(discovered);
-    }
-
-    HttpResponse::Ok().json(folders)
 }
 
 #[derive(serde::Deserialize)]
@@ -1856,21 +1887,25 @@ async fn api_create_folder(
     body: web::Json<CreateFolderRequest>,
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
+    cache_dirs: web::Data<CacheDirs>,
 ) -> impl Responder {
     if let Err(e) = check_auth(&req, &api_state) {
         return e;
     }
 
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
+    let (account, client) = match api_session(&cache_dirs.account_root, tg_state.get_ref()).await {
+        Ok(session) => session,
+        Err(error) => return error,
     };
-
-    match create_folder_inner(&body.name, &client, &tg_state.peer_cache).await {
+    if let Err(error) = crate::file_inventory::changed(&account, Some(i64::MIN), &[]) {
+        return json_error("ACCOUNT_CHANGED", &error, 409);
+    }
+    api_catalog::invalidate_cached(account.owner);
+    let response = match create_folder_inner(&body.name, &client, &tg_state.peer_cache).await {
         Ok(folder) => HttpResponse::Ok().json(folder),
         Err(e) => json_error("CREATE_FOLDER_FAILED", &e, 500),
-    }
+    };
+    account_response(&account, response)
 }
 
 #[derive(serde::Deserialize)]
@@ -1885,22 +1920,27 @@ async fn api_rename_folder(
     body: web::Json<RenameFolderRequest>,
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
+    cache_dirs: web::Data<CacheDirs>,
 ) -> impl Responder {
     if let Err(e) = check_auth(&req, &api_state) {
         return e;
     }
     let folder_id = path.into_inner();
 
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
+    let (account, client) = match api_session(&cache_dirs.account_root, tg_state.get_ref()).await {
+        Ok(session) => session,
+        Err(error) => return error,
     };
-
-    match rename_folder_inner(folder_id, &body.name, &client, &tg_state.peer_cache).await {
-        Ok(_) => HttpResponse::Ok().json(serde_json::json!({ "success": true })),
-        Err(e) => json_error("RENAME_FOLDER_FAILED", &e, 500),
+    if let Err(error) = crate::file_inventory::changed(&account, Some(i64::MIN), &[]) {
+        return json_error("ACCOUNT_CHANGED", &error, 409);
     }
+    api_catalog::invalidate_cached(account.owner);
+    let response =
+        match rename_folder_inner(folder_id, &body.name, &client, &tg_state.peer_cache).await {
+            Ok(_) => HttpResponse::Ok().json(serde_json::json!({ "success": true })),
+            Err(e) => json_error("RENAME_FOLDER_FAILED", &e, 500),
+        };
+    account_response(&account, response)
 }
 
 #[delete("/api/v1/folders/{folder_id}")]
@@ -1909,22 +1949,30 @@ async fn api_delete_folder(
     path: web::Path<i64>,
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
+    cache_dirs: web::Data<CacheDirs>,
 ) -> impl Responder {
     if let Err(e) = check_auth(&req, &api_state) {
         return e;
     }
     let folder_id = path.into_inner();
 
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
+    let (account, client) = match api_session(&cache_dirs.account_root, tg_state.get_ref()).await {
+        Ok(session) => session,
+        Err(error) => return error,
     };
-
-    match delete_folder_inner(folder_id, &client, &tg_state.peer_cache).await {
+    if let Err(error) = crate::file_inventory::changed(&account, Some(i64::MIN), &[]) {
+        return json_error("ACCOUNT_CHANGED", &error, 409);
+    }
+    api_catalog::invalidate_cached(account.owner);
+    // Checked again immediately before the folder is removed.
+    if let Some(error) = api_scope_error(&account) {
+        return error;
+    }
+    let response = match delete_folder_inner(folder_id, &client, &tg_state.peer_cache).await {
         Ok(_) => HttpResponse::Ok().json(serde_json::json!({ "success": true })),
         Err(e) => json_error("DELETE_FOLDER_FAILED", &e, 500),
-    }
+    };
+    account_response(&account, response)
 }
 
 #[derive(Serialize)]
@@ -1946,88 +1994,90 @@ struct MimeStat {
 struct StorageStatsResponse {
     total_storage_used_bytes: u64,
     total_file_count: usize,
+    /// False when a folder holds more files than one listing covers.
+    complete: bool,
     folders: Vec<FolderStat>,
     mime_types: Vec<MimeStat>,
+}
+
+/// Every folder with its complete listing, for the account-wide reports.
+async fn report_listings(
+    cache_dirs: &CacheDirs,
+    state: &TelegramState,
+    refresh: Option<bool>,
+) -> Result<
+    (
+        AccountGuard,
+        Vec<(api_catalog::Folder, api_catalog::Listing)>,
+    ),
+    HttpResponse,
+> {
+    let account = api_account(&cache_dirs.account_root)?;
+    if refresh == Some(true) {
+        api_catalog::invalidate(account.owner);
+    }
+    let folders = api_catalog::folders(&account, state)
+        .await
+        .map_err(catalog_error)?;
+    let mut listings = Vec::with_capacity(folders.len());
+    for folder in folders.iter() {
+        let listing = api_catalog::listing(&account, state, folder.id)
+            .await
+            .map_err(catalog_error)?;
+        listings.push((folder.clone(), listing));
+    }
+    Ok((account, listings))
 }
 
 #[get("/api/v1/storage/stats")]
 async fn api_storage_stats(
     req: HttpRequest,
+    query: web::Query<RefreshQuery>,
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
+    cache_dirs: web::Data<CacheDirs>,
 ) -> impl Responder {
     if let Err(e) = check_auth(&req, &api_state) {
         return e;
     }
-
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
-    };
-
-    let mut peers_to_scan = Vec::new();
-    if let Ok(me_peer) = resolve_peer(&client, None, &tg_state.peer_cache).await {
-        peers_to_scan.push((None, "Saved Messages".to_string(), me_peer));
-    }
-    let mut dialogs = client.iter_dialogs();
-    while let Some(dialog) = dialogs.next().await.ok().flatten() {
-        if let Peer::Channel(ref c) = dialog.peer {
-            let name = c.raw.title.clone();
-            if name.to_lowercase().contains("[td]") {
-                let display_name = name
-                    .replace(" [TD]", "")
-                    .replace(" [td]", "")
-                    .replace("[TD]", "")
-                    .replace("[td]", "")
-                    .trim()
-                    .to_string();
-                peers_to_scan.push((Some(c.raw.id), display_name, dialog.peer.clone()));
-            }
-        }
-    }
+    let (account, listings) =
+        match report_listings(&cache_dirs, tg_state.get_ref(), query.refresh).await {
+            Ok(listings) => listings,
+            Err(error) => return error,
+        };
 
     let mut total_storage_used_bytes: u64 = 0;
     let mut total_file_count: usize = 0;
+    let mut complete = true;
     let mut folder_stats = Vec::new();
     let mut mime_map: HashMap<String, (usize, u64)> = HashMap::new();
 
-    for (fid, folder_name, peer) in peers_to_scan {
+    for (folder, listing) in listings {
         let mut file_count = 0;
-        let mut size_bytes = 0;
-        let mut msgs = client.iter_messages(peer).limit(200);
-        while let Some(msg) = msgs.next().await.ok().flatten() {
-            if let Some(doc) = msg.media() {
-                let size = media_size(&doc);
-                let mime = match doc {
-                    Media::Document(d) => d
-                        .mime_type()
-                        .unwrap_or("application/octet-stream")
-                        .to_string(),
-                    Media::Photo(_) => "image/jpeg".to_string(),
-                    _ => continue,
-                };
-                file_count += 1;
-                size_bytes += size;
-
-                let mime_entry = mime_map.entry(mime).or_insert((0, 0));
-                mime_entry.0 += 1;
-                mime_entry.1 += size;
-            }
+        let mut size_bytes: u64 = 0;
+        for file in listing.files.iter().filter(|file| file.is_document) {
+            file_count += 1;
+            size_bytes = size_bytes.saturating_add(file.size);
+            let mime = file
+                .mime_type
+                .clone()
+                .unwrap_or_else(|| "application/octet-stream".to_string());
+            let entry = mime_map.entry(mime).or_insert((0, 0));
+            entry.0 += 1;
+            entry.1 = entry.1.saturating_add(file.size);
         }
-
-        total_storage_used_bytes += size_bytes;
+        complete &= listing.complete;
+        total_storage_used_bytes = total_storage_used_bytes.saturating_add(size_bytes);
         total_file_count += file_count;
-
         folder_stats.push(FolderStat {
-            id: fid,
-            name: folder_name,
+            id: folder.id,
+            name: folder.name,
             file_count,
             size_bytes,
         });
     }
 
-    let mime_types = mime_map
+    let mut mime_types: Vec<MimeStat> = mime_map
         .into_iter()
         .map(|(mime_type, (file_count, size_bytes))| MimeStat {
             mime_type,
@@ -2035,13 +2085,18 @@ async fn api_storage_stats(
             size_bytes,
         })
         .collect();
+    mime_types.sort_by(|a, b| a.mime_type.cmp(&b.mime_type));
 
-    HttpResponse::Ok().json(StorageStatsResponse {
-        total_storage_used_bytes,
-        total_file_count,
-        folders: folder_stats,
-        mime_types,
-    })
+    account_response(
+        &account,
+        HttpResponse::Ok().json(StorageStatsResponse {
+            total_storage_used_bytes,
+            total_file_count,
+            complete,
+            folders: folder_stats,
+            mime_types,
+        }),
+    )
 }
 
 #[derive(Serialize)]
@@ -2054,137 +2109,7 @@ struct DuplicateGroup {
 #[get("/api/v1/storage/duplicates")]
 async fn api_storage_duplicates(
     req: HttpRequest,
-    tg_state: web::Data<Arc<TelegramState>>,
-    api_state: web::Data<ApiState>,
-) -> impl Responder {
-    if let Err(e) = check_auth(&req, &api_state) {
-        return e;
-    }
-
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
-    };
-
-    let mut peers_to_scan = Vec::new();
-    if let Ok(me_peer) = resolve_peer(&client, None, &tg_state.peer_cache).await {
-        peers_to_scan.push((None, me_peer));
-    }
-    let mut dialogs = client.iter_dialogs();
-    while let Some(dialog) = dialogs.next().await.ok().flatten() {
-        if let Peer::Channel(ref c) = dialog.peer {
-            let name = c.raw.title.clone();
-            if name.to_lowercase().contains("[td]") {
-                peers_to_scan.push((Some(c.raw.id), dialog.peer.clone()));
-            }
-        }
-    }
-
-    let mut file_groups: HashMap<(String, u64), Vec<ApiFile>> = HashMap::new();
-
-    for (fid, peer) in peers_to_scan {
-        let mut msgs = client.iter_messages(peer).limit(200);
-        while let Some(msg) = msgs.next().await.ok().flatten() {
-            if let Some(doc) = msg.media() {
-                let size = media_size(&doc);
-                let (name, mime) = match doc {
-                    Media::Document(d) => {
-                        (d.name().to_string(), d.mime_type().map(|s| s.to_string()))
-                    }
-                    Media::Photo(_) => ("Photo.jpg".to_string(), Some("image/jpeg".into())),
-                    _ => continue,
-                };
-
-                file_groups
-                    .entry((name.clone(), size))
-                    .or_default()
-                    .push(ApiFile {
-                        id: msg.id() as i64,
-                        folder_id: fid,
-                        name,
-                        size,
-                        mime_type: mime,
-                        created_at: msg.date().to_string(),
-                    });
-            }
-        }
-    }
-
-    let duplicates: Vec<DuplicateGroup> = file_groups
-        .into_iter()
-        .filter(|(_, files)| files.len() > 1)
-        .map(|((name, size), files)| DuplicateGroup { name, size, files })
-        .collect();
-
-    HttpResponse::Ok().json(duplicates)
-}
-
-#[get("/api/v1/folders/empty")]
-async fn api_empty_folders(
-    req: HttpRequest,
-    tg_state: web::Data<Arc<TelegramState>>,
-    api_state: web::Data<ApiState>,
-) -> impl Responder {
-    if let Err(e) = check_auth(&req, &api_state) {
-        return e;
-    }
-
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
-    };
-
-    let mut folders_to_check = Vec::new();
-    let mut dialogs = client.iter_dialogs();
-    while let Some(dialog) = dialogs.next().await.ok().flatten() {
-        if let Peer::Channel(ref c) = dialog.peer {
-            let name = c.raw.title.clone();
-            if name.to_lowercase().contains("[td]") {
-                let display_name = name
-                    .replace(" [TD]", "")
-                    .replace(" [td]", "")
-                    .replace("[TD]", "")
-                    .replace("[td]", "")
-                    .trim()
-                    .to_string();
-                folders_to_check.push((c.raw.id, display_name, dialog.peer.clone()));
-            }
-        }
-    }
-
-    let mut empty_folders = Vec::new();
-
-    for (fid, display_name, peer) in folders_to_check {
-        let mut msgs = client.iter_messages(peer).limit(1);
-        let mut is_empty = true;
-        if let Some(msg) = msgs.next().await.ok().flatten() {
-            if msg.media().is_some() {
-                is_empty = false;
-            }
-        }
-        if is_empty {
-            empty_folders.push(FolderMetadata {
-                id: fid,
-                name: display_name,
-                parent_id: None,
-                username: None,
-                is_public: false,
-                group_id: None,
-                display_order: 0,
-            });
-        }
-    }
-
-    HttpResponse::Ok().json(empty_folders)
-}
-
-#[get("/api/v1/files/{message_id}/thumbnail")]
-async fn api_get_file_thumbnail(
-    req: HttpRequest,
-    path: web::Path<i32>,
-    query: web::Query<FolderQuery>,
+    query: web::Query<RefreshQuery>,
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
     cache_dirs: web::Data<CacheDirs>,
@@ -2192,101 +2117,121 @@ async fn api_get_file_thumbnail(
     if let Err(e) = check_auth(&req, &api_state) {
         return e;
     }
-
-    let (account, client) =
-        match api_account_client(&cache_dirs.account_root, tg_state.get_ref()).await {
-            Ok(value) => value,
-            Err(error) => return json_error("ACCOUNT_UNAVAILABLE", &error, 503),
-        };
-    let response = async {
-        let message_id = path.into_inner();
-        let folder_id = query.folder_id;
-
-        let peer = match resolve_peer(&client, folder_id, &tg_state.peer_cache).await {
-            Ok(p) => p,
-            Err(e) => return json_error("PEER_ERROR", &e, 400),
+    let (account, listings) =
+        match report_listings(&cache_dirs, tg_state.get_ref(), query.refresh).await {
+            Ok(listings) => listings,
+            Err(error) => return error,
         };
 
-        let messages = match client.get_messages_by_id(&peer, &[message_id]).await {
-            Ok(msgs) => msgs,
-            Err(e) => return json_error("GET_MESSAGE_ERROR", &e.to_string(), 500),
-        };
-
-        if let Some(m) = messages.into_iter().flatten().next() {
-            if let Some(media) = m.media() {
-                if let Some(error) = api_protected_response(
-                    &account,
-                    &client,
-                    folder_id,
-                    message_id,
-                    &media,
-                    m.text(),
-                    "Encrypted thumbnails are not exposed by the local API",
-                )
-                .await
-                {
-                    return error;
-                }
-                let (is_image, ext) = match &media {
-                    Media::Photo(_) => (true, "jpg"),
-                    Media::Document(d) => {
-                        let mime = d.mime_type().unwrap_or("");
-                        if mime.starts_with("image/") || mime.starts_with("video/") {
-                            if !d.thumbs().is_empty() {
-                                (true, "jpg")
-                            } else {
-                                (false, "")
-                            }
-                        } else {
-                            (false, "")
-                        }
-                    }
-                    _ => (false, ""),
-                };
-
-                if is_image {
-                    let temp_path = std::env::temp_dir().join(format!(
-                        "thumb_{}_{}",
-                        message_id,
-                        rand::random::<u32>()
-                    ));
-                    let temp_path_str = temp_path.to_string_lossy().to_string();
-
-                    let thumbs = match &media {
-                        Media::Photo(p) => p.thumbs(),
-                        Media::Document(d) => d.thumbs(),
-                        _ => vec![],
-                    };
-
-                    let download_success = if let Some(thumb) = thumbs
-                        .iter()
-                        .filter(|t| t.size() > 0)
-                        .max_by_key(|t| t.size())
-                    {
-                        client.download_media(thumb, &temp_path_str).await.is_ok()
-                    } else {
-                        client.download_media(&media, &temp_path_str).await.is_ok()
-                    };
-
-                    if download_success {
-                        if let Ok(bytes) = tokio::fs::read(&temp_path).await {
-                            let _ = tokio::fs::remove_file(&temp_path).await;
-                            let mime = match ext {
-                                "png" => "image/png",
-                                "gif" => "image/gif",
-                                _ => "image/jpeg",
-                            };
-                            return HttpResponse::Ok().content_type(mime).body(bytes);
-                        }
-                    }
-                    let _ = tokio::fs::remove_file(&temp_path).await;
-                }
-            }
+    // Same uploaded name and same size. A rename does not hide a duplicate.
+    let mut file_groups: HashMap<(String, u64), Vec<ApiFile>> = HashMap::new();
+    for (_, listing) in &listings {
+        for file in listing.files.iter().filter(|file| file.is_document) {
+            file_groups
+                .entry((file.document_name.clone(), file.size))
+                .or_default()
+                .push(file.clone());
         }
-
-        json_error("NOT_FOUND", "Thumbnail not found", 404)
     }
-    .await;
+
+    let mut duplicates: Vec<DuplicateGroup> = file_groups
+        .into_iter()
+        .filter(|(_, files)| files.len() > 1)
+        .map(|((name, size), files)| DuplicateGroup { name, size, files })
+        .collect();
+    duplicates.sort_by(|a, b| (&a.name, a.size).cmp(&(&b.name, b.size)));
+
+    account_response(&account, HttpResponse::Ok().json(duplicates))
+}
+
+#[get("/api/v1/folders/empty")]
+async fn api_empty_folders(
+    req: HttpRequest,
+    query: web::Query<RefreshQuery>,
+    tg_state: web::Data<Arc<TelegramState>>,
+    api_state: web::Data<ApiState>,
+    cache_dirs: web::Data<CacheDirs>,
+) -> impl Responder {
+    if let Err(e) = check_auth(&req, &api_state) {
+        return e;
+    }
+    let (account, listings) =
+        match report_listings(&cache_dirs, tg_state.get_ref(), query.refresh).await {
+            Ok(listings) => listings,
+            Err(error) => return error,
+        };
+
+    // Empty means no file anywhere in the folder, not only at its newest
+    // message. Saved Messages is not a folder that can be removed.
+    let empty_folders: Vec<FolderMetadata> = listings
+        .into_iter()
+        .filter(|(_, listing)| listing.files.is_empty())
+        .filter_map(|(folder, _)| {
+            folder.id.map(|id| FolderMetadata {
+                id,
+                name: folder.name,
+                parent_id: None,
+                username: None,
+                is_public: false,
+                group_id: None,
+                display_order: 0,
+            })
+        })
+        .collect();
+
+    account_response(&account, HttpResponse::Ok().json(empty_folders))
+}
+
+#[get("/api/v1/files/{message_id}/thumbnail")]
+async fn api_get_file_thumbnail(
+    req: HttpRequest,
+    path: web::Path<i64>,
+    query: web::Query<FolderQuery>,
+    tg_state: web::Data<Arc<TelegramState>>,
+    api_state: web::Data<ApiState>,
+    cache_dirs: web::Data<CacheDirs>,
+    transport: (
+        web::Data<Arc<BandwidthManager>>,
+        web::Data<Arc<NetworkConfig>>,
+    ),
+) -> impl Responder {
+    if let Err(e) = check_auth(&req, &api_state) {
+        return e;
+    }
+    let message = match message_id(path.into_inner()) {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
+    let account = match api_account(&cache_dirs.account_root) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
+    let cache = match cache_dirs.preview_dir.parent() {
+        Some(p) => p.to_path_buf(),
+        None => return json_error("STORAGE_UNAVAILABLE", "Preview storage unavailable", 503),
+    };
+    let response = match crate::workspace::assets::remote_thumbnail_at(
+        cache,
+        account.clone(),
+        tg_state.get_ref().clone(),
+        (transport.0.get_ref().clone(), transport.1.get_ref().clone()),
+        query.folder_id,
+        message,
+    )
+    .await
+    {
+        Ok(path) => match tokio::fs::read(path).await {
+            Ok(bytes) => HttpResponse::Ok().content_type("image/jpeg").body(bytes),
+            Err(e) => json_error("STORAGE_UNAVAILABLE", &e.to_string(), 503),
+        },
+        Err(e) if e.starts_with("ENCRYPTED") => {
+            json_error("ENCRYPTED_PREVIEW_UNAVAILABLE", &e, 403)
+        }
+        Err(e) if e.starts_with("FILE_NOT_FOUND") || e.starts_with("THUMBNAIL_UNAVAILABLE") => {
+            json_error("NOT_FOUND", &e, 404)
+        }
+        Err(e) => json_error("THUMBNAIL_UNAVAILABLE", &e, 503),
+    };
     account_response(&account, response)
 }
 
@@ -2302,7 +2247,7 @@ struct MediaInfoResponse {
 #[get("/api/v1/files/{message_id}/media-info")]
 async fn api_media_info(
     req: HttpRequest,
-    path: web::Path<i32>,
+    path: web::Path<i64>,
     query: web::Query<FolderQuery>,
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
@@ -2311,6 +2256,10 @@ async fn api_media_info(
     if let Err(e) = check_auth(&req, &api_state) {
         return e;
     }
+    let message_id = match message_id(path.into_inner()) {
+        Ok(id) => id,
+        Err(error) => return error,
+    };
 
     let (account, client) =
         match api_account_client(&cache_dirs.account_root, tg_state.get_ref()).await {
@@ -2318,7 +2267,6 @@ async fn api_media_info(
             Err(error) => return json_error("ACCOUNT_UNAVAILABLE", &error, 503),
         };
     let response = async {
-        let message_id = path.into_inner();
         let folder_id = query.folder_id;
 
         let peer = match resolve_peer(&client, folder_id, &tg_state.peer_cache).await {
@@ -2388,14 +2336,103 @@ async fn api_media_info(
     account_response(&account, response)
 }
 
+/// Everything the REST API server shares with the application.
+pub struct ApiServerParts {
+    pub telegram: Arc<TelegramState>,
+    pub key_hash: Option<String>,
+    pub cache_dirs: CacheDirs,
+    pub bandwidth: Arc<BandwidthManager>,
+    pub network: Arc<NetworkConfig>,
+    pub database: crate::db::DbConnection,
+}
+
+/// Serve the REST API on an already bound loopback listener.
+pub fn serve(
+    listener: std::net::TcpListener,
+    parts: ApiServerParts,
+) -> std::io::Result<actix_web::dev::Server> {
+    let telegram = web::Data::new(parts.telegram);
+    let api_state = web::Data::new(ApiState {
+        key_hash: parts.key_hash,
+    });
+    let cache_dirs = web::Data::new(parts.cache_dirs);
+    let bandwidth = web::Data::new(parts.bandwidth);
+    let network = web::Data::new(parts.network);
+    let database = web::Data::new(parts.database);
+    Ok(actix_web::HttpServer::new(move || {
+        let cors = actix_cors::Cors::default()
+            .allowed_origin_fn(|origin, _req_head| {
+                crate::local_cors::is_allowed_origin_header(origin)
+            })
+            .allow_any_method()
+            .allow_any_header();
+        actix_web::App::new()
+            // The key is checked before a request body, query or path is
+            // parsed, so an unauthenticated caller learns nothing from how
+            // its input was rejected. Handlers check it again.
+            .wrap_fn(|request, service| {
+                use actix_web::dev::Service;
+                let public = matches!(request.path(), "/api/v1/health" | "/api/v1/openapi.json");
+                let refusal = if public {
+                    None
+                } else {
+                    match request.app_data::<web::Data<ApiState>>() {
+                        Some(state) => check_auth(request.request(), state).err(),
+                        None => Some(json_error("UNAUTHORIZED", "Invalid API key", 401)),
+                    }
+                };
+                match refusal {
+                    Some(response) => futures::future::Either::Left(std::future::ready(Ok(
+                        request.into_response(response),
+                    ))),
+                    None => {
+                        let response = service.call(request);
+                        futures::future::Either::Right(async move {
+                            response
+                                .await
+                                .map(|response| response.map_into_boxed_body())
+                        })
+                    }
+                }
+            })
+            // Preflight requests carry no key; CORS answers them first.
+            .wrap(cors)
+            // Malformed input is reported in the same shape as every other error.
+            .app_data(web::JsonConfig::default().error_handler(|error, _| {
+                let response = json_error("INVALID_BODY", &error.to_string(), 400);
+                actix_web::error::InternalError::from_response(error, response).into()
+            }))
+            .app_data(web::QueryConfig::default().error_handler(|error, _| {
+                let response = json_error("INVALID_QUERY", &error.to_string(), 400);
+                actix_web::error::InternalError::from_response(error, response).into()
+            }))
+            .app_data(web::PathConfig::default().error_handler(|error, _| {
+                let response = json_error("NOT_FOUND", "No such resource", 404);
+                actix_web::error::InternalError::from_response(error, response).into()
+            }))
+            .app_data(telegram.clone())
+            .app_data(api_state.clone())
+            .app_data(cache_dirs.clone())
+            .app_data(bandwidth.clone())
+            .app_data(network.clone())
+            .app_data(database.clone())
+            .configure(configure_api)
+    })
+    .listen(listener)?
+    .run())
+}
+
 /// Register all API routes on the Actix App
 pub fn configure_api(cfg: &mut web::ServiceConfig) {
+    // Fixed paths are registered before the patterns that would capture them:
+    // `/files/search` is not a file identifier.
     cfg.service(api_health)
+        .service(api_openapi)
         .service(api_list_files)
+        .service(api_search_files)
         .service(api_get_file)
         .service(api_download_file)
         .service(api_bulk_files)
-        .service(api_search_files)
         .service(api_delete_file)
         .service(api_copy_file)
         .service(api_update_file)

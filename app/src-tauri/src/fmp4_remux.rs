@@ -93,6 +93,7 @@ pub async fn run_fmp4_remux(
     }
 
     let mut cmd = tokio::process::Command::new(ffmpeg_path);
+    crate::process_util::hide_console(&mut cmd);
     cmd.arg("-y") // Overwrite existing output
         .arg("-i")
         .arg(input_path)
@@ -322,6 +323,7 @@ pub async fn cmd_prepare_fmp4_stream(
                     &mut cancel_rx,
                     |_| {},
                     &account,
+                    &manager,
                 )
                 .await?;
             }

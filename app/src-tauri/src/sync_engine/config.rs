@@ -9,6 +9,24 @@ pub struct SyncSettings {
     pub enabled: bool,
     pub debounce_ms: u64,
     pub encryption: String,
+    /// `full` re-hashes every local file and re-reads the Telegram folder on
+    /// every cycle. `incremental` reuses recorded hashes for files whose size
+    /// and modification time are unchanged and polls idle mappings less often.
+    #[serde(default = "default_scanner")]
+    pub scanner: String,
+}
+
+pub const SCANNER_FULL: &str = "full";
+pub const SCANNER_INCREMENTAL: &str = "incremental";
+
+fn default_scanner() -> String {
+    SCANNER_FULL.to_string()
+}
+
+impl SyncSettings {
+    pub fn uses_incremental_scanner(&self) -> bool {
+        self.scanner == SCANNER_INCREMENTAL
+    }
 }
 
 impl Default for SyncSettings {
@@ -17,6 +35,7 @@ impl Default for SyncSettings {
             enabled: false,
             debounce_ms: 3_000,
             encryption: "inherit".to_string(),
+            scanner: default_scanner(),
         }
     }
 }
@@ -55,6 +74,8 @@ pub async fn load_settings(db: DbConnection) -> Result<SyncSettings, String> {
                     settings.debounce_ms = value.parse().unwrap_or(3_000).clamp(250, 60_000)
                 }
                 "sync_encryption" => settings.encryption = value,
+                // An unknown value keeps the conservative full scanner.
+                "sync_scanner" if value == SCANNER_INCREMENTAL => settings.scanner = value,
                 _ => {}
             }
         }

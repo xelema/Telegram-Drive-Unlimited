@@ -82,4 +82,20 @@ export interface VaultStatus {
   session_id: number | null;
   has_recovery: boolean;
   created_at: string | null;
+  /** Non-secret identifier of the unlocked vault; absent while locked. */
+  vault_id?: string | null;
+}
+
+/** Result of checking a recovery bundle against the unlocked vault. */
+export interface RecoveryVerification {
+  matches_vault: boolean;
+  missing_profiles: number;
+  complete: boolean;
+}
+
+export interface RecoveryImportOptions {
+  /** Passphrase for the restored vault; required unless the vault is unlocked. */
+  vaultPassphrase?: string;
+  /** Accept replacing keys the current vault holds that the bundle lacks. */
+  allowKeyReplacement?: boolean;
 }

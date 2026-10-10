@@ -1,3 +1,4 @@
+import i18n from '../i18n';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import type { TelegramFile } from '../types';
@@ -34,19 +35,19 @@ export function useFileSharing(ownerId: string | null, folderId: number | null) 
     const createBulkShares = useCallback(async (files: TelegramFile[], onCreated: () => void) => {
         const ownerIsCurrent = capture();
         if (!ownerId || !ownerIsCurrent()) return;
-        if (!files.length) { toast.info('No shareable files selected (folders cannot be shared)'); return; }
+        if (!files.length) { toast.info(i18n.t('operations.no_shareable_files')); return; }
         const request = ++requestId.current;
         const isCurrent = () => ownerIsCurrent() && requestId.current === request;
         setBulk({ ownerId, request, links: [], loading: true, copied: new Set() });
         const result = await createOwnedShareLinks(ownerId, files, folderId, isCurrent);
         if (!isCurrent()) return;
-        for (const { file, error } of result.errors) toast.error(`Failed to share ${file.name}: ${error}`);
+        for (const { file, error } of result.errors) toast.error(i18n.t('operations.share_failed',{name:file.name,error:String(error)}));
         if (result.links.length) {
             setBulk({ ownerId, request, links: result.links, loading: false, copied: new Set() });
             onCreated();
         } else {
             setBulk(null);
-            toast.error('Failed to generate any share links');
+            toast.error(i18n.t('operations.share_links_failed'));
         }
     }, [capture, folderId, ownerId]);
 

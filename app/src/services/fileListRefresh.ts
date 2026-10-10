@@ -104,7 +104,25 @@ export async function refreshFolderFiles(options: FolderRefreshOptions): Promise
     });
     unlisten = stop;
     if (!isCurrent()) { stop(); unlisten = undefined; check(); }
-    const result = await invoke<FolderLoadResult>('cmd_get_files', { folderId, requestId, ownerId });
+    const deadline = Date.now() + 12 * 60_000;
+    let result: FolderLoadResult;
+    for (;;) {
+      check();
+      try {
+        result = await invoke<FolderLoadResult>('cmd_get_files', {
+          folderId, forcePoll: true, requestId, ownerId,
+        });
+        break;
+      } catch (error) {
+        check();
+        if (!String(error).includes('INVENTORY_BUILDING') || Date.now() >= deadline) throw error;
+        await new Promise<void>((resolve, reject) => {
+          const abort = () => { clearTimeout(timer); reject(new DOMException('File refresh was cancelled', 'AbortError')); };
+          const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve(); }, 2000);
+          signal.addEventListener('abort', abort, { once: true });
+        });
+      }
+    }
     check();
     if (!result || typeof result.ownerId !== 'string') throw new Error('File refresh did not return its account identity');
     if (result.ownerId !== ownerId) throw new Error('ACCOUNT_CHANGED');
@@ -119,6 +137,12 @@ export async function refreshFolderFiles(options: FolderRefreshOptions): Promise
   } catch (error) {
     check();
     if (/ACCOUNT_/.test(String(error))) { onFiles([]); throw error; }
+    if (/VAULT_LOCKED/.test(String(error))) {
+      for (const [id, file] of files) if (file.encryption_state === 'encrypted_unlocked') files.delete(id);
+      onFiles(Array.from(files.values()));
+      throw error;
+    }
+    if (/INVENTORY_/.test(String(error))) throw error;
     if (files.size > 0) return Array.from(files.values());
     throw error;
   } finally {

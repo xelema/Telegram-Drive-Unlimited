@@ -320,7 +320,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
       await copyToClipboard(diagnostics);
       toast.success(t('settings.diagnostics_copied'));
     } catch (error) {
-      toast.error(t('settings.diagnostics_copy_failed', { error: String(error) }));
+      toast.error(t('settings.failed_prefix', { error: String(error) }));
     } finally {
       setCopyingDiagnostics(false);
     }
@@ -644,9 +644,9 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
       const info = await handleExportFolderInvite(folder.id);
       try {
         await copyToClipboard(info.link);
-        toast.success(`Invite link copied: ${info.link}`);
+        toast.success(i18n.t('navigation_copy.invite_copied', { link: info.link }));
       } catch (e) {
-        toast.error(`Failed to copy to clipboard: ${e}`);
+        toast.error(i18n.t('navigation_copy.clipboard_error', { error: String(e) }));
       }
     } catch { /* backend error already toasted in hook */ }
   }, [handleExportFolderInvite]);
@@ -749,14 +749,14 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
       next.set(file.id, newName.trim());
       return next;
     });
-    toast.success(`Renamed to "${newName.trim()}"`);
+    toast.success(i18n.t('operations.renamed',{name:newName.trim()}));
   }, [fileRenames]);
 
   // Bulk share: generate links for all selected non-folder files
   const handleBulkShare = useCallback(async () => {
     const shareFiles = allFiles.filter(f => selectedIds.includes(f.id) && f.type !== 'folder');
     if (shareFiles.length === 0) {
-      toast.info('No shareable files selected (folders cannot be shared)');
+      toast.info(i18n.t('operations.no_shareable_files'));
       return;
     }
     // Open modal immediately with spinner
@@ -777,7 +777,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
             });
             return { file, link: info.link };
           } catch (e) {
-            toast.error(`Failed to share ${file.name}: ${e}`);
+            toast.error(i18n.t('operations.share_failed',{name:file.name,error:String(e)}));
             return null;
           }
         })
@@ -788,7 +788,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
         setSelectedIds([]); // Clear selection after successful bulk share
       } else {
         setBulkShareLinks(null);
-        toast.error('Failed to generate any share links');
+        toast.error(i18n.t('operations.share_links_failed'));
       }
     } finally {
       setBulkShareLoading(false);
@@ -816,14 +816,14 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
     const folder = folders.find(f => f.id === file.folder_id) || folders.find(f => f.id === activeFolderId);
     const username = folder?.username || (folder as any)?.chat?.username || (folder as any)?.channel?.username;
     if (!username) {
-      toast.error('Only available for public channels');
+      toast.error(i18n.t('navigation_copy.public_only'));
       return;
     }
     const url = `https://t.me/${username}/${file.id}`;
     navigator.clipboard.writeText(url).then(() => {
-      toast.success('Telegram link copied');
+      toast.success(i18n.t("notifications.telegram_link_copied"));
     }).catch(() => {
-      toast.error('Failed to copy link');
+      toast.error(i18n.t("notifications.copy_link_failed"));
     });
   }, [folders, activeFolderId]);
 
@@ -861,7 +861,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
       {/* Premium Gradient Top Header */}
       <header className="flex items-center justify-between px-5 pb-4 pt-[calc(1rem+env(safe-area-inset-top,24px))] bg-gradient-to-r from-telegram-hover/40 to-telegram-bg border-b border-telegram-border/60 shadow-lg backdrop-blur-md sticky top-0 z-40 md:ml-[280px]">
         <div className="flex items-center gap-3">
-          <img src="/logo.svg" className="w-8 h-8 drop-shadow-lg" alt="Logo" />
+          <img src="/logo.svg" className="w-8 h-8 drop-shadow-lg" alt={i18n.t('common.app_title')} />
           <div>
             <h1 className={`text-base font-bold tracking-tight ${theme === 'light' ? 'text-[#1c1c1e]' : 'bg-gradient-to-r from-white to-telegram-subtext bg-clip-text text-transparent'}`}>{i18n.t("common.app_title")}</h1>
           </div>
@@ -871,7 +871,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
           <button
             onClick={() => setIsSidebarOpen(true)}
             className="min-h-12 min-w-12 p-2 rounded-xl bg-telegram-hover/30 hover:bg-telegram-hover/60 border border-telegram-border/40 text-telegram-subtext transition-all duration-300 md:hidden"
-            aria-label="Open folders"
+            aria-label={i18n.t('ui_copy.open_folders')}
           >
             <Menu className="mx-auto w-5 h-5" aria-hidden="true" />
           </button>
@@ -909,7 +909,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
 
             {continueWatching.length > 0 && (
               <section className="rounded-2xl border border-telegram-border/30 bg-telegram-hover/20 p-3" aria-labelledby="continue-watching-title">
-                <h2 id="continue-watching-title" className="mb-2 text-[10px] font-bold uppercase tracking-wide text-telegram-primary">Continue watching</h2>
+                <h2 id="continue-watching-title" className="mb-2 text-[10px] font-bold uppercase tracking-wide text-telegram-primary">{i18n.t('playback.title')}</h2>
                 <div className="flex gap-2 overflow-x-auto pb-1">
                   {continueWatching.map(({ entry, file, progress }) => (
                     <button key={entry.mediaId} type="button" onClick={() => setPlayingFile(file)} className="w-44 shrink-0 rounded-xl border border-telegram-border/30 bg-telegram-bg/50 p-3 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-telegram-primary">
@@ -951,11 +951,11 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
         )}
 
         {activeTab === 'downloads' && (
-          <div className="space-y-4" aria-label="Transfer queue">
+          <div className="space-y-4" aria-label={i18n.t('common.transfers')}>
             <div className="rounded-2xl border border-telegram-border/30 bg-telegram-hover/20 p-4">
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <h2 className="text-sm font-bold text-telegram-text">Transfers</h2>
+                  <h2 className="text-sm font-bold text-telegram-text">{i18n.t("common.transfers")}</h2>
                   <p className="mt-0.5 text-[10px] text-telegram-subtext">
                     {activeUploadCount + activeDownloadCount > 0
                       ? `${activeUploadCount + activeDownloadCount} active${aggregateTransferSpeed > 0 ? ` · ${formatBytes(aggregateTransferSpeed)}/s` : ''}`
@@ -991,10 +991,10 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
                 <header className="flex items-center justify-between gap-3 border-b border-telegram-border/20 px-4 py-3">
                   <h3 className="flex items-center gap-2 text-xs font-semibold text-telegram-text"><section.icon className="h-4 w-4 text-telegram-primary" aria-hidden="true" />{section.title}</h3>
                   <div className="flex items-center gap-2 text-[10px] font-semibold">
-                    {section.active > 0 && <button type="button" onClick={section.pause} className="flex items-center gap-1 text-telegram-subtext"><Pause className="h-3 w-3" aria-hidden="true" />Pause</button>}
-                    {section.paused > 0 && <button type="button" onClick={section.resume} className="flex items-center gap-1 text-telegram-primary"><Play className="h-3 w-3" aria-hidden="true" />Resume</button>}
+                    {section.active > 0 && <button type="button" onClick={section.pause} className="flex items-center gap-1 text-telegram-subtext"><Pause className="h-3 w-3" aria-hidden="true" />{i18n.t("activity.pause")}</button>}
+                    {section.paused > 0 && <button type="button" onClick={section.resume} className="flex items-center gap-1 text-telegram-primary"><Play className="h-3 w-3" aria-hidden="true" />{i18n.t("activity.resume")}</button>}
                     {section.active > 0 && <button type="button" onClick={section.cancelAll} className="text-red-400">{i18n.t("common.cancel")}</button>}
-                    <button type="button" onClick={section.clear} className="text-telegram-primary">Clear</button>
+                    <button type="button" onClick={section.clear} className="text-telegram-primary">{i18n.t("settings.clear")}</button>
                   </div>
                 </header>
                 {section.items.length === 0 ? (
@@ -1007,8 +1007,8 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
                     <div key={item.id} className="border-t border-telegram-border/20 px-4 py-3 first:border-t-0">
                       <div className="flex items-center gap-3">
                         <div className="min-w-0 flex-1"><p className="truncate text-xs font-medium text-telegram-text">{name}</p><p className="mt-0.5 text-[10px] capitalize text-telegram-subtext">{item.status.replace(/_/g, ' ')}{item.speedBytesPerSec ? ` · ${formatBytes(item.speedBytesPerSec)}/s` : ''}</p></div>
-                        {canCancel && <button type="button" onClick={() => section.cancel(item.id)} className="rounded-lg p-2 text-telegram-subtext" aria-label={`Cancel ${name}`}><X className="h-4 w-4" aria-hidden="true" /></button>}
-                        {canRetry && <button type="button" onClick={() => void section.retry(item.id)} className="rounded-lg p-2 text-telegram-primary" aria-label={`Retry ${name}`}><RotateCcw className="h-4 w-4" aria-hidden="true" /></button>}
+                        {canCancel && <button type="button" onClick={() => section.cancel(item.id)} className="rounded-lg p-2 text-telegram-subtext" aria-label={i18n.t('common.action_name', { action: i18n.t('common.cancel'), name })}><X className="h-4 w-4" aria-hidden="true" /></button>}
+                        {canRetry && <button type="button" onClick={() => void section.retry(item.id)} className="rounded-lg p-2 text-telegram-primary" aria-label={i18n.t('common.action_name', { action: i18n.t('common.retry'), name })}><RotateCcw className="h-4 w-4" aria-hidden="true" /></button>}
                       </div>
                       {['uploading', 'downloading', 'encrypting', 'decrypting', 'verifying'].includes(item.status) && <div className="mt-2 h-1 overflow-hidden rounded-full bg-telegram-border/30"><div className="h-full rounded-full bg-telegram-primary transition-[width] motion-reduce:transition-none" style={{ width: `${item.progress || 2}%` }} /></div>}
                     </div>
@@ -1031,8 +1031,8 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
                   <Heart className="h-5 w-5" aria-hidden="true" />
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block text-xs font-bold text-telegram-text">$5 lifetime ad-free</span>
-                  <span className="mt-0.5 block text-[10px] leading-4 text-telegram-subtext">Remove sponsor ads forever. One payment, no subscription.</span>
+                  <span className="block text-xs font-bold text-telegram-text">{t('supporter_license.title')}</span>
+                  <span className="mt-0.5 block text-[10px] leading-4 text-telegram-subtext">{t('supporter_license.mobile_description')}</span>
                 </span>
                 <span className="text-lg text-telegram-primary" aria-hidden="true">›</span>
               </button>
@@ -1098,7 +1098,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
             <div className="p-4 rounded-2xl bg-telegram-hover/20 border border-telegram-border/30 space-y-4">
               <h3 className="text-sm font-bold text-telegram-primary tracking-wide uppercase text-[10px] flex items-center gap-1.5">
                 <Wifi className="w-3 h-3" />
-                {t('settings.connection_diagnostics')}
+                {t('common.diagnostics')}
               </h3>
 
               {/* Connection status indicator */}
@@ -1216,7 +1216,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
                 <div className="flex min-w-0 gap-2.5">
                   <Database className="mt-0.5 h-4 w-4 shrink-0 text-telegram-primary" aria-hidden="true" />
                   <div>
-                    <p className="text-xs font-medium">{t('settings.offline_cache')}</p>
+                    <p className="text-xs font-medium">{t('common.offline_files')}</p>
                     <p className="mt-0.5 text-[10px] leading-4 text-telegram-subtext">{t('settings.offline_cache_desc')}</p>
                     <p className="mt-1 text-[10px] font-mono text-telegram-primary">
                       {offlineCache
@@ -1241,7 +1241,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
                 <h3 id="android-media-title" className="mb-2 text-[10px] font-bold uppercase tracking-wide text-telegram-primary">Media &amp; playback</h3>
                 <MobileSettingToggle checked={settings.androidPrivateMediaMetadata} label="Private system metadata" description="Show “Private media” instead of filenames on the lock screen, Bluetooth devices, and system controls." onChange={() => updateSetting('androidPrivateMediaMetadata', !settings.androidPrivateMediaMetadata)} />
                 <div className="grid grid-cols-2 gap-3 py-3">
-                  <label className="text-[10px] text-telegram-subtext">Playback speed<select value={settings.androidPlaybackSpeed} onChange={event => updateSetting('androidPlaybackSpeed', Number(event.target.value))} className="mt-1 min-h-11 w-full rounded-lg border border-telegram-border bg-telegram-bg px-2 text-xs text-telegram-text">{[0.5, 0.75, 1, 1.25, 1.5, 2].map(value => <option key={value} value={value}>{value}×</option>)}</select></label>
+                  <label className="text-[10px] text-telegram-subtext">{i18n.t("playback.speed_label")}<select value={settings.androidPlaybackSpeed} onChange={event => updateSetting('androidPlaybackSpeed', Number(event.target.value))} className="mt-1 min-h-11 w-full rounded-lg border border-telegram-border bg-telegram-bg px-2 text-xs text-telegram-text">{[0.5, 0.75, 1, 1.25, 1.5, 2].map(value => <option key={value} value={value}>{value}×</option>)}</select></label>
                   <label className="text-[10px] text-telegram-subtext">Movie orientation<select value={settings.androidMediaOrientation} onChange={event => updateSetting('androidMediaOrientation', event.target.value as 'auto' | 'landscape' | 'portrait')} className="mt-1 min-h-11 w-full rounded-lg border border-telegram-border bg-telegram-bg px-2 text-xs text-telegram-text"><option value="auto">{i18n.t("settings.auto")}</option><option value="landscape">Landscape</option><option value="portrait">Portrait</option></select></label>
                   <label className="text-[10px] text-telegram-subtext">Subtitle size<select value={settings.androidSubtitleScale} onChange={event => updateSetting('androidSubtitleScale', Number(event.target.value))} className="mt-1 min-h-11 w-full rounded-lg border border-telegram-border bg-telegram-bg px-2 text-xs text-telegram-text"><option value={0.8}>Small</option><option value={1}>Default</option><option value={1.25}>Large</option><option value={1.5}>Extra large</option></select></label>
                   <label className="text-[10px] text-telegram-subtext">Offline cache<select value={settings.androidMediaCacheMaxGb} onChange={event => updateSetting('androidMediaCacheMaxGb', Number(event.target.value))} className="mt-1 min-h-11 w-full rounded-lg border border-telegram-border bg-telegram-bg px-2 text-xs text-telegram-text">{[0.5, 1, 2, 5, 10, 25].map(value => <option key={value} value={value}>{value} GB</option>)}</select></label>
@@ -1440,7 +1440,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
                   className="flex items-center justify-center gap-1.5 rounded-xl border border-telegram-border/40 bg-telegram-bg/50 px-3 py-2.5 text-[11px] font-semibold text-telegram-text"
                 >
                   <HelpCircle className="h-3.5 w-3.5 text-telegram-primary" aria-hidden="true" />
-                  Help &amp; FAQ
+                  {i18n.t('ui_copy.help_faq')}
                 </button>
                 <button
                   type="button"
@@ -1456,7 +1456,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
             <div className="p-4 rounded-2xl bg-telegram-hover/20 border border-telegram-border/30 space-y-4">
               <h3 className="text-sm font-bold text-telegram-primary tracking-wide uppercase text-[10px]">{t('common.about')}</h3>
               <div className="flex flex-col items-center py-3 space-y-4">
-                <img src="/logo.svg" className="w-14 h-14 drop-shadow-lg" alt="Telegram Drive Logo" />
+                <img src="/logo.svg" className="w-14 h-14 drop-shadow-lg" alt={i18n.t('common.app_title')} />
                 <div className="text-center">
                   <p className="text-sm font-bold text-telegram-text">{i18n.t("common.app_title")}</p>
                   <p className="text-[11px] text-telegram-subtext mt-0.5">v{appVersion}</p>
@@ -1516,13 +1516,13 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
       >
         <div className="p-4 flex items-center justify-between border-b border-telegram-border/30">
           <div className="flex items-center gap-2">
-            <img src="/logo.svg" className="w-8 h-8 drop-shadow-lg" alt="Logo" />
+            <img src="/logo.svg" className="w-8 h-8 drop-shadow-lg" alt={i18n.t('common.app_title')} />
             <span className="font-bold text-base text-telegram-text tracking-tight">{i18n.t("common.app_title")}</span>
           </div>
           <button
             onClick={() => setIsSidebarOpen(false)}
             className="min-h-11 min-w-11 p-1 rounded-lg bg-telegram-hover/30 hover:bg-telegram-hover/60 text-telegram-subtext text-xs md:hidden"
-            aria-label="Close folders"
+            aria-label={i18n.t('ui_copy.close_folders')}
           >
             ✕
           </button>
@@ -1573,7 +1573,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
                   setFolderActionMenu(folder);
                 }}
                 className="flex-shrink-0 p-2 rounded-xl hover:bg-telegram-hover/40 active:bg-telegram-hover/60 text-telegram-subtext/60 hover:text-telegram-subtext transition-all duration-200"
-                aria-label="Folder actions"
+                aria-label={i18n.t('ui_copy.folder_actions')}
               >
                 <MoreVertical className="w-3.5 h-3.5" />
               </button>
@@ -1587,18 +1587,18 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
           <BandwidthWidget bandwidth={bandwidth ?? null} />
           <button
             onClick={async () => {
-              const name = prompt("Enter folder name:");
+              const name = prompt(i18n.t('files.folder_name'));
               if (name && name.trim()) {
                 await handleCreateFolder(name.trim());
               }
             }}
             className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-bold text-telegram-subtext hover:text-telegram-text border border-dashed border-telegram-border/60 hover:bg-telegram-hover/20 transition-all duration-200"
           >
-            + Create Folder
+            + {i18n.t('common.create_folder')}
           </button>
           <div className="flex items-center gap-2 text-telegram-subtext text-[10px] font-semibold uppercase tracking-wider">
             <span className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
-            <span>{isConnected ? 'Connected' : 'Offline'}</span>
+            <span>{isConnected ? i18n.t("settings.proxy_status_connected") : i18n.t("settings.offline")}</span>
           </div>
         </div>
       </div>
@@ -1709,7 +1709,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-sm font-bold text-white flex items-center gap-2">
                 <Link className="w-4 h-4 text-telegram-primary" />
-                {bulkShareLinks.length} {i18n.t("files.share_link")}{bulkShareLinks.length !== 1 ? 's' : ''}
+                {i18n.t('common.action_count', { action: i18n.t('files.share_link'), count: bulkShareLinks.length })}
               </h3>
               <button
                 onClick={() => setBulkShareLinks(null)}
@@ -1722,7 +1722,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
             {bulkShareLoading ? (
               <div className="flex flex-col items-center justify-center py-12 space-y-3">
                 <Loader2 className="w-8 h-8 text-telegram-primary animate-spin" />
-                <p className="text-xs text-telegram-subtext">Generating share links...</p>
+                <p className="text-xs text-telegram-subtext">{i18n.t('navigation_copy.generating_links')}</p>
               </div>
             ) : (
               <div className="flex-1 overflow-y-auto space-y-2 min-h-0">
@@ -1770,7 +1770,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
               onClick={() => setBulkShareLinks(null)}
               className="w-full mt-3 flex items-center justify-center gap-2 px-4 py-3 rounded-2xl text-sm font-semibold bg-white/5 text-telegram-subtext hover:bg-white/10 border border-white/5 transition-all duration-200 active:scale-[0.98] flex-shrink-0"
             >
-              Done
+              {i18n.t("settings.done")}
             </button>
           </div>
         </div>
