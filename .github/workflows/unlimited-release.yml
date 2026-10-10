@@ -104,8 +104,8 @@ jobs:
 
           windows_entry='{"platform":"windows","artifact":"windows-x64","runner":"windows-latest","rust_target":"","args":"--bundles nsis --config src-tauri/tauri.windows.release.conf.json --config src-tauri/tauri.unlimited.release.conf.json"}'
           linux_entry='{"platform":"linux","artifact":"linux-x64","runner":"ubuntu-22.04","rust_target":"","args":"--bundles deb,rpm,appimage --config src-tauri/tauri.unlimited.release.conf.json"}'
-          macos_x64_entry='{"platform":"macos","artifact":"macos-x64","runner":"macos-latest","rust_target":"x86_64-apple-darwin","args":"--target x86_64-apple-darwin --bundles dmg --config src-tauri/tauri.unlimited.release.conf.json"}'
-          macos_arm64_entry='{"platform":"macos","artifact":"macos-arm64","runner":"macos-latest","rust_target":"aarch64-apple-darwin","args":"--target aarch64-apple-darwin --bundles dmg --config src-tauri/tauri.unlimited.release.conf.json"}'
+          macos_x64_entry='{"platform":"macos","artifact":"macos-x64","runner":"macos-latest","rust_target":"x86_64-apple-darwin","args":"--target x86_64-apple-darwin --config src-tauri/tauri.unlimited.release.conf.json"}'
+          macos_arm64_entry='{"platform":"macos","artifact":"macos-arm64","runner":"macos-latest","rust_target":"aarch64-apple-darwin","args":"--target aarch64-apple-darwin --config src-tauri/tauri.unlimited.release.conf.json"}'
           case "$platforms" in
             all) entries="$windows_entry,$linux_entry,$macos_x64_entry,$macos_arm64_entry" ;;
             windows) entries="$windows_entry" ;;
@@ -259,23 +259,40 @@ jobs:
 
       - name: Ensure the fork build configuration is available
         shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           config='app/src-tauri/tauri.unlimited.release.conf.json'
           if [ ! -f "$config" ]; then
-            echo "$RELEASE_TAG predates $config; writing it for this build."
-            printf '%s\n' '{"$schema":"https://schema.tauri.app/config/2","bundle":{"createUpdaterArtifacts":false}}' > "$config"
+            branch="${DEFAULT_BRANCH:-main}"
+            echo "$RELEASE_TAG predates $config; taking the current one from $branch."
+            git fetch --depth=1 origin "$branch"
+            git show "FETCH_HEAD:${config}" > "$config"
           fi
           cat "$config"
+
+      - name: Verify the updater signing key is configured
+        shell: bash
+        env:
+          SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SIGNING_KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is not set for this repository."
+            exit 1
+          fi
+          echo "The updater signing key is configured (${#SIGNING_KEY} characters)."
 
       - name: Build the application
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: ./app
           releaseId: ${{ needs.prepare.outputs.release_id }}
-          includeUpdaterJson: false
           args: ${{ matrix.args }}
 
       - name: Verify the Windows bundle
@@ -364,6 +381,8 @@ jobs:
             all) platforms="windows linux macos" ;;
             *) platforms="$PLATFORMS" ;;
           esac
+          expect 'latest.json' 'updater manifest'
+          expect '*.sig' 'updater signature'
           for platform in $platforms; do
             case "$platform" in
               windows)
