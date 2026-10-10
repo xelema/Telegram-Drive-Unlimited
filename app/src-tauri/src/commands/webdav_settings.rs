@@ -74,7 +74,7 @@ fn save_settings(app: &AppHandle, settings: &WebDavSettingsFile) -> Result<(), S
     std::fs::remove_file(&temp_path).map_err(|error| error.to_string())
 }
 
-fn hash_token(token: &str) -> String {
+pub(crate) fn hash_token(token: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(token.as_bytes());
     format!("{:x}", hasher.finalize())
@@ -106,10 +106,10 @@ fn validate_port(app: &AppHandle, port: u16, enabling: bool) -> Result<(), Strin
     if port < 1024 {
         return Err("Port must be between 1024 and 65535".to_string());
     }
-    if port == crate::STREAM_PORT {
+    if port == crate::STREAM_PORT || port == crate::stream_port() {
         return Err(format!(
             "Port {} is used by the media streaming server",
-            crate::STREAM_PORT
+            port
         ));
     }
     let api_settings = crate::commands::api_settings::load_settings(app);

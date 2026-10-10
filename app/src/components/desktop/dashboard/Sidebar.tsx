@@ -1,3 +1,4 @@
+import i18n from '../../../i18n';
 import { useEffect, useState } from 'react';
 import { HardDrive, Folder, Plus, RefreshCw, LogOut, ChevronLeft, ChevronRight, Settings2, Trash2, Check, X, Eye, EyeOff, Clock3, Star, Pin, FileWarning, CalendarClock, Copy, Database } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -175,7 +176,7 @@ export function Sidebar({
         >
             <div className={`desktop-chrome-row ${settings.sidebarCollapsed ? 'flex-col justify-center gap-px' : 'justify-between'}`}>
                 <div className="flex items-center gap-2">
-                    <img src="/logo.svg" className={settings.sidebarCollapsed ? 'h-[22px] w-[22px]' : 'h-6 w-6'} alt="Logo" />
+                    <img src="/logo.svg" className={settings.sidebarCollapsed ? 'h-[22px] w-[22px]' : 'h-6 w-6'} alt={i18n.t('common.app_title')} />
                     {!settings.sidebarCollapsed && (
                         <span className="text-app-title font-semibold tracking-[-0.01em] text-app-text">{t('common.app_title')}</span>
                     )}
@@ -183,7 +184,7 @@ export function Sidebar({
                 <button
                     onClick={() => updateSetting('sidebarCollapsed', !settings.sidebarCollapsed)}
                     className={`quiet-control flex items-center justify-center text-app-text-tertiary hover:text-app-text ${settings.sidebarCollapsed ? 'h-[15px] w-6' : 'h-7 w-7'}`}
-                    title={settings.sidebarCollapsed ? t('common.expand_sidebar') || "Expand Sidebar" : t('common.collapse_sidebar') || "Collapse Sidebar"}
+                    title={settings.sidebarCollapsed ? t('common.expand_sidebar') : t('common.collapse_sidebar')}
                 >
                     {settings.sidebarCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronLeft className="h-3.5 w-3.5" />}
                 </button>
@@ -193,13 +194,13 @@ export function Sidebar({
                     <div className="flex shrink-0 flex-col">
                         <div className="desktop-chrome-row justify-between">
                             <span className="text-ui font-medium text-app-text-tertiary">
-                                {t('common.groups') || "Groups"}
+                                {t('common.groups')}
                             </span>
                             <div className="flex items-center gap-1">
                                 <button
                                     onClick={() => updateSetting('hideGroups', !settings.hideGroups)}
                                     className="quiet-control flex h-7 w-7 items-center justify-center text-app-text-tertiary hover:text-app-text"
-                                    title={settings.hideGroups ? t('common.show_groups') || "Show Groups" : t('common.hide_groups') || "Hide Groups"}
+                                    title={settings.hideGroups ? t('common.show_groups') : t('common.hide_groups')}
                                 >
                                     {settings.hideGroups ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
                                 </button>
@@ -212,7 +213,7 @@ export function Sidebar({
                                             setShowGroupEditor(true);
                                         }}
                                         className="quiet-control flex h-7 w-7 items-center justify-center text-app-text-tertiary hover:text-app-text"
-                                        title={t('common.create_group') || "Create Group"}
+                                        title={t('common.create_group')}
                                     >
                                         <Plus className="w-3.5 h-3.5" />
                                     </button>
@@ -274,7 +275,7 @@ export function Sidebar({
                                         className="quiet-control flex h-7 items-center gap-1 px-2 text-badge font-medium text-app-text-secondary hover:text-app-text"
                                     >
                                         <X className="w-3 h-3" />
-                                        {t('common.cancel') || "Cancel"}
+                                        {t('common.cancel')}
                                     </button>
                                     <button
                                         onClick={handleSaveGroup}
@@ -282,7 +283,7 @@ export function Sidebar({
                                         className="quiet-control flex h-7 items-center gap-1 bg-app-accent px-2.5 text-badge font-medium text-app-accent-contrast hover:bg-app-accent-hover disabled:opacity-50"
                                     >
                                         <Check className="w-3 h-3" />
-                                        {t('common.save') || "Save"}
+                                        {t('common.save')}
                                     </button>
                                 </div>
                             </div>
@@ -301,7 +302,7 @@ export function Sidebar({
                                 <GroupTab
                                     id="group-tab-all"
                                     groupId="all"
-                                    label={t('common.all') || "All"}
+                                    label={t('common.all')}
                                     active={activeGroupId === 'all'}
                                     onClick={() => setActiveGroupId('all')}
                                     isSortable={false}
@@ -309,7 +310,7 @@ export function Sidebar({
                                 <GroupTab
                                     id="group-tab-unassigned"
                                     groupId={null}
-                                    label={t('common.unassigned') || "Unassigned"}
+                                    label={t('common.unassigned')}
                                     active={activeGroupId === null}
                                     onClick={() => setActiveGroupId(null)}
                                     isSortable={false}
@@ -465,7 +466,7 @@ export function Sidebar({
                                 onClick={onSync}
                                 disabled={isSyncing}
                                 className={`quiet-control sidebar-sync-action flex h-[30px] flex-1 items-center justify-center gap-1.5 px-2.5 text-badge font-medium text-app-accent ${isSyncing ? 'cursor-not-allowed opacity-50' : ''}`}
-                                title="Scan for existing folders"
+                                title={i18n.t('workspace.scan')}
                             >
                                 <RefreshCw className={`w-3 h-3 ${isSyncing ? 'animate-spin' : ''}`} />
                                 {isSyncing ? t('common.syncing') : t('common.sync')}
@@ -473,7 +474,7 @@ export function Sidebar({
                             <button
                                 onClick={onLogout}
                                 className="quiet-control sidebar-logout-action flex h-[30px] flex-1 items-center justify-center gap-1.5 px-2.5 text-badge font-medium text-app-danger"
-                                title="Sign Out"
+                                title={i18n.t('common.sign_out')}
                             >
                                 <LogOut className="w-3 h-3" />
                                 {t('common.logout')}

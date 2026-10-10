@@ -27,7 +27,7 @@ test('desktop package contains the application and excludes native E2E executabl
   if (process.platform === 'darwin') {
     const binaries = fs.readdirSync(path.join(output, 'macos', `${config.productName}.app`, 'Contents', 'MacOS'));
     assert.ok(binaries.length > 0, 'Application executable missing');
-    assert.ok(binaries.every(name => !/native[-_]e2e[-_]driver/.test(name)), `Test executable bundled: ${binaries}`);
+    assert.ok(binaries.every(name => !/native[-_]e2e[-_](?:driver|heic[-_]helper)/.test(name)), `Test executable bundled: ${binaries}`);
   } else {
     const directory = path.join(output, 'deb');
     const packages = fs.readdirSync(directory).filter(name => name.endsWith('.deb') && name.includes(config.version));
@@ -41,6 +41,6 @@ test('desktop package contains the application and excludes native E2E executabl
     const mainBinary = config.mainBinaryName || metadata.packages[0].default_run || metadata.packages[0].name;
     const executable = fs.statSync(path.join(binaryDirectory, mainBinary));
     assert.ok(executable.isFile() && (executable.mode & 0o111), 'Application executable missing or not executable');
-    assert.ok(binaries.every(name => !/native[-_]e2e[-_]driver/.test(name)), `Test executable bundled: ${binaries}`);
+    assert.ok(binaries.every(name => !/native[-_]e2e[-_](?:driver|heic[-_]helper)/.test(name)), `Test executable bundled: ${binaries}`);
   }
 });

@@ -153,6 +153,8 @@ struct SharedLinkRow {
 #[derive(Deserialize)]
 struct VerifyForm {
     password: String,
+    #[serde(default)]
+    lang: Option<String>,
 }
 
 /// Verify a password against a bcrypt hash.
@@ -234,91 +236,125 @@ fn escape_html(input: &str) -> String {
         .replace('\'', "&#x27;")
 }
 
-fn resolve_req_lang(req: &HttpRequest) -> (&'static str, &'static str) {
-    if let Some(query) = req.uri().query() {
-        let query = query.to_ascii_lowercase();
-        if query.contains("lang=ar") {
-            return ("ar", "rtl");
+fn query_language(req: &HttpRequest) -> Option<&'static str> {
+    req.query_string().split('&').take(64).find_map(|field| {
+        let (name, value) = field.split_once('=')?;
+        let name = urlencoding::decode(name).ok()?;
+        if name != "lang" {
+            return None;
         }
-        if query.contains("lang=zh-tw")
-            || query.contains("lang=zh-hk")
-            || query.contains("lang=zh-hant")
-        {
-            return ("zh-TW", "ltr");
+        crate::native_localization::canonical_language(&urlencoding::decode(value).ok()?)
+    })
+}
+
+fn language_quality(value: &str) -> Option<u16> {
+    let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
+    if !matches!(whole, "0" | "1")
+        || fraction.len() > 3
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    if whole == "1" {
+        return fraction.bytes().all(|byte| byte == b'0').then_some(1000);
+    }
+    Some(if fraction.is_empty() {
+        0
+    } else {
+        fraction.parse::<u16>().ok()? * 10_u16.pow(3 - fraction.len() as u32)
+    })
+}
+
+fn resolve_req_lang(
+    req: &HttpRequest,
+    form_language: Option<&str>,
+) -> (&'static str, &'static str) {
+    use crate::native_localization::{canonical_language, direction, LANGUAGES};
+    if let Some(language) =
+        query_language(req).or_else(|| form_language.and_then(canonical_language))
+    {
+        return (language, direction(language));
+    }
+    let accept = req
+        .headers()
+        .get("Accept-Language")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    let ranges: Vec<_> = accept
+        .split(',')
+        .take(64)
+        .enumerate()
+        .filter_map(|(order, entry)| {
+            let mut parts = entry.trim().split(';');
+            let range = parts.next()?.trim().to_ascii_lowercase();
+            if range != "*" && canonical_language(&range).is_none() {
+                return None;
+            }
+            let quality = match parts.next() {
+                None => 1000,
+                Some(parameter) => {
+                    let (name, value) = parameter.trim().split_once('=')?;
+                    if !name.trim().eq_ignore_ascii_case("q") || parts.next().is_some() {
+                        return None;
+                    }
+                    language_quality(value.trim())?
+                }
+            };
+            Some((range, quality, order))
+        })
+        .collect();
+    let mut best: Option<(&'static str, u16, usize)> = None;
+    let mut excluded = Vec::new();
+    for &language in LANGUAGES {
+        let tag = language.to_ascii_lowercase();
+        let matching = ranges
+            .iter()
+            .filter(|(range, _, _)| {
+                range == "*"
+                    || canonical_language(range) == Some(language)
+                    || tag == *range
+                    || tag
+                        .strip_prefix(range)
+                        .is_some_and(|rest| rest.starts_with('-'))
+            })
+            .max_by(|left, right| {
+                let specificity = |range: &str| {
+                    if range == "*" {
+                        0
+                    } else {
+                        range.split('-').count()
+                    }
+                };
+                specificity(&left.0)
+                    .cmp(&specificity(&right.0))
+                    // Regional aliases share one catalog. At equal specificity,
+                    // retain the best accepted variant before breaking ties by order.
+                    .then_with(|| left.1.cmp(&right.1))
+                    .then_with(|| right.2.cmp(&left.2))
+            });
+        let Some((_, quality, order)) = matching else {
+            continue;
+        };
+        if *quality == 0 {
+            excluded.push(language);
+            continue;
         }
-        if query.contains("lang=bn") {
-            return ("bn-BD", "ltr");
-        }
-        if query.contains("lang=th") {
-            return ("th-TH", "ltr");
-        }
-        if query.contains("lang=fil") || query.contains("lang=tl") {
-            return ("fil-PH", "ltr");
-        }
-        if query.contains("lang=es") {
-            return ("es", "ltr");
-        }
-        if query.contains("lang=ru") {
-            return ("ru", "ltr");
-        }
-        if query.contains("lang=fr") {
-            return ("fr", "ltr");
-        }
-        if query.contains("lang=de") {
-            return ("de", "ltr");
-        }
-        if query.contains("lang=pt") {
-            return ("pt-BR", "ltr");
-        }
-        if query.contains("lang=zh") {
-            return ("zh-CN", "ltr");
-        }
-        if query.contains("lang=vi") {
-            return ("vi", "ltr");
+        if best.is_none_or(|(_, previous_quality, previous_order)| {
+            *quality > previous_quality || (*quality == previous_quality && *order < previous_order)
+        }) {
+            best = Some((language, *quality, *order));
         }
     }
-    if let Some(accept) = req.headers().get("Accept-Language") {
-        if let Ok(val) = accept.to_str() {
-            let val = val.to_ascii_lowercase();
-            if val.contains("ar") {
-                return ("ar", "rtl");
-            }
-            if val.contains("zh-tw") || val.contains("zh-hk") || val.contains("zh-hant") {
-                return ("zh-TW", "ltr");
-            }
-            if val.contains("bn") {
-                return ("bn-BD", "ltr");
-            }
-            if val.contains("th") {
-                return ("th-TH", "ltr");
-            }
-            if val.contains("fil") || val.contains("tl-ph") {
-                return ("fil-PH", "ltr");
-            }
-            if val.contains("es") {
-                return ("es", "ltr");
-            }
-            if val.contains("ru") {
-                return ("ru", "ltr");
-            }
-            if val.contains("fr") {
-                return ("fr", "ltr");
-            }
-            if val.contains("de") {
-                return ("de", "ltr");
-            }
-            if val.contains("pt") {
-                return ("pt-BR", "ltr");
-            }
-            if val.contains("zh") {
-                return ("zh-CN", "ltr");
-            }
-            if val.contains("vi") {
-                return ("vi", "ltr");
-            }
-        }
-    }
-    ("en", "ltr")
+    // Unsupported or wholly unacceptable headers may be disregarded, as HTTP
+    // permits. Prefer a non-excluded default whenever one remains available.
+    let language = best.map(|(language, _, _)| language).unwrap_or_else(|| {
+        LANGUAGES
+            .iter()
+            .copied()
+            .find(|language| !excluded.contains(language))
+            .unwrap_or("en")
+    });
+    (language, direction(language))
 }
 
 fn render_password_form(
@@ -326,91 +362,22 @@ fn render_password_form(
     file_name: &str,
     token: &str,
     error: Option<&str>,
+    form_language: Option<&str>,
 ) -> HttpResponse {
-    let (lang, dir) = resolve_req_lang(req);
+    let (lang, dir) = resolve_req_lang(req, form_language);
     let safe_file_name = escape_html(file_name);
-    let (
-        title_text,
-        heading_text,
-        desc_text,
-        file_label,
-        password_placeholder,
-        btn_text,
-        incorrect_password,
-    ) = match lang {
-        "es" => (
-            "Archivo protegido con contraseña",
-            "Ingrese contraseña",
-            "Este enlace está protegido con contraseña.",
-            "Archivo",
-            "Contraseña",
-            "Verificar y descargar",
-            "Contraseña incorrecta. Inténtelo de nuevo.",
-        ),
-        "ru" => (
-            "Файл защищен паролем",
-            "Введите пароль",
-            "Эта ссылка защищена паролем.",
-            "Файл",
-            "Пароль",
-            "Проверить и скачать",
-            "Неверный пароль. Повторите попытку.",
-        ),
-        "vi" => (
-            "Tệp được bảo vệ bằng mật khẩu",
-            "Nhập mật khẩu",
-            "Liên kết chia sẻ này được bảo vệ bằng mật khẩu.",
-            "Tệp",
-            "Mật khẩu",
-            "Xác minh và tải xuống",
-            "Mật khẩu không đúng. Vui lòng thử lại.",
-        ),
-        "bn-BD" => (
-            "পাসওয়ার্ড-সুরক্ষিত ফাইল",
-            "পাসওয়ার্ড লিখুন",
-            "এই শেয়ার লিঙ্কটি পাসওয়ার্ড দিয়ে সুরক্ষিত।",
-            "ফাইল",
-            "পাসওয়ার্ড",
-            "যাচাই করে ডাউনলোড করুন",
-            "পাসওয়ার্ডটি সঠিক নয়। আবার চেষ্টা করুন।",
-        ),
-        "th-TH" => (
-            "ไฟล์ที่ป้องกันด้วยรหัสผ่าน",
-            "ป้อนรหัสผ่าน",
-            "ลิงก์แชร์นี้ได้รับการป้องกันด้วยรหัสผ่าน",
-            "ไฟล์",
-            "รหัสผ่าน",
-            "ตรวจสอบและดาวน์โหลด",
-            "รหัสผ่านไม่ถูกต้อง โปรดลองอีกครั้ง",
-        ),
-        "fil-PH" => (
-            "File na Protektado ng Password",
-            "Ilagay ang Password",
-            "Protektado ng password ang share link na ito.",
-            "File",
-            "Password",
-            "I-verify at I-download",
-            "Mali ang password. Pakisubukang muli.",
-        ),
-        "zh-TW" => (
-            "密碼保護的檔案",
-            "輸入密碼",
-            "此分享連結受密碼保護。",
-            "檔案",
-            "密碼",
-            "驗證並下載",
-            "密碼不正確，請再試一次。",
-        ),
-        _ => (
-            "Password Protected File",
-            "Enter Password",
-            "This share link is password-protected.",
-            "File",
-            "Password",
-            "Verify & Download",
-            "Incorrect password. Please try again.",
-        ),
-    };
+    use crate::native_localization::text;
+    let title_text = escape_html(text(lang, "share_page.title"));
+    let heading_text = escape_html(text(lang, "share_page.heading"));
+    let desc_text = escape_html(text(lang, "share_page.description"));
+    let file_label = escape_html(text(lang, "files.file_name"));
+    let password_placeholder = escape_html(text(lang, "common.password"));
+    let btn_text = escape_html(text(lang, "share_page.verify"));
+    let incorrect_password = text(lang, "share_page.incorrect");
+    let form_action = escape_html(&format!(
+        "/d/{}/verify?lang={lang}",
+        urlencoding::encode(token)
+    ));
     let error_html = match error {
         Some(_) => format!(
             "<div class=\"error\">{}</div>",
@@ -497,22 +464,24 @@ fn render_password_form(
         <h2>{}</h2>
         <p>{}<br>{}: <strong><bdi dir="auto">{}</bdi></strong></p>
         {}
-        <form method="POST" action="/d/{}/verify">
+        <form method="POST" action="{}">
+            <input type="hidden" name="lang" value="{}">
             <input type="password" name="password" placeholder="{}" autofocus required>
             <button type="submit">{}</button>
         </form>
     </div>
 </body>
 </html>"#,
-        lang,
-        dir,
+        escape_html(lang),
+        escape_html(dir),
         title_text,
         heading_text,
         desc_text,
         file_label,
         safe_file_name,
         error_html,
-        token,
+        form_action,
+        escape_html(lang),
         password_placeholder,
         btn_text
     );
@@ -572,7 +541,7 @@ async fn get_shared_file(
         }
 
         if !authenticated {
-            return render_password_form(&req, &row.file_name, &token, None);
+            return render_password_form(&req, &row.file_name, &token, None, None);
         }
     }
 
@@ -639,6 +608,16 @@ async fn get_shared_file(
                         &mime,
                         Some(filename),
                         crate::server::StreamingExtras {
+                            bandwidth: req
+                                .app_data::<web::Data<Arc<crate::bandwidth::BandwidthManager>>>()
+                                .expect("Shared bandwidth accounting")
+                                .get_ref()
+                                .clone(),
+                            network: req
+                                .app_data::<web::Data<Arc<crate::vpn_optimizer::NetworkConfig>>>()
+                                .expect("Shared network state")
+                                .get_ref()
+                                .clone(),
                             extra_headers: vec![],
                             log_label: "Share download",
                         },
@@ -712,7 +691,13 @@ async fn verify_shared_file_password(
         || form.password.len() > MAX_SHARE_PASSWORD_BYTES
     {
         with_password_attempt_limiter(|limiter| limiter.record_failure(&token_key, now));
-        return render_password_form(&req, &row.file_name, &token, Some("invalid"));
+        return render_password_form(
+            &req,
+            &row.file_name,
+            &token,
+            Some("invalid"),
+            form.lang.as_deref(),
+        );
     }
 
     let password = form.password.clone();
@@ -740,8 +725,20 @@ async fn verify_shared_file_password(
             .max_age(actix_web::cookie::time::Duration::minutes(30))
             .finish();
 
+        let (language, _) = resolve_req_lang(&req, form.lang.as_deref());
+        let explicit_language = query_language(&req).is_some()
+            || form
+                .lang
+                .as_deref()
+                .and_then(crate::native_localization::canonical_language)
+                .is_some();
+        let location = if language != "en" || explicit_language {
+            format!("/d/{}?lang={language}", urlencoding::encode(&token))
+        } else {
+            format!("/d/{}", urlencoding::encode(&token))
+        };
         HttpResponse::Found()
-            .insert_header(("Location", format!("/d/{}", token)))
+            .insert_header(("Location", location))
             .cookie(cookie)
             .finish()
     } else {
@@ -751,6 +748,7 @@ async fn verify_shared_file_password(
             &row.file_name,
             &token,
             Some("Incorrect password. Please try again."),
+            form.lang.as_deref(),
         )
     }
 }

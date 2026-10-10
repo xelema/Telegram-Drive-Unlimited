@@ -19,40 +19,34 @@ $ANDROID_HOME/build-tools/36.0.0/apksigner verify --print-certs Telegram-Drive-v
 
 Never change the package name or signing key for an update. Android accepts an in-place upgrade only when both remain stable and the new `versionCode` is greater.
 
-## Protected CI values
+## Android builds are local
 
-Configure these GitHub Actions secrets before creating a release tag:
+Android is built, signed, and verified on the maintainer's machine. No GitHub workflow builds Android, and the Android project, build configuration, generated project folders, and Android test projects are never committed or uploaded. Only the compiled, signed binaries are published, as assets of the separate Android release.
 
-- `ANDROID_KEYSTORE_BASE64`
+Provide these values to the local build through the environment, never through a tracked file:
+
 - `ANDROID_KEYSTORE_PASSWORD`
 - `ANDROID_KEY_ALIAS`
 - `ANDROID_KEY_PASSWORD`
 - `ANDROID_SIGNING_CERT_SHA256` (certificate fingerprint, not keystore file hash)
-- `TAURI_SIGNING_PRIVATE_KEY`
-- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` when the updater key is encrypted
+- `TAURI_PRIVATE_KEY` (the local packaging signer input)
+- `TAURI_KEY_PASSWORD` when the updater key is encrypted
 
-The production workflow fails closed if Android signing, updater signing, or the pinned certificate is absent. Pull requests may compile unsigned artifacts for validation, but the workflow does not publish them.
+The packaging scripts fail closed if Android signing, updater signing, or the pinned certificate is absent.
 
-## Build and release
+## Local build and binary publication
 
-1. Update the same semantic version in `app/package.json`, `app/src-tauri/Cargo.toml`, and `app/src-tauri/tauri.conf.json`.
-2. Run `npm run android:version:check -- --tag vX.Y.Z` from `app/`.
-3. Run the frontend and Rust tests.
-4. Reproduce the generated Android project and build the universal APK/AAB.
-5. Run the JNI/R8, four-ABI, 16 KB alignment, certificate, checksum, and generated-update-manifest gates.
-6. Run the separate **Android CI** workflow against the release commit and retain its signed `telegram-drive-android-signed` artifact after every Android gate passes.
-7. Push `vX.Y.Z` to start the desktop release workflow. That workflow does not invoke Android CI, so do not treat a passing desktop release as Android verification.
-8. Distribute the Android artifacts only after both independent workflows have passed for the same source revision.
+Status: all Android builds, artifact verification and installed-device acceptance for this tree are UNRUN. The desktop workflow is not Android verification. The version-line decision belongs to the owner; do not change shared desktop versions merely to follow this runbook.
 
-The signed Android workflow artifact includes:
+1. On the maintainer's private machine, use the reviewed release commit, Node 22, Rust 1.92, Java/Android SDK/NDK required by the local project, and the existing signing identity. Keep the generated Android project and all credentials outside outgoing Git commits. Choose the Android release version/code only after the owner decides the version line; verify the relevant inputs with `npm run android:version:check -- --tag vX.Y.Z` from `app/`.
+2. Run the host gates in `TESTING.md`. In `app/`, run `npm ci`, `npm run build:verify`, then the established local Android generation/build command `npm run tauri -- android build`. Preserve the locally maintained Android configuration; no Android project is created in GitHub. Confirm universal APK/AAB and the four ABI-specific signed APK outputs exist before packaging.
+3. From `app/`, run `bash scripts/verify-android-artifacts.sh src-tauri/gen/android/app/build/outputs`. This checks Baseline Profile presence, all four ABIs and 16 KiB ELF/ZIP alignment. Run `bash scripts/package-android-release.sh` with the existing private signing environment and pinned `ANDROID_SIGNING_CERT_SHA256`. It verifies certificates and AAB signing, packages binaries, creates `SHA256SUMS`, and creates/signs `android-update.json`. Preserve the APK hash, versionCode, package name, update-manifest URL and source revision in the private acceptance log. Do not publish signing keys.
+4. On a dedicated device with the previous signed APK installed, sign in, activate an existing supporter recovery code, create a test folder and transfer queue, and record data/activation visibly before upgrade. Run `bash scripts/verify-android-upgrade.sh /private/path/previous.apk /private/path/current.apk` from `app/`. It checks matching certificates, increasing versionCode, in-place install and launch. It does **not** itself inspect application data or supporter state. After it finishes, check that the Telegram session, folder/queue, recovery code and active ad-free entitlement survived with no purchase prompt. Repeat on phone and TV. Any data/activation loss blocks publication.
+5. Complete the device matrix below and [release acceptance](RELEASE_ACCEPTANCE.md). Verify `android-update.json` identifies the exact package, monotonically newer code, APK filename, SHA-256 and separate Android release URL; verify its Minisign signature with the existing embedded public key. Compare `SHA256SUMS` against the final APK bytes, not an earlier build.
+6. Before any GitHub push, run `node scripts/check-android-publication.cjs --range BASE..HEAD` at the repository root, replacing BASE with the remote published revision, and manually inspect `git diff --name-status BASE..HEAD` and every outgoing commit. The guard's pending owner-review list is not permission to publish those paths. Android project/configuration/generated/test sources and signing files must never be pushed, even if a later outgoing commit removes them.
+7. Only after owner authorization and every local gate passes, create/use the separate Android release and upload the compiled signed APKs and their checksums/update manifest/signature. Keep the AAB as a private archive unless separately authorized as a compiled release asset. Never upload source folders, Gradle reports containing private paths, projects, credentials or signing backups. Do not push a desktop version tag as part of Android publication.
 
-- `Telegram-Drive-vX.Y.Z-android-universal.apk`
-- `Telegram-Drive-vX.Y.Z-android-universal.aab` (archival/device-management use)
-- `SHA256SUMS`
-- `android-update.json`
-- `android-update.json.sig`
-
-The in-app Android updater verifies the embedded Minisign key, exact package name, GitHub release URL, monotonically newer `versionCode`, APK filename, size limit, and SHA-256 before opening Android's trusted package installer. Users may need to grant “Install unknown apps” permission to Telegram Drive once.
+The updater metadata is derived from the exact universal APK, using `scripts/create-android-release-manifest.cjs` (arguments `--apk`, `--version`, `--version-code`, `--repository`, `--tag`, `--output`) and the existing updater signing key. Use the real separate Android tag in the final manifest. Local packaging/version verification may use the plain semantic tag required by its checker; inspect the final download URL before signing rather than assuming it is correct for an `Androidv...` tag. Publication and key changes are owner actions, not performed by this pass.
 
 ## Android and TV advertising
 
@@ -84,7 +78,7 @@ bash scripts/test-android-resilience.sh com.cameronamer.telegramdrive doze
 bash scripts/verify-android-upgrade.sh previous.apk current.apk
 ```
 
-The emulator runner creates an isolated AVD and requires the matching API 36 system image. Android CI installs and tests both the phone and Google TV images. The resilience script changes emulator/device power state and resets it on exit. Use `reboot-recovery` only on a dedicated test device.
+The emulator runner creates an isolated AVD and requires the matching API 36 system image. Run it for both the phone and Google TV images. The resilience script changes emulator/device power state and resets it on exit. Use `reboot-recovery` only on a dedicated test device.
 
 ## Sideloading
 

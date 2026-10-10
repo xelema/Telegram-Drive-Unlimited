@@ -1,53 +1,39 @@
 import { useEffect, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
-import type { TelegramFile } from '../types';
-import { normalizeListedFile } from '../services/fileListRefresh';
+import { listen } from '@tauri-apps/api/event';
+import { searchLocal, type LocalSearchQuery, type LocalSearchReply } from '../services/localSearch';
+import type { FileSearchFilters } from '../services/fileSearch';
 
-interface SearchState {
-    ownerId: string | null;
-    query: string;
-    results: TelegramFile[];
-    isSearching: boolean;
-}
-
-export function useGlobalFileSearch(query: string, scope: 'folder' | 'all', ownerId: string | null) {
-    const normalizedQuery = query.trim();
-    const enabled = Boolean(ownerId) && scope === 'all' && normalizedQuery.length >= 2;
-    const current = useRef({ ownerId, query: normalizedQuery, enabled });
-    current.current = { ownerId, query: normalizedQuery, enabled };
-    const [state, setState] = useState<SearchState>({ ownerId: null, query: '', results: [], isSearching: false });
-
+export function useLocalFileSearch(query: LocalSearchQuery, ownerId: string | null, enabled: boolean, metadataVersion?: unknown) {
+    const metadata = useRef({ value: metadataVersion, revision: 0 });
+    if (metadata.current.value !== metadataVersion) metadata.current = { value: metadataVersion, revision: metadata.current.revision + 1 };
+    const key = JSON.stringify([ownerId, query, metadata.current.revision]);
+    const current = useRef(key); current.current = key;
+    const generation = useRef(0);
+    const [revision, refresh] = useState(0);
+    const [state, setState] = useState<{ key: string; reply?: LocalSearchReply; busy: boolean; error?: string }>({ key: '', busy: false });
     useEffect(() => {
         let cancelled = false;
-        const isCurrent = () => !cancelled && current.current.enabled
-            && current.current.ownerId === ownerId && current.current.query === normalizedQuery;
-        setState({ ownerId, query: normalizedQuery, results: [], isSearching: false });
+        const reset = () => { if (!cancelled) { generation.current++; setState({ key: '', busy: false }); refresh(value => value + 1); } };
+        const listeners = ['vault-locked', 'vault-unlocked', 'file-inventory-changed'].map(event => listen(event, reset));
+        return () => { cancelled = true; generation.current++; listeners.forEach(value => { void value.then(dispose => dispose()).catch(() => undefined); }); };
+    }, []);
+    useEffect(() => {
+        const request = ++generation.current;
+        const isCurrent = () => generation.current === request && current.current === key;
+        setState({ key, busy: enabled });
         if (!enabled || !ownerId) return;
-
-        const timer = window.setTimeout(async () => {
-            if (!isCurrent()) return;
-            setState({ ownerId, query: normalizedQuery, results: [], isSearching: true });
-            try {
-                const results = await invoke<TelegramFile[]>('cmd_search_global', { query: normalizedQuery, ownerId });
-                if (isCurrent()) {
-                    setState({ ownerId, query: normalizedQuery, results: results.map(normalizeListedFile), isSearching: false });
-                }
-            } catch {
-                if (isCurrent()) {
-                    setState({ ownerId, query: normalizedQuery, results: [], isSearching: false });
-                }
-            }
-        }, 500);
-
-        return () => {
-            cancelled = true;
-            window.clearTimeout(timer);
-        };
-    }, [enabled, normalizedQuery, ownerId]);
-
-    // Never render another account's cached results, including the render
-    // before effect cleanup and a switch that leaves the query text unchanged.
-    return enabled && state.ownerId === ownerId && state.query === normalizedQuery
-        ? { results: state.results, isSearching: state.isSearching }
-        : { results: [], isSearching: false };
+        const timer = window.setTimeout(() => {
+            void searchLocal(ownerId, query, isCurrent).then(reply => {
+                if (isCurrent()) setState({ key, reply, busy: false });
+            }).catch(error => {
+                if (isCurrent()) setState({ key, busy: false, error: String(error) });
+            });
+        }, 300);
+        return () => { generation.current++; window.clearTimeout(timer); };
+    }, [key, enabled, revision]); // The serialized key includes every query field and metadata version.
+    const visible = enabled && state.key === key ? state : undefined;
+    return { results: visible?.reply?.files ?? [], isSearching: visible?.busy ?? false, reply: visible?.reply, error: visible?.error };
+}
+export function useGlobalFileSearch(query: string, filters: FileSearchFilters, ownerId: string | null) {
+    return useLocalFileSearch({ ...filters, query: query.trim() }, ownerId, filters.scope === 'all');
 }

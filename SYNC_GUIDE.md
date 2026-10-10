@@ -22,10 +22,17 @@ As an additional guard, a plan that would delete more than half of the Synced Tr
 - The `.td-sync-tmp` suffix is reserved. If that path already exists, sync preserves it and pauses that download; inspect and remove or rename the stale temp file before retrying.
 - Telegram `FLOOD_WAIT` responses pause the queue for the server-requested interval and retry with exponential backoff.
 - When a mapping uses vault encryption, uploads pause while the vault is locked and resume after the vault is unlocked.
+- Sync transfers run in the same queue as your own transfers. They appear in Transfers with their progress and can be paused or cancelled there; a paused sync transfer holds Folder Sync until it is resumed. An upload larger than 10 MB continues where it stopped after an interruption.
+- A file that sync uploads with vault encryption keeps its folder path inside its encrypted metadata. If the mapping's records are lost (a reinstall, a new device, or a mapping that was removed and added again), sync reads that path with the vault unlocked and recognises the file instead of uploading it again. While those files are being identified the mapping shows that it is waiting and continues by itself. Protected files uploaded before version 4.0 carry no path and are not matched this way.
 - A Telegram path that is not representable on every supported desktop filesystem (for example `CON.txt`, a trailing dot, or `report?.pdf`) is rejected rather than silently renamed.
 - Each Telegram channel can map to only one local folder, and mapped local folders cannot overlap or be nested.
 - Duplicate Telegram messages that resolve to the same relative path pause that pair. Rename or remove the duplicate in Telegram before resuming; the engine never guesses which duplicate should win.
 - A mapping pauses if its channel contains more than 50,000 file-bearing messages. This safety ceiling prevents an incomplete remote scan from being mistaken for mass deletion; split very large archives across channels before mapping them.
+
+## Options
+
+- **Skip unchanged files when scanning** (Settings → Folder Sync, off by default). A file whose size and modified time are unchanged since it was last in sync is not read again. With this on, an idle mapping checks Telegram every 5 minutes instead of every 30 seconds, local changes are still picked up immediately, and every file is verified in full every 6 hours.
+- **Treat same-size files already in both places as synced** (per mapping). When a folder and a Telegram channel already hold the same files before the first sync, each shared path is otherwise reported as a conflict, because local and Telegram copies cannot be compared by content without downloading them. With this on, files at the same path with the same size are recorded as in sync; files that differ in size remain conflicts. Preview the mapping to see the effect before saving.
 
 ## Resolve a conflict
 

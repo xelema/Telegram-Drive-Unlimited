@@ -134,7 +134,7 @@ export default function DesignGallery() {
               <div className="flex min-w-0 items-start gap-2">
                 <Database className="mt-0.5 h-4 w-4 shrink-0 text-app-text-secondary" />
                 <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium text-app-text">{t('settings.offline_cache', { lng: auditLanguage })}</p>
+                  <p className="text-sm font-medium text-app-text">{t('common.offline_files', { lng: auditLanguage })}</p>
                   <p className="mt-1 text-xs text-app-text-secondary">{t('settings.offline_cache_desc', { lng: auditLanguage })}</p>
                   <p className="mt-1 text-xs font-mono text-app-accent">{t('settings.offline_cache_usage', { lng: auditLanguage, count: 12, used: '84 MB', limit: '256 MB' })}</p>
                 </div>

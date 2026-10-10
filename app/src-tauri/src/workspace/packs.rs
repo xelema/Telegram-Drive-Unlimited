@@ -357,10 +357,7 @@ async fn command_output(program: &str, args: &[&str]) -> Result<String> {
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true);
-    #[cfg(target_os = "windows")]
-    {
-        command.creation_flags(0x08000000);
-    }
+    crate::process_util::hide_console(&mut command);
     let output = tokio::time::timeout(Duration::from_secs(5), command.output())
         .await
         .map_err(|_| "NETWORK_STATUS_UNKNOWN")?

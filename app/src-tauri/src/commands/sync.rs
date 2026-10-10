@@ -216,6 +216,43 @@ pub async fn cmd_toggle_sync(
     Ok(result)
 }
 
+/// Chooses how mapped folders are scanned. The incremental scanner is opt-in:
+/// it trusts recorded hashes for files whose size and modification time are
+/// unchanged, and re-verifies every file periodically.
+#[tauri::command]
+pub async fn cmd_set_sync_scanner(
+    app: tauri::AppHandle,
+    db: State<'_, DbConnection>,
+    scanner: String,
+    owner_id: String,
+) -> Result<SyncSettings, String> {
+    if !matches!(
+        scanner.as_str(),
+        config::SCANNER_FULL | config::SCANNER_INCREMENTAL
+    ) {
+        return Err("Choose the full or the incremental sync scanner".into());
+    }
+    let account = request_account(&app, &owner_id)?;
+    let account_for_db = account.clone();
+    crate::db::with_connection(db.inner().clone(), move |connection| {
+        change_account(connection, &account_for_db, |connection| {
+            let mut statement = connection.prepare("INSERT INTO sync_settings (key, value) VALUES ('sync_scanner', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+                .map_err(|error| error.to_string())?;
+            statement
+                .bind((1, scanner.as_str()))
+                .map_err(|error| error.to_string())?;
+            statement.next().map_err(|error| error.to_string())?;
+            Ok(())
+        })
+    })
+    .await?;
+    account.validate()?;
+    restart_sync_engine(&app).await?;
+    let result = config::load_settings(db.inner().clone()).await?;
+    account.validate()?;
+    Ok(result)
+}
+
 #[tauri::command]
 // Named IPC fields preserve the existing sync command contract.
 #[allow(clippy::too_many_arguments)]

@@ -14,7 +14,7 @@ Run `node scripts/check-test-policy.cjs` before handing off testing changes. Nev
 
 Android project and source files must remain local and must never be committed to or uploaded to GitHub. This includes Android build configuration, native project files, generated project folders, and Android test projects. Only compiled Android binaries may be uploaded, as assets in the separate Android GitHub release. Signing keys and credentials must always remain private.
 
-Local branch merges are allowed; they do not authorize a push or publication of Android project files. Before any future GitHub push, inspect the complete outgoing commits for Android project files, including changes in shared application files. Do not assume that an existing tracked file or a local merge makes Android source eligible for publication.
+Local branch merges are allowed; they do not authorize a push or publication of Android project files. Before any future GitHub push, inspect the complete outgoing commits for Android project files, including changes in shared application files. Do not assume that an existing tracked file or a local merge makes Android source eligible for publication. `node scripts/check-android-publication.cjs` inspects tracked files and every outgoing commit and must pass before a push; it refuses Android project files and any Android-related path that is not listed in `dependency-policy/android-publication-review.json`. Paths listed there as pending are reported on every run and are not approved by the check; only the repository owner moves a path to the permitted list.
 
 ## $5 lifetime supporter license is a protected compatibility contract
 

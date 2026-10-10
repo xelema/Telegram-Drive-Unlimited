@@ -1,0 +1,43 @@
+{
+  "policy": "Android project and source files are never published to GitHub; only compiled binaries are, as assets of the Android release. The paths under pending_owner_review were tracked before scripts/check-android-publication.cjs existed. Listing them here records that fact; it does not approve them. Move a path to permitted_shared_files only on the repository owner's explicit decision that it is a shared application file. Any Android-related path in neither list fails the check.",
+  "reviewed": "2026-10-01",
+  "permitted_shared_files": [
+    "scripts/check-android-publication.cjs",
+    "dependency-policy/android-publication-review.json",
+    "Docs/ANDROID_SIDELOAD_RELEASE.md",
+    "app/src-tauri/capabilities/mobile.json",
+    "app/src/components/mobile/MobileDashboard.tsx",
+    "app/src/components/mobile/MobileMediaPlayer.tsx",
+    "app/src/components/mobile/MobileSupporterCard.tsx",
+    "app/src/components/mobile/TouchFileList.tsx"
+  ],
+  "pending_owner_review": [
+    "Docs/assets/android-folders.webp",
+    "Docs/assets/android-settings.webp",
+    "Docs/assets/android-transfers.webp",
+    "app/scripts/apply-android-overrides.cjs",
+    "app/scripts/backup-android-signing-key.sh",
+    "app/scripts/check-android-jni-contract.cjs",
+    "app/scripts/create-android-release-manifest.cjs",
+    "app/scripts/package-android-release.sh",
+    "app/scripts/run-android-emulator-tests.sh",
+    "app/scripts/test-android-resilience.sh",
+    "app/scripts/verify-android-artifacts.sh",
+    "app/scripts/verify-android-release-version.cjs",
+    "app/scripts/verify-android-upgrade.sh",
+    "app/src-tauri/src/android_security.rs",
+    "app/src-tauri/src/jni_cache.rs",
+    "app/src/components/mobile/ActionPopover.tsx",
+    "app/src/components/mobile/BottomNavBar.tsx",
+    "app/src/components/mobile/RenameFolderSheet.tsx",
+    "app/src/services/androidReauthentication.ts",
+    "app/src/services/androidTransferPolicy.ts",
+    "screenshots/AndroidDarkModeFolderView.png",
+    "screenshots/AndroidFolderList.png",
+    "screenshots/AndroidHomeScreenWithIcon.png",
+    "screenshots/AndroidSettingsPage.png",
+    "screenshots/AndroidTelegram-DriveSplash.png",
+    "screenshots/AndroidTransferQue.png",
+    "scripts/generate-gradle-sbom.cjs"
+  ]
+}

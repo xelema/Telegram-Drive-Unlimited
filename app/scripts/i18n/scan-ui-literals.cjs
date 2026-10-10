@@ -35,28 +35,54 @@ function scanFile(filePath) {
   const sourceFile = ts.createSourceFile(filePath, code, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   const findings = [];
 
+  const foundPositions = new Set();
+  const textAttributes = new Set(['placeholder', 'title', 'aria-label', 'aria-description', 'alt']);
+  const dialogFields = new Set(['title', 'message', 'description', 'confirmText', 'cancelText', 'confirmLabel', 'cancelLabel']);
+  function add(node, text, type) {
+    text = text.trim();
+    if (!text || !/[a-zA-Z]/.test(text) || foundPositions.has(node.pos)) return;
+    foundPositions.add(node.pos);
+    const {line} = sourceFile.getLineAndCharacterOfPosition(node.getStart());
+    findings.push({line: line + 1, start:node.getStart(), end:node.getEnd(), text, type});
+  }
+  // Follow only values that are actually presented. Translation calls and
+  // arbitrary option objects are not literals; variant:'danger' is not copy.
+  function visible(node, type) {
+    if (!node) return;
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) add(node, node.text, type);
+    else if (ts.isTemplateExpression(node)) {
+      const staticText = node.head.text + node.templateSpans.map(span => span.literal.text).join('');
+      if (/[a-zA-Z]/.test(staticText)) add(node, node.getText(), type + ':template');
+    } else if (ts.isConditionalExpression(node)) {visible(node.whenTrue, type);visible(node.whenFalse, type);}
+    else if (ts.isBinaryExpression(node)) {
+      if (node.operatorToken.kind === ts.SyntaxKind.PlusToken) {visible(node.left, type);visible(node.right, type);}
+      else if ([ts.SyntaxKind.BarBarToken, ts.SyntaxKind.QuestionQuestionToken].includes(node.operatorToken.kind)) {visible(node.left, type);visible(node.right, type);}
+      else if (node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken) visible(node.right, type);
+    }
+    else if (ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isNonNullExpression(node)) visible(node.expression, type);
+  }
+  function options(node, type) {
+    if (!node || !ts.isObjectLiteralExpression(node)) return;
+    for (const property of node.properties) {
+      if (ts.isPropertyAssignment(property) && dialogFields.has(property.name.getText().replace(/^['"]|['"]$/g, ''))) visible(property.initializer, type);
+    }
+  }
   function visit(node) {
-    // JSX Text with letters
-    if (ts.isJsxText(node)) {
-      const text = node.getText().trim();
-      if (text && /[a-zA-Z]/.test(text) && !/^[\s\d\W]+$/.test(text)) {
-        const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart());
-        findings.push({ line: line + 1, text, type: 'jsx_text' });
+    if (ts.isJsxText(node) && !(ts.isJsxElement(node.parent) && node.parent.openingElement.tagName.getText() === 'style')) add(node, node.getText(), 'jsx_text');
+    if (ts.isJsxAttribute(node) && node.initializer && textAttributes.has(node.name.getText())) {
+      if (ts.isStringLiteral(node.initializer)) add(node.initializer, node.initializer.text, `attribute:${node.name.getText()}`);
+      else if (ts.isJsxExpression(node.initializer)) visible(node.initializer.expression, `attribute:${node.name.getText()}`);
+    }
+    if (ts.isJsxExpression(node) && !ts.isJsxAttribute(node.parent) && !(ts.isJsxElement(node.parent) && ['style','script'].includes(node.parent.openingElement.tagName.getText()))) visible(node.expression, 'jsx_expression');
+    if (ts.isCallExpression(node)) {
+      const callee = node.expression.getText();
+      const toast = /^(?:toast)(?:\.(?:success|error|info|warning|message|loading))?$/.test(callee);
+      const dialog = /^(?:(?:window\.)?(?:confirm|alert|prompt)|promptSecret)$/.test(callee);
+      if (toast || dialog) {
+        const type = toast ? 'toast' : 'dialog';
+        visible(node.arguments[0], type);options(node.arguments[0], type);options(node.arguments[1], type);
       }
     }
-
-    // JSX Attributes like placeholder, title, aria-label
-    if (ts.isJsxAttribute(node) && node.initializer && ts.isStringLiteral(node.initializer)) {
-      const attrName = node.name.getText();
-      if (['placeholder', 'title', 'aria-label', 'aria-description', 'alt'].includes(attrName)) {
-        const text = node.initializer.text.trim();
-        if (text && /[a-zA-Z]/.test(text)) {
-          const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart());
-          findings.push({ line: line + 1, text, type: `attribute:${attrName}` });
-        }
-      }
-    }
-
     ts.forEachChild(node, visit);
   }
 
@@ -101,7 +127,11 @@ function runScanner() {
     }
   }
 
-  if (totalFindings > 0) {
+  if (process.argv.includes('--json')) {
+    console.log(JSON.stringify({totalFindings, findingsByArea, files:fileFindingsMap},null,2));
+  }
+
+  if (!process.argv.includes('--json') && totalFindings > 0) {
     console.log(`\n=== UI Literal Scanner Findings (${totalFindings} items in ${Object.keys(fileFindingsMap).length} files) ===`);
     for (const [file, items] of Object.entries(fileFindingsMap)) {
       console.log(`\nFile: ${file}`);
@@ -109,8 +139,8 @@ function runScanner() {
         console.log(`  L${item.line} [${item.type}]: "${item.text}"`);
       }
     }
-    console.log('\nNote: Unextracted literals detected in shipping components. Extract them in Phase 3.');
-  } else {
+    console.log('\nNote: Unextracted text remains in shipping UI. The ceilings must only decrease.');
+  } else if (!process.argv.includes('--json')) {
     console.log('[PASS] UI Literal Scanner found zero unextracted shipping literals.');
   }
 

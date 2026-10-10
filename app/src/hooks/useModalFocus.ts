@@ -18,19 +18,35 @@ export function useModalFocus(
     containerRef: RefObject<HTMLElement | null>,
     onClose: () => void,
     enabled = true,
+    suspended = false,
 ) {
     const onCloseRef = useRef(onClose);
+    const suspendedRef = useRef(suspended);
     onCloseRef.current = onClose;
+    suspendedRef.current = suspended;
     useEffect(() => {
         if (!enabled) return;
         const previouslyFocused = document.activeElement as HTMLElement | null;
         const container = containerRef.current;
         if (!container) return;
 
-        const focusable = Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE));
-        const preferred = container.querySelector<HTMLElement>('[data-modal-autofocus]');
-        (preferred ?? focusable[0] ?? container).focus();
+        if (!suspendedRef.current) {
+            const focusable = Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE));
+            const preferred = container.querySelector<HTMLElement>('[data-modal-autofocus]');
+            (preferred ?? focusable[0] ?? container).focus();
+        }
 
+        return () => {
+            if (previouslyFocused?.isConnected) previouslyFocused.focus();
+        };
+    }, [containerRef, enabled]);
+
+    // A child dialog suspends the parent's keyboard trap without ending the
+    // parent's focus lifecycle or focusing its first control again on resume.
+    useEffect(() => {
+        if (!enabled || suspended) return;
+        const container = containerRef.current;
+        if (!container) return;
         const handleKeyDown = (event: KeyboardEvent) => {
             if (event.key === 'Escape') {
                 event.preventDefault();
@@ -58,9 +74,6 @@ export function useModalFocus(
         };
 
         document.addEventListener('keydown', handleKeyDown, true);
-        return () => {
-            document.removeEventListener('keydown', handleKeyDown, true);
-            previouslyFocused?.focus?.();
-        };
-    }, [containerRef, enabled]);
+        return () => document.removeEventListener('keydown', handleKeyDown, true);
+    }, [containerRef, enabled, suspended]);
 }

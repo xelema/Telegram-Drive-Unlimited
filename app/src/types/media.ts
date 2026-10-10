@@ -32,13 +32,10 @@ export const ADAPTIVE_THRESHOLDS: { minKbps: number; quality: StreamingQuality }
   { minKbps: 0, quality: '360p' },
 ];
 
-export const QUALITY_LABELS: Record<StreamingQuality, string> = {
-  '360p': '360p',
-  '480p': '480p',
-  '720p': '720p',
-  '1080p': '1080p',
-  original: 'Original',
-};
+/** Resolve the only prose label at render time; numeric quality identifiers stay literal. */
+export function qualityLabel(quality: StreamingQuality, originalLabel: string): string {
+  return quality === 'original' ? originalLabel : quality;
+}
 
 export const HLS_QUALITIES: StreamingQuality[] = ['360p', '480p', '720p', '1080p'];
 

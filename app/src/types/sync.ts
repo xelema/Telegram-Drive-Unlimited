@@ -2,6 +2,8 @@ export interface SyncSettings {
   enabled: boolean;
   debounceMs: number;
   encryption: 'inherit' | 'always_vault' | string;
+  /** `incremental` reuses recorded hashes for unchanged files; `full` is the default. */
+  scanner?: 'full' | 'incremental';
 }
 
 export interface SyncPair {
@@ -33,6 +35,8 @@ export interface SyncPreferences {
   ignorePatterns: string[];
   propagateDeletions: boolean;
   pauseOnConflicts: boolean;
+  /** Treat same-path, same-size files as already in sync when a mapping is first reviewed. */
+  adoptMatchingFiles?: boolean;
 }
 
 export interface SyncPairStatus {

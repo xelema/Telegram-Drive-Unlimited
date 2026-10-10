@@ -9,6 +9,10 @@ pub struct StartupHealth {
     database_ready: bool,
     app_data_ready: bool,
     streaming_runtime_ready: bool,
+    /// Loopback port the media server is listening on (0 when unavailable).
+    streaming_port: u16,
+    /// True when the preferred port was taken and another one was assigned.
+    streaming_port_is_fallback: bool,
 }
 
 /// Returns only after the core Rust-managed services required by the desktop UI
@@ -38,9 +42,13 @@ pub async fn cmd_get_startup_health(
         return Err("One or more local services did not initialize correctly".to_string());
     }
 
+    crate::startup_smoke::mark_ready(&app)?;
+
     Ok(StartupHealth {
         database_ready,
         app_data_ready,
         streaming_runtime_ready,
+        streaming_port: stream_config.port,
+        streaming_port_is_fallback: stream_config.port != crate::STREAM_PORT,
     })
 }

@@ -1,3 +1,4 @@
+import i18n from '../i18n';
 import { useState, useEffect, useRef } from 'react';
 import { useActionScope } from './useActionScope';
 import { invoke } from '@tauri-apps/api/core';
@@ -11,6 +12,7 @@ import { useSettings } from '../context/SettingsContext';
 import type { Store } from '@tauri-apps/plugin-store';
 import { useTranslation } from 'react-i18next';
 import { useUploadChoice, type UploadChoice } from '../context/UploadChoiceContext';
+import { useConfirm } from '../context/ConfirmContext';
 import { triggerHaptic } from '../services/feedback';
 import { isTransientNetworkError, restoreUploadQueue, serializeUploadQueue } from '../services/transferQueuePolicy';
 import { announceSupporterValueMoment } from '../services/supporterVisibility';
@@ -65,6 +67,7 @@ export function useFileUpload(
     const queryClient = useQueryClient();
     const { settings } = useSettings();
     const { chooseUploadProtection } = useUploadChoice();
+    const { confirm, promptSecret } = useConfirm();
     const [uploadQueue, setUploadQueue] = useState<QueueItem[]>([]);
     const [initialized, setInitialized] = useState(false);
     const initializingRef = useRef(false);
@@ -154,12 +157,18 @@ export function useFileUpload(
                 ? queue.map(candidate => candidate.id === item.id ? item : candidate)
                 : [...queue, item]);
             if (notifyTransition && previousStatus !== job.status) {
-                if (job.status === 'completed') {
+                // Folder Sync reports its own outcomes in the Sync panel; its
+                // transfers only refresh the folder they changed.
+                if (job.origin) {
+                    if (job.status === 'completed') {
+                        void invalidateFolderFileQueries(queryClient, job.folderId, job.ownerId);
+                    }
+                } else if (job.status === 'completed') {
                     triggerHaptic('success');
                     announceSupporterValueMoment('upload_completed');
                     void invalidateFolderFileQueries(queryClient, job.folderId, job.ownerId);
                 } else if (job.status === 'failed') {
-                    toast.error(`Upload failed for ${job.filename}: ${job.error || 'Unknown error'}`);
+                    toast.error(i18n.t('transfer_copy.upload_failed',{name:job.filename,error:job.error||i18n.t('transfer_copy.unknown_error')}));
                 } else if (job.status === 'waiting_for_unlock') {
                     toast.warning(t('settings.encryption_mode_passphrase'));
                 }
@@ -181,7 +190,7 @@ export function useFileUpload(
         }).catch(error => {
             if (disposed || !isCurrent()) return;
             console.error('[Upload] Could not attach to the desktop transfer engine:', error);
-            toast.error('The desktop transfer queue could not be loaded.');
+            toast.error(i18n.t('transfer_copy.queue_load_error'));
         });
         return () => {
             disposed = true;
@@ -199,12 +208,12 @@ export function useFileUpload(
                     await enqueueDesktopTransfers(pending.map(uploadItemToTransferRequest));
                     await store.set('uploadQueue', []);
                     await store.save();
-                    toast.info(`Migrated ${pending.length} uploads to the durable desktop queue`);
+                    toast.info(i18n.t('transfer_copy.migrated_uploads',{count:pending.length}));
                 }
                 setInitialized(true);
             }).catch(error => {
                 console.error('[Upload] Could not migrate the desktop recovery queue:', error);
-                toast.error('Could not migrate the saved upload queue. It was left intact.');
+                toast.error(i18n.t('transfer_copy.upload_migrate_failed'));
                 setInitialized(true);
             });
             return;
@@ -218,7 +227,7 @@ export function useFileUpload(
                         ...previous,
                     ]);
                     const visibleCount = pending.filter(item => ownerRef.current && item.ownerId === ownerRef.current).length;
-                    if (visibleCount) toast.info(`Restored ${visibleCount} pending uploads`);
+                    if (visibleCount) toast.info(i18n.t('transfer_copy.restored_uploads',{count:visibleCount}));
                 }
             }
             setInitialized(true);
@@ -455,7 +464,7 @@ export function useFileUpload(
                     keepTemporaryFileForResume = Boolean(item.tempZipPath || item.androidStaged);
                     const displayPath = item.url || item.path;
                     setUploadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'error', error: errMsg } : i));
-                    toast.error(`Upload failed for ${displayPath.split('/').pop()}: ${e}`);
+                    toast.error(i18n.t('transfer_copy.upload_failed',{name:displayPath.split('/').pop(),error:String(e)}));
                 }
             } else if (cancelledRef.current.has(item.id)) {
                 cancelledRef.current.delete(item.id);
@@ -489,24 +498,23 @@ export function useFileUpload(
             return Array.from({ length: count }, () => ({ ...base }));
         }
 
-        const accepted = window.confirm(t('settings.encryption_disclaimer_body'));
+        const accepted = await confirm({
+            title: t('settings.encryption_disclaimer_title'),
+            message: t('settings.encryption_disclaimer_body'),
+            variant: 'info',
+        });
         if (!accepted) return null;
         requireCurrent();
-        const passphrase = window.prompt(
-            `${t('settings.encryption_mode_passphrase')}\n${t('settings.min_passphrase_length')}`,
-        );
+        // One masked request covers the whole batch; the value stays in memory
+        // only long enough to stage a single-use token per file.
+        const passphrase = await promptSecret({
+            title: t('settings.encryption_mode_passphrase'),
+            message: t('settings.min_passphrase_length'),
+            confirmEntry: true,
+            minBytes: 8,
+        });
         if (!passphrase) return null;
         requireCurrent();
-        if (new TextEncoder().encode(passphrase).length < 8) {
-            toast.error(t('settings.min_passphrase_length'));
-            return null;
-        }
-        const confirmation = window.prompt(t('settings.confirm_passphrase'));
-        requireCurrent();
-        if (confirmation !== passphrase) {
-            toast.error(t('settings.passphrases_no_match'));
-            return null;
-        }
         try {
             const tokens = await Promise.all(
                 Array.from({ length: count }, () => invoke<number>('cmd_stage_file_passphrase', { passphrase })),
@@ -562,7 +570,7 @@ export function useFileUpload(
             return 0;
         }
         const newItems: QueueItem[] = preparedPaths.map((prepared, index) => ({
-            id: Math.random().toString(36).substr(2, 9),
+            id: crypto.randomUUID(),
             ownerId: actionOwnerId,
             path: prepared.path,
             androidStaged: prepared.androidStaged || undefined,
@@ -642,7 +650,7 @@ export function useFileUpload(
         const destinationFolderId = activeFolderId;
         const folderPath = await pickWithFallback(
             async () => {
-                const selected = await open({ multiple: false, directory: true, title: 'Select Folder to Upload' });
+                const selected = await open({ multiple: false, directory: true, title: i18n.t('common.upload_folder_picker') });
                 if (!selected) return null;
                 const fp = Array.isArray(selected) ? selected[0] : selected;
                 return fp || null;
@@ -693,7 +701,7 @@ export function useFileUpload(
                     await invoke('cmd_delete_temp_zip', { path: zipPath }).catch(() => undefined);
                 }
                 const item: QueueItem = {
-                    id: Math.random().toString(36).substr(2, 9),
+                    id: crypto.randomUUID(),
                     ownerId: actionOwnerId,
                     path: uploadPath,
                     folderId: destinationFolderId,
@@ -722,7 +730,7 @@ export function useFileUpload(
         if (!isCurrent()) return;
         if (!isAndroidPlatform) {
             void transferBulkAction('cancel', 'upload', ownerId).catch(error => { if (isCurrent()) toast.error(userFacingError(error, t)); });
-            toast.info('All uploads cancelled');
+            toast.info(i18n.t('transfer_copy.uploads_cancelled'));
             return;
         }
         setUploadQueue(q => {
@@ -737,14 +745,14 @@ export function useFileUpload(
                 .filter(i => !removableItems.some(removable => removable.id === i.id))
                 .map(i => activeItems.some(active => active.id === i.id) ? { ...i, status: 'cancelled' as const } : i);
         });
-        toast.info('All uploads cancelled');
+        toast.info(i18n.t('transfer_copy.uploads_cancelled'));
     };
 
     const pauseAll = () => {
         if (!isCurrent()) return;
         if (!isAndroidPlatform) {
             void transferBulkAction('pause', 'upload', ownerId).catch(error => { if (isCurrent()) toast.error(userFacingError(error, t)); });
-            toast.info('Uploads paused. Active items will restart safely when resumed.');
+            toast.info(i18n.t('transfer_copy.uploads_paused'));
             return;
         }
         setUploadQueue(q => q.map(item => {
@@ -756,20 +764,20 @@ export function useFileUpload(
             }
             return item.status === 'pending' ? { ...item, status: 'paused' as const } : item;
         }));
-        toast.info('Uploads paused. Active items will restart safely when resumed.');
+        toast.info(i18n.t('transfer_copy.uploads_paused'));
     };
 
     const resumeAll = () => {
         if (!isCurrent()) return;
         if (!isAndroidPlatform) {
             void transferBulkAction('resume', 'upload', ownerId).catch(error => { if (isCurrent()) toast.error(userFacingError(error, t)); });
-            toast.info('Uploads resumed');
+            toast.info(i18n.t('transfer_copy.uploads_resumed'));
             return;
         }
         setUploadQueue(q => q.map(item => ownsItem(item) && item.status === 'paused'
             ? { ...item, status: 'pending' as const, error: undefined }
             : item));
-        toast.info('Uploads resumed');
+        toast.info(i18n.t('transfer_copy.uploads_resumed'));
     };
 
     const clearFinished = () => {
@@ -870,7 +878,7 @@ export function useFileUpload(
         const protection = await chooseAndStageProtection(1);
         if (!protection) return;
         const item: QueueItem = {
-            id: Math.random().toString(36).substr(2, 9),
+            id: crypto.randomUUID(),
             ownerId: actionOwnerId,
             path: filename,
             url: url.trim(),
@@ -883,7 +891,7 @@ export function useFileUpload(
             videoUploadMode: protection[0].mode === 'standard' ? settings.videoUploadMode : 'file',
         };
         await enqueueUploadItems([item]);
-        toast.info(`Queued remote upload from URL`);
+        toast.info(i18n.t('transfer_copy.remote_upload_queued'));
     };
 
     return {

@@ -4,7 +4,7 @@ use crate::desktop_lifecycle::{
     request_graceful_quit, show_main_window, DesktopLifecycleState, DesktopNavigationRequest,
 };
 use crate::transfer_engine::{TransferEngine, TransferJob, TransferStatus};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager};
@@ -40,68 +40,155 @@ impl TransferSummary {
         }
         summary
     }
+}
 
-    fn label(self) -> String {
-        if self.active > 0 {
-            format!("Telegram Drive — {} active", self.active)
-        } else if self.paused > 0 {
-            format!("Telegram Drive — {} paused", self.paused)
-        } else if self.waiting > 0 {
-            format!("Telegram Drive — {} need attention", self.waiting)
-        } else if self.failed > 0 {
-            format!("Telegram Drive — {} failed", self.failed)
-        } else {
-            "Telegram Drive — Up to date".to_string()
+#[derive(serde::Serialize)]
+pub struct TrayProjection {
+    pub status: String,
+    pub open: String,
+    pub transfers: String,
+    pub pause: String,
+    pub resume: String,
+    pub quit: String,
+    pub pause_enabled: bool,
+    pub resume_enabled: bool,
+}
+
+pub fn project(summary: TransferSummary, language: &str) -> TrayProjection {
+    use crate::native_localization::{format, text};
+    let (key, count) = if summary.active > 0 {
+        ("active", summary.active)
+    } else if summary.paused > 0 {
+        ("paused", summary.paused)
+    } else if summary.waiting > 0 {
+        ("attention", summary.waiting)
+    } else if summary.failed > 0 {
+        ("failed", summary.failed)
+    } else {
+        ("current", 0)
+    };
+    let action = |verb, name| {
+        format(
+            language,
+            "common.action_name",
+            &[
+                ("action", text(language, verb)),
+                ("name", text(language, name)),
+            ],
+        )
+    };
+    TrayProjection {
+        status: format(
+            language,
+            &format!("native_tray.{key}"),
+            &[("count", &count.to_string())],
+        ),
+        open: action("files.open", "common.app_title"),
+        transfers: action("files.open", "common.transfers"),
+        pause: text(language, "native_tray.pause_all").to_owned(),
+        resume: action("activity.resume", "common.transfers"),
+        quit: text(language, "native_tray.quit").to_owned(),
+        pause_enabled: summary.active > 0 || summary.waiting > 0,
+        resume_enabled: summary.paused > 0,
+    }
+}
+
+/// A delayed producer cannot replace a newer coordinator snapshot.
+#[derive(Default)]
+pub(crate) struct TraySummaryState(Mutex<(u64, TransferSummary)>);
+impl TraySummaryState {
+    pub(crate) fn update(&self, summary: TransferSummary, revision: u64) -> bool {
+        let mut current = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if revision < current.0 {
+            return false;
         }
+        *current = (revision, summary);
+        true
+    }
+    pub(crate) fn snapshot(&self) -> TransferSummary {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .1
     }
 }
 
 pub struct DesktopTrayState {
+    app: AppHandle,
     tray: TrayIcon<tauri::Wry>,
     status: MenuItem<tauri::Wry>,
+    open: MenuItem<tauri::Wry>,
+    transfers: MenuItem<tauri::Wry>,
     pause: MenuItem<tauri::Wry>,
     resume: MenuItem<tauri::Wry>,
+    quit: MenuItem<tauri::Wry>,
+    summary: TraySummaryState,
 }
 
 impl DesktopTrayState {
-    pub fn update(&self, summary: TransferSummary) {
-        let label = summary.label();
-        if let Err(error) = self.status.set_text(&label) {
-            log::warn!("Could not update tray status text: {error}");
+    pub fn update(&self, summary: TransferSummary, revision: u64) {
+        if self.summary.update(summary, revision) {
+            self.refresh();
         }
-        if let Err(error) = self
-            .pause
-            .set_enabled(summary.active > 0 || summary.waiting > 0)
-        {
-            log::warn!("Could not update tray pause state: {error}");
-        }
-        if let Err(error) = self.resume.set_enabled(summary.paused > 0) {
-            log::warn!("Could not update tray resume state: {error}");
-        }
-        if let Err(error) = self.tray.set_tooltip(Some(label)) {
-            log::debug!("Tray tooltip is unavailable on this desktop: {error}");
+    }
+    pub fn refresh(&self) {
+        let app = self.app.clone();
+        if let Err(error) = self.app.run_on_main_thread(move || {
+            let Some(tray) = app.try_state::<DesktopTrayState>() else {
+                return;
+            };
+            let summary = tray.summary.snapshot();
+            let language = app
+                .state::<crate::native_localization::NativeLanguageState>()
+                .get();
+            let copy = project(summary, language);
+            for (item, label) in [
+                (&tray.status, &copy.status),
+                (&tray.open, &copy.open),
+                (&tray.transfers, &copy.transfers),
+                (&tray.pause, &copy.pause),
+                (&tray.resume, &copy.resume),
+                (&tray.quit, &copy.quit),
+            ] {
+                if let Err(error) = item.set_text(label) {
+                    log::warn!("Could not update tray text: {error}");
+                }
+            }
+            if let Err(error) = tray.pause.set_enabled(copy.pause_enabled) {
+                log::warn!("Could not update tray pause state: {error}");
+            }
+            if let Err(error) = tray.resume.set_enabled(copy.resume_enabled) {
+                log::warn!("Could not update tray resume state: {error}");
+            }
+            if let Err(error) = tray.tray.set_tooltip(Some(copy.status)) {
+                log::debug!("Tray tooltip is unavailable on this desktop: {error}");
+            }
+        }) {
+            log::warn!("Could not schedule tray update: {error}");
         }
     }
 }
 
 pub fn initialize(app: &AppHandle) -> Result<DesktopTrayState, String> {
-    let status = MenuItem::with_id(
-        app,
-        "desktop_status",
-        "Telegram Drive — Up to date",
-        false,
-        None::<&str>,
-    )
-    .map_err(|error| error.to_string())?;
-    let open = MenuItem::with_id(app, MENU_OPEN, "Open Telegram Drive", true, None::<&str>)
+    let copy = project(
+        TransferSummary::default(),
+        app.state::<crate::native_localization::NativeLanguageState>()
+            .get(),
+    );
+    let status = MenuItem::with_id(app, "desktop_status", &copy.status, false, None::<&str>)
         .map_err(|error| error.to_string())?;
-    let transfers = MenuItem::with_id(app, MENU_TRANSFERS, "Open Transfers", true, None::<&str>)
+    let open = MenuItem::with_id(app, MENU_OPEN, &copy.open, true, None::<&str>)
         .map_err(|error| error.to_string())?;
-    let pause = MenuItem::with_id(app, MENU_PAUSE, "Pause All Transfers", false, None::<&str>)
+    let transfers = MenuItem::with_id(app, MENU_TRANSFERS, &copy.transfers, true, None::<&str>)
         .map_err(|error| error.to_string())?;
-    let resume = MenuItem::with_id(app, MENU_RESUME, "Resume Transfers", false, None::<&str>)
+    let pause = MenuItem::with_id(app, MENU_PAUSE, &copy.pause, false, None::<&str>)
         .map_err(|error| error.to_string())?;
-    let quit = MenuItem::with_id(app, MENU_QUIT, "Quit Telegram Drive", true, None::<&str>)
+    let resume = MenuItem::with_id(app, MENU_RESUME, &copy.resume, false, None::<&str>)
+        .map_err(|error| error.to_string())?;
+    let quit = MenuItem::with_id(app, MENU_QUIT, &copy.quit, true, None::<&str>)
         .map_err(|error| error.to_string())?;
     let separator_one = PredefinedMenuItem::separator(app).map_err(|error| error.to_string())?;
     let separator_two = PredefinedMenuItem::separator(app).map_err(|error| error.to_string())?;
@@ -123,7 +210,7 @@ pub fn initialize(app: &AppHandle) -> Result<DesktopTrayState, String> {
     let tray = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .tooltip("Telegram Drive — Up to date")
+        .tooltip(copy.status.clone())
         .on_menu_event(handle_menu_event)
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click {
@@ -151,6 +238,11 @@ pub fn initialize(app: &AppHandle) -> Result<DesktopTrayState, String> {
         lifecycle.set_tray_ready(true);
     }
     Ok(DesktopTrayState {
+        app: app.clone(),
+        summary: TraySummaryState::default(),
+        open,
+        transfers,
+        quit,
         tray,
         status,
         pause,

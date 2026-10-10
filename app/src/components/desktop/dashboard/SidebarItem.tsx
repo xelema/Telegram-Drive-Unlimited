@@ -74,6 +74,8 @@ export function SidebarItem({
             {...attributes}
             {...listeners}
             aria-disabled={undefined}
+            role={hasFolderActions && !collapsed ? 'group' : attributes.role}
+            aria-label={label}
             onKeyDown={event => {
                 if (event.target !== event.currentTarget) return;
                 if (!dragActive && (event.key === 'Enter' || (folderId === null && event.key === ' '))) {
@@ -174,14 +176,14 @@ export function SidebarItem({
                         <>
                             <div className="my-1.5 h-px bg-telegram-border" />
                             <div className="px-3 py-1.5 text-badge font-medium text-app-text-tertiary">
-                                {t('files.move_to_group') || "Move to Group"}
+                                {t('files.move_to_group')}
                             </div>
                             <button
                                 onClick={() => runAndClose(() => onAssignFolderToGroup(folderId, null))}
                                 className="quiet-menu-item min-h-10 gap-3 px-3 py-2 text-metadata"
                             >
                                 <span className="w-1.5 h-1.5 rounded-full bg-telegram-subtext" />
-                                {t('common.unassigned') || "None (Unassigned)"}
+                                {t('common.unassigned')}
                             </button>
                             {groups.map(group => (
                                 <button

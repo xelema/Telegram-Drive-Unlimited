@@ -90,6 +90,86 @@ impl std::fmt::Display for SyncError {
     }
 }
 
+/// Baseline files that exist on both sides of a mapping that has never
+/// recorded them, when they share a path and a byte size. Local and Telegram
+/// trees use different fingerprints, so without this an already-populated
+/// folder reports every shared file as a conflict. Returns the adopted paths so
+/// the caller can persist them; files that differ in size stay conflicts.
+pub fn adopt_matching_files(
+    local: &FileTree,
+    remote: &FileTree,
+    synced: &mut SyncedTree,
+) -> Vec<String> {
+    let mut adopted = Vec::new();
+    for (relative_path, local_entry) in local {
+        let Some(remote_entry) = remote.get(relative_path) else {
+            continue;
+        };
+        // A file with recorded history is never re-baselined, except the
+        // conflict this same pair of copies produced before adoption was
+        // turned on.
+        let adoptable = synced.get(relative_path).is_none_or(|previous| {
+            previous.sync_status == "conflict"
+                && previous.local_hash.as_deref() == Some(local_entry.hash.as_str())
+                && previous.remote_hash.as_deref() == Some(remote_entry.hash.as_str())
+        });
+        if !adoptable {
+            continue;
+        }
+        if local_entry.file_size != remote_entry.file_size {
+            continue;
+        }
+        synced.insert(
+            relative_path.clone(),
+            SyncedEntry {
+                relative_path: relative_path.clone(),
+                local_hash: Some(local_entry.hash.clone()),
+                remote_hash: Some(remote_entry.hash.clone()),
+                file_size: local_entry.file_size,
+                local_mtime: local_entry.modified_at,
+                remote_date: remote_entry.modified_at,
+                message_id: remote_entry.message_id,
+                sync_status: "synced".to_string(),
+            },
+        );
+        adopted.push(relative_path.clone());
+    }
+    adopted
+}
+
+/// An upload is journaled as `syncing` with its Telegram message id before the
+/// uploaded message's fingerprint is known. If the engine stopped before that
+/// final step, finish it here: the file is unchanged locally and the same
+/// message is still at that path, so it is our own upload rather than a remote
+/// edit that would have to be downloaded again. Returns the completed paths.
+pub fn resume_interrupted_uploads(
+    local: &FileTree,
+    remote: &FileTree,
+    synced: &mut SyncedTree,
+) -> Vec<String> {
+    let mut resumed = Vec::new();
+    for (relative_path, previous) in synced.iter_mut() {
+        if previous.sync_status != "syncing" || previous.message_id.is_none() {
+            continue;
+        }
+        let (Some(local_entry), Some(remote_entry)) =
+            (local.get(relative_path), remote.get(relative_path))
+        else {
+            continue;
+        };
+        if remote_entry.message_id != previous.message_id
+            || previous.local_hash.as_deref() != Some(local_entry.hash.as_str())
+        {
+            continue;
+        }
+        previous.remote_hash = Some(remote_entry.hash.clone());
+        previous.remote_date = remote_entry.modified_at;
+        previous.sync_status = "synced".to_string();
+        resumed.push(relative_path.clone());
+    }
+    resumed
+}
+
 pub fn plan(
     local: &FileTree,
     remote: &FileTree,

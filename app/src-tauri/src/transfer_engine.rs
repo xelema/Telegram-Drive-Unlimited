@@ -23,6 +23,25 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Listener, Manager, State};
 use tokio::sync::{Mutex as AsyncMutex, Notify, RwLock};
 
+/// Progress is shown live but written to disk at most this often per job.
+/// State changes are always written immediately; a crash can lose at most
+/// this much progress display, never a transition.
+const PROGRESS_CHECKPOINT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+/// A removed job's id is remembered this long so a late update from the
+/// operation that was running cannot recreate it.
+const TOMBSTONE_RETENTION_SECS: i64 = 30 * 24 * 60 * 60;
+/// Waits before retrying a transfer that failed on a connection problem.
+/// After the last one the job is reported as failed for the user to retry.
+const NETWORK_RETRY_BACKOFF_SECS: [i64; 5] = [5, 15, 45, 120, 300];
+/// A supervised transfer that cannot start because Telegram is disconnected
+/// is handed back to its supervisor after this long.
+const SUPERVISED_OFFLINE_GRACE: std::time::Duration = std::time::Duration::from_secs(15);
+/// After a supervised transfer is withdrawn, how long to wait for the
+/// operation that was running to stop touching its files.
+const WITHDRAW_SETTLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// `origin` of a transfer Folder Sync runs and waits for.
+pub const ORIGIN_SYNC: &str = "sync";
+
 const DATABASE_SCHEMA: &str = r#"
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = FULL;
@@ -158,6 +177,18 @@ pub struct TransferJob {
     #[serde(default)]
     pub persistence_pending: bool,
     pub retry_at: Option<i64>,
+    /// Automatic retries already spent on connection failures for this job.
+    #[serde(default)]
+    pub network_retries: u32,
+    /// Set when another part of the application runs this transfer and waits
+    /// for it. Such a transfer is never left to finish on its own: its owner
+    /// removes it when it stops waiting, and any left by a crash are dropped
+    /// at the next start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    /// For a Folder Sync upload, the file's path inside its mapped folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_path: Option<String>,
     pub queue_position: i64,
     pub revision: u64,
     pub created_at: i64,
@@ -187,6 +218,11 @@ pub struct TransferEnqueueRequest {
     pub temp_zip_path: Option<String>,
     pub total_bytes: Option<u64>,
     pub initial_status: Option<TransferStatus>,
+    /// Internal callers only; never read from a request made by the interface.
+    #[serde(skip)]
+    pub origin: Option<String>,
+    #[serde(skip)]
+    pub sync_path: Option<String>,
 }
 
 impl TransferEnqueueRequest {
@@ -237,7 +273,21 @@ impl TransferStore {
         connection
             .execute(DATABASE_SCHEMA)
             .map_err(|error| format!("Could not initialize transfer database: {error}"))?;
+        Self::maintain_tombstones(&connection, chrono::Utc::now().timestamp())?;
         let mut jobs = Self::load_all_from(&connection)?;
+        // A supervised transfer belongs to an operation that ended with the
+        // previous process. Its supervisor plans the work again; a leftover
+        // record must not run, or be resumed by hand, without it.
+        for orphan in jobs.iter().filter(|job| job.origin.is_some()) {
+            let mut remove = connection
+                .prepare("DELETE FROM transfer_jobs WHERE id = ?")
+                .map_err(|error| error.to_string())?;
+            remove
+                .bind((1, orphan.id.as_str()))
+                .map_err(|error| error.to_string())?;
+            remove.next().map_err(|error| error.to_string())?;
+        }
+        jobs.retain(|job| job.origin.is_none());
         for job in &mut jobs {
             if recover_after_restart(job) {
                 Self::upsert_on(&connection, job)?;
@@ -249,6 +299,41 @@ impl TransferStore {
             },
             jobs,
         ))
+    }
+
+    /// Date tombstones and drop the ones past their retention. Databases
+    /// written by earlier releases have no date column; it is added in place
+    /// and stays compatible with those releases, which never read it.
+    fn maintain_tombstones(connection: &sqlite::Connection, now: i64) -> Result<(), String> {
+        let mut columns = connection
+            .prepare("PRAGMA table_info(transfer_tombstones)")
+            .map_err(|e| e.to_string())?;
+        let mut dated = false;
+        while columns.next().map_err(|e| e.to_string())? == SqliteState::Row {
+            if columns.read::<String, _>(1).map_err(|e| e.to_string())? == "removed_at" {
+                dated = true;
+            }
+        }
+        drop(columns);
+        if !dated {
+            connection
+                .execute("ALTER TABLE transfer_tombstones ADD COLUMN removed_at INTEGER")
+                .map_err(|e| format!("Could not update transfer database: {e}"))?;
+        }
+        for sql in [
+            "UPDATE transfer_tombstones SET removed_at = ?1 WHERE removed_at IS NULL",
+            "DELETE FROM transfer_tombstones WHERE removed_at < ?1",
+        ] {
+            let mut statement = connection.prepare(sql).map_err(|e| e.to_string())?;
+            let bound = if sql.starts_with("UPDATE") {
+                now
+            } else {
+                now.saturating_sub(TOMBSTONE_RETENTION_SECS)
+            };
+            statement.bind((1, bound)).map_err(|e| e.to_string())?;
+            statement.next().map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 
     fn load_all_from(connection: &sqlite::Connection) -> Result<Vec<TransferJob>, String> {
@@ -365,18 +450,24 @@ impl TransferStore {
             connection
                 .execute("BEGIN IMMEDIATE")
                 .map_err(|e| e.to_string())?;
+            let removed_at = chrono::Utc::now().timestamp();
             let result = (|| {
                 for id in &ids {
-                    for sql in [
-                        "INSERT OR IGNORE INTO transfer_tombstones(id) VALUES (?)",
-                        "DELETE FROM transfer_jobs WHERE id = ?",
-                    ] {
-                        let mut statement = connection.prepare(sql).map_err(|e| e.to_string())?;
-                        statement
-                            .bind((1, id.as_str()))
-                            .map_err(|e| e.to_string())?;
-                        statement.next().map_err(|e| e.to_string())?;
-                    }
+                    let mut tombstone = connection
+                        .prepare(
+                            "INSERT OR IGNORE INTO transfer_tombstones(id, removed_at) VALUES (?, ?)",
+                        )
+                        .map_err(|e| e.to_string())?;
+                    tombstone
+                        .bind((1, id.as_str()))
+                        .map_err(|e| e.to_string())?;
+                    tombstone.bind((2, removed_at)).map_err(|e| e.to_string())?;
+                    tombstone.next().map_err(|e| e.to_string())?;
+                    let mut remove = connection
+                        .prepare("DELETE FROM transfer_jobs WHERE id = ?")
+                        .map_err(|e| e.to_string())?;
+                    remove.bind((1, id.as_str())).map_err(|e| e.to_string())?;
+                    remove.next().map_err(|e| e.to_string())?;
                 }
                 Ok::<(), String>(())
             })();
@@ -495,7 +586,11 @@ pub struct TransferEngine {
     mutation_lock: AsyncMutex<()>,
     pending_commits: AsyncMutex<HashMap<String, TransferJob>>,
     prompt_tokens: AsyncMutex<HashMap<String, u64>>,
+    /// When each running job's progress was last written to disk.
+    progress_checkpoints: AsyncMutex<HashMap<String, std::time::Instant>>,
     notify: Notify,
+    /// Wakes supervisors waiting for a transfer to settle.
+    changes: Notify,
     max_uploads: AtomicUsize,
     max_downloads: AtomicUsize,
     shutting_down: AtomicBool,
@@ -524,7 +619,9 @@ impl TransferEngine {
             mutation_lock: AsyncMutex::new(()),
             pending_commits: AsyncMutex::new(HashMap::new()),
             prompt_tokens: AsyncMutex::new(HashMap::new()),
+            progress_checkpoints: AsyncMutex::new(HashMap::new()),
             notify: Notify::new(),
+            changes: Notify::new(),
             max_uploads: AtomicUsize::new(6),
             max_downloads: AtomicUsize::new(6),
             shutting_down: AtomicBool::new(false),
@@ -651,7 +748,24 @@ impl TransferEngine {
             job.updated_at = now_millis();
             job.clone()
         };
-        self.persist_and_emit(updated).await;
+        // The interface gets every update; the database gets a checkpoint.
+        // Each write is a synchronous commit, so writing all of them made the
+        // disk the busiest part of a fast transfer.
+        let checkpoint_due = {
+            let mut checkpoints = self.progress_checkpoints.lock().await;
+            let due = checkpoints
+                .get(&updated.id)
+                .is_none_or(|last| last.elapsed() >= PROGRESS_CHECKPOINT_INTERVAL);
+            if due {
+                checkpoints.insert(updated.id.clone(), std::time::Instant::now());
+            }
+            due
+        };
+        if checkpoint_due {
+            self.persist_and_emit(updated).await;
+        } else {
+            self.emit_job(&updated);
+        }
     }
 
     fn account(&self, expected: Option<&str>) -> Result<AccountGuard, String> {
@@ -670,6 +784,142 @@ impl TransferEngine {
     fn emit_job(&self, job: &TransferJob) {
         if self.is_current_owner(job) {
             let _ = self.app.emit("transfer-upserted", job);
+        }
+        self.changes.notify_waiters();
+    }
+
+    /// Run one transfer on behalf of another part of the application and wait
+    /// for it to settle. It shares the queue's limits, retries, cooldowns and
+    /// progress reporting, and can be paused or cancelled like any other.
+    ///
+    /// The caller owns the outcome: whatever happens, including the caller
+    /// being dropped, the transfer is withdrawn so that it can never finish
+    /// later with nobody to record the result.
+    pub async fn run_supervised(
+        self: &Arc<Self>,
+        request: TransferEnqueueRequest,
+        mut stop: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<TransferJob, String> {
+        struct Withdraw {
+            engine: Arc<TransferEngine>,
+            id: String,
+            armed: bool,
+        }
+        impl Drop for Withdraw {
+            fn drop(&mut self) {
+                if self.armed {
+                    let engine = self.engine.clone();
+                    let id = std::mem::take(&mut self.id);
+                    tauri::async_runtime::spawn(async move { engine.withdraw(&id).await });
+                }
+            }
+        }
+        if request.origin.is_none() {
+            return Err("A supervised transfer must name its origin".into());
+        }
+        let mut guard = Withdraw {
+            engine: self.clone(),
+            id: request.id.clone(),
+            armed: true,
+        };
+        self.enqueue_many(vec![request]).await?;
+        let outcome = self.wait_settled(&guard.id, &mut stop).await;
+        guard.armed = false;
+        self.withdraw(&guard.id).await;
+        outcome
+    }
+
+    async fn wait_settled(
+        &self,
+        id: &str,
+        stop: &mut tokio::sync::watch::Receiver<bool>,
+    ) -> Result<TransferJob, String> {
+        let mut offline_since: Option<std::time::Instant> = None;
+        loop {
+            if *stop.borrow() {
+                return Err("Folder sync shutdown requested".into());
+            }
+            // Registered before the state is read, so no change is missed.
+            let changed = self.changes.notified();
+            let Some(job) = self.jobs.read().await.get(id).cloned() else {
+                return Err("The transfer was removed".into());
+            };
+            if let Some(outcome) = supervised_outcome(&job) {
+                return outcome.map(|()| job);
+            }
+            // A queued transfer does not start while Telegram is disconnected.
+            // Give the supervisor its turn back instead of holding it here.
+            let waiting_to_start = matches!(
+                job.status,
+                TransferStatus::Pending | TransferStatus::WaitingForNetwork
+            );
+            let connected = self
+                .app
+                .state::<TelegramState>()
+                .client
+                .lock()
+                .await
+                .is_some();
+            if waiting_to_start && !connected {
+                let since = *offline_since.get_or_insert_with(std::time::Instant::now);
+                if since.elapsed() >= SUPERVISED_OFFLINE_GRACE {
+                    return Err("Client not connected".into());
+                }
+            } else {
+                offline_since = None;
+            }
+            tokio::select! {
+                _ = changed => {}
+                _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
+                result = stop.changed() => {
+                    if result.is_err() {
+                        return Err("Folder sync shutdown requested".into());
+                    }
+                }
+            }
+        }
+    }
+
+    /// Stop and forget a supervised transfer. Returns once the operation that
+    /// was running has stopped, or after a bounded wait.
+    async fn withdraw(&self, id: &str) {
+        let was_active = {
+            let _mutation = self.mutation_lock.lock().await;
+            let was_active = self.active.lock().await.contains_key(id);
+            let mut jobs = self.jobs.write().await;
+            if jobs.remove(id).is_some() {
+                if let Err(error) = self.store.delete_many(&[id.to_string()]).await {
+                    log::warn!("Could not remove supervised transfer {id}: {error}");
+                }
+                let _ = self.app.emit("transfer-removed", id);
+            }
+            drop(jobs);
+            self.prompt_tokens.lock().await.remove(id);
+            self.pending_commits.lock().await.remove(id);
+            if was_active {
+                let _ = commands::cmd_cancel_transfer(
+                    id.to_string(),
+                    self.app.state::<TelegramState>(),
+                )
+                .await;
+            }
+            was_active
+        };
+        self.changes.notify_waiters();
+        self.notify.notify_one();
+        if was_active {
+            let deadline = std::time::Instant::now() + WITHDRAW_SETTLE_TIMEOUT;
+            while self.active.lock().await.contains_key(id) && std::time::Instant::now() < deadline
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            // The cancellation request is single-use; do not leave it behind.
+            self.app
+                .state::<TelegramState>()
+                .cancelled_transfers
+                .write()
+                .await
+                .remove(id);
         }
     }
 
@@ -810,7 +1060,7 @@ impl TransferEngine {
             Err(error) => Err(error),
             Ok(_) => match job.kind {
                 TransferKind::LocalUpload => {
-                    commands::cmd_upload_file(
+                    commands::fs::upload_local_file(
                         job.path.clone().unwrap_or_default(),
                         job.folder_id,
                         Some(job.id.clone()),
@@ -818,6 +1068,7 @@ impl TransferEngine {
                         prompt_token,
                         job.protect_metadata,
                         job.video_upload_mode.clone(),
+                        job.sync_path.clone(),
                         self.app.clone(),
                         self.app.state::<TelegramState>(),
                         self.app.state::<Arc<BandwidthManager>>(),
@@ -872,10 +1123,12 @@ impl TransferEngine {
 
         let _mutation = self.mutation_lock.lock().await;
         self.active.lock().await.remove(&job.id);
+        self.progress_checkpoints.lock().await.remove(&job.id);
         let updated = {
             let mut jobs = self.jobs.write().await;
             let Some(mut current) = jobs.get(&job.id).cloned() else {
                 self.notify.notify_one();
+                self.changes.notify_waiters();
                 return;
             };
             match result {
@@ -888,6 +1141,7 @@ impl TransferEngine {
                     current.error = None;
                     current.retry_at = None;
                     current.error_category = None;
+                    current.network_retries = 0;
                     record_success_response(&mut current, &response);
                 }
                 Err(_error)
@@ -1007,6 +1261,9 @@ impl TransferEngine {
                 error_category: None,
                 persistence_pending: false,
                 retry_at: None,
+                network_retries: 0,
+                origin: request.origin,
+                sync_path: request.sync_path,
                 queue_position: position,
                 revision: 1,
                 created_at: now,
@@ -1074,7 +1331,8 @@ impl TransferEngine {
                 job.status = TransferStatus::Cancelled
             }
             TransferAction::Resume if job.status == TransferStatus::Paused => {
-                job.status = TransferStatus::Pending
+                job.status = TransferStatus::Pending;
+                job.network_retries = 0;
             }
             TransferAction::Retry
                 if matches!(
@@ -1089,6 +1347,8 @@ impl TransferEngine {
                 job.status = TransferStatus::Pending;
                 job.progress = 0;
                 job.transferred_bytes = 0;
+                // A manual retry gets a fresh automatic retry budget.
+                job.network_retries = 0;
             }
             _ => return Ok(job),
         }
@@ -1191,8 +1451,16 @@ impl TransferEngine {
                 .map(PathBuf::from),
             );
             if job.kind == TransferKind::UrlUpload {
-                paths.push(std::env::temp_dir().join(format!("tg_drive_{}.tmp", job.id)));
-                paths.push(std::env::temp_dir().join(format!("tg_drive_encrypted_{}", job.id)));
+                // Current private staging directory, plus the shared temporary
+                // directory used by releases before 4.0.
+                let mut roots = vec![std::env::temp_dir()];
+                if let Ok(staging) = crate::temp_artifacts::staging_root() {
+                    roots.push(staging);
+                }
+                for root in roots {
+                    paths.push(root.join(format!("tg_drive_{}.tmp", job.id)));
+                    paths.push(root.join(format!("tg_drive_encrypted_{}", job.id)));
+                }
             }
         }
         paths
@@ -1310,6 +1578,33 @@ fn select_pending_job_ids(
         .collect()
 }
 
+/// Whether a supervised transfer has reached a state its supervisor must act
+/// on. `None` while the queue is still working on it, including while the user
+/// has it paused.
+pub(crate) fn supervised_outcome(job: &TransferJob) -> Option<Result<(), String>> {
+    let failure = |fallback: &str| {
+        Err(job
+            .error
+            .clone()
+            .filter(|error| !error.is_empty())
+            .unwrap_or_else(|| fallback.to_string()))
+    };
+    match job.status {
+        TransferStatus::Completed => Some(Ok(())),
+        TransferStatus::Failed => Some(failure("The transfer failed")),
+        TransferStatus::Cancelled => Some(failure("Transfer cancelled")),
+        // Only the user can supply what is missing; the supervisor reports it.
+        TransferStatus::WaitingForUnlock => {
+            Some(failure("[VAULT_LOCKED] Unlock the vault to continue"))
+        }
+        // The queue paused it for a reason the user did not choose.
+        TransferStatus::Paused if job.error_category.is_some() => {
+            Some(failure("The transfer was paused"))
+        }
+        _ => None,
+    }
+}
+
 #[derive(Clone, Copy)]
 enum TransferAction {
     Pause,
@@ -1318,7 +1613,7 @@ enum TransferAction {
     Retry,
 }
 
-fn apply_failure(job: &mut TransferJob, error: String, now: i64) {
+pub(crate) fn apply_failure(job: &mut TransferJob, error: String, now: i64) {
     job.speed_bytes_per_sec = 0;
     job.retry_at = None;
     job.error_category = Some(classify_failure(&error));
@@ -1339,6 +1634,17 @@ fn apply_failure(job: &mut TransferJob, error: String, now: i64) {
         job.status = TransferStatus::WaitingForNetwork;
     } else if error.contains("Transfer cancelled") {
         job.status = TransferStatus::Cancelled;
+    } else if job.error_category == Some(TransferErrorCategory::Network) {
+        // A dropped connection is usually temporary. Retry a few times with
+        // growing waits before asking the user to step in.
+        match NETWORK_RETRY_BACKOFF_SECS.get(job.network_retries as usize) {
+            Some(wait) => {
+                job.network_retries += 1;
+                job.status = TransferStatus::Cooldown;
+                job.retry_at = Some(now.saturating_add(wait * 1_000));
+            }
+            None => job.status = TransferStatus::Failed,
+        }
     } else {
         job.status = TransferStatus::Failed;
     }
@@ -1370,6 +1676,12 @@ fn classify_failure(error: &str) -> TransferErrorCategory {
     } else if lower.contains("network")
         || lower.contains("connection")
         || lower.contains("timed out")
+        || lower.contains("timeout")
+        || lower.contains("broken pipe")
+        || lower.contains("reset by peer")
+        || lower.contains("unexpected eof")
+        || lower.contains("early eof")
+        || lower.contains("temporarily unavailable")
         || lower.contains("client not connected")
     {
         TransferErrorCategory::Network
@@ -1425,11 +1737,15 @@ fn reserve_new_downloads(
                 .ok_or("Download destination is missing")?,
         );
         let reserved_path = reserve_destination(path, job.collision_policy, &mut reserved)?;
-        job.filename = reserved_path
-            .file_name()
-            .ok_or("Download filename is missing")?
-            .to_string_lossy()
-            .into_owned();
+        // A supervised download is staged under an internal name; it keeps
+        // the name its supervisor gave it for display.
+        if job.origin.is_none() {
+            job.filename = reserved_path
+                .file_name()
+                .ok_or("Download filename is missing")?
+                .to_string_lossy()
+                .into_owned();
+        }
         job.save_path = Some(reserved_path.to_string_lossy().into_owned());
     }
     Ok(jobs)
@@ -1474,6 +1790,7 @@ fn activity_projection(job: &TransferJob) -> TransferJob {
         projected.path = None;
         projected.url = None;
         projected.save_path = None;
+        projected.sync_path = None;
         projected.temp_zip_path = None;
         projected.error = None;
         projected.total_bytes = 0;

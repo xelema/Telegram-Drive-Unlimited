@@ -23,7 +23,7 @@ pub enum Change {
     },
 }
 
-fn apply(account: &AccountGuard, changes: Vec<Change>) -> Result<(), String> {
+fn apply_current(account: &AccountGuard, changes: Vec<Change>) -> Result<(), String> {
     account.validate()?;
     let store = Store::open(&account.root, account.owner)?;
     store.transaction(|| {
@@ -83,7 +83,30 @@ fn apply(account: &AccountGuard, changes: Vec<Change>) -> Result<(), String> {
     })
 }
 
+fn apply(account: &AccountGuard, changes: Vec<Change>) -> Result<(), String> {
+    crate::file_inventory::mutate(account, || apply_current(account, changes))
+}
+
 pub async fn record(account: &AccountGuard, changes: Vec<Change>) -> Result<(), String> {
+    for change in &changes {
+        match change {
+            Change::Rename {
+                folder, message, ..
+            }
+            | Change::Delete { folder, message } => {
+                crate::file_inventory::changed(account, *folder, &[*message])?
+            }
+            Change::Move {
+                source,
+                message,
+                target,
+                ..
+            } => {
+                crate::file_inventory::changed(account, *source, &[*message])?;
+                crate::file_inventory::changed(account, *target, &[])?;
+            }
+        }
+    }
     let account = account.clone();
     tokio::task::spawn_blocking(move || apply(&account, changes))
         .await

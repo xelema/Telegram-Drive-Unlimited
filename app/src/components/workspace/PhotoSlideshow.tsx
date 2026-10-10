@@ -80,7 +80,7 @@ export function PhotoSlideshow({ ownerId, files, initialKey, autoPlay = false, o
         let active = true; let settled = false;
         const requestId = crypto.randomUUID();
         setAsset(null); setError(false); setLoaded(false);
-        if (file) void invoke<string>('cmd_workspace_asset', { ownerId, key: file.key, thumbnail: false, requestId })
+        if (file) void invoke<string>('cmd_workspace_asset', { ownerId, key: file.key, thumbnail: false, requestId, display: true })
             .then(path => { if (active) setAsset({ identity, source: convertFileSrc(path) }); })
             .catch(() => { if (active) setError(true); }).finally(() => { settled = true; });
         return () => {

@@ -1,3 +1,43 @@
+## [4.0.0] - 2026-10-05
+
+### Highlights
+
+- Search your Telegram library with account-scoped full-text filters, collections, saved searches and a media timeline.
+- Browse HEIC/HEIF photos and offline copies while preserving the original files. macOS previews are built in; Windows and Linux require FFmpeg 8.1 or newer.
+- Reopen unchanged app-produced files instantly on eligible filesystems, including after a restart. Files with changed or unsupported identities are verified in full.
+- Keep transfers, folder listings, local services and sign-in responsive, with clearer recovery and localized navigation across 24 languages.
+
+### Compatibility and visible changes
+
+- **REST API changes for scripts:** timestamps use RFC 3339, identifiers support 64-bit values, listings include complete results and explicit partial coverage, and the API publishes an OpenAPI document. Update clients that depend on the older shapes.
+- **Open externally** permits only files the app produced or recorded plain caches from earlier releases. Account and protection checks remain active. Arbitrary paths, symlinks and modified contents are refused; recorded 3.9.x previews, thumbnails and ready offline copies remain available after upgrade.
+- **Sponsor placements return every 15 minutes.** Active and offline-grace supporter entitlements continue to suppress every sponsor advertisement.
+- **TDENC2 encryption is a frozen-format beta.** Passphrases use masked dialogs, and recovery drills verify bundles without replacing the active vault. Independent cryptographic review remains pending.
+- Every Telegram Drive feature is available to non-paying users. Supported desktop and Android builds offer an optional **$5.00 USD Lifetime Ad-Free Supporter License** that removes sponsor placements on up to three supported Windows, macOS, Linux, or Android devices in total after one verified PayPal payment. It is a one-time purchase, **not a subscription**. Normal app updates preserve activation; existing purchasers do not need to buy again, and recovery codes remain supported.
+- **Android and Google TV are not part of this release.** Desktop 4.0.0 and the Android/Google TV 4.1.0 preview use independent version lines.
+
+### Workspace, reliability and localization
+
+- Folder, REST and WebDAV views share account-scoped inventory, retain older cached entries in partial listings and refresh after local changes. Search applies type, size, date, folder, tag, collection, favorite and protection filters before paging.
+- Offline packs, gallery/slideshow navigation, archive previews, preview-cache controls and transfer activity preserve source identity and account isolation. Protected files do not produce plaintext HEIC renditions.
+- Sign-out revokes the Telegram session before removing it locally and explains remote revocation failures. Wrong two-step verification passwords can be corrected without restarting sign-in.
+- Local servers recover from occupied ports. Redacted diagnostics identify startup failures, and staged files use private directories with cleanup at startup.
+- Storage checks correctly detect available space on Windows.
+- **Clear finished** removes completed, failed and cancelled uploads and downloads from the transfer queue while preserving ongoing work.
+- Tray menus, transfer notifications, share-password pages, settings, authentication, encryption, Help and viewer controls use localized copy. Language changes preserve dialog and application state; accessibility improvements cover focus, labels and contrast.
+
+### Verify downloads
+
+Download the installer and `SHA256SUMS.txt` from this release. On Linux use `sha256sum -c SHA256SUMS.txt`; on macOS use `shasum -a 256` for the selected file; on Windows use `Get-FileHash -Algorithm SHA256` and compare the matching manifest entry.
+
+Verify provenance with the expected repository and inspect the reported workflow and tag:
+
+```sh
+gh attestation verify ./DOWNLOADED_ARTIFACT --repo caamer20/Telegram-Drive
+```
+
+Do not install if verification fails or identifies an unexpected producer. Source and Arch runtime SBOMs and Sigstore bundles accompany the release. See [download verification](Docs/RELEASE_NOTES_TEMPLATE.md).
+
 ## [3.9.9] - 2026-10-01
 
 ### Unlimited uploads

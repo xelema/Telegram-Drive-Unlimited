@@ -1,9 +1,10 @@
+import { useLocalFileSearch } from '../../hooks/useGlobalFileSearch';
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Activity, ArrowLeft, Check, Download, FolderPlus, HardDrive, Image, Library, Loader2, Play, RefreshCw, Search, Tag, Trash2, X } from 'lucide-react';
 import { useWorkspace } from '../../hooks/useWorkspace';
 import { DEFAULT_SEARCH_FILTERS, type FileSearchFilters } from '../../services/fileSearch';
-import { filterWorkspaceFiles, savedSearchFolder, type WorkspaceFile, type SavedSearch } from '../../services/workspace';
+import { savedSearchFolder, type WorkspaceFile, type SavedSearch } from '../../services/workspace';
 import type { TelegramFile, TelegramFolder } from '../../types';
 import { isImageFile, isVideoFile, isMediaFile } from '../../utils';
 import { CollectionsPanel } from './CollectionsPanel';
@@ -41,11 +42,15 @@ export function WorkspaceHub({ folders, initialKeys = [], onClose, onOpen, onFol
     const [busy, setBusy] = useState(false);
     const selectionControls = useRef<HTMLDivElement>(null);
     const owner = workspace.ownerId;
+    const currentOwner=useRef(owner);currentOwner.current=owner;
     const data = workspace.data?.ownerId === owner ? workspace.data : undefined;
-    const files = useMemo(() => filterWorkspaceFiles(data?.files || [], query, filters, collection, tagFilters, folder)
-        .filter(file => (!favoritesOnly || file.is_favorite) && (tab !== 'timeline' || isImageFile(file.name) || isVideoFile(file.name, file.mime_type))), [data?.files, query, filters, collection, tagFilters, folder, favoritesOnly, tab]);
+    const searching = Boolean(query.trim() || collection || tagFilters.length || favoritesOnly || folder !== 'all' || filters.type !== 'all' || filters.size !== 'any' || filters.date !== 'any' || filters.protection && filters.protection !== 'any');
+    const localSearch = useLocalFileSearch({ ...filters, query, collectionId: collection, tags: tagFilters, favoritesOnly, folderKey: folder === 'all' ? null : folder === null ? 'saved' : String(folder) }, owner, searching, data);
+    const files = useMemo(() => (searching ? localSearch.results : data?.files || [])
+        .filter(file => tab !== 'timeline' || isImageFile(file.name) || isVideoFile(file.name, file.mime_type)), [data?.files, localSearch.results, searching, tab]);
     const photos = useMemo(() => files.filter(file => isImageFile(file.name)), [files]);
-    const selectedFiles = useMemo(() => (data?.files || []).filter(file => selected.has(file.key)), [data?.files, selected]);
+    const knownFiles = useMemo(() => [...new Map([...(data?.files || []), ...localSearch.results].map(file => [file.key, file])).values()], [data?.files, localSearch.results]);
+    const selectedFiles = useMemo(() => knownFiles.filter(file => selected.has(file.key)), [knownFiles, selected]);
     const tags = useMemo(() => [...new Set(data?.files.flatMap(file => file.tags) || [])].sort(), [data?.files]);
     const reportError = (reason: unknown) => {
         const message = String(reason);
@@ -68,9 +73,16 @@ export function WorkspaceHub({ folders, initialKeys = [], onClose, onOpen, onFol
         selectSearch(search); setEditingSearchId(search.id); setSavedName(search.name); setSaveSearchOpen(true);
     };
     const slideshowFiles = useMemo(() => {
-        const byKey = new Map(data?.files.map(file => [file.key, file]));
+        const byKey = new Map(knownFiles.map(file => [file.key, file]));
         return slideshow?.keys.flatMap(key => { const file = byKey.get(key); return file ? [file] : []; }) ?? [];
-    }, [data?.files, slideshow]);
+    }, [knownFiles, slideshow]);
+    const prepareOffline = async () => {
+        const expectedOwner=owner;
+        const stored=new Set(data?.files.map(file=>file.key));
+        const folders=[...new Set(selectedFiles.filter(file=>!stored.has(file.key)).map(file=>file.folder_id))];
+        if (folders.length) await workspace.index(folders);
+        if (currentOwner.current===expectedOwner) setTab('offline');
+    };
     const addQueue = async () => {
         if (!owner) return;
         const media = selectedFiles.filter(file => isMediaFile(file.name));
@@ -101,13 +113,16 @@ export function WorkspaceHub({ folders, initialKeys = [], onClose, onOpen, onFol
                         <select aria-label={t('common.size')} className={control} value={filters.size} onChange={event => setFilters({ ...filters, size: event.target.value as FileSearchFilters['size'] })}>{['any', 'small', 'medium', 'large'].map(size => <option key={size} value={size}>{t(`workspace.sizes.${size}`)}</option>)}</select>
                         <select aria-label={t('common.date')} className={control} value={filters.date} onChange={event => setFilters({ ...filters, date: event.target.value as FileSearchFilters['date'] })}>{['any', '7d', '30d', '1y'].map(date => <option key={date} value={date}>{t(`workspace.dates.${date}`)}</option>)}</select>
                         <select aria-label={t('workspace.tags')} className={control} value="" onChange={event => { if (event.target.value) setTagFilters(current => [...current, event.target.value]); }}><option value="">{t('workspace.add_tag_filter')}</option>{tags.filter(tag => !tagFilters.includes(tag)).map(tag => <option key={tag}>{tag}</option>)}</select>{tagFilters.map(tag => <button key={tag} type="button" className={`${control} flex items-center gap-1`} aria-label={t('workspace.remove_tag_filter', { tag })} onClick={() => setTagFilters(current => current.filter(value => value !== tag))}>{tag}<X className="h-3.5 w-3.5" /></button>)}
+                        <select aria-label={t('workspace.protection')} className={control} value={filters.protection ?? 'any'} onChange={event => setFilters({ ...filters, protection: event.target.value as FileSearchFilters['protection'] })}><option value="any">{t('common.all')}</option><option value="plain">{t('workspace.protection_plain')}</option><option value="protected">{t('settings.protected')}</option><option value="locked">{t('workspace.protection_locked')}</option><option value="unlocked">{t('workspace.protection_unlocked')}</option></select>
                         <label className={`${control} flex items-center gap-2`}><input type="checkbox" checked={favoritesOnly} onChange={event => setFavoritesOnly(event.target.checked)} />{t('common.favorites')}</label>
                     </div>
                     {saveSearchOpen && <form aria-label={t(editingSearchId ? 'workspace.edit_saved_search' : 'workspace.save_search')} className="flex flex-wrap gap-2 rounded-xl border border-telegram-border p-3" onSubmit={event => { event.preventDefault(); void perform(async () => { await workspace.mutate({ type: 'save_search', search: { id: editingSearchId ?? crypto.randomUUID(), name: savedName.trim(), query, filters, tags: tagFilters, folderKey: folder === 'all' ? null : folder === null ? 'saved' : String(folder), collectionId: collection, favoritesOnly } }); setSavedName(''); setSaveSearchOpen(false); setEditingSearchId(null); }); }}><label className="flex min-w-48 flex-1 items-center gap-2 text-sm">{t('common.name')}<input required maxLength={120} value={savedName} onChange={event => setSavedName(event.target.value)} className={`${control} min-w-0 flex-1`} /></label><button className={`${control} text-telegram-primary`} disabled={busy}>{t('common.save')}</button><button type="button" className={control} onClick={() => { setSaveSearchOpen(false); setEditingSearchId(null); }}>{t('common.cancel')}</button><p className="w-full text-xs text-telegram-subtext">{t('workspace.search_rules', { query: query || '*', type: t(`workspace.types.${filters.type}`), size: t(`workspace.sizes.${filters.size}`), date: t(`workspace.dates.${filters.date}`), tags: tagFilters.join(', ') || '*', folder: folder === 'all' ? t('workspace.all_folders') : folder === null ? t('common.saved_messages') : folders.find(item => item.id === folder)?.name ?? String(folder), collection: data.collections.find(item => item.id === collection)?.name ?? t('common.all'), favorites: t(favoritesOnly ? 'workspace.favorites_only' : 'common.all') })}</p></form>}
+                    {localSearch.error && <p role="alert">{t('workspace.error_operation')}</p>}
+                    {localSearch.reply && <p role="status" className="text-xs text-telegram-subtext">{t(localSearch.reply.complete ? 'workspace.search_complete' : 'workspace.search_partial', { count: localSearch.reply.total })}{localSearch.reply.offline ? ` · ${t('settings.offline')}` : ''}</p>}
                     <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-telegram-subtext"><span>{t('workspace.result_count', { count: files.length })}</span><div className="flex gap-2"><button type="button" onClick={() => setSelected(new Set(files.map(file => file.key)))} className="min-h-11 rounded-lg px-3 hover:bg-telegram-hover">{t('workspace.select_all')}</button><button type="button" onClick={() => setSelected(new Set())} className="min-h-11 rounded-lg px-3 hover:bg-telegram-hover">{t('workspace.clear_selection')}</button></div></div>
                     {selected.size > 0 && <div ref={selectionControls} tabIndex={-1} className="space-y-3 rounded-2xl border border-telegram-primary/40 bg-telegram-primary/5 p-3">
                         <p className="flex items-center gap-2 text-sm font-medium"><Check className="h-4 w-4" />{t('workspace.selected_count', { count: selectedFiles.length })}</p>
-                        <div className="flex flex-wrap gap-2"><button type="button" onClick={() => setTab('offline')} className={`${control} flex items-center gap-2 text-telegram-primary`}><Download className="h-4 w-4"/>{t('workspace.prepare_offline')}</button><select aria-label={t('workspace.choose_collection')} value={targetCollection} onChange={event => setTargetCollection(event.target.value)} className={`${control} min-w-40`}><option value="">{t('workspace.choose_collection')}</option>{data.collections.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button type="button" disabled={!targetCollection || busy} onClick={() => void perform(() => workspace.mutate({ type: 'assign', keys: [...selected], collection: targetCollection, add: true }))} className={`${control} flex items-center gap-2 disabled:opacity-40`}><FolderPlus className="h-4 w-4" />{t('workspace.add_to_collection')}</button><button type="button" disabled={!targetCollection || busy} onClick={() => void perform(() => workspace.mutate({ type: 'assign', keys: [...selected], collection: targetCollection, add: false }))} className={`${control} disabled:opacity-40`}>{t('workspace.remove_membership')}</button>
+                        <div className="flex flex-wrap gap-2"><button type="button" onClick={() => void perform(prepareOffline)} disabled={busy || workspace.indexing} className={`${control} flex items-center gap-2 text-telegram-primary`}><Download className="h-4 w-4"/>{t('workspace.prepare_offline')}</button><select aria-label={t('workspace.choose_collection')} value={targetCollection} onChange={event => setTargetCollection(event.target.value)} className={`${control} min-w-40`}><option value="">{t('workspace.choose_collection')}</option>{data.collections.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button type="button" disabled={!targetCollection || busy} onClick={() => void perform(() => workspace.mutate({ type: 'assign', keys: [...selected], collection: targetCollection, add: true }))} className={`${control} flex items-center gap-2 disabled:opacity-40`}><FolderPlus className="h-4 w-4" />{t('workspace.add_to_collection')}</button><button type="button" disabled={!targetCollection || busy} onClick={() => void perform(() => workspace.mutate({ type: 'assign', keys: [...selected], collection: targetCollection, add: false }))} className={`${control} disabled:opacity-40`}>{t('workspace.remove_membership')}</button>
                         {collection && selectedFiles.length === 1 && isImageFile(selectedFiles[0].name) && <button type="button" disabled={busy} onClick={() => void perform(() => workspace.mutate({ type: 'save_collection', collection: { ...data.collections.find(c => c.id === collection)!, coverKey: selectedFiles[0].key } }))} className={control}>{t('workspace.use_cover')}</button>}</div>
                         <form className="flex flex-wrap gap-2" onSubmit={event => { event.preventDefault(); void perform(() => workspace.mutate({ type: 'tag', keys: [...selected], tag, add: true })); }}><input aria-label={t('workspace.tag_name')} placeholder={t('workspace.tag_name')} required maxLength={40} value={tag} onChange={event => setTag(event.target.value)} className={`${control} min-w-36 flex-1`} /><button disabled={busy || !tag.trim()} className={`${control} flex items-center gap-2 disabled:opacity-40`}><Tag className="h-4 w-4" />{t('workspace.add_tag')}</button><button type="button" disabled={busy || !tag.trim()} onClick={() => void perform(() => workspace.mutate({ type: 'tag', keys: [...selected], tag, add: false }))} className={`${control} disabled:opacity-40`}>{t('workspace.remove_tag')}</button>{selectedFiles.some(file => isMediaFile(file.name)) && <button type="button" disabled={busy} onClick={() => void perform(addQueue)} className={control}>{t('workspace.add_queue')}</button>}</form>
                         <p className="text-xs text-telegram-subtext">{t('workspace.collection_local')}</p>

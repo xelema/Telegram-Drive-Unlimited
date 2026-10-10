@@ -297,7 +297,7 @@ export function FileExplorer({
                                                 onPreview={() => handlePreviewRequest(file)}
                                                 activeFolderId={sourceFolder(file, activeFolderId)}
                                                 height={cardHeight}
-                                                onToggleSelection={() => onToggleSelection(file.id)}
+                                                onToggleSelection={selectionDisabled ? undefined : () => onToggleSelection(file.id)}
                                                 onShare={onShare ? () => onShare(file) : undefined}
                                                 selectedIds={selectedIds}
                                                 disableDrag={selectionDisabled}

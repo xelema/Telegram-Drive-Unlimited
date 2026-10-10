@@ -1,3 +1,4 @@
+import i18n from '../../../i18n';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Eye, HardDrive, Trash2, FolderOpen, Pencil, Play, FileText, Link, Copy, ArrowRightLeft, Star, Pin } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -119,14 +120,14 @@ export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPrevi
             {!actions.isFolder && onToggleFavorite && (
                 <button onClick={onToggleFavorite} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-telegram-text transition-colors hover:bg-telegram-hover">
                     <Star className={`h-4 w-4 ${file.is_favorite ? 'fill-amber-400 text-amber-400' : 'text-amber-400'}`} />
-                    {file.is_favorite ? 'Remove from Favorites' : 'Add to Favorites'}
+                    {file.is_favorite ? i18n.t('navigation_copy.favorite_remove') : i18n.t('navigation_copy.favorite_add')}
                 </button>
             )}
             {!actions.isFolder && <button type="button" onClick={() => { requestFileOrganization(file, activeFolderId ?? null); onClose(); }} className="flex min-h-9 w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-telegram-text hover:bg-telegram-hover"><FolderOpen className="h-4 w-4 text-telegram-primary" />{t('workspace.organize_file')}</button>}
             {!actions.isFolder && onTogglePinned && (
                 <button onClick={onTogglePinned} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-telegram-text transition-colors hover:bg-telegram-hover">
                     <Pin className={`h-4 w-4 ${file.is_pinned ? 'fill-blue-400 text-blue-400' : 'text-blue-400'}`} />
-                    {file.is_pinned ? 'Unpin' : 'Pin'}
+                    {file.is_pinned ? i18n.t('navigation_copy.unpin') : i18n.t('navigation_copy.pin')}
                 </button>
             )}
 
@@ -162,7 +163,7 @@ export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPrevi
                         return (
                             <button 
                                 disabled 
-                                title="Only available for public channels" 
+                                title={i18n.t('navigation_copy.public_only')}
                                 className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-subtext hover:bg-telegram-hover rounded transition-colors text-left w-full cursor-not-allowed opacity-50"
                             >
                                 <Copy className="w-4 h-4" />

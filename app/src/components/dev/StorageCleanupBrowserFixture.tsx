@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { CleanupPanel } from '../workspace/CleanupPanel';
 import { StoragePanel } from '../workspace/StoragePanel';
 import type { WorkspaceFile } from '../../services/workspace';
-import '../../i18n';
+import {ensureLanguageResource,i18nInitialized} from '../../i18n';
 import '../../App.css';
 
 type BrowserFixture = { files: WorkspaceFile[]; calls: { command: string; args: unknown }[] };
@@ -27,5 +27,5 @@ function StorageCleanupBrowserFixture() {
 
 if (import.meta.env.DEV) {
     const target = document.getElementById('storage-cleanup-browser-fixture');
-    if (target) createRoot(target).render(<StorageCleanupBrowserFixture />);
+    if (target) void i18nInitialized.then(()=>ensureLanguageResource('en')).then(()=>createRoot(target).render(<StorageCleanupBrowserFixture />));
 }

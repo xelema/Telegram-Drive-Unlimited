@@ -1,6 +1,6 @@
 import { createRoot } from 'react-dom/client';
 import { ConfirmProvider, useConfirm } from '../../context/ConfirmContext';
-import '../../i18n';
+import {ensureLanguageResource,i18nInitialized} from '../../i18n';
 import '../../App.css';
 
 function Caller() {
@@ -12,5 +12,5 @@ function Caller() {
 
 if (import.meta.env.DEV) {
     const target = document.getElementById('collision-fixture');
-    if (target) createRoot(target).render(<ConfirmProvider><Caller /></ConfirmProvider>);
+    if (target) void i18nInitialized.then(()=>ensureLanguageResource('en')).then(()=>createRoot(target).render(<ConfirmProvider><Caller /></ConfirmProvider>));
 }

@@ -65,12 +65,16 @@ pub struct VpnConfig {
     pub dc_fallback_attempts: u32, // 1–4
     pub flood_wait_respect: bool,
     pub peer_cache_size: usize, // Compatibility field; no runtime size control.
-    pub bandwidth_limit_up_kbs: u32, // Compatibility field; upload throttling is not implemented.
+    pub bandwidth_limit_up_kbs: u32, // 0 = unlimited; effective behind bandwidth_schedule.
+    #[serde(default)]
+    pub bandwidth_schedule: bool,
+    #[serde(default)]
+    pub bandwidth_windows: Vec<crate::traffic::Window>,
     pub bandwidth_limit_down_kbs: u32, // 0 = unlimited
-    pub chunk_size_kb: u32,     // 128, 256, 512
-    pub keep_alive_interval_sec: u32, // 0 = disabled, 30–120
-    pub auto_detect_vpn: bool,  // Compatibility field; detection is explicitly requested.
-    pub archive_max_bytes: u64, // 0 = unlimited, max bytes for bulk archive (API)
+    pub chunk_size_kb: u32,            // 128, 256, 512
+    pub keep_alive_interval_sec: u32,  // 0 = disabled, 30–120
+    pub auto_detect_vpn: bool,         // Compatibility field; detection is explicitly requested.
+    pub archive_max_bytes: u64,        // 0 = unlimited, max bytes for bulk archive (API)
 }
 
 impl Default for VpnConfig {
@@ -89,6 +93,8 @@ impl Default for VpnConfig {
             flood_wait_respect: true,
             peer_cache_size: 500,
             bandwidth_limit_up_kbs: 0,
+            bandwidth_schedule: false,
+            bandwidth_windows: Vec::new(),
             bandwidth_limit_down_kbs: 0,
             chunk_size_kb: 512,
             keep_alive_interval_sec: 0,
@@ -105,10 +111,29 @@ pub struct NetworkConfigSnapshot {
     pub vpn: VpnConfig,
 }
 
+pub trait ProxySecretStore: Send + Sync {
+    fn read(&self) -> Result<Option<String>, String>;
+    fn write(&self, value: Option<&str>) -> Result<(), String>;
+}
+pub struct OsProxySecretStore;
+impl ProxySecretStore for OsProxySecretStore {
+    fn read(&self) -> Result<Option<String>, String> {
+        crate::proxy_secret::load_password()
+    }
+    fn write(&self, value: Option<&str>) -> Result<(), String> {
+        match value {
+            Some(password) => crate::proxy_secret::store_password(password),
+            None => crate::proxy_secret::delete_password(),
+        }
+    }
+}
+
 /// Thread-safe global state managed via Tauri's state system
 pub struct NetworkConfig {
     pub proxy: RwLock<ProxyConfig>,
     pub vpn: RwLock<VpnConfig>,
+    pub pacer: crate::traffic::Pacer,
+    updates: std::sync::Mutex<()>,
     pub bridge_handle: std::sync::Mutex<Option<(u16, tokio::task::JoinHandle<()>)>>,
 }
 
@@ -117,6 +142,8 @@ impl NetworkConfig {
         Self {
             proxy: RwLock::new(ProxyConfig::default()),
             vpn: RwLock::new(VpnConfig::default()),
+            pacer: crate::traffic::Pacer::default(),
+            updates: std::sync::Mutex::new(()),
             bridge_handle: std::sync::Mutex::new(None),
         }
     }
@@ -125,8 +152,113 @@ impl NetworkConfig {
         Self {
             proxy: RwLock::new(config.proxy),
             vpn: RwLock::new(config.vpn),
+            pacer: crate::traffic::Pacer::default(),
+            updates: std::sync::Mutex::new(()),
             bridge_handle: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Serialize updates to the shared file and publish only a durable snapshot.
+    pub fn update_at(
+        &self,
+        path: &std::path::Path,
+        patch: impl FnOnce(&mut NetworkConfigSnapshot) -> Result<(), String>,
+    ) -> Result<(), String> {
+        self.update_transaction_at(path, patch, None, &OsProxySecretStore)
+    }
+    fn update_transaction_at(
+        &self,
+        path: &std::path::Path,
+        patch: impl FnOnce(&mut NetworkConfigSnapshot) -> Result<(), String>,
+        change: Option<Option<String>>,
+        store: &dyn ProxySecretStore,
+    ) -> Result<(), String> {
+        let _update = self
+            .updates
+            .lock()
+            .map_err(|_| "Network settings unavailable")?;
+        let mut snapshot = {
+            let proxy = self
+                .proxy
+                .read()
+                .map_err(|_| "Proxy settings unavailable")?;
+            let vpn = self.vpn.read().map_err(|_| "VPN settings unavailable")?;
+            NetworkConfigSnapshot {
+                proxy: proxy.clone(),
+                vpn: vpn.clone(),
+            }
+        };
+        patch(&mut snapshot)?;
+        if snapshot.vpn.bandwidth_windows.len() > 32
+            || snapshot.vpn.bandwidth_limit_up_kbs > 65536
+            || snapshot.vpn.bandwidth_limit_down_kbs > 65536
+        {
+            return Err("Invalid bandwidth limits or too many schedule windows".into());
+        }
+        for window in &snapshot.vpn.bandwidth_windows {
+            window.validate()?;
+        }
+        // Validate first, then remember both the old value and its absence.
+        // OS credentials and JSON have no shared transaction; on an operation
+        // error restore the old credential, and report restoration failure.
+        let previous = change.as_ref().map(|_| store.read()).transpose()?;
+        let restore = |error: String| -> String {
+            if let Some(previous) = &previous {
+                if let Err(restore) = store.write(previous.as_deref()) {
+                    return format!(
+                        "{error}; prior proxy credential restoration failed: {restore}"
+                    );
+                }
+            }
+            error
+        };
+        if let Some(change) = change {
+            if let Err(error) = store.write(change.as_deref()) {
+                return Err(restore(error));
+            }
+            snapshot.proxy.password = change.unwrap_or_default();
+        }
+        if let Err(error) = save_network_config_at(path, &snapshot) {
+            return Err(restore(error));
+        }
+        // Only the update serializer spans external IO. Configuration readers
+        // and cancellation can proceed while credentials/storage are waiting.
+        let mut proxy = self
+            .proxy
+            .write()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut vpn = self.vpn.write().unwrap_or_else(|error| error.into_inner());
+        *proxy = snapshot.proxy;
+        *vpn = snapshot.vpn;
+        drop(vpn);
+        drop(proxy);
+        self.pacer.changed();
+        Ok(())
+    }
+    pub fn update_credentials_at(
+        &self,
+        path: &std::path::Path,
+        patch: impl FnOnce(&mut NetworkConfigSnapshot) -> Result<(), String>,
+        change: Option<Option<String>>,
+        store: &impl ProxySecretStore,
+    ) -> Result<(), String> {
+        self.update_transaction_at(path, patch, change, store)
+    }
+    pub fn update_credentials(
+        &self,
+        app: &tauri::AppHandle,
+        patch: impl FnOnce(&mut NetworkConfigSnapshot) -> Result<(), String>,
+        change: Option<Option<String>>,
+    ) -> Result<(), String> {
+        self.update_credentials_at(&settings_path(app)?, patch, change, &OsProxySecretStore)
+    }
+
+    pub fn update(
+        &self,
+        app: &tauri::AppHandle,
+        patch: impl FnOnce(&mut NetworkConfigSnapshot) -> Result<(), String>,
+    ) -> Result<(), String> {
+        self.update_at(&settings_path(app)?, patch)
     }
 
     pub fn snapshot(&self) -> NetworkConfigSnapshot {
@@ -277,7 +409,7 @@ impl NetworkConfig {
     /// Download bandwidth limit in bytes/sec. 0 = unlimited.
     pub fn download_limit_bytes_per_sec(&self) -> u64 {
         let vpn = self.vpn.read().unwrap();
-        if vpn.enabled && vpn.bandwidth_limit_down_kbs > 0 {
+        if vpn.bandwidth_limit_down_kbs > 0 {
             vpn.bandwidth_limit_down_kbs as u64 * 1024
         } else {
             0 // unlimited
@@ -394,23 +526,38 @@ pub fn save_network_config(
     config: &NetworkConfigSnapshot,
 ) -> Result<(), String> {
     let path = settings_path(app)?;
+    save_network_config_at(&path, config)
+}
+
+pub(crate) fn save_network_config_at(
+    path: &std::path::Path,
+    config: &NetworkConfigSnapshot,
+) -> Result<(), String> {
+    let parent = path.parent().ok_or("Network settings path has no parent")?;
+    std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     let json = serde_json::to_string_pretty(config).map_err(|e| e.to_string())?;
-    let temporary = path.with_extension("json.tmp");
+    let temporary = parent.join(format!(".network-settings.{}.tmp", uuid::Uuid::new_v4()));
     let mut options = std::fs::OpenOptions::new();
-    options.create(true).truncate(true).write(true);
+    options.create_new(true).write(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let mut file = options
-        .open(&temporary)
-        .map_err(|error| error.to_string())?;
-    file.write_all(json.as_bytes())
-        .and_then(|()| file.sync_all())
-        .map_err(|error| error.to_string())?;
-    drop(file);
-    replace_network_settings_file(&temporary, &path).map_err(|error| error.to_string())
+    let result = (|| {
+        let mut file = options
+            .open(&temporary)
+            .map_err(|error| error.to_string())?;
+        file.write_all(json.as_bytes())
+            .and_then(|()| file.sync_all())
+            .map_err(|error| error.to_string())?;
+        drop(file);
+        replace_network_settings_file(&temporary, path).map_err(|error| error.to_string())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
 }
 
 #[cfg(not(target_os = "windows"))]

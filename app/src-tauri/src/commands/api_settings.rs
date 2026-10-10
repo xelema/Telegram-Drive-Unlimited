@@ -71,7 +71,7 @@ fn response(app: &AppHandle, settings: ApiSettingsFile) -> ApiSettingsResponse {
     }
 }
 
-fn hash_key(key: &str) -> String {
+pub(crate) fn hash_key(key: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(key.as_bytes());
     format!("{:x}", hasher.finalize())
@@ -102,7 +102,7 @@ pub async fn cmd_update_api_settings(
     }
 
     // Prevent collision with streaming server
-    if port == crate::STREAM_PORT {
+    if port == crate::STREAM_PORT || port == crate::stream_port() {
         return Err(format!(
             "Port {} is used by the media streaming server",
             port

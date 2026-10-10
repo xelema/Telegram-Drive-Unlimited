@@ -15,7 +15,7 @@ test('a new desktop session completes phone, code and two-factor recovery and su
   const password = page.getByLabel('Cloud Password', { exact: true });
   await password.fill('incorrect-fixture-password');
   await page.getByRole('button', { name: 'Unlock', exact: true }).click();
-  await expect(page.getByText('Password verification failed.', { exact: true })).toBeVisible();
+  await expect(page.getByText('That two-step verification password is incorrect. Check it and try again.', { exact: true })).toBeVisible();
   await password.fill('correct-fixture-password');
   await page.getByRole('button', { name: 'Unlock', exact: true }).click();
   await expect(page.getByText('Holiday folder photo.jpg', { exact: true })).toBeVisible();

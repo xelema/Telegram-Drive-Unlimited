@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ConfirmProvider, useConfirm } from '../../context/ConfirmContext';
-import '../../i18n';
+import {ensureLanguageResource,i18nInitialized} from '../../i18n';
 import '../../App.css';
 
 /** Exercises the actual dialog and feedback without accessing a Telegram session. */
@@ -20,5 +20,5 @@ function Caller() {
 
 if (import.meta.env.DEV) {
     const target = document.getElementById('confirmation-fixture');
-    if (target) createRoot(target).render(<ConfirmProvider><Caller /></ConfirmProvider>);
+    if (target) void i18nInitialized.then(()=>ensureLanguageResource('en')).then(()=>createRoot(target).render(<ConfirmProvider><Caller /></ConfirmProvider>));
 }

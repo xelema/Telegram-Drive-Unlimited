@@ -23,13 +23,90 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
 use crate::bandwidth::{BandwidthManager, BandwidthReservation};
-use crate::commands::utils::{map_error, media_size, resolve_peer};
+use crate::commands::utils::{media_size, resolve_peer};
 use crate::commands::{
     create_folder_inner, delete_folder_inner, rename_folder_inner, TelegramState,
 };
-use crate::db::DbConnection;
 use crate::vpn_optimizer::NetworkConfig;
 use crate::workspace::AccountGuard;
+
+fn inventory_error(error: String) -> FsError {
+    if error.contains("ACCOUNT_")
+        || [
+            "CHANNEL_PRIVATE",
+            "CHAT_WRITE_FORBIDDEN",
+            "AUTH_KEY_UNREGISTERED",
+            "USER_BANNED_IN_CHANNEL",
+            "CHAT_ADMIN_REQUIRED",
+            "AUTH_KEY_INVALID",
+            "SESSION_REVOKED",
+        ]
+        .iter()
+        .any(|code| error.contains(code))
+    {
+        FsError::Forbidden
+    } else if [
+        "MESSAGE_ID_INVALID",
+        "CHANNEL_INVALID",
+        "PEER_ID_INVALID",
+        "Folder not found",
+        "Message not found",
+    ]
+    .iter()
+    .any(|code| error.contains(code))
+    {
+        FsError::NotFound
+    } else {
+        FsError::IsRemote
+    }
+}
+fn io_error(error: std::io::Error) -> FsError {
+    match error.kind() {
+        std::io::ErrorKind::NotFound => FsError::NotFound,
+        std::io::ErrorKind::PermissionDenied => FsError::Forbidden,
+        _ => FsError::GeneralFailure,
+    }
+}
+fn telegram_error(error: grammers_mtsender::InvocationError) -> FsError {
+    inventory_error(error.to_string())
+}
+pub(crate) async fn retry_upload<T, F, Fut>(
+    attempts: u32,
+    mut upload: F,
+    validate: impl Fn() -> FsResult<()>,
+    base_ms: u64,
+    max_ms: u64,
+) -> FsResult<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = FsResult<T>>,
+{
+    for attempt in 0..=attempts {
+        validate()?;
+        match upload().await {
+            Ok(value) => {
+                validate()?;
+                return Ok(value);
+            }
+            Err(
+                error @ (FsError::Forbidden
+                | FsError::NotFound
+                | FsError::TooLarge
+                | FsError::InsufficientStorage),
+            ) => return Err(error),
+            Err(error) => {
+                if attempt == attempts {
+                    return Err(error);
+                }
+                tokio::time::sleep(Duration::from_millis(crate::vpn_optimizer::backoff_ms(
+                    attempt, base_ms, max_ms,
+                )))
+                .await;
+            }
+        }
+    }
+    Err(FsError::IsRemote)
+}
 
 struct DavRequestAccess {
     account: AccountGuard,
@@ -68,8 +145,9 @@ async fn protected_media(
         .map_err(|_| FsError::Forbidden)
 }
 
-const INDEX_TTL: Duration = Duration::from_secs(15);
+const INDEX_TTL: Duration = crate::file_inventory::POLL_INTERVAL;
 const MAX_LISTED_FILES: usize = 50_000;
+type DavFolderFile = (i32, String, u64, SystemTime, bool);
 const READ_CHUNK_SIZE: i32 = 524_288;
 const CDN_ALIGNMENT: u64 = 524_288;
 
@@ -120,6 +198,8 @@ struct DavIndex {
     nodes: HashMap<String, DavNode>,
     children: HashMap<String, Vec<String>>,
     refreshed: HashMap<String, Instant>,
+    #[cfg(feature = "native-e2e")]
+    fixture_revision: u64,
 }
 
 impl DavIndex {
@@ -144,11 +224,14 @@ pub struct TelegramDavFs {
     state: Arc<TelegramState>,
     bandwidth: Arc<BandwidthManager>,
     network: Arc<NetworkConfig>,
-    db: DbConnection,
     write_enabled: bool,
     staging_dir: PathBuf,
     account_root: PathBuf,
     index: Arc<tokio::sync::RwLock<DavIndex>>,
+    #[cfg(feature = "native-e2e")]
+    remote_error: Option<String>,
+    #[cfg(feature = "native-e2e")]
+    fixture_catalog: bool,
 }
 
 impl TelegramDavFs {
@@ -156,7 +239,6 @@ impl TelegramDavFs {
         state: Arc<TelegramState>,
         bandwidth: Arc<BandwidthManager>,
         network: Arc<NetworkConfig>,
-        db: DbConnection,
         write_enabled: bool,
         staging_dir: PathBuf,
         account_root: PathBuf,
@@ -165,12 +247,27 @@ impl TelegramDavFs {
             state,
             bandwidth,
             network,
-            db,
             write_enabled,
             staging_dir,
             account_root,
             index: Arc::new(tokio::sync::RwLock::new(DavIndex::default())),
+            #[cfg(feature = "native-e2e")]
+            remote_error: None,
+            #[cfg(feature = "native-e2e")]
+            fixture_catalog: false,
         }
+    }
+
+    #[cfg(feature = "native-e2e")]
+    pub(crate) fn with_remote_error(mut self, error: Option<String>) -> Self {
+        self.remote_error = error;
+        self
+    }
+
+    #[cfg(feature = "native-e2e")]
+    pub(crate) fn with_catalog_fixture(mut self, enabled: bool) -> Self {
+        self.fixture_catalog = enabled;
+        self
     }
 
     fn account(&self) -> FsResult<AccountGuard> {
@@ -200,6 +297,10 @@ impl TelegramDavFs {
     }
 
     async fn client(&self) -> FsResult<grammers_client::Client> {
+        #[cfg(feature = "native-e2e")]
+        if let Some(error) = &self.remote_error {
+            return Err(inventory_error(error.clone()));
+        }
         let access = DAV_REQUEST
             .try_with(Arc::clone)
             .map_err(|_| FsError::Forbidden)?;
@@ -227,6 +328,11 @@ impl TelegramDavFs {
     }
 
     async fn should_refresh(&self, path: &str) -> bool {
+        #[cfg(feature = "native-e2e")]
+        if self.fixture_catalog && path != "/" {
+            return self.index.read().await.fixture_revision
+                != crate::api_catalog::fixture_revision();
+        }
         self.index
             .read()
             .await
@@ -240,80 +346,24 @@ impl TelegramDavFs {
         if !self.should_refresh("/").await {
             return Ok(());
         }
-        let mut raw_folders = vec![(None, "Saved Messages".to_string(), UNIX_EPOCH)];
-        let mut discovered = HashMap::new();
-        if let Ok(client) = self.client().await {
-            let mut dialogs = client.iter_dialogs();
-            loop {
-                match dialogs.next().await {
-                    Ok(Some(dialog)) => {
-                        if let Peer::Channel(channel) = &dialog.peer {
-                            discovered.insert(channel.raw.id, dialog.peer.clone());
-                            if channel.raw.title.to_ascii_lowercase().contains("[td]") {
-                                let name = channel
-                                    .raw
-                                    .title
-                                    .replace(" [TD]", "")
-                                    .replace(" [td]", "")
-                                    .replace("[TD]", "")
-                                    .replace("[td]", "")
-                                    .trim()
-                                    .to_string();
-                                raw_folders.push((Some(channel.raw.id), name, UNIX_EPOCH));
-                            }
-                        }
-                    }
-                    Ok(None) => break,
-                    Err(error) => {
-                        log::warn!("WebDAV root dialog scan failed; using cached folders: {error}");
-                        break;
-                    }
-                }
+        let account = self.account()?;
+        let folders = match crate::api_catalog::folders(&account, &self.state).await {
+            Ok(folders) => folders.as_ref().clone(),
+            // Preserve the offline Saved Messages root, without inventing a
+            // completed listing or using unowned legacy folder rows.
+            Err(crate::api_catalog::CatalogError::NotConnected) => {
+                vec![crate::api_catalog::Folder {
+                    id: None,
+                    name: "Saved Messages".into(),
+                }]
             }
-            self.account()?;
-            self.state
-                .peer_cache
-                .write()
-                .await
-                .extend(discovered.clone());
-        }
-
-        // The desktop app persists the folder/channel index locally. Use it as a
-        // fallback so the WebDAV root remains useful during a delayed Telegram
-        // dialog refresh or when a channel's legacy title lacks the [TD] marker.
-        let cached_folders = crate::db::with_connection(self.db.clone(), |connection| {
-            let mut folders = Vec::new();
-            if let Ok(mut statement) = connection
-                .prepare("SELECT channel_id, name FROM folder_metadata ORDER BY display_order ASC")
-            {
-                while let Ok(sqlite::State::Row) = statement.next() {
-                    let Ok(channel_id) = statement.read::<i64, _>(0) else {
-                        continue;
-                    };
-                    let Ok(name) = statement.read::<String, _>(1) else {
-                        continue;
-                    };
-                    folders.push((channel_id, name));
-                }
-            }
-            Ok(folders)
-        })
-        .await
-        .unwrap_or_default();
-        for (channel_id, _name) in cached_folders {
-            // Legacy rows have no owner. Only a channel verified in this request's
-            // actual account may supplement discovery, using its current title.
-            let Some(Peer::Channel(channel)) = discovered.get(&channel_id) else {
-                continue;
-            };
-            let name = channel.title().replace(" [TD]", "").replace(" [td]", "");
-            if !raw_folders
-                .iter()
-                .any(|(folder_id, _, _)| *folder_id == Some(channel_id))
-            {
-                raw_folders.push((Some(channel_id), name, UNIX_EPOCH));
-            }
-        }
+            Err(crate::api_catalog::CatalogError::Account(_)) => return Err(FsError::Forbidden),
+            Err(_) => return Err(FsError::IsRemote),
+        };
+        let mut raw_folders: Vec<_> = folders
+            .into_iter()
+            .map(|folder| (folder.id, folder.name, UNIX_EPOCH))
+            .collect();
 
         raw_folders.sort_by_cached_key(|folder| folder.1.to_lowercase());
         let aliases = unique_aliases(
@@ -365,15 +415,47 @@ impl TelegramDavFs {
             return Err(FsError::Forbidden);
         };
 
-        let client = self.client().await?;
-        let peer = resolve_peer(&client, folder_id, &self.state.peer_cache)
-            .await
-            .map_err(|_| FsError::GeneralFailure)?;
         let account = self.account()?;
-        let mut messages = client.iter_messages(&peer);
+        #[cfg(feature = "native-e2e")]
+        if self.fixture_catalog {
+            let listing = crate::api_catalog::listing(&account, &self.state, folder_id)
+                .await
+                .map_err(|_| FsError::IsRemote)?;
+            let mut files = listing.files.iter().collect::<Vec<_>>();
+            files.sort_by_key(|file| std::cmp::Reverse(file.id));
+            let complete = listing.complete && files.len() <= MAX_LISTED_FILES;
+            let raw = files
+                .into_iter()
+                .take(MAX_LISTED_FILES)
+                .map(|file| {
+                    (
+                        file.id as i32,
+                        file.name.clone(),
+                        file.size,
+                        UNIX_EPOCH + Duration::from_secs(file.timestamp.max(0) as u64),
+                        file.encrypted,
+                    )
+                })
+                .collect();
+            return self
+                .publish_folder_rows(
+                    &account,
+                    crate::file_inventory::RevisionTicket::capture(&account),
+                    folder_id,
+                    folder_path,
+                    raw,
+                    complete,
+                )
+                .await;
+        }
+        let client = self.client().await?;
+        let listing = crate::file_inventory::messages(&account, &self.state, folder_id)
+            .await
+            .map_err(inventory_error)?;
+        let mut messages = listing.rows.iter();
         let mut raw_files = Vec::new();
         while raw_files.len() < MAX_LISTED_FILES {
-            let Some(message) = messages.next().await.map_err(|_| FsError::GeneralFailure)? else {
+            let Some(message) = messages.next() else {
                 break;
             };
             let Some(media) = message.media() else {
@@ -409,6 +491,26 @@ impl TelegramDavFs {
                 encrypted,
             ));
         }
+        self.publish_folder_rows(
+            &account,
+            listing.ticket,
+            folder_id,
+            folder_path,
+            raw_files,
+            listing.complete,
+        )
+        .await
+    }
+
+    async fn publish_folder_rows(
+        &self,
+        account: &AccountGuard,
+        ticket: crate::file_inventory::RevisionTicket,
+        folder_id: Option<i64>,
+        folder_path: &str,
+        mut raw_files: Vec<DavFolderFile>,
+        complete: bool,
+    ) -> FsResult<()> {
         raw_files.sort_by_key(|entry| entry.0);
         let aliases = unique_aliases(
             raw_files
@@ -417,33 +519,51 @@ impl TelegramDavFs {
         );
 
         let mut index = self.index.write().await;
-        index.bind(&account)?;
-        let previous = index.children.remove(folder_path).unwrap_or_default();
-        for path in previous {
-            index.nodes.remove(&path);
-        }
-        let mut children = Vec::new();
-        for ((message_id, _name, size, modified, encrypted), alias) in
-            raw_files.into_iter().zip(aliases)
-        {
-            let path = format!("{}/{}", folder_path, alias);
-            index.nodes.insert(
-                path.clone(),
-                DavNode::File {
-                    folder_id,
-                    message_id,
-                    size,
-                    modified,
-                    encrypted,
-                },
-            );
-            children.push(path);
-        }
-        index.children.insert(folder_path.to_string(), children);
-        index
-            .refreshed
-            .insert(folder_path.to_string(), Instant::now());
-        Ok(())
+        ticket
+            .with(account, || {
+                index.bind(account).map_err(|error| error.to_string())?;
+                let previous = index.children.remove(folder_path).unwrap_or_default();
+                let fresh_ids = raw_files.iter().map(|file| file.0).collect::<HashSet<_>>();
+                let mut children = Vec::new();
+                for path in previous {
+                    let refreshed = matches!(index.nodes.get(&path), Some(DavNode::File { message_id, .. }) if fresh_ids.contains(message_id));
+                    if complete || refreshed { index.nodes.remove(&path); }
+                    else { children.push(path); }
+                }
+                let mut occupied = children.iter().map(|path| path.to_lowercase()).collect::<HashSet<_>>();
+                for ((message_id, _name, size, modified, encrypted), alias) in
+                    raw_files.into_iter().zip(aliases)
+                {
+                    let mut path = format!("{}/{}", folder_path, alias);
+                    let mut counter = 1;
+                    while !occupied.insert(path.to_lowercase()) {
+                        let suffix = if counter == 1 { message_id.to_string() } else { format!("{message_id}-{counter}") };
+                        path = format!("{}/{}", folder_path, disambiguate_name(&alias, suffix));
+                        counter += 1;
+                    }
+                    index.nodes.insert(
+                        path.clone(),
+                        DavNode::File {
+                            folder_id,
+                            message_id,
+                            size,
+                            modified,
+                            encrypted,
+                        },
+                    );
+                    children.push(path);
+                }
+                index.children.insert(folder_path.to_string(), children);
+                #[cfg(feature = "native-e2e")]
+                {
+                    index.fixture_revision = crate::api_catalog::fixture_revision();
+                }
+                index
+                    .refreshed
+                    .insert(folder_path.to_string(), Instant::now());
+                Ok(())
+            })
+            .map_err(inventory_error)
     }
 
     async fn refresh_for_path(&self, path: &str) -> FsResult<()> {
@@ -467,6 +587,15 @@ impl TelegramDavFs {
     }
 
     async fn invalidate(&self, folder_path: &str) {
+        if let Ok(account) = self.account() {
+            let folder = self.index.read().await.nodes.get(folder_path).cloned();
+            if let Some(DavNode::Folder { folder_id, .. }) = folder {
+                let _ = crate::file_inventory::changed(&account, folder_id, &[]);
+            } else if folder_path == "/" {
+                let _ = crate::file_inventory::changed(&account, Some(i64::MIN), &[]);
+            }
+            crate::api_catalog::invalidate_cached(account.owner);
+        }
         let mut index = self.index.write().await;
         index.refreshed.remove(folder_path);
         if folder_path == "/" {
@@ -495,11 +624,11 @@ impl TelegramDavFs {
         let client = self.client().await?;
         let peer = resolve_peer(&client, folder_id, &self.state.peer_cache)
             .await
-            .map_err(|_| FsError::GeneralFailure)?;
+            .map_err(inventory_error)?;
         let messages = client
             .get_messages_by_id(&peer, &[message_id])
             .await
-            .map_err(|_| FsError::GeneralFailure)?;
+            .map_err(telegram_error)?;
         let message = messages
             .into_iter()
             .flatten()
@@ -570,52 +699,49 @@ impl TelegramDavFs {
         let client = self.client().await?;
         let peer = resolve_peer(&client, folder_id, &self.state.peer_cache)
             .await
-            .map_err(|_| FsError::GeneralFailure)?;
-        let mut file = tokio::fs::File::open(temp_path)
+            .map_err(inventory_error)?;
+        let uploaded = retry_upload(
+            self.network.retry_attempts(),
+            || async {
+                self.account()?;
+                let file = tokio::fs::File::open(temp_path).await.map_err(io_error)?;
+                let mut file = crate::traffic::Reader::new(
+                    file,
+                    crate::traffic::Traffic {
+                        network: self.network.clone(),
+                        account: self.account()?,
+                        direction: crate::traffic::Direction::Upload,
+                    },
+                );
+                client
+                    .upload_stream(&mut file, size as usize, filename.clone())
+                    .await
+                    .map_err(|error| match io_error(error) {
+                        FsError::GeneralFailure => FsError::IsRemote,
+                        error => error,
+                    })
+            },
+            || self.account().map(|_| ()),
+            self.network.retry_base_backoff_ms(),
+            self.network.retry_max_backoff_ms(),
+        )
+        .await?;
+        self.account()?;
+        // send_message generates a new random_id on every invocation. A lost
+        // reply cannot safely be retried here: invalidate and let a fresh listing
+        // reconcile the remote result before a user retries the PUT.
+        let sent = match client
+            .send_message(&peer, InputMessage::new().text("").file(uploaded))
             .await
-            .map_err(|_| FsError::GeneralFailure)?;
-        let uploaded = client
-            .upload_stream(&mut file, size as usize, filename.clone())
-            .await
-            .map_err(|_| FsError::GeneralFailure)?;
-        let outgoing = InputMessage::new().text("").file(uploaded);
-
-        let mut sent = None;
-        let mut last_error = String::new();
-        for attempt in 0..=self.network.retry_attempts() {
-            self.account()?;
-            match client.send_message(&peer, outgoing.clone()).await {
-                Ok(message) => {
-                    sent = Some(message);
-                    break;
-                }
-                Err(error) => {
-                    last_error = map_error(error);
-                    if self.network.should_respect_flood_wait()
-                        && last_error.starts_with("FLOOD_WAIT_")
-                    {
-                        if let Ok(seconds) =
-                            last_error.trim_start_matches("FLOOD_WAIT_").parse::<u64>()
-                        {
-                            tokio::time::sleep(Duration::from_secs(seconds.min(300))).await;
-                            continue;
-                        }
-                    }
-                    if attempt < self.network.retry_attempts() {
-                        let wait = crate::vpn_optimizer::backoff_ms(
-                            attempt,
-                            self.network.retry_base_backoff_ms(),
-                            self.network.retry_max_backoff_ms(),
-                        );
-                        tokio::time::sleep(Duration::from_millis(wait)).await;
-                    }
-                }
+        {
+            Ok(sent) => sent,
+            Err(error) => {
+                self.invalidate(&folder_path).await;
+                return Err(telegram_error(error));
             }
-        }
-        let sent = sent.ok_or_else(|| {
-            log::error!("WebDAV upload failed: {last_error}");
-            FsError::GeneralFailure
-        })?;
+        };
+        crate::file_inventory::changed(&self.account()?, folder_id, &[])
+            .map_err(inventory_error)?;
         reservation.commit();
 
         if let Some(DavNode::File {
@@ -633,7 +759,7 @@ impl TelegramDavFs {
                         old_message,
                         error
                     );
-                    return Err(FsError::GeneralFailure);
+                    return Err(telegram_error(error));
                 }
                 crate::workspace::remote_changes::record(
                     &self.account()?,
@@ -672,12 +798,12 @@ impl TelegramDavFs {
         let client = self.client().await?;
         let peer = resolve_peer(&client, *folder_id, &self.state.peer_cache)
             .await
-            .map_err(|_| FsError::GeneralFailure)?;
+            .map_err(inventory_error)?;
         self.account()?;
         client
             .delete_messages(&peer, &[*message_id])
             .await
-            .map_err(|_| FsError::GeneralFailure)?;
+            .map_err(telegram_error)?;
         crate::workspace::remote_changes::record(
             &self.account()?,
             vec![crate::workspace::remote_changes::Change::Delete {
@@ -714,7 +840,7 @@ impl TelegramDavFs {
                 schedule_repeat_period: None,
             })
             .await
-            .map_err(|_| FsError::GeneralFailure)?;
+            .map_err(telegram_error)?;
         Ok(())
     }
 
@@ -746,7 +872,7 @@ impl TelegramDavFs {
         let client = self.client().await?;
         let source_peer = resolve_peer(&client, source_folder_id, &self.state.peer_cache)
             .await
-            .map_err(|_| FsError::GeneralFailure)?;
+            .map_err(inventory_error)?;
 
         if move_file && source_folder_id == target_folder_id {
             self.edit_message_name(&client, &source_peer, message_id, new_name.clone())
@@ -764,12 +890,12 @@ impl TelegramDavFs {
         } else {
             let target_peer = resolve_peer(&client, target_folder_id, &self.state.peer_cache)
                 .await
-                .map_err(|_| FsError::GeneralFailure)?;
+                .map_err(inventory_error)?;
             self.account()?;
             let forwarded = client
                 .forward_messages(&target_peer, &[message_id], &source_peer)
                 .await
-                .map_err(|_| FsError::GeneralFailure)?;
+                .map_err(telegram_error)?;
             let new_message_id = forwarded
                 .into_iter()
                 .flatten()
@@ -783,7 +909,7 @@ impl TelegramDavFs {
                 client
                     .delete_messages(&source_peer, &[message_id])
                     .await
-                    .map_err(|_| FsError::GeneralFailure)?;
+                    .map_err(telegram_error)?;
                 crate::workspace::remote_changes::record(
                     &self.account()?,
                     vec![
@@ -877,7 +1003,7 @@ impl DavFileSystem for TelegramDavFs {
                 position: 0,
                 metadata,
                 bandwidth: self.bandwidth.clone(),
-                download_limit: self.network.download_limit_bytes_per_sec(),
+                network: self.network.clone(),
             }) as Box<dyn DavFile>)
         }))
     }
@@ -942,7 +1068,7 @@ impl DavFileSystem for TelegramDavFs {
             let client = self.client().await?;
             create_folder_inner(&name, &client, &self.state.peer_cache)
                 .await
-                .map_err(|_| FsError::GeneralFailure)?;
+                .map_err(inventory_error)?;
             self.invalidate("/").await;
             Ok(())
         }))
@@ -975,7 +1101,7 @@ impl DavFileSystem for TelegramDavFs {
             let client = self.client().await?;
             delete_folder_inner(folder_id, &client, &self.state.peer_cache)
                 .await
-                .map_err(|_| FsError::GeneralFailure)?;
+                .map_err(inventory_error)?;
             self.invalidate("/").await;
             Ok(())
         }))
@@ -1020,7 +1146,7 @@ impl DavFileSystem for TelegramDavFs {
             let client = self.client().await?;
             rename_folder_inner(folder_id, &new_name, &client, &self.state.peer_cache)
                 .await
-                .map_err(|_| FsError::GeneralFailure)?;
+                .map_err(inventory_error)?;
             self.invalidate("/").await;
             Ok(())
         }))
@@ -1049,7 +1175,7 @@ enum TelegramDavFile {
         position: u64,
         metadata: DavMetadata,
         bandwidth: Arc<BandwidthManager>,
-        download_limit: u64,
+        network: Arc<NetworkConfig>,
     },
     Write {
         account: AccountGuard,
@@ -1148,7 +1274,7 @@ impl DavFile for TelegramDavFile {
                 position,
                 metadata,
                 bandwidth,
-                download_limit,
+                network,
             } = self
             else {
                 return Err(FsError::Forbidden);
@@ -1161,14 +1287,20 @@ impl DavFile for TelegramDavFile {
             let wanted = remaining.min(count as u64) as usize;
             let mut reservation = BandwidthReservation::download(bandwidth.clone(), wanted as u64)
                 .map_err(|_| FsError::InsufficientStorage)?;
-            let started = Instant::now();
             let bytes = read_media_range(client, media, *position, wanted).await?;
-            if *download_limit > 0 {
-                let expected = Duration::from_secs_f64(bytes.len() as f64 / *download_limit as f64);
-                if let Some(delay) = expected.checked_sub(started.elapsed()) {
-                    tokio::time::sleep(delay).await;
-                }
-            }
+            network
+                .pacer
+                .wait(
+                    network,
+                    crate::traffic::Direction::Download,
+                    bytes.len(),
+                    || account.validate(),
+                )
+                .await
+                .map_err(|_| FsError::Forbidden)?;
+            reservation
+                .resize(bytes.len() as u64)
+                .map_err(|_| FsError::InsufficientStorage)?;
             account.validate().map_err(|_| FsError::Forbidden)?;
             *position += bytes.len() as u64;
             reservation.commit();
@@ -1296,6 +1428,25 @@ pub fn build_handler(fs: TelegramDavFs, token_hash: String) -> (DavHandler, WebD
         .read_buf_size(READ_CHUNK_SIZE as usize)
         .build_handler();
     (handler, WebDavAuth { token_hash })
+}
+
+/// Serve WebDAV on an already bound loopback listener.
+pub fn serve(
+    listener: std::net::TcpListener,
+    filesystem: TelegramDavFs,
+    token_hash: String,
+) -> std::io::Result<actix_web::dev::Server> {
+    let (handler, auth) = build_handler(filesystem, token_hash);
+    let handler = web::Data::new(handler);
+    let auth = web::Data::new(auth);
+    Ok(actix_web::HttpServer::new(move || {
+        actix_web::App::new()
+            .app_data(handler.clone())
+            .app_data(auth.clone())
+            .service(web::resource("/{tail:.*}").to(webdav_handler))
+    })
+    .listen(listener)?
+    .run())
 }
 
 pub async fn webdav_handler(
@@ -1520,7 +1671,7 @@ async fn read_media_range(
         let Some(chunk) = downloader
             .next()
             .await
-            .map_err(|_| FsError::GeneralFailure)?
+            .map_err(|error| inventory_error(error.to_string()))?
         else {
             break;
         };

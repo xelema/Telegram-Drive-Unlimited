@@ -2,9 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, File, Maximize, Scan, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { listen } from '@tauri-apps/api/event';
-import { convertFileSrc } from '@tauri-apps/api/core';
+import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { TelegramFile } from '../../../types';
 import { isImageFile } from '../../../utils';
+import { isAndroidPlatform } from '../../../utils/platform';
 import { useSettings } from '../../../context/SettingsContext';
 import { userFacingError } from '../../../services/userFacingError';
 import {
@@ -13,6 +14,7 @@ import {
     getCachedPreview,
     getCachedThumbnail,
     loadPreview,
+    loadLocalPreview,
     loadThumbnail,
 } from '../../../services/imagePreviewCache';
 import i18n from '../../../i18n';
@@ -52,6 +54,7 @@ interface PreviewModalProps {
     prevFile?: TelegramFile | null;
     activeFolderId: number | null;
     localPath?: string;
+    onDownload?: () => void;
 }
 
 export function PreviewModal({
@@ -64,6 +67,7 @@ export function PreviewModal({
     nextFile,
     activeFolderId,
     localPath,
+    onDownload,
 }: PreviewModalProps) {
     const { t } = useTranslation();
     const { settings } = useSettings();
@@ -77,6 +81,7 @@ export function PreviewModal({
     const currentFileIdRef = useRef(file.id);
     currentFileIdRef.current = file.id;
     const imagePreview = isImageFile(file.name);
+    const heicPreview = !isAndroidPlatform && /\.hei[cf]$/i.test(file.name);
     const imageViewportRef = useRef<HTMLDivElement>(null);
     const fullImageRef = useRef<HTMLImageElement>(null);
     const [imageTransform, setImageTransform] = useState<ImageTransform>({ zoom: 1, pan: { x: 0, y: 0 } });
@@ -185,13 +190,13 @@ export function PreviewModal({
 
     useEffect(() => {
         const requestId = ++latestRequestRef.current;
-        if (localPath) {
+        if (localPath && !heicPreview) {
             setThumbnailSrc(null); setFullSrc(convertFileSrc(localPath));
             setFullReady(false); setLoading(imagePreview); setProgress(100); setError(null);
             fitImage(); activePointersRef.current.clear(); pointerGestureRef.current = null; setImageInteracting(false);
             return;
         }
-        const cachedPreview = getCachedPreview(file.id, activeFolderId);
+        const cachedPreview = localPath ? null : getCachedPreview(file.id, activeFolderId);
         const cachedThumbnail = imagePreview
             ? getCachedThumbnail(file.id, activeFolderId)
             : null;
@@ -217,10 +222,13 @@ export function PreviewModal({
             });
         }
 
-        loadPreview(file.id, activeFolderId).then((src) => {
+        const preview = localPath
+            ? loadLocalPreview(file.id, activeFolderId, localPath)
+            : loadPreview(file.id, activeFolderId);
+        preview.then((src) => {
             if (requestId !== latestRequestRef.current) return;
             if (!src) {
-                setError('Preview not available');
+                setError(t('workspace.preview_failed'));
                 setLoading(false);
                 return;
             }
@@ -228,10 +236,11 @@ export function PreviewModal({
             if (!imagePreview) setLoading(false);
         }).catch((loadError) => {
             if (requestId !== latestRequestRef.current) return;
-            setError(userFacingError(loadError, t));
+            setThumbnailSrc(null);
+            setError(heicPreview ? t('workspace.preview_failed') : userFacingError(loadError, t));
             setLoading(false);
         });
-    }, [file.id, file.name, activeFolderId, imagePreview, fitImage, localPath]);
+    }, [file.id, file.name, activeFolderId, imagePreview, heicPreview, fitImage, localPath]);
 
     // Prefetch only the likely next image, after the current one is fully decoded and
     // the browser is idle. Avoid speculative downloads when a bandwidth cap is active.
@@ -239,7 +248,7 @@ export function PreviewModal({
         if (localPath) return;
         if (!fullReady || !nextFile || !isImageFile(nextFile.name)) return;
         if (nextFile.size > MAX_PREFETCH_BYTES) return;
-        if (settings.vpnMode && settings.bandwidthLimitDownKBs > 0) return;
+        if (settings.bandwidthLimitDownKBs > 0 || settings.bandwidth_schedule) return;
         const connection = (navigator as Navigator & { connection?: { saveData?: boolean } }).connection;
         if (connection?.saveData) return;
 
@@ -264,7 +273,7 @@ export function PreviewModal({
             window.clearTimeout(timerId);
             if (idleId !== undefined) idleWindow.cancelIdleCallback?.(idleId);
         };
-    }, [fullReady, nextFile, activeFolderId, settings.vpnMode, settings.bandwidthLimitDownKBs, localPath]);
+    }, [fullReady, nextFile, activeFolderId, settings.bandwidth_schedule, settings.bandwidthLimitDownKBs, localPath]);
 
     useEffect(() => {
         if (!fullReady) return;
@@ -446,8 +455,8 @@ export function PreviewModal({
                     onClick={onPrev}
                     disabled={!onPrev}
                     className="viewer-navigation absolute start-2 top-1/2 z-20 -translate-y-1/2 disabled:pointer-events-none disabled:opacity-0"
-                    title="Previous (ArrowLeft / J)"
-                    aria-label="Previous file"
+                    title={i18n.t('viewer.previous_shortcut')}
+                    aria-label={i18n.t('viewer.previous_file')}
                 >
                     <ChevronLeft className="h-5 w-5 rtl:rotate-180" />
                 </button>
@@ -456,8 +465,8 @@ export function PreviewModal({
                     onClick={onNext}
                     disabled={!onNext}
                     className="viewer-navigation absolute end-2 top-1/2 z-20 -translate-y-1/2 disabled:pointer-events-none disabled:opacity-0"
-                    title="Next (ArrowRight / L)"
-                    aria-label="Next file"
+                    title={i18n.t('viewer.next_shortcut')}
+                    aria-label={i18n.t('viewer.next_file')}
                 >
                     <ChevronRight className="h-5 w-5 rtl:rotate-180" />
                 </button>
@@ -466,14 +475,14 @@ export function PreviewModal({
                     onClick={onClose}
                     className="viewer-control absolute -top-10 end-0 z-20 border border-white/10 bg-black/55"
                     title={i18n.t("common.close")}
-                    aria-label="Close preview"
+                    aria-label={i18n.t('viewer.close_preview')}
                 >
                     <X className="h-4 w-4" />
                 </button>
 
                 {error && (
                     <div className="viewer-panel max-w-md border-app-danger/25 bg-app-danger/10 p-4 text-app-danger">
-                        <p className="text-ui font-semibold">Preview Error</p>
+                        <p className="text-ui font-semibold">{i18n.t('viewer.preview_error')}</p>
                         <p className="mt-1 text-metadata leading-relaxed">{error}</p>
                     </div>
                 )}
@@ -536,7 +545,7 @@ export function PreviewModal({
                                 }}
                                 onError={() => {
                                     if (!localPath) forgetPreview(file.id, activeFolderId);
-                                    setError('Failed to render image preview');
+                                    setError(i18n.t('viewer.image_render_failed'));
                                     setLoading(false);
                                 }}
                             />
@@ -603,7 +612,7 @@ export function PreviewModal({
                         {loading && (
                             <div className={`viewer-toolbar absolute flex-col gap-2 px-4 py-3 text-white ${thumbnailSrc ? 'bottom-4' : 'start-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rtl:translate-x-1/2'}`}>
                                 <div className="h-5 w-5 animate-spin rounded-full border-2 border-white/25 border-t-app-accent" />
-                                <p className="text-metadata">Loading preview…</p>
+                                <p className="text-metadata">{i18n.t('viewer.loading_preview')}</p>
                                 {progress > 0 && (
                                     <div className="h-1 w-32 overflow-hidden rounded-full bg-white/15" aria-label={`${progress}%`}>
                                         <div className="h-full rounded-full bg-telegram-primary transition-[width] duration-200" style={{ width: `${progress}%` }} />
@@ -618,11 +627,18 @@ export function PreviewModal({
                     <div className="viewer-panel max-w-md p-6 text-center text-white">
                         <File className="mx-auto mb-3 h-10 w-10 text-app-accent" />
                         <h3 className="truncate text-app-title font-medium" title={file.name}>{file.name}</h3>
-                        <p className="mt-2 text-ui text-white/60">Preview not supported in app.</p>
-                        <p className="mt-4 text-badge text-white/40">File type: {file.name.split('.').pop()}</p>
+                        <p className="mt-2 text-ui text-white/60">{i18n.t('viewer.preview_unsupported')}</p>
+                        <p className="mt-4 text-badge text-white/40">{i18n.t('viewer.file_type')} {file.name.split('.').pop()}</p>
                     </div>
                 )}
 
+                {heicPreview && <div className="viewer-toolbar absolute -top-12 flex gap-2 text-white">
+                    <button type="button" className="viewer-control" onClick={() => {
+                        void (localPath ? Promise.resolve(localPath) : invoke<string>('cmd_get_preview', {messageId: file.id, folderId: activeFolderId}))
+                            .then(path => invoke('cmd_open_file_externally', {path})).catch(error => setError(userFacingError(error, t)));
+                    }}>{t('viewer.open_external')}</button>
+                    {onDownload && <button type="button" className="viewer-control" onClick={onDownload}>{t('files.download')}</button>}
+                </div>}
                 <div className="viewer-toolbar absolute -bottom-11 max-w-[min(80vw,40rem)] px-3 py-1.5 text-metadata text-white/70">
                     <span className="min-w-0 truncate" title={file.name}>{file.name}</span>
                     {typeof currentIndex === 'number' && typeof totalItems === 'number' && totalItems > 0 && (

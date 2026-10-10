@@ -10,7 +10,7 @@ use crate::{
     },
     vpn_optimizer::NetworkConfig,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     path::{Component, Path, PathBuf},
     sync::Arc,
@@ -30,14 +30,17 @@ fn validate_upload_size(file_size: u64) -> Result<(), String> {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecutionResult {
     pub relative_path: String,
     pub action: String,
     pub success: bool,
+    #[serde(default)]
     pub detail: Option<String>,
+    #[serde(default)]
     pub message_id: Option<i32>,
+    #[serde(default)]
     pub local_hash: Option<String>,
 }
 
@@ -196,24 +199,96 @@ where
     }
 }
 
+/// The name shown for a sync transfer: the file's own name, not its path.
+#[cfg_attr(any(target_os = "android", target_os = "ios"), allow(dead_code))]
+fn display_name(relative_path: &str) -> String {
+    relative_path
+        .rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or("file")
+        .to_string()
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn transfer_queue(app: &tauri::AppHandle) -> Option<Arc<crate::transfer_engine::TransferEngine>> {
+    app.try_state::<Arc<crate::transfer_engine::TransferEngine>>()
+        .map(|engine| engine.inner().clone())
+}
+
 async fn upload(
     app: &tauri::AppHandle,
     pair: &SyncPair,
     path: &Path,
+    relative_path: &str,
     settings: &SyncSettings,
     account: &crate::workspace::AccountGuard,
-) -> Result<i32, String> {
+) -> Result<UploadedFile, String> {
     let protection_mode = upload_protection_mode(app, settings)?;
+    let protected = protection_mode.is_some();
     let path = path.to_string_lossy().into_owned();
+    // One id for every attempt, registered so shutdown can cancel the upload.
+    let transfer_id = format!("sync-{}", uuid::Uuid::new_v4());
+    let _active = app
+        .state::<SyncEngine>()
+        .track_transfer(transfer_id.clone(), None);
+
+    // The transfer queue runs the upload: it shares the queue's limits and
+    // retries, shows in Transfers, and continues a large file where an
+    // earlier attempt stopped.
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    if let Some(queue) = transfer_queue(app) {
+        let total_bytes = tokio::fs::metadata(&path)
+            .await
+            .map(|metadata| metadata.len())
+            .ok();
+        let job = queue
+            .run_supervised(
+                crate::transfer_engine::TransferEnqueueRequest {
+                    id: transfer_id,
+                    owner_id: Some(account.owner.to_string()),
+                    direction: crate::transfer_engine::TransferDirection::Upload,
+                    kind: crate::transfer_engine::TransferKind::LocalUpload,
+                    path: Some(path),
+                    url: None,
+                    folder_id: Some(pair.channel_id),
+                    message_id: None,
+                    filename: display_name(relative_path),
+                    save_path: None,
+                    collision_policy: Default::default(),
+                    protection_mode,
+                    prompt_token: None,
+                    protect_metadata: Some(true),
+                    video_upload_mode: Some("file".to_string()),
+                    temp_zip_path: None,
+                    total_bytes,
+                    initial_status: None,
+                    origin: Some(crate::transfer_engine::ORIGIN_SYNC.to_string()),
+                    sync_path: Some(relative_path.to_string()),
+                },
+                app.state::<SyncEngine>().subscribe_shutdown()?,
+            )
+            .await?;
+        account.validate()?;
+        let message_id = job.message_id.ok_or_else(|| {
+            "Upload succeeded but Telegram did not return its message id".to_string()
+        })?;
+        return Ok(UploadedFile {
+            message_id,
+            protected,
+        });
+    }
+
     let message_id = with_flood_wait(app, account, || {
-        commands::fs::cmd_upload_file(
+        commands::fs::upload_local_file(
             path.clone(),
             Some(pair.channel_id),
-            Some(format!("sync-{}", uuid::Uuid::new_v4())),
+            Some(transfer_id.clone()),
             protection_mode.clone(),
             None,
             Some(true),
             Some("file".to_string()),
+            Some(relative_path.to_string()),
             app.clone(),
             app.state::<TelegramState>(),
             app.state::<Arc<BandwidthManager>>(),
@@ -224,9 +299,19 @@ async fn upload(
         )
     })
     .await?;
-    message_id
+    let message_id = message_id
         .parse::<i32>()
-        .map_err(|_| "Upload succeeded but Telegram did not return its message id".to_string())
+        .map_err(|_| "Upload succeeded but Telegram did not return its message id".to_string())?;
+    Ok(UploadedFile {
+        message_id,
+        protected,
+    })
+}
+
+struct UploadedFile {
+    message_id: i32,
+    /// The file was uploaded as an encrypted envelope.
+    protected: bool,
 }
 
 pub(crate) fn upload_protection_mode(
@@ -343,10 +428,14 @@ async fn verify_remote_precondition(
     account.validate()
 }
 
+#[allow(clippy::too_many_arguments)] // One value per independent input of a download.
+#[cfg_attr(any(target_os = "android", target_os = "ios"), allow(unused_variables))]
 async fn download(
     app: &tauri::AppHandle,
     pair: &SyncPair,
     message_id: i32,
+    relative_path: &str,
+    total_bytes: u64,
     destination: &Path,
     expected_local_hash: Option<&str>,
     account: &crate::workspace::AccountGuard,
@@ -359,28 +448,79 @@ async fn download(
     }
     let temporary = temporary_download_path(destination)?;
     reserve_temporary_download(&temporary).await?;
-    let request = DownloadFileRequest {
-        owner_id: Some(account.owner.to_string()),
-        // This is our exclusively reserved internal staging file, never the user destination.
-        collision_policy: commands::download_destination::DownloadCollisionPolicy::Replace,
-        message_id,
-        save_path: temporary.to_string_lossy().into_owned(),
-        folder_id: Some(pair.channel_id),
-        transfer_id: Some(format!("sync-{}", uuid::Uuid::new_v4())),
-        prompt_token: None,
+    let transfer_id = format!("sync-{}", uuid::Uuid::new_v4());
+    // Registered so shutdown can cancel the download and, if it has to be
+    // abandoned, remove this reserved staging file.
+    let _active = app
+        .state::<SyncEngine>()
+        .track_transfer(transfer_id.clone(), Some(temporary.clone()));
+    // The transfer queue runs the download, into our staging file.
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let queue = transfer_queue(app);
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let queue: Option<()> = None;
+    let result = match queue {
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        Some(queue) => match app.state::<SyncEngine>().subscribe_shutdown() {
+            Ok(stop) => queue
+                .run_supervised(
+                    crate::transfer_engine::TransferEnqueueRequest {
+                        id: transfer_id,
+                        owner_id: Some(account.owner.to_string()),
+                        direction: crate::transfer_engine::TransferDirection::Download,
+                        kind: crate::transfer_engine::TransferKind::Download,
+                        path: None,
+                        url: None,
+                        folder_id: Some(pair.channel_id),
+                        message_id: Some(message_id),
+                        filename: display_name(relative_path),
+                        // This is our exclusively reserved internal staging
+                        // file, never the user destination.
+                        save_path: Some(temporary.to_string_lossy().into_owned()),
+                        collision_policy:
+                            commands::download_destination::DownloadCollisionPolicy::Replace,
+                        protection_mode: None,
+                        prompt_token: None,
+                        protect_metadata: None,
+                        video_upload_mode: None,
+                        temp_zip_path: None,
+                        total_bytes: Some(total_bytes),
+                        initial_status: None,
+                        origin: Some(crate::transfer_engine::ORIGIN_SYNC.to_string()),
+                        sync_path: None,
+                    },
+                    stop,
+                )
+                .await
+                .map(|_| ()),
+            Err(error) => Err(error),
+        },
+        _ => {
+            let request = DownloadFileRequest {
+                owner_id: Some(account.owner.to_string()),
+                // This is our exclusively reserved internal staging file, never the user destination.
+                collision_policy: commands::download_destination::DownloadCollisionPolicy::Replace,
+                message_id,
+                save_path: temporary.to_string_lossy().into_owned(),
+                folder_id: Some(pair.channel_id),
+                transfer_id: Some(transfer_id),
+                prompt_token: None,
+            };
+            with_flood_wait(app, account, || {
+                commands::fs::cmd_download_file(
+                    DownloadFileRequest { ..request.clone() },
+                    app.clone(),
+                    app.state::<TelegramState>(),
+                    app.state::<Arc<BandwidthManager>>(),
+                    app.state::<Arc<NetworkConfig>>(),
+                    app.state::<CryptoState>(),
+                    app.state::<DbConnection>(),
+                )
+            })
+            .await
+            .map(|_| ())
+        }
     };
-    let result = with_flood_wait(app, account, || {
-        commands::fs::cmd_download_file(
-            DownloadFileRequest { ..request.clone() },
-            app.clone(),
-            app.state::<TelegramState>(),
-            app.state::<Arc<BandwidthManager>>(),
-            app.state::<Arc<NetworkConfig>>(),
-            app.state::<CryptoState>(),
-            app.state::<DbConnection>(),
-        )
-    })
-    .await;
     if let Err(error) = result {
         let _ = tokio::fs::remove_file(&temporary).await;
         return Err(error);
@@ -535,10 +675,20 @@ pub async fn execute(
                                     Ok(metadata) => match validate_upload_size(metadata.len()) {
                                         Err(error) => Err(error),
                                         Ok(()) => {
-                                            match upload(app, pair, &local_path, settings, account)
-                                                .await
+                                            match upload(
+                                                app,
+                                                pair,
+                                                &local_path,
+                                                &path,
+                                                settings,
+                                                account,
+                                            )
+                                            .await
                                             {
-                                                Ok(message_id) => {
+                                                Ok(UploadedFile {
+                                                    message_id,
+                                                    protected,
+                                                }) => {
                                                     let verify_path = local_path.clone();
                                                     let current_hash =
                                                         tokio::task::spawn_blocking(move || {
@@ -566,9 +716,28 @@ pub async fn execute(
                                                             Ok(()) => {
                                                                 uploaded_message_id =
                                                                     Some(message_id);
-                                                                if settings.encryption
-                                                                    != "always_vault"
+                                                                // Recorded now, not after
+                                                                // the whole batch: if the
+                                                                // engine stops before then,
+                                                                // the next cycle still
+                                                                // knows this message is
+                                                                // this file.
+                                                                if let Err(error) =
+                                                                    super::journal_upload(
+                                                                        db, pair.id, &path, &local,
+                                                                        message_id,
+                                                                    )
+                                                                    .await
                                                                 {
+                                                                    log::warn!("Folder sync could not journal an upload yet: {error}");
+                                                                }
+                                                                // A protected file keeps its
+                                                                // envelope marker as caption:
+                                                                // writing the path there would
+                                                                // expose it and is refused for
+                                                                // envelopes. Its path is mapped
+                                                                // by the journaled message id.
+                                                                if !protected {
                                                                     crate::workspace::with_operation_account(account, commands::fs::cmd_rename_file(
                                                         message_id,
                                                         Some(pair.channel_id),
@@ -615,13 +784,22 @@ pub async fn execute(
                             } else {
                                 expected_local_hash.as_deref()
                             };
-                            download(app, pair, message_id, &destination, expected_hash, account)
-                                .await
-                                .map(|hash| {
-                                    if !keep_both {
-                                        downloaded_hash = Some(hash);
-                                    }
-                                })
+                            download(
+                                app,
+                                pair,
+                                message_id,
+                                &path,
+                                remote.file_size,
+                                &destination,
+                                expected_hash,
+                                account,
+                            )
+                            .await
+                            .map(|hash| {
+                                if !keep_both {
+                                    downloaded_hash = Some(hash);
+                                }
+                            })
                         }
                         Err(error) => Err(error),
                     },

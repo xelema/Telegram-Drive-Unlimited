@@ -2,6 +2,7 @@ pub mod envelope;
 pub mod error;
 pub mod kdf;
 pub mod policy;
+pub(crate) mod preparation;
 pub mod random;
 pub mod registry;
 pub mod secret;

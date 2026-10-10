@@ -176,30 +176,35 @@ export function TopBar({
                                         <IconButton size="xs" label={t('common.close')} onClick={closeSearchFilters}><X className="h-3.5 w-3.5" /></IconButton>
                                     </div>
                                     <div className="grid gap-3 p-4">
-                                        <label className="search-filter-field text-xs font-medium text-app-text-secondary">Search scope
+                                        <label className="search-filter-field text-xs font-medium text-app-text-secondary">{i18n.t('ui_copy.search_scope')}
                                             <Select value={searchFilters.scope} onChange={(event) => onSearchFiltersChange({ ...searchFilters, scope: event.target.value as FileSearchFilters['scope'] })} className="search-filter-select">
-                                                <option value="folder">Current folder / view</option>
-                                                <option value="all">All Telegram Drive folders</option>
+                                                <option value="folder">{i18n.t('ui_copy.current_scope')}</option>
+                                                <option value="all">{i18n.t('ui_copy.global_scope')}</option>
                                             </Select>
                                         </label>
                                         <label className="search-filter-field text-xs font-medium text-app-text-secondary">{t('workspace.file_type')}
                                             <Select value={searchFilters.type} onChange={(event) => onSearchFiltersChange({ ...searchFilters, type: event.target.value as FileSearchFilters['type'] })} className="search-filter-select">
-                                                <option value="all">All types</option><option value="image">Images</option><option value="video">Videos</option><option value="audio">Audio</option><option value="document">Documents</option><option value="archive">Archives</option><option value="other">Other</option>
+                                                <option value="all">{i18n.t("workspace.types.all")}</option><option value="image">{i18n.t('workspace.types.image')}</option><option value="video">{i18n.t('workspace.types.video')}</option><option value="audio">{i18n.t('workspace.types.audio')}</option><option value="document">{i18n.t("workspace.types.document")}</option><option value="archive">{i18n.t("workspace.types.archive")}</option><option value="other">{t('workspace.types.other')}</option>
                                             </Select>
                                         </label>
                                         <label className="search-filter-field text-xs font-medium text-app-text-secondary">{i18n.t("common.size")}
                                             <Select value={searchFilters.size} onChange={(event) => onSearchFiltersChange({ ...searchFilters, size: event.target.value as FileSearchFilters['size'] })} className="search-filter-select">
-                                                <option value="any">Any</option><option value="small">Under 10 MB</option><option value="medium">10–100 MB</option><option value="large">100 MB+</option>
+                                                <option value="any">{t('workspace.sizes.any')}</option><option value="small">{i18n.t("workspace.sizes.small")}</option><option value="medium">{i18n.t("workspace.sizes.medium")}</option><option value="large">{t('workspace.sizes.large')}</option>
                                             </Select>
                                         </label>
                                         <label className="search-filter-field text-xs font-medium text-app-text-secondary">{i18n.t("common.date")}
                                             <Select value={searchFilters.date} onChange={(event) => onSearchFiltersChange({ ...searchFilters, date: event.target.value as FileSearchFilters['date'] })} className="search-filter-select">
-                                                <option value="any">Any</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option><option value="1y">Last year</option>
+                                                <option value="any">{t('workspace.dates.any')}</option><option value="7d">{t('workspace.dates.7d')}</option><option value="30d">{t('workspace.dates.30d')}</option><option value="1y">{t('workspace.dates.1y')}</option>
+                                            </Select>
+                                        </label>
+                                        <label className="search-filter-field text-xs font-medium text-app-text-secondary">{t('workspace.protection')}
+                                            <Select aria-label={t('workspace.protection')} value={searchFilters.protection ?? 'any'} onChange={event => onSearchFiltersChange({ ...searchFilters, protection: event.target.value as FileSearchFilters['protection'] })} className="search-filter-select">
+                                                <option value="any">{t('common.all')}</option><option value="plain">{t('workspace.protection_plain')}</option><option value="protected">{t('settings.protected')}</option><option value="locked">{t('workspace.protection_locked')}</option><option value="unlocked">{t('workspace.protection_unlocked')}</option>
                                             </Select>
                                         </label>
                                     </div>
                                     <div className="border-t border-app-border-subtle p-3">
-                                        <Button className="w-full" onClick={() => onSearchFiltersChange(DEFAULT_SEARCH_FILTERS)}>Reset filters</Button>
+                                        <Button className="w-full" onClick={() => onSearchFiltersChange(DEFAULT_SEARCH_FILTERS)}>{i18n.t('ui_copy.reset_filters')}</Button>
                                     </div>
                                 </div>
                             )}
@@ -220,7 +225,7 @@ export function TopBar({
                                     !proxyStatus ? 'bg-app-warning animate-pulse' : proxyStatus.reachable ? 'bg-app-success' : 'bg-app-danger'
                                 }`} />
                                 <span className="font-mono">
-                                    {!proxyStatus ? '…' : proxyStatus.reachable ? `${proxyStatus.latency_ms}ms` : 'Offline'}
+                                    {!proxyStatus ? '…' : proxyStatus.reachable ? `${proxyStatus.latency_ms}ms` : i18n.t("settings.offline")}
                                 </span>
                             </div>
                         )}
@@ -259,8 +264,8 @@ export function TopBar({
                             </IconButton>
                             {showViewOptions && (
                                 <MenuPanel className="absolute end-0 top-9 z-50 w-64">
-                                    <div className="px-2 pb-2 pt-1 text-badge font-medium text-app-text-tertiary">Sort files</div>
-                                    <div className="grid grid-cols-3 gap-1" role="group" aria-label="Sort files">
+                                    <div className="px-2 pb-2 pt-1 text-badge font-medium text-app-text-tertiary">{i18n.t('ui_copy.sort_files')}</div>
+                                    <div className="grid grid-cols-3 gap-1" role="group" aria-label={i18n.t('ui_copy.sort_files')}>
                                         {(['name', 'size', 'date'] as const).map((field) => (
                                             <button
                                                 key={field}
@@ -296,7 +301,7 @@ export function TopBar({
                                                     value={cardScale}
                                                     onChange={(event) => onCardScaleChange(parseFloat(event.target.value))}
                                                     className="h-1 min-w-0 flex-1 cursor-pointer appearance-none rounded-full bg-app-border [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-app-accent"
-                                                    aria-label="Thumbnail size"
+                                                    aria-label={i18n.t('ui_copy.thumbnail_size')}
                                                 />
                                                 <IconButton
                                                     size="xs"
@@ -334,11 +339,11 @@ export function TopBar({
                                     </MenuItem>
                                     <MenuItem onClick={() => runMoreAction(onShowShortcuts)}>
                                         <Keyboard className="h-3.5 w-3.5 text-app-text-secondary" />
-                                        Keyboard shortcuts
+                                        {i18n.t('ui_copy.keyboard_shortcuts')}
                                     </MenuItem>
                                     <MenuItem onClick={() => runMoreAction(onShowHelp)}>
                                         <HelpCircle className="h-3.5 w-3.5 text-app-text-secondary" />
-                                        Help &amp; FAQ
+                                        {i18n.t('ui_copy.help_faq')}
                                     </MenuItem>
                                     <div className="my-1 h-px bg-app-border-subtle" />
                                     <MenuItem onClick={() => runMoreAction(onSettingsClick)}>

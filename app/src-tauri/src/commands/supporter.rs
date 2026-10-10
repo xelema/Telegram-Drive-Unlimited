@@ -587,6 +587,33 @@ fn parse_and_verify_token_with_key(
     Ok(claims)
 }
 
+/// Native journeys check a token issued by the locally run supporter Worker
+/// against that Worker's own test key. The key compiled into release builds
+/// is not involved and nothing here changes how it is used; the verification
+/// and validity-window code is the code every build runs.
+#[cfg(feature = "native-e2e")]
+pub(crate) fn verify_issued_token(
+    token: &str,
+    device_public_key: &str,
+    service_public_key: &str,
+    now: i64,
+) -> Result<serde_json::Value, String> {
+    let claims = parse_and_verify_token_with_key(token, device_public_key, service_public_key)?;
+    let access = match entitlement_access_at(&claims, now) {
+        EntitlementAccess::Active => "active",
+        EntitlementAccess::OfflineGrace => "offline_grace",
+        EntitlementAccess::Expired => "expired",
+    };
+    Ok(serde_json::json!({
+        "access": access,
+        "entitlementId": claims.entitlement_id,
+        "termsVersion": claims.terms_version,
+        "appTermsVersion": TERMS_VERSION,
+        "expiresAt": claims.expires_at,
+        "offlineUntil": claims.offline_until,
+    }))
+}
+
 fn entitlement_access_at(claims: &EntitlementClaims, now: i64) -> EntitlementAccess {
     if now <= claims.expires_at {
         EntitlementAccess::Active
@@ -754,6 +781,7 @@ async fn refresh_error(
         if let Err(error) = save_state(app, state) {
             return error;
         }
+        SPONSOR_OFFLINE_UNTIL.store(0, std::sync::atomic::Ordering::Release);
     }
     body.and_then(|body| body.error)
         .map(|error| format!("{}: {}", error.code, error.message))
@@ -769,6 +797,43 @@ fn recovery_presence_for_status(
         Err(_) if state.entitlement_token.is_some() || state.revoked => Ok(false),
         Err(error) => Err(error),
     }
+}
+
+// Only signature-verified, device-bound local access may populate this cache.
+// HTTP routes read RAM only; they never initiate verification or show an ad.
+static SPONSOR_OFFLINE_UNTIL: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+// The fork ships no sponsor routes, so nothing calls this today; it stays with
+// the offline-grace cache it reads because the $5 supporter contract is a
+// protected compatibility surface (see SUPPORTER_LICENSE_INVARIANTS.md).
+#[allow(dead_code)]
+pub(crate) fn sponsor_requests_suppressed() -> bool {
+    let until = SPONSOR_OFFLINE_UNTIL.load(std::sync::atomic::Ordering::Acquire);
+    until > 0 && unix_time() <= until
+}
+
+fn cache_verified_access(claims: &EntitlementClaims, now: i64) {
+    SPONSOR_OFFLINE_UNTIL.store(
+        if entitlement_access_at(claims, now) == EntitlementAccess::Expired {
+            0
+        } else {
+            claims.offline_until
+        },
+        std::sync::atomic::Ordering::Release,
+    );
+}
+
+#[cfg(feature = "native-e2e")]
+pub(crate) async fn load_sponsor_fixture(
+    token: &str,
+    device: &str,
+    key: &str,
+    now: i64,
+) -> Result<(), String> {
+    let _operation = supporter_operation().await;
+    let claims = parse_and_verify_token_with_key(token, device, key)?;
+    cache_verified_access(&claims, now);
+    Ok(())
 }
 
 fn status_from_state(state: &SupporterLocalState) -> Result<SupporterStatus, String> {
@@ -796,6 +861,7 @@ fn status_from_state(state: &SupporterLocalState) -> Result<SupporterStatus, Str
         );
     }
     if state.revoked {
+        SPONSOR_OFFLINE_UNTIL.store(0, std::sync::atomic::Ordering::Release);
         return Ok(SupporterStatus {
             state: "revoked",
             ad_free: false,
@@ -844,6 +910,7 @@ fn status_from_state(state: &SupporterLocalState) -> Result<SupporterStatus, Str
     match parse_and_verify_token(token, device_public_key) {
         Ok(claims) => {
             let now = unix_time();
+            cache_verified_access(&claims, now);
             let (status, ad_free, message) = match entitlement_access_at(&claims, now) {
                 EntitlementAccess::Active => (
                     "active",
@@ -974,6 +1041,11 @@ pub async fn cmd_poll_supporter_checkout(app: AppHandle) -> Result<CheckoutPollR
                 .send()
                 .await;
             let _ = clear_checkout_secret();
+        }
+        // Verification is local and uses the just-persisted activation. Failure
+        // cannot undo a completed purchase or require a second payment.
+        if let Ok(saved) = load_state(&app) {
+            let _ = status_from_state(&saved);
         }
         return Ok(CheckoutPollResult {
             status: "completed".into(), recovery_code: checkout.recovery_code,

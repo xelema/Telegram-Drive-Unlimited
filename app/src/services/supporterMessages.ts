@@ -1,5 +1,4 @@
 import type { CheckoutPollResult, SupporterStatus } from '../context/SupporterContext';
-import '../i18n/supporterTranslations';
 
 type Translate = (key: string) => string;
 

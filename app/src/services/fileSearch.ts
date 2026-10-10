@@ -16,6 +16,7 @@ export interface FileSearchFilters {
     type: SearchTypeFacet;
     size: SearchSizeFacet;
     date: SearchDateFacet;
+    protection?: 'any' | 'plain' | 'protected' | 'locked' | 'unlocked';
 }
 
 export const DEFAULT_SEARCH_FILTERS: FileSearchFilters = {
@@ -23,6 +24,7 @@ export const DEFAULT_SEARCH_FILTERS: FileSearchFilters = {
     type: 'all',
     size: 'any',
     date: 'any',
+    protection: 'any',
 };
 
 function normalized(value: string): string {
@@ -56,7 +58,11 @@ function typeFacet(file: TelegramFile): Exclude<SearchTypeFacet, 'all'> {
 }
 
 function matchesFacets(file: TelegramFile, filters: FileSearchFilters): boolean {
-    if (filters.type !== 'all' && typeFacet(file) !== filters.type) return false;
+    const protectedFile = file.encryption_state !== 'plain';
+    if (filters.protection === 'plain' && protectedFile || filters.protection === 'protected' && !protectedFile
+        || filters.protection === 'locked' && (!protectedFile || file.encryption_state === 'encrypted_unlocked')
+        || filters.protection === 'unlocked' && file.encryption_state !== 'encrypted_unlocked') return false;
+    if (filters.type !== 'all'  && typeFacet(file) !== filters.type) return false;
     const size = file.size || 0;
     if (!matchesSizeFacet(size, filters.size)) return false;
     if (filters.date !== 'any') {

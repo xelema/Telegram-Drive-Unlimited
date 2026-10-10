@@ -1,0 +1,32 @@
+{
+"en":{
+"qr_title":"QR-first secure sign in",
+"qr_description":"Desktop sign-in uses Telegram's QR device flow. A one-time API ID and hash are still required by Telegram to identify this open-source client.",
+"advanced":"Advanced client credentials",
+"continue_phone":"Continue to phone sign in",
+"continue_qr":"Continue to QR sign in",
+"qr_path":"Settings > Devices > Link Desktop Device",
+"help_intro":"Telegram Drive uses your Telegram account as the storage backend for a local-first file workspace. You'll need a Telegram account and API credentials to get started.",
+"portal_heading":"Go to Telegram's Developer Portal",
+"portal_instruction":"Visit <portal>my.telegram.org</portal> and log in with your phone number.",
+"create_heading":"Create a New Application",
+"create_instruction":"Click on \"API development tools\" and create a new application. Use any name and description you like.",
+"copy_heading":"Copy Your Credentials",
+"copy_instruction":"After creating the app, you'll see your {{apiId}} (a number) and {{apiHash}} (a string). Copy both and paste them into the fields on the previous screen."
+},
+"bn-BD":{
+"qr_title":"QR দিয়ে নিরাপদ সাইন ইন",
+"qr_description":"ডেস্কটপ সাইন ইনে Telegram-এর QR ডিভাইস পদ্ধতি ব্যবহৃত হয়। এই ওপেন-সোর্স ক্লায়েন্ট শনাক্ত করতে Telegram-এর জন্য একবার API ID ও হ্যাশ দেওয়া এখনও প্রয়োজন।",
+"advanced":"উন্নত ক্লায়েন্ট পরিচয়তথ্য",
+"continue_phone":"ফোন দিয়ে সাইন ইনে যান",
+"continue_qr":"QR দিয়ে সাইন ইনে যান",
+"qr_path":"সেটিংস > ডিভাইস > ডেস্কটপ ডিভাইস যুক্ত করুন",
+"help_intro":"Telegram Drive আপনার Telegram অ্যাকাউন্টকে স্থানীয়-প্রথম ফাইল কর্মক্ষেত্রের সংরক্ষণব্যবস্থা হিসেবে ব্যবহার করে। শুরু করতে একটি Telegram অ্যাকাউন্ট ও API পরিচয়তথ্য লাগবে।",
+"portal_heading":"Telegram-এর ডেভেলপার পোর্টালে যান",
+"portal_instruction":"<portal>my.telegram.org</portal>-এ যান এবং আপনার ফোন নম্বর দিয়ে লগ ইন করুন।",
+"create_heading":"নতুন অ্যাপ্লিকেশন তৈরি করুন",
+"create_instruction":"\"API development tools\"-এ ক্লিক করে নতুন অ্যাপ্লিকেশন তৈরি করুন। যেকোনো নাম ও বিবরণ ব্যবহার করতে পারেন।",
+"copy_heading":"আপনার পরিচয়তথ্য কপি করুন",
+"copy_instruction":"অ্যাপ তৈরি করার পর {{apiId}} (একটি সংখ্যা) ও {{apiHash}} (একটি স্ট্রিং) দেখতে পাবেন। দুটোই কপি করে আগের পর্দার ঘরে বসান।"
+}
+}

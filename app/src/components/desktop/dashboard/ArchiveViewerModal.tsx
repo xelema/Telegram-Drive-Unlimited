@@ -311,7 +311,7 @@ export function ArchiveViewerModal({
                 <button
                     onClick={(e) => { e.stopPropagation(); onPrev(); }}
                     className="viewer-navigation absolute start-4 top-1/2 z-[210] -translate-y-1/2"
-                    aria-label="Previous file"
+                    aria-label={i18n.t('viewer.previous_file')}
                 >
                     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
                 </button>
@@ -320,7 +320,7 @@ export function ArchiveViewerModal({
                 <button
                     onClick={(e) => { e.stopPropagation(); onNext(); }}
                     className="viewer-navigation absolute end-4 top-1/2 z-[210] -translate-y-1/2"
-                    aria-label="Next file"
+                    aria-label={i18n.t('viewer.next_file')}
                 >
                     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
                 </button>
@@ -353,7 +353,7 @@ export function ArchiveViewerModal({
                         <button
                             onClick={onClose}
                             className="quiet-control flex h-8 w-8 items-center justify-center text-app-text-secondary hover:text-app-text"
-                            aria-label="Close archive viewer"
+                            aria-label={i18n.t('viewer.close_archive')}
                         >
                             <X className="h-4 w-4" />
                         </button>

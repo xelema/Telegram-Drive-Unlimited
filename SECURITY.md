@@ -19,7 +19,7 @@ Never send Telegram API credentials, login codes, session data, phone numbers, f
 ## Responsible testing
 
 - Test only with accounts, devices, services, and data you own or have explicit permission to use.
-- Use isolated test files for encryption research. The TDENC2 encryption feature is alpha and has not received an independent security audit.
+- Use isolated test files for encryption research. The TDENC2 encryption feature is a frozen-format beta and has not received an independent security audit.
 - Do not perform live PayPal transactions, entitlement revocations, signing-key changes, production deployments, or production D1 mutations without explicit repository-owner authorization.
 - Do not expose Telegram Drive's loopback REST, WebDAV, streaming, or share-link ports to a LAN or the public internet.
 - Stop testing if it could access another person's account or data, interrupt a service, or destroy data.
@@ -29,3 +29,9 @@ Never send Telegram API credentials, login codes, session data, phone numbers, f
 Non-sensitive reliability and usability issues can be reported through [GitHub Issues](https://github.com/caamer20/Telegram-Drive/issues). Before posting, remove identifiers, private filenames, paths, file contents, credentials, payment information, and recovery material.
 
 For the application's data handling and local-server model, read the [Privacy Policy](PRIVACY.md), [REST API reference](REST_API_Documentation.md), and [WebDAV guide](WEBDAV_GUIDE.md). Maintainers changing the supporter path must also preserve the [$5 lifetime supporter license invariants](SUPPORTER_LICENSE_INVARIANTS.md).
+
+See [TDENC2 format and review boundaries](Docs/TDENC2_FORMAT.md) and the [recovery drill](Docs/ENCRYPTION_RECOVERY_DRILL.md). Independent cryptographic review remains an owner-commissioned release boundary.
+
+## Release provenance
+
+After downloading a release artifact, compare its SHA-256 with the same release's `SHA256SUMS.txt`, then run `gh attestation verify ./ARTIFACT --repo caamer20/Telegram-Drive`. Inspect the verified workflow and tag/ref for the intended release. Refuse installation if verification fails or identifies an unexpected producer. See the [release-notes template](Docs/RELEASE_NOTES_TEMPLATE.md). Preflight accepts `--verify-attestation FILE --attestation-repo OWNER/REPO`; no published artifact verification has been run for this tree.

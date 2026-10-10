@@ -1,3 +1,4 @@
+import {useTranslation} from 'react-i18next';
 import { useEffect, useState, useRef } from 'react';
 import { X, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, Maximize } from 'lucide-react';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
@@ -7,9 +8,11 @@ import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { TelegramFile } from '../../../types';
 import { isAndroidPlatform } from '../../../utils';
 
-// Use Vite's ?url suffix to get a properly bundled asset URL for the worker
-import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.mjs?url';
+// Use Vite's ?url suffix to get a properly bundled asset URL for the worker.
+// The asset is copied as-is, so ship the upstream minified worker.
+import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
 import i18n from '../../../i18n';
+import { toast } from 'sonner';
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 
 const PDF_CACHE_LIMIT_BYTES = 25 * 1024 * 1024;
@@ -33,6 +36,7 @@ interface PdfViewerProps {
 }
 
 export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalItems, activeFolderId, localPath }: PdfViewerProps) {
+    useTranslation();
     const [streamInfo, setStreamInfo] = useState<StreamInfo | null>(null);
     const [pdf, setPdf] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
     const [numPages, setNumPages] = useState<number>(0);
@@ -54,11 +58,11 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
             if (path) {
                 await invoke('cmd_open_file_externally', { path });
             } else {
-                alert("Failed to locate file path.");
+                toast.error(i18n.t('common.operation_failed'));
             }
         } catch (err) {
             console.error("Failed to open externally:", err);
-            alert("Error: " + String(err));
+            toast.error(i18n.t('common.operation_failed'));
         } finally {
             setOpeningExternal(false);
         }
@@ -68,7 +72,7 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
         if (isAndroidPlatform || localPath) return;
         invoke<StreamInfo>('cmd_get_stream_info').then(setStreamInfo).catch((err) => {
             console.error("Failed to get stream info:", err);
-            setError("Failed to initialize stream");
+            setError(i18n.t('viewer.stream_failed'));
         });
     }, [localPath]);
 
@@ -82,10 +86,10 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
 
         const finishPdfLoad = (pdfDoc: pdfjsLib.PDFDocumentProxy) => {
             if (cancelled) {
-                void pdfDoc.destroy();
+                void pdfDoc.loadingTask.destroy();
                 return;
             }
-            if (pdfRef.current) void pdfRef.current.destroy();
+            if (pdfRef.current) void pdfRef.current.loadingTask.destroy();
             pdfRef.current = pdfDoc;
             setPdf(pdfDoc);
             setNumPages(pdfDoc.numPages);
@@ -94,7 +98,7 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
 
         const loadStream = () => {
             if (!streamInfo || cancelled) {
-                if (!streamInfo) setError("Failed to initialize stream");
+                if (!streamInfo) setError(i18n.t('viewer.stream_failed'));
                 return;
             }
             const folderIdParam = activeFolderId !== null ? activeFolderId.toString() : 'home';
@@ -102,11 +106,11 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
                 ? `&credential=${encodeURIComponent(streamInfo.operation_token)}`
                 : '';
             const streamUrl = `${streamInfo.base_url}/stream/${folderIdParam}/${file.id}?token=${encodeURIComponent(streamInfo.token)}${credential}`;
-            activeLoadingTask = pdfjsLib.getDocument(streamUrl);
+            activeLoadingTask = pdfjsLib.getDocument({ url: streamUrl });
             activeLoadingTask.promise.then(finishPdfLoad, (err) => {
                 if (cancelled) return;
                 console.error("Error loading PDF stream:", err);
-                setError("Failed to load PDF document.");
+                setError(i18n.t('viewer.pdf_document_failed'));
                 setLoading(false);
             });
         };
@@ -137,7 +141,7 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
                     })
                     .catch((externalError) => {
                         if (!cancelled) {
-                            setError("Failed to render PDF in WebView or open natively: " + String(externalError));
+                            setError(i18n.t('viewer.pdf_native_failed', { error: String(externalError) }));
                             setLoading(false);
                         }
                     });
@@ -165,7 +169,7 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
                 if (filePath) loadLocalFile(filePath);
                 else if (!isAndroidPlatform) loadStream();
                 else {
-                    setError("Failed to fetch PDF preview path.");
+                    setError(i18n.t('viewer.pdf_path_failed'));
                     setLoading(false);
                 }
             }).catch((err) => {
@@ -175,7 +179,7 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
                     loadStream();
                 } else {
                     console.error("Error invoking PDF preview command:", err);
-                    setError("Failed to load PDF.");
+                    setError(i18n.t('viewer.pdf_load_failed'));
                     setLoading(false);
                 }
             });
@@ -192,7 +196,7 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
     useEffect(() => {
         return () => {
             if (pdfRef.current) {
-                pdfRef.current.destroy();
+                void pdfRef.current.loadingTask.destroy();
                 pdfRef.current = null;
             }
         };
@@ -266,23 +270,23 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
                         onClick={handleOpenExternally}
                         disabled={openingExternal}
                         className="quiet-control h-7 rounded-control bg-app-accent px-2 text-badge font-semibold text-app-accent-contrast disabled:opacity-50"
-                        title="Open document in a native external app"
+                        title={i18n.t('viewer.open_native')}
                     >
-                        {openingExternal ? 'Opening...' : 'Open Natively'}
+                        {openingExternal ? i18n.t('viewer.opening') : i18n.t('viewer.open_native')}
                     </button>
                 </div>
 
                 <div className="pointer-events-auto flex items-center gap-2">
                     <div className="viewer-toolbar">
-                        <button onClick={handleZoomOut} className="viewer-control" title="Zoom Out (-)" aria-label={i18n.t("common.zoom_out")}>
+                        <button onClick={handleZoomOut} className="viewer-control" title={i18n.t('common.zoom_out_shortcut')} aria-label={i18n.t("common.zoom_out")}>
                             <ZoomOut className="w-4 h-4" />
                         </button>
                         <span className="min-w-[3rem] text-center text-badge font-medium tabular-nums text-white/85">{Math.round(scale * 100)}%</span>
-                        <button onClick={handleZoomIn} className="viewer-control" title="Zoom In (+)" aria-label={i18n.t("common.zoom_in")}>
+                        <button onClick={handleZoomIn} className="viewer-control" title={i18n.t('common.zoom_in_shortcut')} aria-label={i18n.t("common.zoom_in")}>
                             <ZoomIn className="w-4 h-4" />
                         </button>
                         <div className="mx-0.5 h-4 w-px bg-white/15"></div>
-                        <button onClick={handleFitWidth} className="viewer-control" title="Fit Width" aria-label="Fit width">
+                        <button onClick={handleFitWidth} className="viewer-control" title={i18n.t('viewer.fit_width')} aria-label={i18n.t('viewer.fit_width')}>
                             <Maximize className="w-4 h-4" />
                         </button>
                     </div>
@@ -290,8 +294,8 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
                     <button
                         onClick={onClose}
                         className="viewer-navigation"
-                        title="Close PDF Viewer"
-                        aria-label="Close PDF"
+                        title={i18n.t('viewer.close_pdf')}
+                        aria-label={i18n.t('viewer.close_pdf')}
                     >
                         <X className="w-5 h-5" />
                     </button>
@@ -302,8 +306,8 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
             <button
                 onClick={(e) => { e.stopPropagation(); onPrev?.(); }}
                 className="viewer-navigation absolute start-4 top-1/2 z-10 -translate-y-1/2"
-                title="Previous file (ArrowLeft / J)"
-                aria-label="Previous file"
+                title={i18n.t('viewer.previous_shortcut')}
+                aria-label={i18n.t('viewer.previous_file')}
             >
                 <ChevronLeft className="h-5 w-5 rtl:rotate-180" />
             </button>
@@ -311,8 +315,8 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
             <button
                 onClick={(e) => { e.stopPropagation(); onNext?.(); }}
                 className="viewer-navigation absolute end-4 top-1/2 z-10 -translate-y-1/2"
-                title="Next file (ArrowRight / L)"
-                aria-label="Next file"
+                title={i18n.t('viewer.next_shortcut')}
+                aria-label={i18n.t('viewer.next_file')}
             >
                 <ChevronRight className="h-5 w-5 rtl:rotate-180" />
             </button>
@@ -326,21 +330,21 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
                 {loading && (
                     <div className="absolute inset-0 flex flex-1 flex-col items-center justify-center text-white">
                         <div className="mb-3 h-6 w-6 animate-spin rounded-full border-2 border-white/20 border-t-app-accent"></div>
-                        <p className="text-ui font-medium">Loading document…</p>
-                        <p className="mt-1 text-badge text-white/45">Downloading from Telegram…</p>
+                        <p className="text-ui font-medium">{i18n.t('viewer.loading_document')}</p>
+                        <p className="mt-1 text-badge text-white/45">{i18n.t('viewer.downloading_telegram')}</p>
                     </div>
                 )}
 
                 {error && (
                     <div className="viewer-panel mt-20 flex max-w-md flex-col items-center justify-center border-app-danger/30 bg-app-danger/10 p-5 text-center text-white">
-                        <p className="mb-1 text-ui font-semibold text-app-danger">Unable to open PDF</p>
+                        <p className="mb-1 text-ui font-semibold text-app-danger">{i18n.t('viewer.unable_pdf')}</p>
                         <p className="mb-5 text-metadata leading-relaxed text-white/60">{error}</p>
                         <button
                             onClick={handleOpenExternally}
                             disabled={openingExternal}
                             className="quiet-control pointer-events-auto h-9 rounded-control bg-app-accent px-4 text-ui font-semibold text-app-accent-contrast disabled:opacity-50"
                         >
-                            {openingExternal ? 'Opening...' : 'Open with External App'}
+                            {openingExternal ? i18n.t('viewer.opening') : i18n.t('viewer.open_external')}
                         </button>
                     </div>
                 )}

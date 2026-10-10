@@ -342,30 +342,68 @@ pub async fn cmd_reconnect_with_network_settings(
     }
 }
 
+/// How long sign-out waits for Telegram to revoke the authorization before the
+/// local session is discarded anyway.
+const REMOTE_SIGN_OUT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Result of a sign-out. Local state is always cleared; the Telegram-side
+/// authorization is revoked only when Telegram confirmed it in time.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+pub struct LogoutOutcome {
+    pub signed_out: bool,
+    pub remote_session_revoked: bool,
+}
+
 #[tauri::command]
 pub async fn cmd_logout(
     app_handle: tauri::AppHandle,
     state: State<'_, TelegramState>,
     crypto_state: State<'_, crate::crypto::state::CryptoState>,
-) -> Result<bool, String> {
+) -> Result<LogoutOutcome, String> {
     log::info!("Logging out...");
+    // Identify the account before its session is suspended; its folder layout
+    // is set aside under this owner further down.
+    let signing_out = app_handle
+        .path()
+        .app_data_dir()
+        .ok()
+        .and_then(|root| crate::workspace::current_owner(&root).ok());
     crate::workspace::suspend();
+    if let (Some(owner), Ok(root)) = (signing_out, app_handle.path().app_data_dir()) {
+        if let Err(error) = crate::external_files::invalidate_account(&root, owner) {
+            log::warn!("External hash reuse disabled at sign-out: {error}");
+        }
+    }
     crypto_state.lock();
 
-    // 1. Shutdown the network runner FIRST to prevent any operations
+    // 1. Revoke the Telegram authorization while the network runner is still
+    //    alive. The runner drives every request, so stopping it first would
+    //    leave this device listed under Telegram's active sessions.
+    let client_opt = { state.client.lock().await.clone() };
+    let remote_session_revoked = match client_opt {
+        Some(client) => match timeout(REMOTE_SIGN_OUT_TIMEOUT, client.sign_out()).await {
+            Ok(Ok(_)) => true,
+            Ok(Err(error)) => {
+                log::warn!("Telegram did not confirm sign-out: {}", error);
+                false
+            }
+            Err(_) => {
+                log::warn!("Telegram sign-out timed out; clearing the local session only");
+                false
+            }
+        },
+        // Nothing was connected, so there is no live authorization this
+        // process could have revoked.
+        None => false,
+    };
+
+    // 2. Stop the network runner now that no further request is needed.
     {
         let mut shutdown_guard = state.runner_shutdown.lock().unwrap();
         if let Some(shutdown_tx) = shutdown_guard.take() {
             log::info!("Signaling runner shutdown for logout...");
             let _ = shutdown_tx.send(());
         }
-    }
-
-    // 2. Try to sign out from Telegram (if connected)
-    let client_opt = { state.client.lock().await.clone() };
-    if let Some(client) = client_opt {
-        // We don't strictly care if this fails (e.g. network down), we just want to clear local state.
-        let _ = client.sign_out().await;
     }
 
     // 3. Clear State
@@ -384,16 +422,33 @@ pub async fn cmd_logout(
         .path()
         .app_data_dir()
         .map_err(|e| e.to_string())?;
+
+    // Save this account's folder groups and ordering to its own store and
+    // empty the shared tables, so the next account neither sees nor prunes them.
+    if let Some(db) = app_handle.try_state::<crate::db::DbConnection>() {
+        let root = app_data_dir.clone();
+        if let Err(error) = crate::db::with_connection(db.inner().clone(), move |connection| {
+            crate::folder_layout::deactivate(connection, &root, signing_out)
+        })
+        .await
+        {
+            log::warn!("Folder layout could not be set aside at sign-out: {error}");
+        }
+    }
     let session_path = app_data_dir.join("telegram.session");
     let _ = std::fs::remove_file(session_path);
     let _ = std::fs::remove_file(app_data_dir.join("telegram.session-wal"));
     let _ = std::fs::remove_file(app_data_dir.join("telegram.session-shm"));
 
     log::info!(
-        "Logout complete. Vault locked. Runner count: {}",
+        "Logout complete. Vault locked. Remote session revoked: {}. Runner count: {}",
+        remote_session_revoked,
         state.runner_count.load(Ordering::SeqCst)
     );
-    Ok(true)
+    Ok(LogoutOutcome {
+        signed_out: true,
+        remote_session_revoked,
+    })
 }
 
 fn normalize_phone_number(input: &str) -> Result<String, String> {
@@ -1015,6 +1070,38 @@ pub async fn cmd_auth_sign_in(
     }
 }
 
+/// Message shown when Telegram rejects the two-step verification password.
+/// The browser fixture uses the same text so both boundaries stay aligned.
+const INVALID_TWO_STEP_PASSWORD: &str =
+    "That two-step verification password is incorrect. Check it and try again.";
+
+/// Telegram's SRP challenge is single-use. Request a fresh one after a failed
+/// attempt so the user can retry without restarting the whole sign-in.
+async fn renew_password_challenge(client: &Client, state: &TelegramState) {
+    match timeout(
+        Duration::from_secs(30),
+        client.invoke(&tl::functions::account::GetPassword {}),
+    )
+    .await
+    {
+        Ok(Ok(password)) => {
+            let password: tl::types::account::Password = password.into();
+            *state.password_token.lock().await = Some(PasswordToken::new(password));
+        }
+        Ok(Err(error)) => {
+            log::warn!(
+                "Could not renew the two-step verification challenge: {}",
+                error
+            );
+        }
+        Err(_) => {
+            log::warn!(
+                "Telegram did not respond while renewing the two-step verification challenge"
+            );
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn cmd_auth_check_password(
     password: String,
@@ -1022,8 +1109,12 @@ pub async fn cmd_auth_check_password(
 ) -> Result<AuthResult, String> {
     let (client, captured) = authentication_client(&state).await?;
 
-    let mut pw_guard = state.password_token.lock().await;
-    let pw_token = pw_guard.take().ok_or("No password session found")?;
+    let pw_token = state
+        .password_token
+        .lock()
+        .await
+        .take()
+        .ok_or("No password session found")?;
 
     match client.check_password(pw_token, password.as_str()).await {
         Ok(user) => {
@@ -1039,7 +1130,16 @@ pub async fn cmd_auth_check_password(
                 error: None,
             })
         }
-        Err(e) => Err(format!("2FA Failed: {}", e)),
+        Err(grammers_client::SignInError::InvalidPassword) => {
+            renew_password_challenge(&client, state.inner()).await;
+            Err(INVALID_TWO_STEP_PASSWORD.to_string())
+        }
+        Err(e) => {
+            // A transport failure also consumed the challenge; renew it so the
+            // password step stays usable once the connection recovers.
+            renew_password_challenge(&client, state.inner()).await;
+            Err(format!("2FA Failed: {}", e))
+        }
     }
 }
 

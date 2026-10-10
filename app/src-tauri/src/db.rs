@@ -89,7 +89,10 @@ pub(crate) fn init_db_at(dir: &std::path::Path) -> Result<DbConnection, String> 
         let mut opened = None;
         for attempt in 0..MAX_DB_INIT_RETRIES {
             match sqlite::open(&db_path) {
-                Ok(c) => {
+                Ok(mut c) => {
+                    c.set_busy_timeout(5000).map_err(|error| {
+                        format!("Could not configure database busy timeout: {error}")
+                    })?;
                     opened = Some(c);
                     break;
                 }
@@ -131,6 +134,13 @@ pub(crate) fn init_db_at(dir: &std::path::Path) -> Result<DbConnection, String> 
             .unwrap_or("pre-migration backup");
         log::info!("Verified SQLite recovery backup '{}'.", backup_name);
     }
+
+    // Schema inspection and recovery backup precede any journal-mode change.
+    // WAL lets a read snapshot coexist with shared-link and inventory writes.
+    retry_initialization_step("database WAL configuration", || {
+        conn.execute("PRAGMA journal_mode=WAL")
+            .map_err(|error| error.to_string())
+    })?;
 
     // Run migration (also with retry for locked-database scenarios)
     {

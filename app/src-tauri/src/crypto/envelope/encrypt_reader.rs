@@ -71,6 +71,33 @@ impl EncryptionSession {
         })
     }
 
+    /// Continue an envelope whose header was built earlier, for an upload that
+    /// was interrupted. The same header, key and plaintext produce the same
+    /// ciphertext, so the parts already sent remain valid.
+    pub fn from_header(header_bytes: Vec<u8>, dek: SecretKey) -> CryptoResult<Self> {
+        let parsed = EnvelopeHeader::parse(&header_bytes)?;
+        parsed.verify_and_decrypt_metadata(&dek)?;
+        let chunk_size = parsed.core.chunk_size;
+        policy::validate_chunk_size(chunk_size)?;
+        let plaintext_length = parsed.core.total_plaintext_length;
+        let total_ciphertext_length =
+            calculate_ciphertext_length(plaintext_length, chunk_size, header_bytes.len() as u32)?;
+        let content_key = kdf::derive_domain_key_32(dek.expose(), kdf::domains::CONTENT_ENC)?;
+        Ok(Self {
+            file_uuid: parsed.core.file_uuid,
+            dek,
+            content_key,
+            nonce_prefix: parsed.core.nonce_prefix,
+            chunk_size,
+            total_plaintext_length: plaintext_length,
+            chunk_count: calculate_chunk_count(plaintext_length, chunk_size),
+            metadata_ct_length: parsed.core.encrypted_metadata_length as usize,
+            header_authenticator: parsed.core.header_authenticator,
+            header_bytes,
+            total_ciphertext_length,
+        })
+    }
+
     fn nonce(&self, index: u64) -> [u8; 24] {
         let mut nonce = [0u8; 24];
         nonce[..16].copy_from_slice(&self.nonce_prefix);

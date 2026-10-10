@@ -15,7 +15,7 @@ const DEFAULT_IGNORES = '.git/\nnode_modules/\n.DS_Store';
 
 export function SyncSettingsPanel() {
   const { t } = useTranslation();
-  const { ownerId, settings, pairs, status, setEnabled, addPair, updatePair, setPairActive, removePair } = useSync();
+  const { ownerId, settings, pairs, status, setEnabled, setScanner, addPair, updatePair, setPairActive, removePair } = useSync();
   const [folders, setFolders] = useState<TelegramFolder[]>([]);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [channelId, setChannelId] = useState<number | ''>('');
@@ -24,6 +24,7 @@ export function SyncSettingsPanel() {
   const [ignoreText, setIgnoreText] = useState(DEFAULT_IGNORES);
   const [propagateDeletions, setPropagateDeletions] = useState(false);
   const [pauseOnConflicts, setPauseOnConflicts] = useState(true);
+  const [adoptMatchingFiles, setAdoptMatchingFiles] = useState(false);
   const [activateAfterSave, setActivateAfterSave] = useState(false);
   const [busy, setBusy] = useState(false);
   const [previewBusy, setPreviewBusy] = useState(false);
@@ -33,9 +34,10 @@ export function SyncSettingsPanel() {
   const currentOwner = useRef(ownerId); currentOwner.current = ownerId;
   const formRef = useRef<HTMLDivElement>(null);
   const enabled = settings.data?.enabled ?? false;
+  const fastScan = settings.data?.scanner === 'incremental';
   const editingPair = (pairs.data ?? []).find(pair => pair.id === editingId);
   const selectedFolder = useMemo(() => folders.find(folder => folder.id === channelId), [channelId, folders]);
-  const draftSignature = JSON.stringify([editingId, selectedPath, channelId, direction, ignoreText, propagateDeletions, pauseOnConflicts]);
+  const draftSignature = JSON.stringify([editingId, selectedPath, channelId, direction, ignoreText, propagateDeletions, pauseOnConflicts, adoptMatchingFiles]);
 
   useEffect(() => {
     let disposed = false;
@@ -54,7 +56,7 @@ export function SyncSettingsPanel() {
     previewSequence.current += 1;
     setEditingId(null); setSelectedPath(null); setChannelId('');
     setDirection('upload_only'); setIgnoreText(DEFAULT_IGNORES);
-    setPropagateDeletions(false); setPauseOnConflicts(true); setActivateAfterSave(false);
+    setPropagateDeletions(false); setPauseOnConflicts(true); setAdoptMatchingFiles(false); setActivateAfterSave(false);
     setPreview(null); setPreviewError(null); setPreviewBusy(false);
   };
   useEffect(() => { resetDraft(); setBusy(false); }, [ownerId]);
@@ -63,6 +65,7 @@ export function SyncSettingsPanel() {
     setDirection(pair.syncDirection); setIgnoreText(pair.preferences?.ignorePatterns.join('\n') ?? DEFAULT_IGNORES);
     setPropagateDeletions(pair.preferences?.propagateDeletions ?? false);
     setPauseOnConflicts(pair.preferences?.pauseOnConflicts ?? true);
+    setAdoptMatchingFiles(pair.preferences?.adoptMatchingFiles ?? false);
     setActivateAfterSave(Boolean(pair.accountOwner && pair.isActive));
     formRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' });
   };
@@ -75,7 +78,7 @@ export function SyncSettingsPanel() {
     if (!ownerId || !selectedPath || channelId === '') return;
     const request: SyncPreviewRequest = {
       pairId: editingId, localPath: selectedPath, channelId, syncDirection: direction,
-      preferences: { ignorePatterns: ignoreText.split(/\r?\n/).map(pattern => pattern.trim()).filter(Boolean), propagateDeletions, pauseOnConflicts },
+      preferences: { ignorePatterns: ignoreText.split(/\r?\n/).map(pattern => pattern.trim()).filter(Boolean), propagateDeletions, pauseOnConflicts, adoptMatchingFiles },
     };
     const sequence = ++previewSequence.current;
     setPreviewBusy(true); setPreview(null); setPreviewError(null);
@@ -132,6 +135,10 @@ export function SyncSettingsPanel() {
       </button>
     </div>
     {!enabled && <p className="rounded-lg border border-app-accent/25 bg-app-accent/5 p-3 text-xs leading-5 text-app-text-secondary">{t('syncPreview.global_paused')}</p>}
+    <div className="quiet-surface p-4">
+      <label className="flex items-start gap-2 text-xs leading-5 text-app-text"><input type="checkbox" disabled={busy || settings.isLoading} checked={fastScan} onChange={event => void runAction(() => setScanner(event.target.checked ? 'incremental' : 'full'))} aria-describedby="sync-fast-scan-help" className="mt-1 accent-app-accent" />{t('syncPreview.fast_scan')}</label>
+      <p id="sync-fast-scan-help" className="mt-1 text-xs leading-5 text-app-text-tertiary">{t('syncPreview.fast_scan_help')}</p>
+    </div>
     <div className="space-y-3">{(pairs.data ?? []).map(pair => {
       const current = status.data?.pairs?.find(value => value.pairId === pair.id);
       return <div key={pair.id} className="quiet-surface space-y-2 p-3">
@@ -183,6 +190,10 @@ export function SyncSettingsPanel() {
       <div>
         <label className="flex items-start gap-2 text-xs leading-5 text-app-text"><input type="checkbox" disabled={busy} checked={pauseOnConflicts} onChange={event => setPauseOnConflicts(event.target.checked)} className="mt-1 accent-app-accent" />{t('syncPreview.pause_conflicts')}</label>
         <p className="mt-1 text-xs leading-5 text-app-text-tertiary">{t('syncPreview.pause_conflicts_help')}</p><p className="mt-1 text-xs leading-5 text-app-text-tertiary">{t('syncPreview.pause_conditions')}</p>
+      </div>
+      <div>
+        <label className="flex items-start gap-2 text-xs leading-5 text-app-text"><input type="checkbox" disabled={busy} checked={adoptMatchingFiles} onChange={event => setAdoptMatchingFiles(event.target.checked)} aria-describedby="sync-adopt-help" className="mt-1 accent-app-accent" />{t('syncPreview.adopt_matching')}</label>
+        <p id="sync-adopt-help" className="mt-1 text-xs leading-5 text-app-text-tertiary">{t('syncPreview.adopt_matching_help')}</p>
       </div>
       <button type="button" disabled={!selectedPath || channelId === '' || busy || previewBusy} onClick={() => void runPreview()} className="quiet-control flex items-center justify-center gap-2 border border-app-accent px-3 py-2 text-xs font-medium text-app-accent disabled:opacity-40">{previewBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}{previewBusy ? t('syncPreview.preview_loading') : t('syncPreview.preview_button')}</button>
       {previewError && <p role="alert" className="rounded-md border border-app-danger/30 p-3 text-xs leading-5 text-app-danger">{previewError}</p>}

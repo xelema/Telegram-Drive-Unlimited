@@ -2,6 +2,7 @@ import { createContext, ReactNode, useCallback, useContext, useRef, useState } f
 import { LockKeyhole, UploadCloud } from 'lucide-react';
 import { useModalFocus } from '../hooks/useModalFocus';
 import i18n from '../i18n';
+import { useTranslation } from 'react-i18next';
 
 export type UploadChoice = 'store' | 'protect';
 
@@ -12,6 +13,7 @@ interface UploadChoiceContextValue {
 const UploadChoiceContext = createContext<UploadChoiceContextValue | null>(null);
 
 export function UploadChoiceProvider({ children }: { children: ReactNode }) {
+    const { t } = useTranslation();
     const [request, setRequest] = useState<{ count: number; resolve: (choice: UploadChoice | null) => void } | null>(null);
     const panelRef = useRef<HTMLDivElement>(null);
     const finish = useCallback((choice: UploadChoice | null) => {
@@ -30,18 +32,18 @@ export function UploadChoiceProvider({ children }: { children: ReactNode }) {
             {request && (
                 <div className="fixed inset-0 z-[250] flex items-center justify-center bg-app-overlay p-4 backdrop-blur-sm">
                     <div ref={panelRef} role="dialog" aria-modal="true" aria-labelledby="upload-choice-title" tabIndex={-1} className="quiet-raised w-[min(520px,calc(100vw-2rem))] p-5">
-                        <h2 id="upload-choice-title" className="text-lg font-semibold text-app-text">How should we store {request.count === 1 ? 'this file' : `these ${request.count} files`}?</h2>
-                        <p className="mt-1 text-sm text-app-text-secondary">You can keep the original file, or protect it with Telegram Drive encryption before upload.</p>
+                        <h2 id="upload-choice-title" className="text-lg font-semibold text-app-text">{t('upload_choice_copy.question', {count: request.count})}</h2>
+                        <p className="mt-1 text-sm text-app-text-secondary">{t('upload_choice_copy.description')}</p>
                         <div className="mt-5 grid gap-3 sm:grid-cols-2">
                             <button onClick={() => finish('store')} className="quiet-surface p-4 text-start hover:border-app-accent/40 hover:bg-app-hover">
                                 <UploadCloud className="mb-3 h-5 w-5 text-app-accent" />
-                                <span className="block text-sm font-semibold text-app-text">Store</span>
-                                <span className="mt-1 block text-xs leading-5 text-app-text-secondary">Upload normally for maximum compatibility and easy sharing.</span>
+                                <span className="block text-sm font-semibold text-app-text">{t('upload_choice_copy.store')}</span>
+                                <span className="mt-1 block text-xs leading-5 text-app-text-secondary">{t('upload_choice_copy.plain_description')}</span>
                             </button>
                             <button onClick={() => finish('protect')} className="quiet-surface p-4 text-start hover:border-app-accent/40 hover:bg-app-hover">
                                 <LockKeyhole className="mb-3 h-5 w-5 text-app-success" />
-                                <span className="block text-sm font-semibold text-app-text">Store &amp; protect</span>
-                                <span className="mt-1 block text-xs leading-5 text-app-text-secondary">Encrypt before upload using your configured protection settings.</span>
+                                <span className="block text-sm font-semibold text-app-text">{t('upload_choice_copy.protect')}</span>
+                                <span className="mt-1 block text-xs leading-5 text-app-text-secondary">{t('upload_choice_copy.protect_description')}</span>
                             </button>
                         </div>
                         <div className="mt-4 flex justify-end">
