@@ -257,6 +257,17 @@ jobs:
         shell: pwsh
         run: ./app/scripts/prepare-windows-runtime.ps1
 
+      - name: Ensure the fork build configuration is available
+        shell: bash
+        run: |
+          set -euo pipefail
+          config='app/src-tauri/tauri.unlimited.release.conf.json'
+          if [ ! -f "$config" ]; then
+            echo "$RELEASE_TAG predates $config; writing it for this build."
+            printf '%s\n' '{"$schema":"https://schema.tauri.app/config/2","bundle":{"createUpdaterArtifacts":false}}' > "$config"
+          fi
+          cat "$config"
+
       - name: Build the application
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         env:
@@ -264,6 +275,7 @@ jobs:
         with:
           projectPath: ./app
           releaseId: ${{ needs.prepare.outputs.release_id }}
+          includeUpdaterJson: false
           args: ${{ matrix.args }}
 
       - name: Verify the Windows bundle
