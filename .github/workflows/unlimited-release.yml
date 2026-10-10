@@ -116,8 +116,8 @@ jobs:
               exit 1
               ;;
           esac
-          matrix="[$entries]"
-          if ! echo "$matrix" | jq -e 'type == "array" and length > 0' > /dev/null; then
+          matrix="{\"include\":[$entries]}"
+          if ! echo "$matrix" | jq -e 'type == "object" and (.include | length) > 0' > /dev/null; then
             echo "::error::Could not build the platform matrix."
             exit 1
           fi
@@ -208,6 +208,7 @@ jobs:
       RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
       RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
       GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
@@ -324,6 +325,7 @@ jobs:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
       RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
       RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
       RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
@@ -406,6 +408,7 @@ jobs:
       - name: Re-publish the release that was already public
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -euo pipefail
