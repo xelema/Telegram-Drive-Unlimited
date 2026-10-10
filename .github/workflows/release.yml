@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'v*'  # Trigger on version tags like v1.0.0, v1.0.1
+      - '!v*-unlimited'  # The fork's own tags are handled by unlimited-release.yml
 
 jobs:
   dependency-assurance:

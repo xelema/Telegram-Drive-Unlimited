@@ -1,0 +1,413 @@
+name: "Unlimited release"
+
+# Builds the Telegram Drive Unlimited installers on GitHub-hosted runners and
+# attaches them to the GitHub release of a "v<version>-unlimited" tag.
+#
+# Pushing such a tag builds and publishes in one run; a manual run rebuilds an
+# existing tag (assets with the same name are replaced, so a tag is safe to
+# rebuild).
+#
+# Windows and macOS binaries cannot be produced on the lab VM (aarch64 Linux),
+# so windows-latest, ubuntu-22.04 and macos-latest do the builds. The release is
+# opened as a draft during the run and only published once every expected
+# artifact is present and its checksum verified.
+
+on:
+  push:
+    tags:
+      - 'v*-unlimited'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build, for example v3.9.9-unlimited'
+        required: true
+        type: string
+      platforms:
+        description: 'Platforms to build'
+        required: true
+        type: choice
+        default: all
+        options:
+          - all
+          - windows
+          - linux
+          - macos
+      publish:
+        description: 'Publish the release once every artifact is verified'
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: unlimited-release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Verify the tag and open the draft release
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+      platforms: ${{ steps.resolve.outputs.platforms }}
+      publish: ${{ steps.resolve.outputs.publish }}
+      matrix: ${{ steps.resolve.outputs.matrix }}
+      release_id: ${{ steps.release.outputs.release_id }}
+      was_published: ${{ steps.release.outputs.was_published }}
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Resolve the tag, the version and the run options
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          INPUT_PLATFORMS: ${{ github.event.inputs.platforms }}
+          INPUT_PUBLISH: ${{ github.event.inputs.publish }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            tag="$INPUT_TAG"
+            platforms="$INPUT_PLATFORMS"
+            publish="$INPUT_PUBLISH"
+          else
+            tag="$REF_NAME"
+            platforms="all"
+            publish="true"
+          fi
+          case "$tag" in
+            v[0-9]*-unlimited) ;;
+            *)
+              echo "::error::The tag must look like v<version>-unlimited, received '$tag'."
+              exit 1
+              ;;
+          esac
+          version="${tag#v}"
+          version="${version%-unlimited}"
+          case "$version" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *)
+              echo "::error::Cannot read an x.y.z version out of '$tag'."
+              exit 1
+              ;;
+          esac
+
+          windows_entry='{"platform":"windows","artifact":"windows-x64","runner":"windows-latest","rust_target":"","args":"--bundles nsis --config src-tauri/tauri.windows.release.conf.json --config src-tauri/tauri.unlimited.release.conf.json"}'
+          linux_entry='{"platform":"linux","artifact":"linux-x64","runner":"ubuntu-22.04","rust_target":"","args":"--bundles deb,rpm,appimage --config src-tauri/tauri.unlimited.release.conf.json"}'
+          macos_x64_entry='{"platform":"macos","artifact":"macos-x64","runner":"macos-latest","rust_target":"x86_64-apple-darwin","args":"--target x86_64-apple-darwin --bundles dmg --config src-tauri/tauri.unlimited.release.conf.json"}'
+          macos_arm64_entry='{"platform":"macos","artifact":"macos-arm64","runner":"macos-latest","rust_target":"aarch64-apple-darwin","args":"--target aarch64-apple-darwin --bundles dmg --config src-tauri/tauri.unlimited.release.conf.json"}'
+          case "$platforms" in
+            all) entries="$windows_entry,$linux_entry,$macos_x64_entry,$macos_arm64_entry" ;;
+            windows) entries="$windows_entry" ;;
+            linux) entries="$linux_entry" ;;
+            macos) entries="$macos_x64_entry,$macos_arm64_entry" ;;
+            *)
+              echo "::error::Unknown platforms value '$platforms'."
+              exit 1
+              ;;
+          esac
+          matrix="[$entries]"
+          if ! echo "$matrix" | jq -e 'type == "array" and length > 0' > /dev/null; then
+            echo "::error::Could not build the platform matrix."
+            exit 1
+          fi
+
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "platforms=$platforms"
+            echo "publish=$publish"
+            echo "matrix<<MATRIX_EOF"
+            echo "$matrix"
+            echo "MATRIX_EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "Building $tag (version $version, platforms $platforms, publish $publish)."
+
+      - name: Verify the tag points at the checked out commit
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git fetch --force "origin" "refs/tags/${TAG}:refs/tags/${TAG}"
+          tag_commit="$(git rev-list -n 1 "refs/tags/${TAG}")"
+          head_commit="$(git rev-parse HEAD)"
+          if [ "$tag_commit" != "$head_commit" ]; then
+            echo "::error::${TAG} points at ${tag_commit} but ${head_commit} was checked out."
+            exit 1
+          fi
+          echo "${TAG} points at the checked out commit ${head_commit}."
+
+      - name: Verify the release version contract
+        env:
+          VERSION: ${{ steps.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          node app/scripts/verify-android-release-version.cjs --tag "v${VERSION}" --changelog CHANGELOG.md
+
+      - name: Open the release as a draft
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+          VERSION: ${{ steps.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          was_published=false
+          if gh release view "$TAG" --json databaseId,isDraft > /tmp/release.json 2>/dev/null; then
+            release_id="$(python3 -c 'import json;print(json.load(open("/tmp/release.json"))["databaseId"])')"
+            if [ "$(python3 -c 'import json;print(json.load(open("/tmp/release.json"))["isDraft"])')" = "False" ]; then
+              was_published=true
+            fi
+            gh release edit "$TAG" --draft
+            echo "Reusing the existing release for $TAG ($release_id), opened as a draft for this run."
+          else
+            awk '/^## \[/{if(found) exit; found=1; next} found' CHANGELOG.md > /tmp/body.md
+            {
+              echo "Windows, Linux and macOS installers built from the fork sources of \`$TAG\`."
+              echo
+              echo "Upstream project: https://github.com/caamer20/Telegram-Drive"
+              echo
+              cat /tmp/body.md
+            } > /tmp/release-body.md
+            gh release create "$TAG" \
+              --title "Telegram Drive Unlimited v${VERSION}" \
+              --notes-file /tmp/release-body.md \
+              --draft \
+              --verify-tag
+            release_id="$(gh release view "$TAG" --json databaseId -q .databaseId)"
+            echo "Created the draft release for $TAG ($release_id)."
+          fi
+          {
+            echo "release_id=$release_id"
+            echo "was_published=$was_published"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.artifact }}
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    env:
+      TELEGRAM_DRIVE_SUPPORTER_SERVICE_URL: ${{ vars.SUPPORTER_SERVICE_URL }}
+      TELEGRAM_DRIVE_SUPPORTER_PUBLIC_KEY: ${{ vars.SUPPORTER_PUBLIC_KEY }}
+      TELEGRAM_DRIVE_CRASH_REPORT_ENDPOINT: ${{ vars.CRASH_REPORT_ENDPOINT }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
+      GH_TOKEN: ${{ github.token }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+          fetch-depth: 1
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Install Linux desktop dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libssl-dev \
+            libdbus-1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libfuse2
+
+      - name: Install application dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Prepare the Windows runtime prerequisite
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: ./app/scripts/prepare-windows-runtime.ps1
+
+      - name: Build the application
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          projectPath: ./app
+          releaseId: ${{ needs.prepare.outputs.release_id }}
+          args: ${{ matrix.args }}
+
+      - name: Verify the Windows bundle
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: ./app/scripts/verify-windows-bundle.ps1
+
+      - name: Publish the portable Windows build
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $application = Get-ChildItem -Path app/src-tauri/target/release -Filter '*.exe' -File |
+            Where-Object { $_.Name -notlike '*-setup.exe' } |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+          if (-not $application) {
+            throw 'No Windows application executable was produced under app/src-tauri/target/release.'
+          }
+          New-Item -ItemType Directory -Path staging -Force | Out-Null
+          $portable = "staging/Telegram-Drive-Unlimited-${env:RELEASE_VERSION}-portable.exe"
+          Copy-Item -LiteralPath $application.FullName -Destination $portable -Force
+          Write-Host "Portable build: $portable ($((Get-Item $portable).Length) bytes)"
+          gh release upload "$env:RELEASE_TAG" $portable --clobber
+
+      - name: Verify the Linux packages
+        if: matrix.platform == 'linux'
+        run: |
+          set -euo pipefail
+          deb="$(find app/src-tauri/target -type f -path '*/bundle/deb/*.deb' -print -quit)"
+          rpm="$(find app/src-tauri/target -type f -path '*/bundle/rpm/*.rpm' -print -quit)"
+          appimage="$(find app/src-tauri/target -type f -path '*/bundle/appimage/*.AppImage' -print -quit)"
+          for artifact in "$deb" "$rpm" "$appimage"; do
+            if [ -z "$artifact" ]; then
+              echo "::error::A Linux bundle is missing (deb=$deb rpm=$rpm appimage=$appimage)."
+              exit 1
+            fi
+          done
+          dpkg-deb --info "$deb"
+          dpkg-deb --contents "$deb" | grep -E 'usr/bin/|\.desktop'
+          file "$appimage" "$rpm" "$deb"
+
+      - name: Verify the macOS bundle
+        if: matrix.platform == 'macos'
+        run: |
+          set -euo pipefail
+          dmg="$(find app/src-tauri/target -type f -path '*/bundle/dmg/*.dmg' -print -quit)"
+          if [ -z "$dmg" ]; then
+            echo "::error::No macOS dmg was produced."
+            exit 1
+          fi
+          file "$dmg"
+
+  finalize:
+    name: Verify the artifacts and publish
+    needs: [prepare, build]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
+      PUBLISH: ${{ needs.prepare.outputs.publish }}
+      PLATFORMS: ${{ needs.prepare.outputs.platforms }}
+    steps:
+      - name: Download the release assets
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          gh release download "$RELEASE_TAG" --dir release-assets --clobber
+          ls -l release-assets
+
+      - name: Verify every expected artifact is present
+        run: |
+          set -euo pipefail
+          expect() {
+            if ! compgen -G "release-assets/$1" > /dev/null; then
+              echo "::error::Missing artifact: $2 (pattern $1)"
+              exit 1
+            fi
+          }
+          case "$PLATFORMS" in
+            all) platforms="windows linux macos" ;;
+            *) platforms="$PLATFORMS" ;;
+          esac
+          for platform in $platforms; do
+            case "$platform" in
+              windows)
+                expect '*-setup.exe' 'Windows NSIS installer'
+                expect '*portable.exe' 'Windows portable build'
+                ;;
+              linux)
+                expect '*.deb' 'Debian package'
+                expect '*.rpm' 'RPM package'
+                expect '*.AppImage' 'AppImage'
+                ;;
+              macos)
+                expect '*_x64.dmg' 'macOS Intel dmg'
+                expect '*_aarch64.dmg' 'macOS Apple Silicon dmg'
+                ;;
+            esac
+          done
+          echo "Every expected artifact is present for: $platforms"
+
+      - name: Generate and verify the checksums
+        run: |
+          set -euo pipefail
+          cd release-assets
+          rm -f SHA256SUMS.txt
+          sha256sum ./* > SHA256SUMS.txt
+          sha256sum -c SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Upload the checksums
+        run: gh release upload "$RELEASE_TAG" release-assets/SHA256SUMS.txt --clobber
+
+      - name: Report the release assets
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets" \
+            --jq '.[] | "\(.name)\t\(.size) bytes\t\(.digest)"'
+
+      - name: Publish the release
+        if: needs.prepare.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          gh release edit "$RELEASE_TAG" --draft=false --latest
+          gh release view "$RELEASE_TAG" --json url,isDraft,isPrerelease,tagName,assets \
+            --jq '{url, isDraft, isPrerelease, tagName, assets: [.assets[].name]}'
+
+  restore:
+    name: Restore the release state after a failure
+    needs: [prepare, build, finalize]
+    if: failure() && needs.prepare.outputs.was_published == 'true'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Re-publish the release that was already public
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          echo "This run failed; $RELEASE_TAG was public before it started, publishing it again."
+          gh release edit "$RELEASE_TAG" --draft=false
