@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "4.0.0"
+version = "4.1.1"
 description = "A local-first file workspace for files stored in Telegram, built with Tauri, Rust, and React."
 authors = ["Cameron Amer"]
 edition = "2021"
@@ -105,6 +105,7 @@ tauri-plugin-single-instance = "2"
 rfd = { version = "0.16", default-features = false }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.61.3", features = ["Foundation", "Storage", "Storage_Streams", "Media_Editing", "Graphics_Imaging", "Win32_System_WinRT"] }
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }
 
 [target.'cfg(target_os = "android")'.dependencies]

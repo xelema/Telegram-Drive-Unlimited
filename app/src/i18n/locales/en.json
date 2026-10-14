@@ -429,7 +429,9 @@
     "window_remove": "Remove time window",
     "show_passphrase": "Show passphrase",
     "hide_passphrase": "Hide passphrase",
-    "current_vault_passphrase": "Current vault passphrase"
+    "current_vault_passphrase": "Current vault passphrase",
+    "videoFilenameCaption": "Filename captions",
+    "videoFilenameCaptionDesc": "Add the original filename to video media messages. Encrypted uploads keep it private."
   },
   "files": {
     "download": "Download",
@@ -1455,7 +1457,9 @@
     "store": "Store",
     "plain_description": "Upload normally for maximum compatibility and easy sharing.",
     "protect": "Store & protect",
-    "protect_description": "Encrypt before upload using your configured protection settings."
+    "protect_description": "Encrypt before upload using your configured protection settings.",
+    "reload_app": "Reload app",
+    "load_failed": "Upload options could not load. Reloading cancels this selection. Select your files again after the app reloads."
   },
   "auth_copy": {
     "qr_title": "QR-first secure sign in",

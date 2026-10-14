@@ -29,7 +29,7 @@ export const BUILTIN_THEMES: CustomTheme[] = [
     ['#0a1628', '#112240', '#00e5bf', '#00b4d8', '#e0f7f4', '#6faaaf'],
     'rgba(0, 229, 191, 0.12)', 'rgba(0, 229, 191, 0.06)'),
   preset('default-light', 'Default Light', false,
-    ['#f5f5f2', '#fbfbf9', '#168ac3', '#2479c8', '#1b1c1f', '#5d6068'],
+    ['#f5f5f2', '#fbfbf9', '#0e78ad', '#2479c8', '#1b1c1f', '#5d6068'],
     'rgba(0, 0, 0, 0.1)', 'rgba(27, 28, 31, 0.05)'),
   preset('solarized-light', 'Solarized Light', false,
     ['#fdf6e3', '#eee8d5', '#b58900', '#268bd2', '#073642', '#586e75']),

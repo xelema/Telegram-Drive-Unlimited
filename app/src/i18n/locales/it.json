@@ -430,7 +430,9 @@
     "show_passphrase": "Mostra la frase segreta",
     "hide_passphrase": "Nascondi la frase segreta",
     "encryption_experimental_inventory_many": "{{count}} file crittografati sperimentali sono indicizzati localmente. I relativi testi cifrati sono stati conservati.",
-    "current_vault_passphrase": "Passphrase attuale del deposito"
+    "current_vault_passphrase": "Passphrase attuale del deposito",
+    "videoFilenameCaption": "Nomi dei file nelle didascalie",
+    "videoFilenameCaptionDesc": "Aggiungi il nome originale ai messaggi video. I caricamenti crittografati lo mantengono privato."
   },
   "files": {
     "download": "Scarica",
@@ -1462,7 +1464,9 @@
     "store": "Conserva",
     "plain_description": "Carica normalmente per la massima compatibilità e una condivisione semplice.",
     "protect": "Conserva e proteggi",
-    "protect_description": "Cifra prima del caricamento con le impostazioni di protezione configurate."
+    "protect_description": "Cifra prima del caricamento con le impostazioni di protezione configurate.",
+    "reload_app": "Ricarica app",
+    "load_failed": "Impossibile caricare le opzioni di invio. Ricaricare annulla questa selezione. Seleziona di nuovo i file dopo il ricaricamento."
   },
   "auth_copy": {
     "qr_title": "Accesso sicuro tramite QR",

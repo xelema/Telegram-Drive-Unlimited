@@ -57,7 +57,7 @@ test('onboarding, Help and shortcut data arrays follow the saved language throug
 
 
 test('encrypted settings warnings, entered passphrase and badge explanation survive a language switch', async ({ page }) => {
-  await desktopFixture(page, { settings: { language: 'es', telegramSettingsSyncEnabled: true } });
+  await desktopFixture(page, { settings: { language: 'es', telegramSettingsSyncEnabled: true, videoFilenameCaption: false } });
   await page.goto('/?a11y-fixture=locale-arrays');
   await expect(page.getByRole('heading', { name: 'Sincronización cifrada de ajustes', exact: true })).toBeVisible();
   const es = await catalog('es');
@@ -87,7 +87,7 @@ test('encrypted settings warnings, entered passphrase and badge explanation surv
   const calls = await nativeCalls(page, 'cmd_upload_settings_sync');
   expect(calls).toHaveLength(1);
   expect(calls[0].args.passphrase).toBe('fixture-sync-passphrase');
-  for (const excluded of ['supporter_activation', 'proxyPassword', 'crashReportingEnabled']) expect(calls[0].args.settings).not.toHaveProperty(excluded);
+  for (const excluded of ['supporter_activation', 'proxyPassword', 'crashReportingEnabled', 'videoFilenameCaption']) expect(calls[0].args.settings).not.toHaveProperty(excluded);
 });
 
 

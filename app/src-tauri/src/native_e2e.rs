@@ -994,7 +994,82 @@ struct FixtureNotifications {
     jobs: HashMap<String, crate::transfer_engine::TransferJob>,
 }
 
+/// The controlled Telegram boundary records bytes it actually receives and the
+/// actual production publication. It never fabricates a prepared thumbnail.
+struct FixtureVideoUploadTransport {
+    root: PathBuf,
+    block_thumbnail: bool,
+    block_main_upload: bool,
+    fail_thumbnail: bool,
+    fail_publish: bool,
+    release: tokio::sync::Notify,
+    thumbnail_requests: AtomicU64,
+    preparation_completed: std::sync::atomic::AtomicBool,
+    main_upload_requests: AtomicU64,
+    send_attempts: AtomicU64,
+    capture: std::sync::Mutex<Value>,
+}
+impl crate::desktop_video_upload::Transport for FixtureVideoUploadTransport {
+    type Receipt = String;
+    async fn upload_thumbnail(
+        &self,
+        mut reader: crate::desktop_video_upload::ThumbnailReader,
+        len: usize,
+    ) -> Result<grammers_client::types::media::Uploaded, String> {
+        use tokio::io::AsyncReadExt;
+        self.thumbnail_requests
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.block_thumbnail {
+            self.release.notified().await;
+        }
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).await.map_err(error)?;
+        if bytes.len() != len {
+            return Err("Thumbnail transport received incomplete bytes".into());
+        }
+        std::fs::write(self.root.join("video-upload-thumbnail.jpg"), &bytes).map_err(error)?;
+        if self.fail_thumbnail {
+            return Err("Controlled Telegram thumbnail upload failure".into());
+        }
+        Ok(grammers_client::types::media::Uploaded::from_raw(
+            grammers_tl_types::types::InputFile {
+                id: 202,
+                parts: 1,
+                name: "video-upload-thumbnail.jpg".into(),
+                md5_checksum: "controlled-telegram-thumbnail".into(),
+            }
+            .into(),
+        ))
+    }
+    async fn publish(
+        &self,
+        payload: crate::desktop_video_upload::Publication,
+    ) -> Result<Self::Receipt, String> {
+        use grammers_tl_types::Serializable;
+        self.send_attempts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let raw: grammers_tl_types::enums::InputMedia = payload.media.into();
+        let encoded = raw
+            .to_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        *self.capture.lock().map_err(error)? =
+            json!({"serializedTl":encoded,"caption":payload.caption});
+        if self.fail_publish {
+            return Err("Controlled Telegram publication failure".into());
+        }
+        Ok("controlled-telegram-message-303".into())
+    }
+}
+struct FixtureVideoUploadJourney {
+    transport: Arc<FixtureVideoUploadTransport>,
+    cancel: Option<tokio::sync::oneshot::Sender<()>>,
+    task: tokio::task::JoinHandle<Result<Value, String>>,
+}
+
 struct Driver {
+    video_upload: Option<FixtureVideoUploadJourney>,
     notifications: Option<FixtureNotifications>,
     proxy_update_task: Option<tokio::task::JoinHandle<Result<(), String>>>,
     reader_tasks: Vec<tokio::task::JoinHandle<Result<u64, String>>>,
@@ -1206,10 +1281,20 @@ impl Driver {
             | "sync_cycle"
             | "sync_record"
             | "sync_state" => self.dispatch_sync(request).await,
-            "upload_resumable" | "upload_session" | "upload_assemble" | "publish_download"
-            | "save_transfer" | "transfers" | "fail_transfer" | "remove_transfer" => {
-                self.dispatch_transfers(request).await
-            }
+            "video_upload_prepare"
+            | "video_upload_start"
+            | "video_upload_observe"
+            | "video_upload_release"
+            | "video_upload_cancel"
+            | "video_upload_finish"
+            | "upload_resumable"
+            | "upload_session"
+            | "upload_assemble"
+            | "publish_download"
+            | "save_transfer"
+            | "transfers"
+            | "fail_transfer"
+            | "remove_transfer" => self.dispatch_transfers(request).await,
             _ => Err("Unknown native E2E command".into()),
         }
     }
@@ -4381,8 +4466,189 @@ impl Driver {
         }
     }
 
+    async fn finish_video_upload(&mut self) -> Result<Value, String> {
+        let journey = self
+            .video_upload
+            .take()
+            .ok_or("No video upload is running")?;
+        // Keep the sender alive while the production operation is awaiting I/O.
+        let _cancel = journey.cancel;
+        journey.task.await.map_err(error)?
+    }
+
     async fn dispatch_transfers(&mut self, request: Value) -> Result<Value, String> {
         match text(&request, "command")? {
+            "video_upload_prepare" | "video_upload_start" => {
+                if self.video_upload.is_some() {
+                    return Err("A video upload is already running".into());
+                }
+                let account = AccountGuard::open(&self.root, Some(text(&request, "owner")?))?;
+                account.validate()?;
+                let source = child(&self.root, text(&request, "source")?)?;
+                let name = text(&request, "source")?.to_string();
+                let mode = text(&request, "mode")? == "media";
+                let filename_caption = request["filenameCaption"].as_bool();
+                let transport = Arc::new(FixtureVideoUploadTransport {
+                    root: self.root.clone(),
+                    block_thumbnail: request["blockThumbnail"] == true,
+                    block_main_upload: request["blockMainUpload"] == true,
+                    fail_thumbnail: request["failThumbnail"] == true,
+                    fail_publish: request["failPublish"] == true,
+                    release: tokio::sync::Notify::new(),
+                    thumbnail_requests: AtomicU64::new(0),
+                    preparation_completed: std::sync::atomic::AtomicBool::new(false),
+                    main_upload_requests: AtomicU64::new(0),
+                    send_attempts: AtomicU64::new(0),
+                    capture: std::sync::Mutex::new(Value::Null),
+                });
+                let (cancel_tx, mut cancel) = tokio::sync::oneshot::channel();
+                let network = self.network.clone();
+                let bandwidth = self.bandwidth.clone();
+                let boundary = transport.clone();
+                let task = tokio::spawn(async move {
+                    let result = async {
+                        let Some(video) = crate::desktop_video_upload::prepare_for_account(
+                            source.to_str().ok_or("Invalid source path")?,
+                            &name,
+                            mode,
+                            "video/mp4",
+                            None,
+                            bandwidth.clone(),
+                            &account,
+                            &mut cancel,
+                        )
+                        .await?
+                        else {
+                            return Ok(json!({"video":false}));
+                        };
+                        boundary
+                            .preparation_completed
+                            .store(true, std::sync::atomic::Ordering::SeqCst);
+                        // Hold the controlled main Telegram upload boundary after
+                        // production preparation has admitted its preview. No file
+                        // part handle or publication exists until that boundary returns.
+                        boundary.main_upload_requests.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
+                        if boundary.block_main_upload {
+                            tokio::select! {
+                                biased;
+                                _ = &mut cancel => return Err("Transfer cancelled".into()),
+                                result = async {loop {
+                                    account.validate()?;
+                                    tokio::time::sleep(Duration::from_millis(50)).await;
+                                } #[allow(unreachable_code)] Ok::<(),String>(())} => {result?; unreachable!()},
+                                _ = boundary.release.notified() => {},
+                            }
+                        }
+                        let length = std::fs::metadata(&source).map_err(error)?.len();
+                        // File-part upload is a controlled external boundary; the
+                        // main payload need not be transferred again to inspect publication.
+                        let raw: grammers_tl_types::enums::InputFile = if length > 10 * 1024 * 1024
+                        {
+                            grammers_tl_types::types::InputFileBig {
+                                id: 101,
+                                parts: i32::try_from(length.div_ceil(512 * 1024)).map_err(error)?,
+                                name: name.clone(),
+                            }
+                            .into()
+                        } else {
+                            grammers_tl_types::types::InputFile {
+                                id: 101,
+                                parts: 1,
+                                name: name.clone(),
+                                md5_checksum: "controlled-telegram-part".into(),
+                            }
+                            .into()
+                        };
+                        let receipt = crate::desktop_video_upload::publish(
+                            &video,
+                            grammers_client::types::media::Uploaded::from_raw(raw),
+                            crate::desktop_video_upload::caption(&name, filename_caption),
+                            boundary.as_ref(),
+                            &account,
+                            bandwidth.clone(),
+                            network.clone(),
+                            &mut cancel,
+                        )
+                        .await?;
+                        Ok::<_, String>(json!({"video":true,"receipt":receipt}))
+                    }
+                    .await;
+                    let mut capture = boundary.capture.lock().map_err(error)?.clone();
+                    if capture.is_null() {
+                        capture = json!({});
+                    }
+                    capture["result"] = match result {
+                        Ok(value) => value,
+                        Err(error) => json!({"error":error}),
+                    };
+                    capture["preparationCompleted"] = json!(boundary
+                        .preparation_completed
+                        .load(std::sync::atomic::Ordering::SeqCst));
+                    capture["mainUploadRequests"] = json!(boundary
+                        .main_upload_requests
+                        .load(std::sync::atomic::Ordering::SeqCst));
+                    capture["thumbnailRequests"] = json!(boundary
+                        .thumbnail_requests
+                        .load(std::sync::atomic::Ordering::SeqCst));
+                    capture["sendAttempts"] = json!(boundary
+                        .send_attempts
+                        .load(std::sync::atomic::Ordering::SeqCst));
+                    capture["thumbnail"] =
+                        if boundary.root.join("video-upload-thumbnail.jpg").exists() {
+                            json!("video-upload-thumbnail.jpg")
+                        } else {
+                            Value::Null
+                        };
+                    capture["upBytes"] = json!(bandwidth.checked_stats()?.up_bytes);
+                    capture["pacerPending"] = json!(network.pacer.pending());
+                    Ok(capture)
+                });
+                self.video_upload = Some(FixtureVideoUploadJourney {
+                    transport,
+                    cancel: Some(cancel_tx),
+                    task,
+                });
+                if text(&request, "command")? == "video_upload_start" {
+                    Ok(json!(true))
+                } else {
+                    self.finish_video_upload().await
+                }
+            }
+            "video_upload_observe" => {
+                let journey = self
+                    .video_upload
+                    .as_ref()
+                    .ok_or("No video upload is running")?;
+                Ok(
+                    json!({"thumbnailRequests":journey.transport.thumbnail_requests.load(std::sync::atomic::Ordering::SeqCst),
+                    "mainUploadRequests":journey.transport.main_upload_requests.load(std::sync::atomic::Ordering::SeqCst),
+                    "preparationCompleted":journey.transport.preparation_completed.load(std::sync::atomic::Ordering::SeqCst),
+                    "sendAttempts":journey.transport.send_attempts.load(std::sync::atomic::Ordering::SeqCst),
+                    "finished":journey.task.is_finished(),"upBytes":self.bandwidth.checked_stats()?.up_bytes}),
+                )
+            }
+            "video_upload_release" => {
+                self.video_upload
+                    .as_ref()
+                    .ok_or("No video upload is running")?
+                    .transport
+                    .release
+                    .notify_one();
+                Ok(json!(true))
+            }
+            "video_upload_cancel" => {
+                if let Some(sender) = self
+                    .video_upload
+                    .as_mut()
+                    .ok_or("No video upload is running")?
+                    .cancel
+                    .take()
+                {
+                    let _ = sender.send(());
+                }
+                Ok(json!(true))
+            }
+            "video_upload_finish" => self.finish_video_upload().await,
             "upload_resumable" => self.upload_resumable(&request).await,
             "upload_session" => {
                 let resumable = self.resumable(&request).await?;
@@ -4743,6 +5009,7 @@ pub async fn run() -> Result<(), String> {
     initial_network.proxy.password =
         std::fs::read_to_string(root.join("proxy-credential")).unwrap_or_default();
     let mut driver = Driver {
+        video_upload: None,
         notifications: None,
         proxy_update_task: None,
         reader_tasks: Vec::new(),

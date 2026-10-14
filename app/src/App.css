@@ -57,8 +57,8 @@
   --color-app-surface: #fbfbf9;
   --color-app-surface-raised: #ffffff;
   --color-app-surface-sunken: #e9e9e5;
-  --color-app-accent: #168ac3;
-  --color-app-accent-hover: #0e78ad;
+  --color-app-accent: #0e78ad;
+  --color-app-accent-hover: #096c9e;
   --color-app-accent-soft: rgba(22, 138, 195, 0.12);
   --color-app-accent-contrast: #ffffff;
   --color-app-text: #1b1c1f;
@@ -198,6 +198,58 @@ textarea:disabled {
   box-shadow: var(--shadow-raised);
 }
 
+/* Settings share one row, switch and field system on desktop and touch screens. */
+.settings-group {
+  overflow: hidden;
+  border: 1px solid var(--color-app-border);
+  border-radius: var(--radius-container);
+  background: var(--color-app-surface);
+}
+
+.settings-group > h3 {
+  margin: 0;
+  padding: 1rem 1rem 0.625rem;
+  color: var(--color-app-text-tertiary);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+  min-height: 4rem;
+  padding: 0.875rem 0;
+  border-bottom: 1px solid var(--color-app-border-subtle);
+}
+
+.settings-group > .settings-row { margin-inline: 1rem; }
+.settings-row:last-child { border-bottom: 0; }
+.settings-row-copy { display: flex; align-items: flex-start; gap: 0.75rem; min-width: 0; }
+.settings-row-icon { display: flex; flex-shrink: 0; margin-top: 0.125rem; color: var(--color-app-text-tertiary); }
+.settings-row-title { color: var(--color-app-text); font-size: 0.8125rem; font-weight: 500; line-height: 1.25rem; overflow-wrap: anywhere; }
+.settings-row-description { margin-top: 0.25rem; color: var(--color-app-text-secondary); font-size: 0.75rem; line-height: 1.125rem; overflow-wrap: anywhere; }
+.settings-row-control { flex-shrink: 0; max-width: 45%; }
+.settings-select { min-height: 2.25rem; max-width: 100%; border: 1px solid var(--color-app-border-strong); border-radius: var(--radius-control); background: var(--color-app-surface-raised); padding: 0.375rem 0.625rem; color: var(--color-app-text); font-size: 0.8125rem; }
+.settings-switch { display: flex; align-items: center; justify-content: center; width: 2.75rem; height: 2.75rem; flex-shrink: 0; border-radius: var(--radius-control); }
+.settings-switch:disabled { opacity: 0.45; }
+.settings-switch-track { position: relative; display: block; width: 2.5rem; height: 1.375rem; border-radius: 999px; background: var(--color-app-border-strong); transition: background var(--motion-fast); }
+.settings-switch[aria-checked="true"] .settings-switch-track { background: var(--color-app-accent); }
+.settings-switch-thumb { position: absolute; inset-inline-start: 0.1875rem; top: 0.1875rem; width: 1rem; height: 1rem; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px #0002; transition: transform var(--motion-fast); }
+.settings-switch[aria-checked="true"] .settings-switch-thumb { transform: translateX(1.125rem); }
+[dir="rtl"] .settings-switch[aria-checked="true"] .settings-switch-thumb { transform: translateX(-1.125rem); }
+.settings-stepper { display: flex; align-items: center; gap: 0.25rem; border: 1px solid var(--color-app-border); border-radius: var(--radius-control); background: var(--color-app-surface-raised); }
+.settings-stepper button { width: 2rem; height: 2rem; border-radius: var(--radius-control); color: var(--color-app-text-secondary); }
+.settings-stepper button:hover:not(:disabled) { background: var(--color-app-hover); color: var(--color-app-text); }
+.settings-stepper button:disabled { opacity: 0.35; }
+.settings-stepper > span { min-width: 1.25rem; text-align: center; font-size: 0.8125rem; }
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-switch-track, .settings-switch-thumb { transition: none; }
+}
+
 /* Shared desktop header rows keep dividers continuous across both columns. */
 .desktop-chrome-row {
   box-sizing: border-box;
@@ -229,6 +281,16 @@ textarea:disabled {
 
 .quiet-control:hover:not(:disabled) {
   background: var(--color-app-hover);
+}
+
+.encryption-settings .quiet-control.bg-app-accent:hover:not(:disabled) {
+  background: var(--color-app-accent-hover);
+}
+
+.encryption-settings button,
+.encryption-settings input:not([type="checkbox"]),
+.encryption-settings select {
+  min-height: var(--metric-control-touch);
 }
 
 .quiet-control:active:not(:disabled) {

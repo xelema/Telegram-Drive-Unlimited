@@ -763,7 +763,7 @@ function OwnedSettingsModal({ ownerId, isOpen, onClose, initialTab = 'general', 
                                     <GeneralSettingsTab>
 
                             {/* Transfers Section */}
-                            <section className="space-y-3">
+                            <section className="settings-group">
                                 <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
                                     <Upload className="w-3.5 h-3.5" />
                                     {t('settings.transfers')}
@@ -794,13 +794,15 @@ function OwnedSettingsModal({ ownerId, isOpen, onClose, initialTab = 'general', 
                                             value={settings.videoUploadMode}
                                             onChange={event => updateSetting('videoUploadMode', event.target.value as 'file' | 'media')}
                                             aria-label={t('settings.video_upload_default')}
-                                            className="rounded-md border border-telegram-border bg-telegram-bg px-2.5 py-1.5 text-sm text-telegram-text focus:border-telegram-primary/50 focus:outline-none"
+                                            className="settings-select"
                                         >
                                             <option value="file">{t('settings.video_upload_file')}</option>
                                             <option value="media">{t('settings.video_upload_media')}</option>
                                         </select>
                                     )}
                                 />
+
+                                <SettingsRow icon={<Play className="h-4 w-4" />} title={t('settings.videoFilenameCaption')} description={t('settings.videoFilenameCaptionDesc')} control={<SettingsToggle checked={settings.videoFilenameCaption} label={t('settings.videoFilenameCaption')} onChange={() => updateSetting('videoFilenameCaption', !settings.videoFilenameCaption)} />} />
 
                                 <SettingsRow icon={<Tag className="h-4 w-4 text-telegram-subtext" />} title={t('common.hide_groups')} description={t('common.hide_groups_desc')} control={<SettingsToggle checked={settings.hideGroups} label={t('common.hide_groups')} onChange={() => updateSetting('hideGroups', !settings.hideGroups)} />} />
 

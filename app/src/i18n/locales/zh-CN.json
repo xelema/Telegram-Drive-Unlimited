@@ -429,7 +429,9 @@
     "window_remove": "删除时间段",
     "show_passphrase": "显示密码短语",
     "hide_passphrase": "隐藏密码短语",
-    "current_vault_passphrase": "当前保险库口令"
+    "current_vault_passphrase": "当前保险库口令",
+    "videoFilenameCaption": "文件名说明",
+    "videoFilenameCaptionDesc": "将原始文件名添加到视频消息说明中。加密上传会保护文件名隐私。"
   },
   "files": {
     "download": "下载",
@@ -1455,7 +1457,9 @@
     "store": "存储",
     "plain_description": "正常上传，获得最佳兼容性和便捷共享。",
     "protect": "存储并保护",
-    "protect_description": "上传前使用已配置的保护设置进行加密。"
+    "protect_description": "上传前使用已配置的保护设置进行加密。",
+    "reload_app": "重新加载应用",
+    "load_failed": "无法加载上传选项。重新加载会取消此次选择。应用重新加载后，请再次选择文件。"
   },
   "auth_copy": {
     "qr_title": "优先使用 QR 安全登录",

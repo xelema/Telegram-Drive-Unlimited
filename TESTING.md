@@ -4,7 +4,7 @@ Behavioral regression testing uses E2E suites. New tests must exercise an applic
 
 ## Host verification
 
-Install JavaScript dependencies in `app/` and `supporter-service/`, the normal native build prerequisites, and Playwright Chromium:
+Install JavaScript dependencies in `app/` and `supporter-service/`, the normal native build prerequisites, FFmpeg on macOS/Linux for video upload journeys, and Playwright Chromium:
 
 ```sh
 npm ci --prefix app
@@ -63,6 +63,12 @@ Archive journeys stage a real file through the production stream, inject a trans
 Native child-process journeys stream local source files through the production asset service and exercise source/account/protection identity, cache hits without indexing arbitrary messages, failed completion, lookup cancellation, pinned eviction/clearing/deletion, shared native/async byte reservations and clear generations, explicit roots under similarly named parent directories, offline/status compatibility, and competing thumbnail/preview or canceled SQLite metadata publication. A gated legacy pin crosses shared admission. Real JPEG/PNG decoding checks the three-job ceiling and output dimensions. REST journeys use the real HTTP server with only the remote source replaced by a controlled fixture.
 
 Video journeys prefer a provided JPEG, exercise a controlled extraction child that succeeds/fails/stalls, count a live JPEG partial once at the reservation ceiling, and verify clear/deadline kill-and-wait cleanup. That helper does not establish codec compatibility. A separate local macOS acceptance used the installed FFmpeg with a synthetic MP4 and produced a 480×360 JPEG; other codecs, operating systems and packaged FFmpeg discovery remain unrun. Sources above 16 MiB and unsupported formats gracefully lack frame fallback. Browser journeys cover video cards, delayed old-account responses, same-name/size source replacement and closing an already displayed preview on an account switch; complete visual snapshots were unchanged.
+
+### Desktop video upload previews
+
+The native child-process journeys exercise the same video preparation and publication operation used by local and URL uploads. A controlled Telegram transport reads the actual paced JPEG bytes and captures the caption and serialized MTProto document; assertions independently decode both. Synthetic two-second H.264 fixtures include valid containers above 200 MiB using sparse `free` padding, with early and trailing `moov` metadata. This covers large-container handling, not long/high-bitrate recordings. Original video bytes are preserved; only early metadata is marked streamable.
+
+Failure, retry, cancellation, account changes, source replacement, quota holds and private decoder staging are checked through that operation. Windows journeys remove FFmpeg from PATH to require the native media decoder; non-Windows success uses installed FFmpeg. Decoder-unavailable and controlled-process failure journeys are separate from codec compatibility. A passing macOS run does not establish native Windows decoding. Protected uploads retain the existing encrypted-upload journeys. The main-file part handle and Telegram service are controlled boundaries; real Telegram Desktop playback, the reporter's exact file/codec and installed-app acceptance remain separate checks.
 
 ### What the native journeys do not reach
 

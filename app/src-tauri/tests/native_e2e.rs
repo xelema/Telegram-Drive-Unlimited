@@ -54,7 +54,21 @@ struct Backend {
 const NATIVE_FIXTURE_STARTUP: Duration = Duration::from_secs(120);
 impl Backend {
     fn start(root: &Path) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_native-e2e-driver"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_native-e2e-driver"));
+        if root.join(".video-upload-fixture").exists() {
+            let scratch = root.join("video-upload-scratch");
+            command
+                .env("TMPDIR", &scratch)
+                .env("TMP", &scratch)
+                .env("TEMP", &scratch);
+        }
+        if root.join(".video-upload-empty-path").exists() {
+            command.env("PATH", root.join("video-upload-scratch"));
+        }
+        if root.join(".video-upload-helper-path").exists() {
+            command.env("PATH", root.join("video-upload-codec"));
+        }
+        let mut child = command
             .arg(root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -8848,4 +8862,619 @@ fn heic_pin_markers_do_not_survive_canceled_rendition_publication() {
     );
     app.ok(json!({"command":"asset_pin","owner":"101","pinned":false}));
     app.ok(json!({"command":"asset_clear","owner":"101","category":"previews"}));
+}
+
+#[test]
+fn video_caption_choice_survives_interrupted_upload_restart() {
+    let fixture = Fixture::new();
+    fixture.write("Holiday video.mp4", b"synthetic video boundary fixture");
+    let mut app = Backend::start(&fixture.0);
+    for (id, enabled) in [("caption-on", true), ("caption-off", false)] {
+        app.ok(json!({"command":"save_transfer","job":{
+            "id":id,"ownerId":"101","direction":"upload","kind":"local_upload",
+            "status":"uploading","path":fixture.path("Holiday video.mp4"),
+            "filename":"Holiday video.mp4","videoUploadMode":"media","videoFilenameCaption":enabled,
+            "protectionMode":"standard","progress":50,"transferredBytes":15,"totalBytes":30,
+            "speedBytesPerSec":10,"queuePosition":0,"revision":1,"createdAt":1,"updatedAt":2
+        }}));
+    }
+    app.stop();
+    let mut app = Backend::start(&fixture.0);
+    let recovered = app.ok(json!({"command":"transfers"}));
+    for (id, enabled) in [("caption-on", true), ("caption-off", false)] {
+        let job = recovered
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|job| job["id"] == id)
+            .unwrap();
+        assert_eq!(job["videoFilenameCaption"], enabled);
+        assert_eq!(job["videoUploadMode"], "media");
+        assert_eq!(job["status"], "paused");
+        assert_eq!(job["ownerId"], "101");
+    }
+    app.stop();
+}
+
+// These are valid, short H.264 MP4 containers. Sparse ISO-BMFF `free` padding
+// exercises real large-file preparation without checking in 210 MiB of video.
+fn video_upload_fixture(fixture: &Fixture, name: &str, large: bool, late_moov: bool) {
+    use std::io::{Seek, SeekFrom};
+    let bytes: &[u8] = if late_moov {
+        include_bytes!("fixtures/video-upload/synthetic-h264-moov-late.mp4")
+    } else {
+        include_bytes!("fixtures/video-upload/synthetic-h264.mp4")
+    };
+    let mut file = std::fs::File::create(fixture.path(name)).unwrap();
+    if !large {
+        file.write_all(bytes).unwrap();
+        return;
+    }
+    let (prefix, suffix) = if late_moov {
+        let mut offset = 0;
+        let moov = loop {
+            let size = u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+            assert!(size >= 8);
+            if &bytes[offset + 4..offset + 8] == b"moov" {
+                break offset;
+            }
+            offset += size;
+            assert!(offset < bytes.len());
+        };
+        (&bytes[..moov], &bytes[moov..])
+    } else {
+        (bytes, &[][..])
+    };
+    file.write_all(prefix).unwrap();
+    const PADDING: u32 = 210 * 1024 * 1024;
+    file.write_all(&PADDING.to_be_bytes()).unwrap();
+    file.write_all(b"free").unwrap();
+    file.seek(SeekFrom::Current(i64::from(PADDING) - 8))
+        .unwrap();
+    file.write_all(suffix).unwrap();
+    if suffix.is_empty() {
+        file.set_len(bytes.len() as u64 + u64::from(PADDING))
+            .unwrap();
+    }
+    assert!(file.metadata().unwrap().len() > 200 * 1024 * 1024);
+}
+
+fn uploaded_video_wire(value: &Value) -> grammers_tl_types::types::InputMediaUploadedDocument {
+    use grammers_tl_types::Deserializable;
+    let hex = value["serializedTl"]
+        .as_str()
+        .expect("No captured Telegram attachment");
+    assert_eq!(hex.len() % 2, 0);
+    let bytes: Vec<u8> = hex
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect();
+    let wire = grammers_tl_types::enums::InputMedia::from_bytes(&bytes).unwrap();
+    let grammers_tl_types::enums::InputMedia::UploadedDocument(document) = wire else {
+        panic!("Media upload was serialized as a different Telegram type")
+    };
+    document
+}
+
+#[test]
+fn video_upload_media_includes_a_real_thumbnail_for_small_and_large_mp4_containers() {
+    for (name, large, late) in [
+        ("large-faststart.mp4", true, false),
+        ("large-moov-late.mp4", true, true),
+        ("small.mp4", false, false),
+    ] {
+        let fixture = Fixture::new();
+        video_upload_fixture(&fixture, name, large, late);
+        let mut app = start_video_upload_backend(&fixture);
+        let result = app.ok(
+            json!({"command":"video_upload_prepare","owner":"101","source":name,
+            "mode":"media","filenameCaption":true}),
+        );
+        assert_eq!(
+            result["result"]["receipt"],
+            "controlled-telegram-message-303"
+        );
+        assert_eq!(result["thumbnailRequests"], 1);
+        assert_eq!(result["sendAttempts"], 1);
+        assert_eq!(result["pacerPending"], 0);
+        let wire = uploaded_video_wire(&result);
+        assert!(!wire.force_file, "Media was forced to a generic file");
+        assert_eq!(wire.mime_type, "video/mp4");
+        assert!(matches!(wire.file, grammers_tl_types::enums::InputFile::Big(_)) == large);
+        let video = wire
+            .attributes
+            .iter()
+            .find_map(|attribute| match attribute {
+                grammers_tl_types::enums::DocumentAttribute::Video(video) => Some(video),
+                _ => None,
+            })
+            .expect("Missing DocumentAttributeVideo in the actual Telegram payload");
+        assert_eq!((video.w, video.h), (640, 360));
+        assert!(
+            (video.duration - 2.0).abs() < 0.1,
+            "Unexpected video duration: {}",
+            video.duration
+        );
+        assert_eq!(
+            video.supports_streaming, !late,
+            "Streaming requires an early moov; video bytes are not remuxed"
+        );
+        assert!(wire.attributes.iter().any(|attribute| matches!(attribute,
+            grammers_tl_types::enums::DocumentAttribute::Filename(filename) if filename.file_name == name)));
+        assert_eq!(result["caption"], name);
+        assert!(
+            wire.thumb.is_some(),
+            "Missing uploaded thumbnail for {name}"
+        );
+        let thumbnail = fixture.read(
+            result["thumbnail"]
+                .as_str()
+                .expect("No generated thumbnail file"),
+        );
+        assert!(thumbnail.len() <= 200 * 1024 && thumbnail.len() > 100);
+        assert_eq!(
+            image::guess_format(&thumbnail).unwrap(),
+            image::ImageFormat::Jpeg
+        );
+        let decoded = image::load_from_memory(&thumbnail)
+            .expect("Thumbnail must be an actual decodable JPEG");
+        assert!(decoded.width() > 0 && decoded.height() > 0);
+        assert!(decoded.width() <= 320 && decoded.height() <= 320);
+        assert_eq!(result["upBytes"], thumbnail.len() as u64);
+        assert_video_upload_scratch_empty(&fixture);
+        app.stop();
+    }
+}
+
+fn start_video_upload_backend(fixture: &Fixture) -> Backend {
+    fixture.write(".video-upload-fixture", b"synthetic\n");
+    std::fs::create_dir(fixture.path("video-upload-scratch")).unwrap();
+    // Native Windows success cannot silently be provided by FFmpeg from PATH.
+    #[cfg(target_os = "windows")]
+    fixture.write(".video-upload-empty-path", b"native Windows codec only");
+    let mut app = Backend::start(&fixture.0);
+    app.ok(json!({"command":"seed_account","owner":101}));
+    app
+}
+fn assert_video_upload_scratch_empty(fixture: &Fixture) {
+    for entry in std::fs::read_dir(fixture.path("video-upload-scratch")).unwrap() {
+        let entry = entry.unwrap();
+        assert!(
+            entry.file_type().unwrap().is_dir()
+                && entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("telegram-drive-staging"),
+            "Unexpected decoder scratch artifact: {:?}",
+            entry.path()
+        );
+        assert!(
+            std::fs::read_dir(entry.path()).unwrap().next().is_none(),
+            "Plaintext decoder staging was not cleaned: {:?}",
+            entry.path()
+        );
+    }
+}
+fn wait_for_video_thumbnail_transport(app: &mut Backend) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let status = app.ok(json!({"command":"video_upload_observe"}));
+        if status["thumbnailRequests"] == 1 {
+            return status;
+        }
+        assert!(
+            status["finished"] != true,
+            "Operation finished without uploading a thumbnail: {status}"
+        );
+        assert!(
+            Instant::now() < deadline,
+            "Thumbnail upload was not reached: {status}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn video_upload_file_mode_skips_media_inspection_for_opaque_mp4_files() {
+    let fixture = Fixture::new();
+    fixture.write("private.mp4", b"private opaque content is not a valid MP4");
+    let mut app = start_video_upload_backend(&fixture);
+    let result=app.ok(json!({"command":"video_upload_prepare","owner":"101","source":"private.mp4","mode":"file"}));
+    assert_eq!(result["result"]["video"], false);
+    assert_eq!(result["thumbnailRequests"], 0);
+    assert_eq!(result["sendAttempts"], 0);
+    assert_eq!(result["upBytes"], 0);
+    assert!(!fixture.path("video-upload-thumbnail.jpg").exists());
+    assert_video_upload_scratch_empty(&fixture);
+    app.stop();
+}
+
+#[test]
+fn video_upload_invalid_media_and_other_accounts_do_not_publish_thumbnail_artifacts() {
+    let fixture = Fixture::new();
+    fixture.write("broken.mp4", b"not an MP4");
+    let mut app = start_video_upload_backend(&fixture);
+    let result=app.ok(json!({"command":"video_upload_prepare","owner":"101","source":"broken.mp4","mode":"media"}));
+    assert!(result["result"]["error"]
+        .as_str()
+        .unwrap()
+        .contains("VIDEO_METADATA_UNAVAILABLE"));
+    assert_eq!(result["thumbnailRequests"], 0);
+    assert_eq!(result["sendAttempts"], 0);
+    assert_eq!(result["upBytes"], 0);
+    assert!(!fixture.path("video-upload-thumbnail.jpg").exists());
+    let rejected=app.request(json!({"command":"video_upload_prepare","owner":"202","source":"broken.mp4","mode":"media"}));
+    assert_eq!(rejected["ok"], false);
+    assert!(!fixture.path("video-upload-thumbnail.jpg").exists());
+    assert_video_upload_scratch_empty(&fixture);
+    app.stop();
+}
+
+#[test]
+fn video_upload_thumbnail_failure_prevents_publication_and_releases_admission_for_retry() {
+    let fixture = Fixture::new();
+    video_upload_fixture(&fixture, "retry.mp4", false, false);
+    let mut app = start_video_upload_backend(&fixture);
+    let failure=app.ok(json!({"command":"video_upload_prepare","owner":"101","source":"retry.mp4","mode":"media","failThumbnail":true}));
+    assert!(failure["result"]["error"]
+        .as_str()
+        .unwrap()
+        .contains("thumbnail upload failure"));
+    assert_eq!(failure["thumbnailRequests"], 1);
+    assert_eq!(failure["sendAttempts"], 0);
+    assert_eq!(failure["upBytes"], 0);
+    assert_eq!(failure["pacerPending"], 0);
+    assert_video_upload_scratch_empty(&fixture);
+    let retry=app.ok(json!({"command":"video_upload_prepare","owner":"101","source":"retry.mp4","mode":"media","filenameCaption":false}));
+    assert_eq!(
+        retry["result"]["receipt"],
+        "controlled-telegram-message-303"
+    );
+    assert_eq!(retry["thumbnailRequests"], 1);
+    assert_eq!(retry["sendAttempts"], 1);
+    assert_eq!(retry["caption"], "");
+    assert!(uploaded_video_wire(&retry).thumb.is_some());
+    let thumbnail = fixture.read("video-upload-thumbnail.jpg");
+    assert_eq!(retry["upBytes"], thumbnail.len() as u64);
+    assert_video_upload_scratch_empty(&fixture);
+    app.stop();
+}
+
+#[test]
+fn video_upload_cancellation_during_thumbnail_transport_never_sends_a_message() {
+    let fixture = Fixture::new();
+    video_upload_fixture(&fixture, "cancel.mp4", false, false);
+    let mut app = start_video_upload_backend(&fixture);
+    app.ok(json!({"command":"video_upload_start","owner":"101","source":"cancel.mp4","mode":"media","blockThumbnail":true}));
+    let blocked = wait_for_video_thumbnail_transport(&mut app);
+    assert!(
+        blocked["upBytes"].as_u64().unwrap() > 0,
+        "Thumbnail must hold real bandwidth admission"
+    );
+    app.ok(json!({"command":"video_upload_cancel"}));
+    let result = app.ok(json!({"command":"video_upload_finish"}));
+    assert!(result["result"]["error"]
+        .as_str()
+        .unwrap()
+        .contains("cancelled"));
+    assert_eq!(result["sendAttempts"], 0);
+    assert_eq!(result["upBytes"], 0);
+    assert_eq!(result["pacerPending"], 0);
+    assert!(!fixture.path("video-upload-thumbnail.jpg").exists());
+    assert_video_upload_scratch_empty(&fixture);
+    app.stop();
+}
+
+#[test]
+fn video_upload_account_switch_during_thumbnail_transport_fences_publication() {
+    let fixture = Fixture::new();
+    video_upload_fixture(&fixture, "account.mp4", false, false);
+    let mut app = start_video_upload_backend(&fixture);
+    app.ok(json!({"command":"video_upload_start","owner":"101","source":"account.mp4","mode":"media","blockThumbnail":true}));
+    wait_for_video_thumbnail_transport(&mut app);
+    app.ok(json!({"command":"seed_account","owner":202}));
+    let result = app.ok(json!({"command":"video_upload_finish"}));
+    assert!(
+        result["result"]["error"].is_string(),
+        "Account switch must reject the operation"
+    );
+    assert_eq!(result["sendAttempts"], 0);
+    assert_eq!(result["upBytes"], 0);
+    assert_eq!(result["pacerPending"], 0);
+    assert!(!fixture.path("video-upload-thumbnail.jpg").exists());
+    assert_video_upload_scratch_empty(&fixture);
+    app.stop();
+}
+
+#[test]
+fn video_upload_publication_failure_releases_thumbnail_admission_without_committing_usage() {
+    let fixture = Fixture::new();
+    video_upload_fixture(&fixture, "publish.mp4", false, false);
+    let mut app = start_video_upload_backend(&fixture);
+    let result=app.ok(json!({"command":"video_upload_prepare","owner":"101","source":"publish.mp4","mode":"media","failPublish":true}));
+    assert!(result["result"]["error"]
+        .as_str()
+        .unwrap()
+        .contains("publication failure"));
+    assert_eq!(result["thumbnailRequests"], 1);
+    assert_eq!(result["sendAttempts"], 1);
+    assert_eq!(result["caption"], "publish.mp4");
+    assert!(uploaded_video_wire(&result).thumb.is_some());
+    assert_eq!(
+        result["upBytes"], 0,
+        "Only a successful declared upload commits quota"
+    );
+    assert_eq!(result["pacerPending"], 0);
+    assert_video_upload_scratch_empty(&fixture);
+    app.stop();
+}
+
+#[cfg(not(target_os = "windows"))]
+#[test]
+fn video_upload_unavailable_decoder_reports_file_fallback_without_publication_or_quota() {
+    let fixture = Fixture::new();
+    video_upload_fixture(&fixture, "unsupported.mp4", false, false);
+    fixture.write(
+        ".video-upload-empty-path",
+        b"No external decoder is available",
+    );
+    let mut app = start_video_upload_backend(&fixture);
+    let result=app.ok(json!({"command":"video_upload_prepare","owner":"101","source":"unsupported.mp4","mode":"media"}));
+    let message = result["result"]["error"].as_str().unwrap();
+    assert!(message.contains("VIDEO_THUMBNAIL_UNAVAILABLE"), "{message}");
+    assert!(message.contains("File mode"), "{message}");
+    assert_eq!(result["thumbnailRequests"], 0);
+    assert_eq!(result["sendAttempts"], 0);
+    assert_eq!(result["upBytes"], 0);
+    assert_eq!(result["pacerPending"], 0);
+    assert_video_upload_scratch_empty(&fixture);
+    let fallback=app.ok(json!({"command":"video_upload_prepare","owner":"101","source":"unsupported.mp4","mode":"file"}));
+    assert_eq!(fallback["result"]["video"], false);
+    assert_eq!(fallback["sendAttempts"], 0);
+    assert_video_upload_scratch_empty(&fixture);
+    app.stop();
+}
+
+#[test]
+fn video_upload_source_replacement_during_thumbnail_transport_prevents_publication() {
+    let fixture = Fixture::new();
+    video_upload_fixture(&fixture, "replace.mp4", false, false);
+    let mut app = start_video_upload_backend(&fixture);
+    app.ok(json!({"command":"video_upload_start","owner":"101","source":"replace.mp4","mode":"media","blockThumbnail":true}));
+    wait_for_video_thumbnail_transport(&mut app);
+    fixture.write(
+        "replace.mp4",
+        b"another file replaced the source after its preview was prepared",
+    );
+    app.ok(json!({"command":"video_upload_release"}));
+    let result = app.ok(json!({"command":"video_upload_finish"}));
+    assert!(
+        result["result"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("SOURCE_CHANGED"),
+        "{result}"
+    );
+    assert_eq!(result["thumbnailRequests"], 1);
+    assert_eq!(result["sendAttempts"], 0);
+    assert_eq!(result["upBytes"], 0);
+    assert_eq!(result["pacerPending"], 0);
+    assert_video_upload_scratch_empty(&fixture);
+    app.stop();
+}
+
+// These lifecycle journeys control the external codec process, while the other
+// video journeys decode a real H.264 stream with FFmpeg or Windows WinRT.
+#[cfg(unix)]
+fn video_upload_stalled_codec(fixture: &Fixture) {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = fixture.path("video-upload-codec");
+    std::fs::create_dir(&directory).unwrap();
+    let marker = fixture.path("decoder.pid");
+    let script=format!("#!/bin/sh\nprintf '%s' \"$$\" > '{}'\nfor output in \"$@\"; do :; done\nprintf 'unfinished preview' > \"$output\"\nexec /bin/sleep 300\n",marker.display());
+    let executable = directory.join("ffmpeg");
+    std::fs::write(&executable, script).unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    fixture.write(
+        ".video-upload-helper-path",
+        b"Owned blocking external codec fixture",
+    );
+}
+#[cfg(unix)]
+fn wait_for_owned_video_decoder(fixture: &Fixture) -> i32 {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Ok(marker) = std::fs::read_to_string(fixture.path("decoder.pid")) {
+            if let Ok(pid) = marker.parse() {
+                return pid;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Controlled decoder process did not start"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+#[cfg(unix)]
+fn assert_owned_video_decoder_stopped(fixture: &Fixture, pid: i32) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        // Read-only existence check of the exact process created by this journey.
+        let running = unsafe { libc::kill(pid, 0) } == 0;
+        let scratch = fixture.path("video-upload-scratch");
+        let active_scratch = std::fs::read_dir(&scratch).unwrap().any(|entry| {
+            let entry = entry.unwrap();
+            entry.file_type().unwrap().is_dir()
+                && std::fs::read_dir(entry.path()).unwrap().next().is_some()
+        });
+        if !running && !active_scratch {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Owned codec process or preview survived cleanup: pid={pid}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_video_upload_scratch_empty(fixture);
+}
+
+#[cfg(unix)]
+#[test]
+fn video_upload_cancels_a_blocked_decoder_process_and_removes_its_plaintext_staging() {
+    let fixture = Fixture::new();
+    video_upload_fixture(&fixture, "decode-cancel.mp4", false, false);
+    video_upload_stalled_codec(&fixture);
+    let mut app = start_video_upload_backend(&fixture);
+    app.ok(json!({"command":"video_upload_start","owner":"101","source":"decode-cancel.mp4","mode":"media"}));
+    let pid = wait_for_owned_video_decoder(&fixture);
+    app.ok(json!({"command":"video_upload_cancel"}));
+    let result = app.ok(json!({"command":"video_upload_finish"}));
+    assert!(
+        result["result"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("cancelled"),
+        "{result}"
+    );
+    assert_eq!(result["thumbnailRequests"], 0);
+    assert_eq!(result["sendAttempts"], 0);
+    assert_eq!(result["upBytes"], 0);
+    assert_owned_video_decoder_stopped(&fixture, pid);
+    app.stop();
+}
+
+#[cfg(unix)]
+#[test]
+fn video_upload_account_switch_stops_a_blocked_decoder_before_thumbnail_transport() {
+    let fixture = Fixture::new();
+    video_upload_fixture(&fixture, "decode-account.mp4", false, false);
+    video_upload_stalled_codec(&fixture);
+    let mut app = start_video_upload_backend(&fixture);
+    app.ok(json!({"command":"video_upload_start","owner":"101","source":"decode-account.mp4","mode":"media"}));
+    let pid = wait_for_owned_video_decoder(&fixture);
+    app.ok(json!({"command":"seed_account","owner":202}));
+    let result = app.ok(json!({"command":"video_upload_finish"}));
+    assert!(result["result"]["error"].is_string(), "{result}");
+    assert_eq!(result["thumbnailRequests"], 0);
+    assert_eq!(result["sendAttempts"], 0);
+    assert_eq!(result["upBytes"], 0);
+    assert_owned_video_decoder_stopped(&fixture, pid);
+    app.stop();
+}
+
+#[cfg(unix)]
+#[test]
+fn video_upload_decoder_deadline_kills_the_owned_process_without_publication_or_quota() {
+    let fixture = Fixture::new();
+    video_upload_fixture(&fixture, "decode-deadline.mp4", false, false);
+    video_upload_stalled_codec(&fixture);
+    let mut app = start_video_upload_backend(&fixture);
+    let started = Instant::now();
+    app.ok(json!({"command":"video_upload_start","owner":"101","source":"decode-deadline.mp4","mode":"media"}));
+    let pid = wait_for_owned_video_decoder(&fixture);
+    let result = app.ok_before(
+        json!({"command":"video_upload_finish"}),
+        Duration::from_secs(75),
+    );
+    assert!(
+        result["result"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("VIDEO_THUMBNAIL_UNAVAILABLE"),
+        "{result}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(70),
+        "Decoder exceeded its complete operation bound"
+    );
+    assert_eq!(result["thumbnailRequests"], 0);
+    assert_eq!(result["sendAttempts"], 0);
+    assert_eq!(result["upBytes"], 0);
+    assert_owned_video_decoder_stopped(&fixture, pid);
+    app.stop();
+}
+
+#[test]
+fn video_upload_near_quota_limit_refuses_preview_admission_before_main_file_upload() {
+    let fixture = Fixture::new();
+    video_upload_fixture(&fixture, "quota.mp4", false, false);
+    let mut app = start_video_upload_backend(&fixture);
+    app.ok(json!({"command":"bandwidth_set_limit","bytes":1024}));
+    app.ok(json!({"command":"bandwidth_hold","bytes":900,"upload":true}));
+    let result = app.ok(
+        json!({"command":"video_upload_prepare","owner":"101","source":"quota.mp4","mode":"media"}),
+    );
+    assert!(
+        result["result"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("bandwidth limit"),
+        "{result}"
+    );
+    assert_eq!(result["preparationCompleted"],false,"Preview quota must be admitted during preparation, before handing back a main-file upload plan");
+    assert_eq!(result["thumbnailRequests"], 0);
+    assert_eq!(result["sendAttempts"], 0);
+    assert_eq!(
+        result["upBytes"], 900,
+        "Failed preview admission must release its own hold while preserving other operations"
+    );
+    assert_eq!(result["pacerPending"], 0);
+    assert_video_upload_scratch_empty(&fixture);
+    let stats = app.ok(json!({"command":"bandwidth_cancel"}));
+    assert_eq!(stats["up_bytes"], 0);
+    app.stop();
+}
+
+#[test]
+fn video_upload_unused_prepared_preview_admission_is_released_when_main_upload_is_interrupted() {
+    for switch_account in [false, true] {
+        let fixture = Fixture::new();
+        video_upload_fixture(&fixture, "main-boundary.mp4", false, false);
+        let mut app = start_video_upload_backend(&fixture);
+        app.ok(json!({"command":"video_upload_start","owner":"101","source":"main-boundary.mp4","mode":"media","blockMainUpload":true}));
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let observed = app.ok(json!({"command":"video_upload_observe"}));
+            if observed["mainUploadRequests"] == 1 {
+                assert_eq!(observed["preparationCompleted"], true);
+                assert!(
+                    observed["upBytes"].as_u64().unwrap() > 0,
+                    "Preview quota must be admitted before the main upload"
+                );
+                assert_eq!(observed["thumbnailRequests"], 0);
+                assert_eq!(observed["sendAttempts"], 0);
+                break;
+            }
+            assert!(
+                observed["finished"] != true,
+                "Main upload handoff ended prematurely: {observed}"
+            );
+            assert!(
+                Instant::now() < deadline,
+                "Main upload was never reached: {observed}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if switch_account {
+            app.ok(json!({"command":"seed_account","owner":202}));
+        } else {
+            app.ok(json!({"command":"video_upload_cancel"}));
+        }
+        let result = app.ok(json!({"command":"video_upload_finish"}));
+        assert!(result["result"]["error"].is_string(), "{result}");
+        assert_eq!(result["mainUploadRequests"], 1);
+        assert_eq!(result["thumbnailRequests"], 0);
+        assert_eq!(result["sendAttempts"], 0);
+        assert_eq!(
+            result["upBytes"], 0,
+            "Dropping an interrupted upload plan must release unused preview quota"
+        );
+        assert_eq!(result["pacerPending"], 0);
+        assert!(!fixture.path("video-upload-thumbnail.jpg").exists());
+        assert_video_upload_scratch_empty(&fixture);
+        app.stop();
+    }
 }

@@ -431,7 +431,9 @@
     "window_remove": "Usuń przedział czasu",
     "show_passphrase": "Pokaż frazę hasła",
     "hide_passphrase": "Ukryj frazę hasła",
-    "current_vault_passphrase": "Aktualne hasło sejfu"
+    "current_vault_passphrase": "Aktualne hasło sejfu",
+    "videoFilenameCaption": "Nazwy plików w podpisach",
+    "videoFilenameCaptionDesc": "Dodaj oryginalną nazwę pliku do wiadomości wideo. Przy szyfrowanym przesyłaniu pozostaje ona prywatna."
   },
   "files": {
     "download": "Pobierać",
@@ -1469,7 +1471,9 @@
     "store": "Zapisz",
     "plain_description": "Wyślij standardowo, aby zapewnić największą zgodność i łatwe udostępnianie.",
     "protect": "Zapisz i chroń",
-    "protect_description": "Zaszyfruj przed wysłaniem z użyciem skonfigurowanych ustawień ochrony."
+    "protect_description": "Zaszyfruj przed wysłaniem z użyciem skonfigurowanych ustawień ochrony.",
+    "reload_app": "Odśwież aplikację",
+    "load_failed": "Nie udało się wczytać opcji przesyłania. Odświeżenie anuluje ten wybór. Następnie wybierz pliki ponownie."
   },
   "auth_copy": {
     "qr_title": "Bezpieczne logowanie przez QR",

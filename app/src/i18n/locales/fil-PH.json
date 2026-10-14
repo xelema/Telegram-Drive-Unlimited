@@ -429,7 +429,9 @@
     "window_remove": "Alisin ang yugto ng oras",
     "show_passphrase": "Ipakita ang passphrase",
     "hide_passphrase": "Itago ang passphrase",
-    "current_vault_passphrase": "Kasalukuyang passphrase ng vault"
+    "current_vault_passphrase": "Kasalukuyang passphrase ng vault",
+    "videoFilenameCaption": "Pangalan ng file sa caption",
+    "videoFilenameCaptionDesc": "Idagdag ang orihinal na pangalan ng file sa mga video message. Nananatili itong pribado sa mga naka-encrypt na upload."
   },
   "files": {
     "download": "I-download",
@@ -1455,7 +1457,9 @@
     "store": "Iimbak",
     "plain_description": "Mag-upload nang normal para sa pinakamalawak na compatibility at madaling pagbabahagi.",
     "protect": "Iimbak at protektahan",
-    "protect_description": "I-encrypt bago mag-upload gamit ang iyong itinakdang proteksyon."
+    "protect_description": "I-encrypt bago mag-upload gamit ang iyong itinakdang proteksyon.",
+    "reload_app": "I-reload ang app",
+    "load_failed": "Hindi ma-load ang mga opsyon sa upload. Kakanselahin ng pag-reload ang piniling mga file. Piliin muli ang mga file pagkatapos."
   },
   "auth_copy": {
     "qr_title": "Ligtas na pag-sign in gamit ang QR",

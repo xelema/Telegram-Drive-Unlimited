@@ -582,6 +582,7 @@ export function useFileUpload(
                 protection[index],
                 settings.videoUploadMode,
             ),
+            videoFilenameCaption: settings.videoFilenameCaption,
         }));
         requireCurrent();
         await enqueueUploadItems(newItems);
@@ -889,6 +890,7 @@ export function useFileUpload(
             // even when the URL itself has no extension. Rust applies this
             // preference only after it knows the downloaded file's real name.
             videoUploadMode: protection[0].mode === 'standard' ? settings.videoUploadMode : 'file',
+            videoFilenameCaption: settings.videoFilenameCaption,
         };
         await enqueueUploadItems([item]);
         toast.info(i18n.t('transfer_copy.remote_upload_queued'));

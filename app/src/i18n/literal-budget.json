@@ -37,6 +37,7 @@
         "SettingsModal",
         "SettingsTabs",
         "UploadChoiceContext",
+        "UploadProtectionDialog",
         "BandwidthWidget",
         "RemoteUploadModal"
       ]
