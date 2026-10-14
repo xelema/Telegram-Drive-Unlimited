@@ -4,6 +4,7 @@ import type { Page } from '@playwright/test';
  * These browser journeys do not validate SQLite, Keychain, Telegram, or payment cryptography.
  */
 export async function desktopFixture(page: Page, options: {
+  pickedUploadPaths?: string[];
   accountFailures?: number;
   holdFiles?: boolean;
   holdStartupHealth?: boolean;
@@ -28,6 +29,8 @@ export async function desktopFixture(page: Page, options: {
   encryptionReady?: boolean;
   vaultState?: 'none' | 'locked' | 'unlocked';
   populatedTransfers?: boolean;
+  /** Persist the controlled native queue and its call history through document reload. */
+  persistTransfersAcrossReload?: boolean;
   networkEnabled?: boolean;
   platform?: 'windows' | 'android';
   isTelevision?: boolean;
@@ -51,14 +54,15 @@ export async function desktopFixture(page: Page, options: {
     let releaseSearch:(()=>void)|undefined;const searchGate=new Promise<void>(resolve=>{releaseSearch=resolve;});
     let releaseStartupHealth: (()=>void) | undefined;
     const startupHealthGate=new Promise<void>(resolve=>{releaseStartupHealth=resolve;});
+    const savedTransfers = options.persistTransfersAcrossReload ? JSON.parse(sessionStorage.getItem('desktop-e2e-native-transfers') || 'null') : null;
     const state = {
       vaultExists:options.vaultState !== undefined && options.vaultState !== 'none',
-      jobs: options.populatedTransfers ? [
+      jobs: savedTransfers?.jobs ?? (options.populatedTransfers ? [
         {id:'upload-active',direction:'upload',kind:'local_upload',status:'uploading',filename:'Fixture upload.bin',path:'/fixture/Fixture upload.bin'},
         {id:'upload-error',direction:'upload',kind:'local_upload',status:'failed',filename:'Fixture retry.bin',path:'/fixture/Fixture retry.bin',error:'Controlled transport failure'},
         {id:'download-active',direction:'download',kind:'download',status:'downloading',filename:'Fixture download.bin',messageId:42},
         {id:'download-done',direction:'download',kind:'download',status:'completed',filename:'Fixture finished.bin',messageId:43,downloadOutcome:'saved'},
-      ].map((job,index)=>({...job,ownerId:'101',folderId:9,progress:40,transferredBytes:400,totalBytes:1000,speedBytesPerSec:128,queuePosition:index,revision:1,createdAt:Date.now(),updatedAt:Date.now()})) as any[] : [] as any[],
+      ].map((job,index)=>({...job,ownerId:'101',folderId:9,progress:40,transferredBytes:400,totalBytes:1000,speedBytesPerSec:128,queuePosition:index,revision:1,createdAt:Date.now(),updatedAt:Date.now()})) as any[] : [] as any[]),
       holdStartupHealth:options.holdStartupHealth??false,
       releaseStartupHealth:()=>{state.holdStartupHealth=false;releaseStartupHealth?.();},
       searchHold:false, searchFails:false, searchPageSize:256, searchBuilding:0, searchDuplicateIds:false, releaseSearch:()=>{state.searchHold=false;releaseSearch?.();},
@@ -67,7 +71,7 @@ export async function desktopFixture(page: Page, options: {
       holdSupporter: options.holdSupporter ?? false, supporterState: options.supporterState ?? 'active',
       supporterRefreshFails: options.supporterState === 'needs_refresh',
       logoutFails: false, remoteSignOutUnconfirmed: false, saveFails: false, installFails: true, incompleteDownload: false,
-      update: options.update ?? false, stores, calls: [] as { command: string; args: any }[],
+      update: options.update ?? false, stores, calls: (savedTransfers?.calls ?? []) as { command: string; args: any }[],
       sync: { settings: { enabled: false, debounceMs: 2000, encryption: 'inherit', scanner: 'full' } as Record<string, unknown>, pairs: [] as any[] },
       holdThumbnails: options.holdThumbnails ?? false, thumbnailVersion: 0,
       releaseThumbnails: () => { state.holdThumbnails = false; releaseThumbnails?.(); },
@@ -102,6 +106,7 @@ export async function desktopFixture(page: Page, options: {
         convertFileSrc: (path: string) => path,
         invoke: async (command: string, args: any = {}) => {
           state.calls.push({ command, args });
+          try {
           if (command === 'plugin:event|listen') { const id = nextId++; listeners.set(id, { event: args.event, handler: args.handler }); return id; }
           if (command === 'plugin:event|unlisten') { listeners.delete(args.eventId); return; }
           if (command === 'plugin:store|load') { stores[args.path] ??= {}; return args.path; }
@@ -148,7 +153,7 @@ export async function desktopFixture(page: Page, options: {
           if (command === 'cmd_get_sync_pairs') return state.sync.pairs;
           if (command === 'cmd_get_sync_status') return { enabled: state.sync.settings.enabled, running: false, activePairs: 0, pendingOps: 0, conflicts: 0, lastError: null, pairs: [] };
           if (command === 'plugin:dialog|save') return '/synthetic/Downloads/photo.jpg';
-          if (command === 'plugin:dialog|open') return '/synthetic/Library';
+          if (command === 'plugin:dialog|open') return options.pickedUploadPaths ?? '/synthetic/Library';
           if (command === 'cmd_preview_sync_pair') return {
             request: args.request, generatedAt: 1_790_000_000, reviewToken: 'fixture-review-token', accountOwner: args.ownerId, localFiles: 2, remoteFiles: 2,
             counts: { uploads: 0, downloads: 0, deleteLocal: 0, deleteRemote: 0, conflicts: args.request.preferences.adoptMatchingFiles ? 0 : 2, skipped: args.request.preferences.adoptMatchingFiles ? 2 : 0 },
@@ -216,7 +221,11 @@ export async function desktopFixture(page: Page, options: {
           if (command === 'cmd_verify_vault_recovery') return {matches_vault:true,missing_profiles:0,complete:true};
           if (command === 'cmd_get_encryption_settings' || command === 'cmd_update_encryption_settings') return args.settings ?? { default_mode: 'none' };
           if (command === 'cmd_get_file_encryption_info') return { state: 'plain', protection_mode: 'none' };
-          if (options.populatedTransfers && command === 'cmd_transfer_list') return state.jobs;
+          if (command === 'cmd_transfer_list') return state.jobs;
+          if (command === 'cmd_transfer_enqueue_many') return args.requests.map((request: any) => ({
+            ...request, status: 'paused', progress: 0, transferredBytes: 0, totalBytes: request.totalBytes ?? 0,
+            speedBytesPerSec: 0, queuePosition: 0, revision: 1, createdAt: Date.now(), updatedAt: Date.now(),
+          }));
           if (options.populatedTransfers && /^cmd_transfer_(pause|resume|cancel|retry)(_all)?$/.test(command)) {
             const action=command.split('_')[2];
             const targets=state.jobs.filter(job=>job.ownerId===args.ownerId && (args.id ? job.id===args.id : job.direction===args.direction) && (
@@ -243,6 +252,9 @@ export async function desktopFixture(page: Page, options: {
           }
           if (command === 'plugin:updater|install') { if (state.installFails) throw new Error('Disk unavailable'); return; }
           return null;
+          } finally {
+            if (options.persistTransfersAcrossReload) sessionStorage.setItem('desktop-e2e-native-transfers', JSON.stringify({ jobs: state.jobs, calls: state.calls }));
+          }
         },
       },
     });

@@ -429,7 +429,9 @@
     "window_remove": "Zeitfenster entfernen",
     "show_passphrase": "Passphrase anzeigen",
     "hide_passphrase": "Passphrase verbergen",
-    "current_vault_passphrase": "Aktuelle Tresor-Passphrase"
+    "current_vault_passphrase": "Aktuelle Tresor-Passphrase",
+    "videoFilenameCaption": "Dateinamen als Bildunterschrift",
+    "videoFilenameCaptionDesc": "Den ursprünglichen Dateinamen zu Videonachrichten hinzufügen. Bei verschlüsselten Uploads bleibt er privat."
   },
   "files": {
     "download": "Herunterladen",
@@ -1455,7 +1457,9 @@
     "store": "Speichern",
     "plain_description": "Normal hochladen für beste Kompatibilität und einfaches Teilen.",
     "protect": "Speichern & schützen",
-    "protect_description": "Vor dem Upload mit deinen konfigurierten Schutzeinstellungen verschlüsseln."
+    "protect_description": "Vor dem Upload mit deinen konfigurierten Schutzeinstellungen verschlüsseln.",
+    "reload_app": "App neu laden",
+    "load_failed": "Die Upload-Optionen konnten nicht geladen werden. Beim Neuladen wird diese Auswahl verworfen. Wähle danach deine Dateien erneut aus."
   },
   "auth_copy": {
     "qr_title": "Sichere Anmeldung per QR",

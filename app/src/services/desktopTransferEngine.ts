@@ -38,6 +38,7 @@ export interface DesktopTransferJob {
     protectionMode?: string;
     protectMetadata?: boolean;
     videoUploadMode?: VideoUploadMode;
+    videoFilenameCaption?: boolean;
     tempZipPath?: string;
     /** Set when another part of the app, such as Folder Sync, runs the transfer. */
     origin?: string;
@@ -69,6 +70,7 @@ export interface DesktopTransferRequest {
     promptToken?: number;
     protectMetadata?: boolean;
     videoUploadMode?: VideoUploadMode;
+    videoFilenameCaption?: boolean;
     tempZipPath?: string;
     totalBytes?: number;
     initialStatus?: TransferStatus;
@@ -106,6 +108,7 @@ export const transferJobToUploadItem = (job: DesktopTransferJob): QueueItem => (
         protectMetadata: job.protectMetadata,
     } : undefined,
     videoUploadMode: job.videoUploadMode,
+    videoFilenameCaption: job.videoFilenameCaption,
 });
 
 export const transferJobToDownloadItem = (job: DesktopTransferJob): DownloadItem => ({
@@ -139,6 +142,7 @@ export const uploadItemToTransferRequest = (item: QueueItem): DesktopTransferReq
     promptToken: item.protection?.promptToken,
     protectMetadata: item.protection?.protectMetadata,
     videoUploadMode: item.videoUploadMode,
+    videoFilenameCaption: item.videoFilenameCaption,
     tempZipPath: item.tempZipPath,
     totalBytes: item.totalBytes,
     initialStatus: normalizeInitialStatus(item.status),

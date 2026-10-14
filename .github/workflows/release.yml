@@ -46,7 +46,7 @@ jobs:
       - name: Install Linux desktop dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libssl-dev libdbus-1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libssl-dev libdbus-1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev ffmpeg
 
       - name: Install application dependencies
         working-directory: app
@@ -613,3 +613,25 @@ jobs:
           script: |
             const { publish } = require('./scripts/release-draft.cjs');
             await publish(github, context, process.env.release_id, context.ref.replace('refs/tags/', ''));
+
+  refresh-product-page:
+    name: Refresh product page after stable publication
+    needs: publish-release
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      # GITHUB_TOKEN publication does not emit a new release-triggered run.
+      # Dispatch main explicitly so Pages keeps its branch protection and
+      # mirrors the newly published stable desktop updater manifest.
+      - name: Request main-branch Pages deployment
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              ...context.repo,
+              workflow_id: 'pages.yml',
+              ref: 'main',
+            });

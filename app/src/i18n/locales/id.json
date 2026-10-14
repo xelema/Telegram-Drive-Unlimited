@@ -429,7 +429,9 @@
     "window_remove": "Hapus rentang waktu",
     "show_passphrase": "Tampilkan frasa sandi",
     "hide_passphrase": "Sembunyikan frasa sandi",
-    "current_vault_passphrase": "Frasa sandi brankas saat ini"
+    "current_vault_passphrase": "Frasa sandi brankas saat ini",
+    "videoFilenameCaption": "Nama berkas sebagai keterangan",
+    "videoFilenameCaptionDesc": "Tambahkan nama berkas asli ke pesan video. Unggahan terenkripsi menjaga nama tetap pribadi."
   },
   "files": {
     "download": "Unduh",
@@ -1455,7 +1457,9 @@
     "store": "Simpan",
     "plain_description": "Unggah biasa untuk kompatibilitas terbaik dan berbagi dengan mudah.",
     "protect": "Simpan dan lindungi",
-    "protect_description": "Enkripsi sebelum diunggah menggunakan pengaturan perlindungan Anda."
+    "protect_description": "Enkripsi sebelum diunggah menggunakan pengaturan perlindungan Anda.",
+    "reload_app": "Muat ulang aplikasi",
+    "load_failed": "Opsi unggahan tidak dapat dimuat. Memuat ulang membatalkan pilihan ini. Pilih file Anda lagi setelah aplikasi dimuat ulang."
   },
   "auth_copy": {
     "qr_title": "Masuk aman dengan QR",

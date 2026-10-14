@@ -6,9 +6,7 @@ on:
     paths:
       - "Docs/**"
       - ".github/workflows/pages.yml"
-  # Republish after a desktop release so the secondary updater manifest follows it.
-  release:
-    types: [published]
+  # Stable desktop publication explicitly dispatches this workflow on main.
   workflow_dispatch:
 
 permissions:
@@ -16,12 +14,13 @@ permissions:
   pages: write
   id-token: write
 
-concurrency:
-  group: pages
-  cancel-in-progress: true
-
 jobs:
   deploy:
+    # Match the protected environment and never deploy an older release tag.
+    if: github.ref == 'refs/heads/main'
+    concurrency:
+      group: pages
+      cancel-in-progress: true
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

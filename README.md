@@ -70,7 +70,7 @@ Organize, transfer, preview, stream, sync, and share the files you keep in Saved
 [![oosmetrics](https://api.oosmetrics.com/api/v1/badge/achievement/029fb97b-a54a-4566-a1eb-aa1a5039065d.svg)](https://oosmetrics.com/repo/caamer20/Telegram-Drive)
 [![oosmetrics](https://api.oosmetrics.com/api/v1/badge/achievement/2aa6f3f9-fd8a-4523-bd73-6625ee6a948a.svg)](https://oosmetrics.com/repo/caamer20/Telegram-Drive)
 
-[Download for desktop](https://github.com/caamer20/Telegram-Drive/releases/latest) · [Find the latest Android preview](https://github.com/caamer20/Telegram-Drive/releases) · [Product website](https://telegram-drive.com/) · [Changelog](CHANGELOG.md)
+[Download for desktop](https://github.com/caamer20/Telegram-Drive/releases/latest) · [Download Android 4.1.0](https://github.com/caamer20/Telegram-Drive/releases/tag/Androidv4.1.0) · [Product website](https://telegram-drive.com/) · [Changelog](CHANGELOG.md)
 
 </div>
 
@@ -90,7 +90,7 @@ Telegram Drive turns Telegram's familiar file storage into a focused, desktop-st
 - [Folder Sync](#folder-sync-desktop)
 - [Encryption](#optional-client-side-encryption-beta-format-frozen)
 - [Privacy and security](#privacy-and-security)
-- [Android and Google TV](#android-and-google-tv-signed-preview)
+- [Android and Google TV](#android-and-google-tv-signed-apk)
 - [Documentation](#documentation)
 - [Build from source](#build-from-source)
 
@@ -109,16 +109,16 @@ Telegram Drive turns Telegram's familiar file storage into a focused, desktop-st
 
 ## Download and install
 
-Desktop **4.0.0** and Android / Google TV **4.1.0 preview** use separate version lines. The desktop release does not update or include Android or Google TV. Downloads are listed below.
+Desktop **4.1.1** and Android / Google TV **4.1.0** use separate version lines. The desktop release does not update or include Android or Google TV. Downloads are listed below.
 
 | Platform | Download | Notes |
 | --- | --- | --- |
-| **Windows x64** | [Installer](https://github.com/caamer20/Telegram-Drive/releases/download/v4.0.0/Telegram.Drive_4.0.0_x64-setup.exe) | Includes the required Microsoft Visual C++ runtime setup |
-| **macOS — Apple Silicon** | [DMG](https://github.com/caamer20/Telegram-Drive/releases/download/v4.0.0/Telegram.Drive_4.0.0_aarch64.dmg) | For M-series Macs |
-| **macOS — Intel** | [DMG](https://github.com/caamer20/Telegram-Drive/releases/download/v4.0.0/Telegram.Drive_4.0.0_x64.dmg) | For Intel-based Macs |
-| **Linux x64** | [AppImage](https://github.com/caamer20/Telegram-Drive/releases/download/v4.0.0/Telegram.Drive_4.0.0_amd64.AppImage) · [Debian](https://github.com/caamer20/Telegram-Drive/releases/download/v4.0.0/Telegram.Drive_4.0.0_amd64.deb) · [RPM](https://github.com/caamer20/Telegram-Drive/releases/download/v4.0.0/Telegram.Drive-4.0.0-1.x86_64.rpm) · [Arch](https://github.com/caamer20/Telegram-Drive/releases/download/v4.0.0/telegram-drive-bin-4.0.0-1-x86_64.pkg.tar.zst) | Choose your distribution; Arch updates remain managed by pacman |
-| **Android phones and tablets** | [Signed universal APK](https://github.com/caamer20/Telegram-Drive/releases/download/Androidv4.1.0beta/Telegram-Drive-v4.1.0-android-universal.apk) | Android 7.0 or newer; supports ARM64, ARMv7, x86, and x86_64 |
-| **Android TV / Google TV** | [Signed TV-compatible APK](https://github.com/caamer20/Telegram-Drive/releases/download/Androidv4.1.0beta/Telegram-Drive-v4.1.0-android-universal.apk) | The same universal package includes the TV launcher and remote navigation |
+| **Windows x64** | [Installer](https://github.com/caamer20/Telegram-Drive/releases/download/v4.1.1/Telegram.Drive_4.1.1_x64-setup.exe) | Includes the required Microsoft Visual C++ runtime setup |
+| **macOS — Apple Silicon** | [DMG](https://github.com/caamer20/Telegram-Drive/releases/download/v4.1.1/Telegram.Drive_4.1.1_aarch64.dmg) | For M-series Macs |
+| **macOS — Intel** | [DMG](https://github.com/caamer20/Telegram-Drive/releases/download/v4.1.1/Telegram.Drive_4.1.1_x64.dmg) | For Intel-based Macs |
+| **Linux x64** | [AppImage](https://github.com/caamer20/Telegram-Drive/releases/download/v4.1.1/Telegram.Drive_4.1.1_amd64.AppImage) · [Debian](https://github.com/caamer20/Telegram-Drive/releases/download/v4.1.1/Telegram.Drive_4.1.1_amd64.deb) · [RPM](https://github.com/caamer20/Telegram-Drive/releases/download/v4.1.1/Telegram.Drive-4.1.1-1.x86_64.rpm) · [Arch](https://github.com/caamer20/Telegram-Drive/releases/download/v4.1.1/telegram-drive-bin-4.1.1-1-x86_64.pkg.tar.zst) | Choose your distribution; Arch updates remain managed by pacman |
+| **Android phones and tablets** | [Signed universal APK](https://github.com/caamer20/Telegram-Drive/releases/download/Androidv4.1.0/Telegram-Drive-v4.1.0-android-universal.apk) | Android 7.0 or newer; supports ARM64, ARMv7, x86, and x86_64 |
+| **Android TV / Google TV** | [Signed TV-compatible APK](https://github.com/caamer20/Telegram-Drive/releases/download/Androidv4.1.0/Telegram-Drive-v4.1.0-android-universal.apk) | The same universal package includes the TV launcher and remote navigation |
 
 The new desktop workspace adds collections, saved searches, a media timeline, Continue Watching, offline trip packs, transfer activity, storage controls, cleanup, and sync previews. Android 4.1.0 includes the latest native media and offline improvements and fixes the folder sidebar reported in [issue #212](https://github.com/caamer20/Telegram-Drive/issues/212). Install the signed APK over your existing app to preserve its data and activation.
 
@@ -180,6 +180,7 @@ The application caps a Telegram object at exactly **2,000,000,000 bytes**. Encry
 - A desktop image viewer with zoom, pan, fit-to-window, actual-size, wheel, double-click, and keyboard navigation controls.
 - Built-in PDF viewer and audio player.
 - Video playback with seeking, HLS/fMP4 streaming, remuxing/transcoding fallbacks, and cache recovery for supported plaintext media.
+- Desktop MP4/M4V/MOV uploads in Media mode attach a locally generated JPEG preview and video dimensions/duration. Windows uses its native media decoder first; macOS/Linux need FFmpeg. If decoding is unavailable, choose File mode. Original video bytes are preserved; immediate streaming requires early MP4 metadata.
 - Native Android playback with system media controls, resume, subtitle/audio-track selection, playback speed, and Picture-in-Picture where supported.
 - ZIP, RAR, and 7z archive browsing and extraction, including extraction back into Telegram Drive where the platform supports it.
 - Offline preview-cache controls for recently viewed standard files.
@@ -321,11 +322,11 @@ Every Telegram Drive feature is available to non-paying users. Supported desktop
 > [!WARNING]
 > Save the recovery code shown after activation. Payment alone does not bypass verification. Refunds are not automatic or guaranteed except where required by law. A refund, payment reversal, chargeback, or upheld dispute revokes the associated ad-free entitlement. Read the [Supporter Terms](SUPPORTER_TERMS.md) before paying.
 
-## Android and Google TV (signed preview)
+## Android and Google TV (signed APK)
 
-The Android build is currently distributed separately from the desktop release as a signed sideload preview. It is not available through Google Play.
+The Android build is currently distributed separately from the desktop release as a signed sideload release. It is not available through Google Play.
 
-1. Open the [Android / Android TV 4.1.0 release](https://github.com/caamer20/Telegram-Drive/releases/tag/Androidv4.1.0beta).
+1. Open the [Android / Android TV 4.1.0 release](https://github.com/caamer20/Telegram-Drive/releases/tag/Androidv4.1.0).
 2. Download the signed universal Android APK listed in that release.
 3. On Android, allow **Install unknown apps** for the browser or file manager you used.
 4. Open the APK and choose **Install**.

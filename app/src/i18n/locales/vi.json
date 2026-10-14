@@ -429,7 +429,9 @@
     "window_remove": "Xóa khoảng thời gian",
     "show_passphrase": "Hiện cụm mật khẩu",
     "hide_passphrase": "Ẩn cụm mật khẩu",
-    "current_vault_passphrase": "Mật khẩu kho hiện tại"
+    "current_vault_passphrase": "Mật khẩu kho hiện tại",
+    "videoFilenameCaption": "Tên tệp trong chú thích",
+    "videoFilenameCaptionDesc": "Thêm tên tệp gốc vào tin nhắn video. Nội dung tải lên được mã hóa sẽ giữ tên riêng tư."
   },
   "files": {
     "download": "Tải xuống",
@@ -1455,7 +1457,9 @@
     "store": "Lưu",
     "plain_description": "Tải lên thông thường để tương thích tối đa và chia sẻ dễ dàng.",
     "protect": "Lưu và bảo vệ",
-    "protect_description": "Mã hóa trước khi tải lên bằng thiết lập bảo vệ đã cấu hình."
+    "protect_description": "Mã hóa trước khi tải lên bằng thiết lập bảo vệ đã cấu hình.",
+    "reload_app": "Tải lại ứng dụng",
+    "load_failed": "Không thể tải các tùy chọn tải lên. Tải lại sẽ hủy lựa chọn này. Hãy chọn lại tệp sau khi ứng dụng tải xong."
   },
   "auth_copy": {
     "qr_title": "Đăng nhập an toàn ưu tiên QR",

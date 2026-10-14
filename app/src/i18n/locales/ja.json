@@ -429,7 +429,9 @@
     "window_remove": "時間帯を削除",
     "show_passphrase": "パスフレーズを表示",
     "hide_passphrase": "パスフレーズを隠す",
-    "current_vault_passphrase": "現在の保管庫パスフレーズ"
+    "current_vault_passphrase": "現在の保管庫パスフレーズ",
+    "videoFilenameCaption": "ファイル名のキャプション",
+    "videoFilenameCaptionDesc": "動画メッセージに元のファイル名を追加します。暗号化されたアップロードでは名前を公開しません。"
   },
   "files": {
     "download": "ダウンロード",
@@ -1455,7 +1457,9 @@
     "store": "保存",
     "plain_description": "互換性を最大限に保ち、簡単に共有するために通常のアップロードを行います。",
     "protect": "保存して保護",
-    "protect_description": "設定済みの保護設定でアップロード前に暗号化します。"
+    "protect_description": "設定済みの保護設定でアップロード前に暗号化します。",
+    "reload_app": "アプリを再読み込み",
+    "load_failed": "アップロード設定を読み込めませんでした。再読み込みすると選択が取り消されます。再読み込み後にファイルを選び直してください。"
   },
   "auth_copy": {
     "qr_title": "QRを優先する安全なサインイン",

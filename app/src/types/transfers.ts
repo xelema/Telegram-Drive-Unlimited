@@ -22,6 +22,8 @@ export interface QueueItem {
   protection?: UploadProtectionIntent;
   /** Snapshot of the video preference used when this upload was queued. */
   videoUploadMode?: VideoUploadMode;
+  /** Snapshot of whether plaintext video media should use a literal filename caption. */
+  videoFilenameCaption?: boolean;
 }
 
 export type DroppedPathRejectionReason = 'directory' | 'missing' | 'unreadable' | 'unsupported';

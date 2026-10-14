@@ -22,6 +22,7 @@ export interface Settings {
   maxConcurrentDownloads: number;
   zipFolders: boolean;
   videoUploadMode: VideoUploadMode;
+  videoFilenameCaption: boolean;
   language: LanguagePreference;
   crashReportingEnabled: boolean;
   crashReportingConsentSeen: boolean;

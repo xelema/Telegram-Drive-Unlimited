@@ -1,6 +1,7 @@
+import { SettingsRow, SettingsToggle } from './SettingsControls';
 import i18n from '../../i18n';
 import { useState } from 'react';
-import { Shield, Lock, Key, Clock, Download, Upload, Eye, EyeOff, FileDown, FileUp, ChevronDown, AlertTriangle, RefreshCw, Copy, HelpCircle } from 'lucide-react';
+import { Shield, Lock, Key, Clock, Download, Upload, Eye, EyeOff, FileDown, FileUp, AlertTriangle, RefreshCw, Copy, HelpCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import { useSettings } from '../../context/SettingsContext';
@@ -134,10 +135,10 @@ function ExportRecoverySection({ encryption }: { encryption: ReturnType<typeof u
                     </button>
                     {exportedBundle && (
                         <div className="p-3 bg-amber-500/5 border border-amber-500/10 rounded-lg space-y-2">
-                            <p className="text-[10px] text-amber-400/80 uppercase tracking-wider font-semibold">
+                            <p className="text-[10px] text-app-text uppercase tracking-wider font-semibold">
                                 {t('settings.bundle_exported')}
                             </p>
-                            <p className="text-[10px] text-red-400/70">
+                            <p className="text-[10px] text-app-text">
                                 {t('settings.bundle_warning')}
                             </p>
                             <button
@@ -290,7 +291,7 @@ function ImportRecoverySection({ encryption, vaultUnlocked }: { encryption: Retu
     );
 }
 
-export function EncryptionSettingsSection() {
+export function EncryptionSettingsSection({ vaultOnly = false }: { vaultOnly?: boolean } = {}) {
     const { t } = useTranslation();
     const { settings, updateSetting, updateSettings } = useSettings();
     const encryption = useEncryption();
@@ -309,7 +310,7 @@ export function EncryptionSettingsSection() {
     const vaultExists = encryption.vaultStatus?.exists ?? false;
     const vaultUnlocked = encryption.vaultStatus?.is_unlocked ?? false;
     const caps = encryption.capabilities;
-    const cryptoReady = encryption.capabilityState === 'ready' && caps?.core_available === true;
+    const cryptoReady = encryption.capabilityState === 'ready' && caps?.core_available === true && encryption.vaultStatus !== null;
     const recoveryAvailable = cryptoReady && caps?.features.recovery === true;
     // A drill counts only for the vault it was run against. Drills recorded
     // before the vault identity existed stay valid.
@@ -333,7 +334,7 @@ export function EncryptionSettingsSection() {
         setCreatingVault(true);
         try {
             await encryption.createVault(passphrase);
-            updateSettings({ vaultRecoveryDrillCompleted: false, vaultRecoveryDrillVaultId: '', encryptionDefaultMode: 'standard' });
+            updateSettings({ vaultRecoveryDrillCompleted: false, vaultRecoveryDrillVaultId: '', ...(vaultOnly ? {} : { encryptionDefaultMode: 'standard' as const }) });
             toast.success(t('recovery_copy.vault_created'));
             setPassphrase('');
             setConfirmPassphrase('');
@@ -389,24 +390,24 @@ export function EncryptionSettingsSection() {
     };
 
     return (
-        <div className="space-y-4 w-full">
+        <div className="encryption-settings space-y-4 w-full">
             <h3 className="text-xs font-semibold text-telegram-subtext uppercase tracking-wider flex items-center gap-2">
                 <Shield className="w-3.5 h-3.5" />
                 {t('settings.encryption_privacy')}
                 {vaultUnlocked && (
-                    <span className="ml-auto text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400">
+                    <span className="ml-auto text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-app-text">
                         {t('settings.vault_unlocked')}
                     </span>
                 )}
                 {vaultExists && !vaultUnlocked && (
-                    <span className="ml-auto text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-amber-500/10 text-amber-400">
+                    <span className="ml-auto text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-amber-500/10 text-app-text">
                         {t('settings.vault_locked')}
                     </span>
                 )}
             </h3>
 
             <div className="p-3 rounded-lg border border-amber-500/20 bg-amber-500/5 space-y-1.5" role="note">
-                <p className="text-xs font-semibold text-amber-500 flex items-center gap-1.5">
+                <p className="text-xs font-semibold text-app-text flex items-center gap-1.5">
                     <AlertTriangle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
                     {t('settings.encryption_disclaimer_title')}
                 </p>
@@ -416,8 +417,8 @@ export function EncryptionSettingsSection() {
             </div>
 
             <section className="grid gap-2 sm:grid-cols-3" aria-label={i18n.t('ui_copy.security_center')}>
-                <div className="rounded-lg border border-app-border-subtle bg-app-surface-sunken/25 p-3"><span className="text-[10px] font-semibold uppercase tracking-wider text-app-text-tertiary">{i18n.t('ui_copy.vault')}</span><p className={`mt-1 text-xs font-medium ${vaultUnlocked ? 'text-app-success' : vaultExists ? 'text-app-warning' : 'text-app-text-secondary'}`}>{vaultUnlocked ? i18n.t('ui_copy.unlocked_session') : vaultExists ? i18n.t('settings.vault_locked') : i18n.t('ui_copy.not_configured')}</p></div>
-                <div className="rounded-lg border border-app-border-subtle bg-app-surface-sunken/25 p-3"><span className="text-[10px] font-semibold uppercase tracking-wider text-app-text-tertiary">{i18n.t('ui_copy.recovery')}</span><p className={`mt-1 text-xs font-medium ${drillCompleted ? 'text-app-success' : 'text-app-warning'}`}>{drillCompleted ? i18n.t('ui_copy.recovery_verified') : i18n.t('ui_copy.action_required')}</p></div>
+                <div className="rounded-lg border border-app-border-subtle bg-app-surface-sunken/25 p-3"><span className="text-[10px] font-semibold uppercase tracking-wider text-app-text-tertiary">{i18n.t('ui_copy.vault')}</span><p className={`mt-1 text-xs font-medium ${vaultUnlocked || vaultExists ? 'text-app-text' : 'text-app-text-secondary'}`}>{vaultUnlocked ? i18n.t('ui_copy.unlocked_session') : vaultExists ? i18n.t('settings.vault_locked') : i18n.t('ui_copy.not_configured')}</p></div>
+                <div className="rounded-lg border border-app-border-subtle bg-app-surface-sunken/25 p-3"><span className="text-[10px] font-semibold uppercase tracking-wider text-app-text-tertiary">{i18n.t('ui_copy.recovery')}</span><p className="mt-1 text-xs font-medium text-app-text">{drillCompleted ? i18n.t('ui_copy.recovery_verified') : i18n.t('ui_copy.action_required')}</p></div>
                 <button type="button" onClick={() => setShowTransparency(true)} className="rounded-lg border border-app-border-subtle bg-app-surface-sunken/25 p-3 text-start hover:border-app-accent/30"><span className="text-[10px] font-semibold uppercase tracking-wider text-app-text-tertiary">{i18n.t("workspace.protection")}</span><p className="mt-1 flex items-center gap-1 text-xs font-medium text-app-accent">{i18n.t('ui_copy.how_it_works')} <HelpCircle className="h-3.5 w-3.5" /></p></button>
             </section>
 
@@ -471,129 +472,38 @@ export function EncryptionSettingsSection() {
                 </div>
             )}
 
-            {/* Default Upload Protection */}
-            {cryptoReady && (
-                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                    <div className="flex items-center gap-2">
-                        <Upload className="w-4 h-4 text-telegram-subtext" />
-                        <div>
-                            <p className="text-sm text-telegram-text font-medium">{t('settings.default_upload_protection')}</p>
-                            <p className="text-xs text-telegram-subtext">{t('settings.default_upload_protection_desc')}</p>
-                        </div>
-                    </div>
-                    <div className="relative">
-                        <select
-                            aria-label={t('settings.default_upload_protection')}
-                            value={settings.encryptionDefaultMode}
-                            onChange={e => updateSetting('encryptionDefaultMode', e.target.value as 'standard' | 'vault' | 'passphrase' | 'vault_and_passphrase')}
-                            className="appearance-none bg-telegram-bg border border-telegram-border rounded-md pl-3 pr-8 py-1.5 text-sm text-telegram-text focus:outline-none focus:border-telegram-primary/50 transition cursor-pointer"
-                        >
+            {encryption.isLoaded && encryption.capabilityState === 'ready' && encryption.vaultStatus === null && (
+                <div role="alert" className="rounded-lg border border-app-warning/25 bg-app-warning/5 p-3 text-xs text-app-text-secondary">
+                    <p>{t('settings.encryption_backend_error')}</p>
+                    <button type="button" onClick={() => void encryption.refreshVaultStatus()} className="quiet-control mt-2 min-h-11 px-3 text-app-text">{t('settings.retry_encryption_check')}</button>
+                </div>
+            )}
+
+            {cryptoReady && !vaultOnly && (
+                <section className="settings-group" aria-label={t('settings.encryption_privacy')}>
+                    <SettingsRow icon={<Upload className="h-4 w-4" />} title={t('settings.default_upload_protection')} description={t('settings.default_upload_protection_desc')} control={
+                        <select aria-label={t('settings.default_upload_protection')} value={settings.encryptionDefaultMode} onChange={event => updateSetting('encryptionDefaultMode', event.target.value as 'standard' | 'vault' | 'passphrase' | 'vault_and_passphrase')} className="settings-select">
                             <option value="standard">{t('settings.encryption_mode_standard')}</option>
                             <option value="vault">{t('settings.encryption_mode_vault')}</option>
                             <option value="passphrase">{t('settings.encryption_mode_passphrase')}</option>
                             <option value="vault_and_passphrase">{t('settings.encryption_mode_vault_and_passphrase')}</option>
                         </select>
-                        <ChevronDown className="w-4 h-4 text-telegram-subtext absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-                    </div>
-                </div>
-            )}
-
-            {/* Protect Metadata */}
-            {cryptoReady && (
-                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                    <div className="flex items-center gap-2">
-                        <EyeOff className="w-4 h-4 text-telegram-subtext" />
-                        <div>
-                            <p className="text-sm text-telegram-text font-medium">{t('settings.protect_metadata')}</p>
-                            <p className="text-xs text-telegram-subtext">{t('settings.protect_metadata_desc')}</p>
-                        </div>
-                    </div>
-                    <button
-                        type="button" role="switch" aria-checked={settings.encryptionProtectMetadata} aria-label={t('settings.protect_metadata')}
-                        onClick={() => updateSetting('encryptionProtectMetadata', !settings.encryptionProtectMetadata)}
-                        className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${
-                            settings.encryptionProtectMetadata ? 'bg-telegram-primary' : 'bg-telegram-border'
-                        }`}
-                    >
-                        <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${
-                            settings.encryptionProtectMetadata ? 'translate-x-5' : 'translate-x-0'
-                        }`} />
-                    </button>
-                </div>
-            )}
-
-            {/* Auto-lock */}
-            {cryptoReady && vaultExists && (
-                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                    <div className="flex items-center gap-2">
-                        <Clock className="w-4 h-4 text-telegram-subtext" />
-                        <div>
-                            <p className="text-sm text-telegram-text font-medium">{t('settings.auto_lock_vault')}</p>
-                            <p className="text-xs text-telegram-subtext">{t('settings.auto_lock_vault_desc')}</p>
-                        </div>
-                    </div>
-                    <div className="relative">
-                        <select
-                            aria-label={t('settings.auto_lock_vault')}
-                            value={settings.encryptionAutoLockMinutes}
-                            onChange={e => updateSetting('encryptionAutoLockMinutes', parseInt(e.target.value))}
-                            className="appearance-none bg-telegram-bg border border-telegram-border rounded-md pl-3 pr-8 py-1.5 text-sm text-telegram-text focus:outline-none focus:border-telegram-primary/50 transition cursor-pointer"
-                        >
+                    } />
+                    <SettingsRow icon={<EyeOff className="h-4 w-4" />} title={t('settings.protect_metadata')} description={t('settings.protect_metadata_desc')} control={<SettingsToggle checked={settings.encryptionProtectMetadata} label={t('settings.protect_metadata')} onChange={() => updateSetting('encryptionProtectMetadata', !settings.encryptionProtectMetadata)} />} />
+                    {vaultExists && <SettingsRow icon={<Clock className="h-4 w-4" />} title={t('settings.auto_lock_vault')} description={t('settings.auto_lock_vault_desc')} control={
+                        <select aria-label={t('settings.auto_lock_vault')} value={settings.encryptionAutoLockMinutes} onChange={event => updateSetting('encryptionAutoLockMinutes', Number(event.target.value))} className="settings-select">
                             <option value={0}>{t('settings.never')}</option>
-                            {[1, 5, 15, 30, 60].map(minutes => <option key={minutes} value={minutes}>{new Intl.NumberFormat(i18n.language, { style: 'unit', unit: 'minute', unitDisplay: 'short' }).format(minutes)}</option>)}
+                            {[1, 5, 15, 30, 60].map(value => <option key={value} value={value}>{new Intl.NumberFormat(i18n.language, { style: 'unit', unit: 'minute', unitDisplay: 'short' }).format(value)}</option>)}
                         </select>
-                        <ChevronDown className="w-4 h-4 text-telegram-subtext absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-                    </div>
-                </div>
-            )}
-
-            {/* Lock on Sleep */}
-            {cryptoReady && vaultExists && (
-                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                    <div className="flex items-center gap-2">
-                        <Lock className="w-4 h-4 text-telegram-subtext" />
-                        <div>
-                            <p className="text-sm text-telegram-text font-medium">{t('settings.lock_on_sleep')}</p>
-                            <p className="text-xs text-telegram-subtext">{t('settings.lock_on_sleep_desc')}</p>
-                        </div>
-                    </div>
-                    <button
-                        type="button" role="switch" aria-checked={settings.encryptionLockOnSleep} aria-label={t('settings.lock_on_sleep')}
-                        onClick={() => updateSetting('encryptionLockOnSleep', !settings.encryptionLockOnSleep)}
-                        className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${
-                            settings.encryptionLockOnSleep ? 'bg-telegram-primary' : 'bg-telegram-border'
-                        }`}
-                    >
-                        <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${
-                            settings.encryptionLockOnSleep ? 'translate-x-5' : 'translate-x-0'
-                        }`} />
-                    </button>
-                </div>
-            )}
-
-            {/* Temp Policy */}
-            {cryptoReady && (
-                <div className="flex items-center justify-between p-3 rounded-lg bg-telegram-hover/50">
-                    <div className="flex items-center gap-2">
-                        <Download className="w-4 h-4 text-telegram-subtext" />
-                        <div>
-                            <p className="text-sm text-telegram-text font-medium">{t('settings.temp_plaintext_policy')}</p>
-                            <p className="text-xs text-telegram-subtext">{t('settings.temp_plaintext_policy_desc')}</p>
-                        </div>
-                    </div>
-                    <div className="relative">
-                        <select
-                            aria-label={t('settings.temp_plaintext_policy')}
-                            value={settings.encryptionTempPolicy}
-                            onChange={e => updateSetting('encryptionTempPolicy', e.target.value as 'balanced' | 'strict')}
-                            className="appearance-none bg-telegram-bg border border-telegram-border rounded-md pl-3 pr-8 py-1.5 text-sm text-telegram-text focus:outline-none focus:border-telegram-primary/50 transition cursor-pointer"
-                        >
+                    } />}
+                    {vaultExists && <SettingsRow icon={<Lock className="h-4 w-4" />} title={t('settings.lock_on_sleep')} description={t('settings.lock_on_sleep_desc')} control={<SettingsToggle checked={settings.encryptionLockOnSleep} label={t('settings.lock_on_sleep')} onChange={() => updateSetting('encryptionLockOnSleep', !settings.encryptionLockOnSleep)} />} />}
+                    <SettingsRow icon={<Download className="h-4 w-4" />} title={t('settings.temp_plaintext_policy')} description={t('settings.temp_plaintext_policy_desc')} control={
+                        <select aria-label={t('settings.temp_plaintext_policy')} value={settings.encryptionTempPolicy} onChange={event => updateSetting('encryptionTempPolicy', event.target.value as 'balanced' | 'strict')} className="settings-select">
                             <option value="balanced">{t('settings.policy_balanced')}</option>
                             <option value="strict">{t('settings.policy_strict')}</option>
                         </select>
-                        <ChevronDown className="w-4 h-4 text-telegram-subtext absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-                    </div>
-                </div>
+                    } />
+                </section>
             )}
 
             {/* Vault Management */}
@@ -621,7 +531,7 @@ export function EncryptionSettingsSection() {
                                 <button
                                     type="button" aria-label={t(showPassphrase ? 'settings.hide_passphrase' : 'settings.show_passphrase')} aria-pressed={showPassphrase}
                                     onClick={() => setShowPassphrase(!showPassphrase)}
-                                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-telegram-subtext hover:text-telegram-text transition"
+                                    className="absolute right-0 top-1/2 flex min-h-11 min-w-11 -translate-y-1/2 items-center justify-center text-telegram-subtext hover:text-telegram-text transition"
                                 >
                                     {showPassphrase ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                                 </button>
@@ -647,7 +557,7 @@ export function EncryptionSettingsSection() {
                             <button
                                 onClick={handleCreateVault}
                                 disabled={creatingVault || passphrase.length < 8 || !keyLossAcknowledged}
-                                className="w-full py-2 rounded-lg text-sm font-medium bg-telegram-primary text-app-accent-contrast hover:bg-telegram-primary/90 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                                className="w-full py-2 rounded-lg text-sm font-medium bg-telegram-primary text-app-accent-contrast hover:bg-app-accent-hover transition disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                                 {creatingVault ? t('settings.creating_vault') : t('settings.create_vault')}
                             </button>
@@ -656,12 +566,12 @@ export function EncryptionSettingsSection() {
                     ) : vaultUnlocked ? (
                         /* Unlocked Vault */
                         <div className="space-y-3">
-                            <p className="text-xs text-emerald-400">
+                            <p className="text-xs text-app-text">
                                 {t('settings.vault_is_unlocked')}
                             </p>
                             <button
                                 onClick={handleLock}
-                                className="w-full py-2 rounded-lg text-sm font-medium bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 transition border border-amber-500/20"
+                                className="w-full py-2 rounded-lg text-sm font-medium bg-amber-500/10 text-app-text hover:bg-amber-500/20 transition border border-amber-500/20"
                             >
                                 <Lock className="w-4 h-4 inline mr-1.5" />
                                 {t('settings.lock_vault_now')}
@@ -717,7 +627,7 @@ export function EncryptionSettingsSection() {
                     ) : (
                         /* Locked Vault */
                         <div className="space-y-3">
-                            <p className="text-xs text-amber-400/70">
+                            <p className="text-xs text-app-text/70">
                                 {t('settings.vault_is_locked')}
                             </p>
                             <div className="relative">
@@ -732,7 +642,7 @@ export function EncryptionSettingsSection() {
                                 <button
                                     type="button" aria-label={t(showPassphrase ? 'settings.hide_passphrase' : 'settings.show_passphrase')} aria-pressed={showPassphrase}
                                     onClick={() => setShowPassphrase(!showPassphrase)}
-                                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-telegram-subtext hover:text-telegram-text transition"
+                                    className="absolute right-0 top-1/2 flex min-h-11 min-w-11 -translate-y-1/2 items-center justify-center text-telegram-subtext hover:text-telegram-text transition"
                                 >
                                     {showPassphrase ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                                 </button>
@@ -740,7 +650,7 @@ export function EncryptionSettingsSection() {
                             <button
                                 onClick={handleUnlock}
                                 disabled={unlocking || !passphrase}
-                                className="w-full py-2 rounded-lg text-sm font-medium bg-telegram-primary text-app-accent-contrast hover:bg-telegram-primary/90 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                                className="w-full py-2 rounded-lg text-sm font-medium bg-telegram-primary text-app-accent-contrast hover:bg-app-accent-hover transition disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                                 {unlocking ? t('settings.unlocking') : t('settings.unlock_vault')}
                             </button>

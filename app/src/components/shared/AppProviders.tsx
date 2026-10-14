@@ -41,11 +41,11 @@ export function AppProviders({ children }: AppProvidersProps) {
             <SettingsProvider>
               <SupporterProvider>
                 <SyncProvider>
-                  <UploadChoiceProvider>
-                    <EncryptionProvider>
+                  <EncryptionProvider>
+                    <UploadChoiceProvider>
                       <UpdateProvider>{children}</UpdateProvider>
-                    </EncryptionProvider>
-                  </UploadChoiceProvider>
+                    </UploadChoiceProvider>
+                  </EncryptionProvider>
                 </SyncProvider>
               </SupporterProvider>
             </SettingsProvider>

@@ -430,7 +430,9 @@
     "show_passphrase": "Mostrar frase secreta",
     "hide_passphrase": "Ocultar frase secreta",
     "encryption_experimental_inventory_many": "{{count}} arquivos criptografados experimentais estão indexados localmente. Seus textos cifrados foram preservados.",
-    "current_vault_passphrase": "Frase-senha atual do cofre"
+    "current_vault_passphrase": "Frase-senha atual do cofre",
+    "videoFilenameCaption": "Nomes de arquivo nas legendas",
+    "videoFilenameCaptionDesc": "Adicione o nome original às mensagens de vídeo. Envios criptografados mantêm o nome privado."
   },
   "files": {
     "download": "Baixar",
@@ -1462,7 +1464,9 @@
     "store": "Armazenar",
     "plain_description": "Envie normalmente para máxima compatibilidade e compartilhamento fácil.",
     "protect": "Armazenar e proteger",
-    "protect_description": "Criptografe antes do envio usando suas configurações de proteção."
+    "protect_description": "Criptografe antes do envio usando suas configurações de proteção.",
+    "reload_app": "Recarregar aplicativo",
+    "load_failed": "Não foi possível carregar as opções de envio. Recarregar cancela esta seleção. Selecione seus arquivos novamente depois."
   },
   "auth_copy": {
     "qr_title": "Entrada segura por QR",

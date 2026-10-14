@@ -429,7 +429,9 @@
     "window_remove": "Zaman aralığını kaldır",
     "show_passphrase": "Parola ifadesini göster",
     "hide_passphrase": "Parola ifadesini gizle",
-    "current_vault_passphrase": "Geçerli kasa parolası"
+    "current_vault_passphrase": "Geçerli kasa parolası",
+    "videoFilenameCaption": "Dosya adı açıklamaları",
+    "videoFilenameCaptionDesc": "Video mesajlarına özgün dosya adını ekleyin. Şifreli yüklemelerde ad gizli kalır."
   },
   "files": {
     "download": "İndir",
@@ -1455,7 +1457,9 @@
     "store": "Sakla",
     "plain_description": "En yüksek uyumluluk ve kolay paylaşım için normal yükleyin.",
     "protect": "Sakla ve koru",
-    "protect_description": "Yapılandırdığınız koruma ayarlarıyla yüklemeden önce şifreleyin."
+    "protect_description": "Yapılandırdığınız koruma ayarlarıyla yüklemeden önce şifreleyin.",
+    "reload_app": "Uygulamayı yeniden yükle",
+    "load_failed": "Yükleme seçenekleri açılamadı. Yeniden yüklemek bu seçimi iptal eder. Uygulama yüklendikten sonra dosyaları yeniden seçin."
   },
   "auth_copy": {
     "qr_title": "QR ile güvenli giriş",

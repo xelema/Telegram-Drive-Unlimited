@@ -430,7 +430,9 @@
     "show_passphrase": "Mostrar frase de contraseña",
     "hide_passphrase": "Ocultar frase de contraseña",
     "encryption_experimental_inventory_many": "Hay {{count}} archivos cifrados experimentales indexados localmente. Sus textos cifrados se han conservado.",
-    "current_vault_passphrase": "Contraseña actual de la bóveda"
+    "current_vault_passphrase": "Contraseña actual de la bóveda",
+    "videoFilenameCaption": "Nombres de archivo como subtítulos",
+    "videoFilenameCaptionDesc": "Añade el nombre original a los mensajes de vídeo. Las subidas cifradas lo mantienen privado."
   },
   "files": {
     "download": "Descargar",
@@ -1462,7 +1464,9 @@
     "store": "Almacenar",
     "plain_description": "Sube normalmente para la máxima compatibilidad y facilidad al compartir.",
     "protect": "Almacenar y proteger",
-    "protect_description": "Cifra antes de subir con los ajustes de protección que has configurado."
+    "protect_description": "Cifra antes de subir con los ajustes de protección que has configurado.",
+    "reload_app": "Recargar aplicación",
+    "load_failed": "No se pudieron cargar las opciones de subida. Al recargar se cancela esta selección. Vuelve a seleccionar tus archivos después."
   },
   "auth_copy": {
     "qr_title": "Inicio de sesión seguro con QR",

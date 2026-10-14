@@ -429,7 +429,9 @@
     "window_remove": "移除時段",
     "show_passphrase": "顯示密碼片語",
     "hide_passphrase": "隱藏密碼片語",
-    "current_vault_passphrase": "目前保險庫通行片語"
+    "current_vault_passphrase": "目前保險庫通行片語",
+    "videoFilenameCaption": "檔案名稱說明",
+    "videoFilenameCaptionDesc": "將原始檔案名稱加入影片訊息說明中。加密上傳會保護檔案名稱隱私。"
   },
   "files": {
     "download": "下載",
@@ -1455,7 +1457,9 @@
     "store": "儲存",
     "plain_description": "正常上傳，取得最佳相容性和方便的分享。",
     "protect": "儲存並保護",
-    "protect_description": "上傳前使用已設定的保護選項進行加密。"
+    "protect_description": "上傳前使用已設定的保護選項進行加密。",
+    "reload_app": "重新載入應用程式",
+    "load_failed": "無法載入上傳選項。重新載入會取消此次選取。應用程式重新載入後，請再次選取檔案。"
   },
   "auth_copy": {
     "qr_title": "優先使用 QR 安全登入",

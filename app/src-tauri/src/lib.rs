@@ -10,6 +10,8 @@ pub mod desktop_power;
 pub mod desktop_preferences;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod desktop_tray;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub(crate) mod desktop_video_upload;
 pub mod installation;
 pub mod linux_startup;
 pub mod models;

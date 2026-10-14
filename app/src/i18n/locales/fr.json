@@ -430,7 +430,9 @@
     "show_passphrase": "Afficher la phrase secrète",
     "hide_passphrase": "Masquer la phrase secrète",
     "encryption_experimental_inventory_many": "{{count}} fichiers chiffrés expérimentaux sont indexés localement. Leurs textes chiffrés ont été conservés.",
-    "current_vault_passphrase": "Phrase secrète actuelle du coffre"
+    "current_vault_passphrase": "Phrase secrète actuelle du coffre",
+    "videoFilenameCaption": "Noms de fichier en légende",
+    "videoFilenameCaptionDesc": "Ajoutez le nom original aux messages vidéo. Les envois chiffrés gardent ce nom privé."
   },
   "files": {
     "download": "Télécharger",
@@ -1462,7 +1464,9 @@
     "store": "Conserver",
     "plain_description": "Envoyez normalement pour une compatibilité maximale et un partage facile.",
     "protect": "Conserver et protéger",
-    "protect_description": "Chiffrez avant l’envoi avec vos paramètres de protection configurés."
+    "protect_description": "Chiffrez avant l’envoi avec vos paramètres de protection configurés.",
+    "reload_app": "Recharger l’application",
+    "load_failed": "Les options d’envoi n’ont pas pu être chargées. Le rechargement annule cette sélection. Sélectionnez à nouveau vos fichiers ensuite."
   },
   "auth_copy": {
     "qr_title": "Connexion sécurisée par QR",
