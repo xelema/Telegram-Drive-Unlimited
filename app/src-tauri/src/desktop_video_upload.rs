@@ -327,17 +327,15 @@ fn metadata_atoms(
         .len();
     let mut offset = 0u64;
     let mut metadata = Vec::new();
-    let mut first_moov = None;
+    let mut previous_atom_start = 0u64;
+    let mut streaming_decision = None;
     for _ in 0..65_536 {
         stopped(stop)?;
         if Instant::now() >= deadline {
             return Err("Video metadata inspection timed out".into());
         }
         if offset == length {
-            return Ok((
-                metadata,
-                first_moov.is_some_and(|offset| offset < 128 * 1024),
-            ));
+            return Ok((metadata, streaming_decision.unwrap_or(false)));
         }
         if length.saturating_sub(offset) < 8 {
             return Err("The video contains a truncated container box".into());
@@ -369,12 +367,19 @@ fn metadata_atoms(
         if size < header_size || end <= offset {
             return Err("The video contains an invalid container box".into());
         }
+        // Telegram Desktop 7.3.1 checks the previous atom's start, not the
+        // current moov offset: a large mdat may precede an eligible moov.
+        // Latch that decision while still validating the complete container.
+        if streaming_decision.is_none() {
+            if previous_atom_start >= 128 * 1024 {
+                streaming_decision = Some(false);
+            } else if &header[4..] == b"moov" {
+                streaming_decision = Some(true);
+            }
+        }
         if &header[4..] == b"moov" || &header[4..] == b"ftyp" {
             if metadata.len() as u64 + size > METADATA_LIMIT {
                 return Err("The video metadata exceeds the safe inspection limit".into());
-            }
-            if &header[4..] == b"moov" {
-                first_moov.get_or_insert(offset);
             }
             file.seek(SeekFrom::Start(offset))
                 .map_err(|_| "Could not inspect the video layout".to_string())?;
@@ -394,6 +399,7 @@ fn metadata_atoms(
                 metadata[start..start + 4].copy_from_slice(&(size as u32).to_be_bytes());
             }
         }
+        previous_atom_start = offset;
         offset = end;
     }
     Err("The video contains too many container boxes".into())

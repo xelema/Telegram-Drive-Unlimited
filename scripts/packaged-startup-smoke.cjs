@@ -108,10 +108,12 @@ async function main() {
       if (!exited) throw new Error('Smoke process could not be reaped');
       // Windows/macOS known-folder APIs may choose locations outside the temporary
       // HOME. Remove only the exact unique profile paths returned by readiness.
+      // A released WebView profile can stay briefly locked after its Job is empty.
+      // Retry transient filesystem errors; persistent locks still fail this smoke.
       if (ready) for (const name of ['app_data_dir', 'app_cache_dir', 'app_config_dir', 'app_local_data_dir']) {
-        const directory = ready[name]; if (path.basename(directory) === identifier) fs.rmSync(directory, { recursive: true, force: true });
+        const directory = ready[name]; if (path.basename(directory) === identifier) fs.rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
       }
-      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     } catch (cleanupError) {
       if (!startupError) throw cleanupError;
       console.error(`[packaged-smoke] Cleanup also failed: ${cleanupError.message}`);

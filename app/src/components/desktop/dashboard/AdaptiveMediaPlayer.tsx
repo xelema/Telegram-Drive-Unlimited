@@ -954,7 +954,7 @@ export function AdaptiveMediaPlayer({
             className={`viewer-overlay fixed inset-0 z-[200] animate-in fade-in duration-150 ${isFullscreen ? 'p-0' : 'flex items-center justify-center p-4'}`}
             onClick={onClose}
         >
-            <div ref={containerRef} className={`relative ${isFullscreen ? 'fixed inset-0 w-screen h-screen max-w-none' : 'w-full max-w-6xl flex flex-col items-center'}`} onClick={e => e.stopPropagation()}>
+            <div ref={containerRef} className={`relative ${isFullscreen ? 'fixed inset-0 w-screen h-screen max-w-none' : 'media-viewer-shell w-full max-w-6xl flex flex-col items-center'}`} onClick={e => e.stopPropagation()}>
                 {/* Nav buttons */}
                 <button onClick={onPrev} className={`viewer-navigation absolute start-2 top-1/2 z-10 -translate-y-1/2 ${isFullscreen ? 'start-4' : ''}`} title={i18n.t('viewer.previous_shortcut')} aria-label={i18n.t('viewer.previous_file')}>
                     <ChevronLeft className="h-5 w-5 rtl:rotate-180" />
@@ -962,7 +962,7 @@ export function AdaptiveMediaPlayer({
                 <button onClick={onNext} className={`viewer-navigation absolute end-2 top-1/2 z-10 -translate-y-1/2 ${isFullscreen ? 'end-4' : ''}`} title={i18n.t('viewer.next_shortcut')} aria-label={i18n.t('viewer.next_file')}>
                     <ChevronRight className="h-5 w-5 rtl:rotate-180" />
                 </button>
-                <div className={`viewer-toolbar absolute z-30 ${isFullscreen ? 'end-4 top-4' : '-top-10 end-0'}`}>
+                <div className={`viewer-toolbar z-30 ${isFullscreen ? 'absolute end-4 top-4' : 'relative mb-2 self-end shrink-0'}`}>
                     <button
                         onClick={toggleFullscreen}
                         className="viewer-control"
@@ -982,7 +982,7 @@ export function AdaptiveMediaPlayer({
                 </div>
 
                 {/* Video container */}
-                <div className={`relative flex items-center justify-center overflow-hidden bg-black ${isFullscreen ? 'h-full w-full rounded-none shadow-none' : 'viewer-panel aspect-video w-full'}`}>
+                <div className={`relative flex items-center justify-center overflow-hidden bg-black ${isFullscreen ? 'h-full w-full rounded-none shadow-none' : 'viewer-panel media-viewer-stage aspect-video w-full'}`}>
                     {/* fMP4 remux loading overlay */}
                     {fmp4Remuxing && !useFallback && !playbackConfirmed && (
                         <div className="flex flex-col items-center gap-4 text-white absolute inset-0 bg-black/80 z-10">
@@ -1105,81 +1105,82 @@ export function AdaptiveMediaPlayer({
                             className={`w-full h-full object-contain ${(isMseLoading || msePhase === 'error') ? 'opacity-0' : 'opacity-100'}`}
                         />
                     )}
-                </div>
 
-                {/* Quality overlay badge on video */}
-                {(displayPhase === 'playing' || displayPhase === 'ready') && (
-                    <div className={`absolute ${isFullscreen ? 'bottom-16 left-4' : 'top-3 right-3'} z-20 flex items-center gap-2`}>
-                        {/* Quality / mode badge */}
-                        <div className="px-2.5 py-1 rounded-full bg-black/60 backdrop-blur-sm border border-white/10 text-xs font-medium text-white/90 shadow-lg pointer-events-none">
-                            {isHlsMode && hlsQuality ? qualityLabel(hlsQuality, i18n.t('settings.original')) : `${qualityLabel(effectiveQuality, i18n.t('settings.original'))}${measuredKbps > 0 && effectiveQuality !== 'original' ? ` · ${(measuredKbps / 1000).toFixed(0)}k` : ''}`}
-                        </div>
-                        {/* Resolution badge */}
-                        {(sourceResolution || playingResolution) && (
-                            <div className="px-2.5 py-1 rounded-full bg-black/60 backdrop-blur-sm border border-white/10 text-[10px] font-medium text-white/70 shadow-lg pointer-events-none flex items-center gap-1.5">
-                                {sourceResolution && (
-                                    <span>{i18n.t('viewer.source')} {sourceResolution.w}×{sourceResolution.h}</span>
-                                )}
-                                {playingResolution && (!sourceResolution || playingResolution.w !== sourceResolution.w || playingResolution.h !== sourceResolution.h) && (
-                                    <span>{i18n.t('viewer.playing')} {playingResolution.w}×{playingResolution.h}</span>
-                                )}
+                    {/* Quality and diagnostics stay anchored to the video stage. */}
+                    {(displayPhase === 'playing' || displayPhase === 'ready') && (
+                        <div className={`absolute ${isFullscreen ? 'bottom-16 left-4' : 'top-3 end-3'} z-20 flex max-w-[calc(100%_-_1.5rem)] flex-wrap items-center justify-end gap-2`}>
+                            {/* Quality / mode badge */}
+                            <div className="px-2.5 py-1 rounded-full bg-black/60 backdrop-blur-sm border border-white/10 text-xs font-medium text-white/90 shadow-lg pointer-events-none">
+                                {isHlsMode && hlsQuality ? qualityLabel(hlsQuality, i18n.t('settings.original')) : `${qualityLabel(effectiveQuality, i18n.t('settings.original'))}${measuredKbps > 0 && effectiveQuality !== 'original' ? ` · ${(measuredKbps / 1000).toFixed(0)}k` : ''}`}
                             </div>
-                        )}
-                    </div>
-                )}
-
-                {/* Debug overlay (lower-left, toggle with D key) */}
-                {debugOverlay && (
-                    <div className={`absolute z-40 pointer-events-none ${isFullscreen ? 'bottom-20 left-4' : 'bottom-4 left-4'}`}>
-                        <div className="px-3 py-2 rounded-lg bg-black/80 backdrop-blur-sm border border-white/10 text-[10px] font-mono text-white/80 shadow-xl space-y-1">
-                            <div className="flex items-center gap-2 text-[11px] font-semibold text-white/60 mb-0.5">
-                                <Activity className="w-3 h-3" />
-                                {i18n.t('viewer.debug')}
-                            </div>
-                            <div className="flex justify-between gap-4">
-                                <span className="text-white/40">{i18n.t("playback.speed")}</span>
-                                <span>{isHlsMode ? '—' : measuredKbps > 999 ? `${(measuredKbps / 1000).toFixed(1)} Mbps` : `${Math.round(measuredKbps)} Kbps`}</span>
-                            </div>
-                            <div className="flex justify-between gap-4">
-                                <span className="text-white/40">{i18n.t('viewer.cap')}</span>
-                                <span>{effectiveQuality === 'original' ? i18n.t("settings.unlimited") : `${qualityLabel(effectiveQuality, i18n.t('settings.original'))}${!transcodeCapabilities?.available ? ' (throttle)' : ''}`}</span>
-                            </div>
-                            <div className="flex justify-between gap-4">
-                                <span className="text-white/40">{i18n.t('viewer.buffered')}</span>
-                                <span>{debugBufferedSecs.toFixed(1)}s</span>
-                            </div>
-                            <div className="flex justify-between gap-4">
-                                <span className="text-white/40">{i18n.t('viewer.mode')}</span>
-                                <span className={isHlsMode ? 'text-emerald-400' : effectiveQuality !== 'original' && !transcodeCapabilities?.available ? 'text-amber-400' : 'text-white/60'}>
-                                    {isHlsMode ? 'HLS' : effectiveQuality !== 'original' && !transcodeCapabilities?.available ? 'Bandwidth capped' : i18n.t("settings.original")}
-                                </span>
-                            </div>
+                            {/* Resolution badge */}
                             {(sourceResolution || playingResolution) && (
-                                <div className="flex justify-between gap-4">
-                                    <span className="text-white/40">{i18n.t("common.size")}</span>
-                                    <span>
-                                        {playingResolution ? `${playingResolution.w}×${playingResolution.h}` : ''}
-                                        {playingResolution && sourceResolution && (playingResolution.w !== sourceResolution.w || playingResolution.h !== sourceResolution.h)
-                                            ? ` (src: ${sourceResolution.w}×${sourceResolution.h})`
-                                            : sourceResolution ? ` ${sourceResolution.w}×${sourceResolution.h}` : ''}
-                                    </span>
+                                <div className="px-2.5 py-1 rounded-full bg-black/60 backdrop-blur-sm border border-white/10 text-[10px] font-medium text-white/70 shadow-lg pointer-events-none flex items-center gap-1.5">
+                                    {sourceResolution && (
+                                        <span>{i18n.t('viewer.source')} {sourceResolution.w}×{sourceResolution.h}</span>
+                                    )}
+                                    {playingResolution && (!sourceResolution || playingResolution.w !== sourceResolution.w || playingResolution.h !== sourceResolution.h) && (
+                                        <span>{i18n.t('viewer.playing')} {playingResolution.w}×{playingResolution.h}</span>
+                                    )}
                                 </div>
                             )}
-                            {/* Clear transcode cache button */}
-                            <div className="pt-1.5 mt-1 border-t border-white/5">
-                                <button
-                                    onClick={handleClearTranscodeCache}
-                                    disabled={clearingCache}
-                                    className="pointer-events-auto flex items-center gap-1.5 text-[9px] text-red-400/60 hover:text-red-400 transition-colors disabled:opacity-50"
-                                    title={`Clear all transcoded HLS variants for ${file.name}`}
-                                >
-                                    <Trash2 className="w-3 h-3" />
-                                    {clearingCache ? i18n.t("settings.clearing") : 'Clear Transcodes'}
-                                </button>
+                        </div>
+                    )}
+
+                    {/* Debug overlay (lower-left, toggle with D key) */}
+                    {debugOverlay && (
+                        <div className={`absolute z-40 pointer-events-none ${isFullscreen ? 'bottom-20 left-4' : 'bottom-4 left-4'}`}>
+                            <div className="px-3 py-2 rounded-lg bg-black/80 backdrop-blur-sm border border-white/10 text-[10px] font-mono text-white/80 shadow-xl space-y-1">
+                                <div className="flex items-center gap-2 text-[11px] font-semibold text-white/60 mb-0.5">
+                                    <Activity className="w-3 h-3" />
+                                    {i18n.t('viewer.debug')}
+                                </div>
+                                <div className="flex justify-between gap-4">
+                                    <span className="text-white/40">{i18n.t("playback.speed")}</span>
+                                    <span>{isHlsMode ? '—' : measuredKbps > 999 ? `${(measuredKbps / 1000).toFixed(1)} Mbps` : `${Math.round(measuredKbps)} Kbps`}</span>
+                                </div>
+                                <div className="flex justify-between gap-4">
+                                    <span className="text-white/40">{i18n.t('viewer.cap')}</span>
+                                    <span>{effectiveQuality === 'original' ? i18n.t("settings.unlimited") : `${qualityLabel(effectiveQuality, i18n.t('settings.original'))}${!transcodeCapabilities?.available ? ' (throttle)' : ''}`}</span>
+                                </div>
+                                <div className="flex justify-between gap-4">
+                                    <span className="text-white/40">{i18n.t('viewer.buffered')}</span>
+                                    <span>{debugBufferedSecs.toFixed(1)}s</span>
+                                </div>
+                                <div className="flex justify-between gap-4">
+                                    <span className="text-white/40">{i18n.t('viewer.mode')}</span>
+                                    <span className={isHlsMode ? 'text-emerald-400' : effectiveQuality !== 'original' && !transcodeCapabilities?.available ? 'text-amber-400' : 'text-white/60'}>
+                                        {isHlsMode ? 'HLS' : effectiveQuality !== 'original' && !transcodeCapabilities?.available ? 'Bandwidth capped' : i18n.t("settings.original")}
+                                    </span>
+                                </div>
+                                {(sourceResolution || playingResolution) && (
+                                    <div className="flex justify-between gap-4">
+                                        <span className="text-white/40">{i18n.t("common.size")}</span>
+                                        <span>
+                                            {playingResolution ? `${playingResolution.w}×${playingResolution.h}` : ''}
+                                            {playingResolution && sourceResolution && (playingResolution.w !== sourceResolution.w || playingResolution.h !== sourceResolution.h)
+                                                ? ` (src: ${sourceResolution.w}×${sourceResolution.h})`
+                                                : sourceResolution ? ` ${sourceResolution.w}×${sourceResolution.h}` : ''}
+                                        </span>
+                                    </div>
+                                )}
+                                {/* Clear transcode cache button */}
+                                <div className="pt-1.5 mt-1 border-t border-white/5">
+                                    <button
+                                        onClick={handleClearTranscodeCache}
+                                        disabled={clearingCache}
+                                        className="pointer-events-auto flex items-center gap-1.5 text-[9px] text-red-400/60 hover:text-red-400 transition-colors disabled:opacity-50"
+                                        title={`Clear all transcoded HLS variants for ${file.name}`}
+                                    >
+                                        <Trash2 className="w-3 h-3" />
+                                        {clearingCache ? i18n.t("settings.clearing") : 'Clear Transcodes'}
+                                    </button>
+                                </div>
                             </div>
                         </div>
-                    </div>
-                )}
+                    )}
+
+                </div>
 
                 {/* Fullscreen overlay toolbar */}
                 {isFullscreen && (displayPhase !== 'error' && displayPhase !== 'failed') && (
@@ -1261,9 +1262,9 @@ export function AdaptiveMediaPlayer({
                 )}
 
                 {/* Bottom bar: file info + volume + quality selector (non-fullscreen) */}
-                {!isFullscreen && <div className="mt-3 w-full flex items-center justify-between px-1 gap-3">
+                {!isFullscreen && <div className="media-viewer-file-info w-full flex items-center justify-between gap-3">
                     <div className="min-w-0 flex-1 text-start">
-                        <h3 className="max-w-md truncate text-ui font-medium text-white" title={file.name}>{file.name}</h3>
+                        <h3 className="truncate text-ui font-medium text-white" title={file.name}>{file.name}</h3>
                         <p className="flex items-center gap-2 text-badge text-white/40">
                             {isHlsMode && hlsQuality && (
                                 <span className="text-telegram-primary">{qualityLabel(hlsQuality, i18n.t('settings.original'))}</span>
@@ -1314,7 +1315,7 @@ export function AdaptiveMediaPlayer({
                 {!isFullscreen && playback && <PlaybackControls playback={playback} />}
 
                 {/* Keyboard shortcut hints */}
-                {!isFullscreen && <div className="mt-2 flex items-center gap-4 text-[10px] text-white/25 select-none">
+                {!isFullscreen && <div className="media-viewer-shortcuts flex flex-wrap items-center justify-center text-[10px] text-white/40 select-none">
                     <span className="flex items-center gap-1">
                         <kbd className="px-1 py-0.5 rounded bg-white/10 text-white/40 text-[9px] font-mono">← →</kbd> {i18n.t('viewer.navigate')}
                     </span>

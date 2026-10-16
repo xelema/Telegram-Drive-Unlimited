@@ -77,7 +77,7 @@ export function OfflinePacksPanel({ ownerId, selectedFiles, collectionName, onOp
       {data && required + data.reserveBytes > data.freeBytes && <p className="text-xs text-amber-400">{text('low_space')}</p>}
       {protectedFiles && <p className="text-xs text-amber-400">{text('protected_note')}</p>}
       <label className="flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={wifiOnly} onChange={event => setWifiOnly(event.target.checked)} />{text('wifi_only')}</label>
-      <label className="flex flex-wrap items-center gap-2 text-sm">{text('expires')}<select value={expiryDays} onChange={event => setExpiryDays(Number(event.target.value))} className={control}><option value={0}>{text('never')}</option>{[7, 14, 30, 90].map(days => <option key={days} value={days}>{text('days', { count: days })}</option>)}</select></label>
+      <label className="flex flex-wrap items-center gap-2 text-sm">{text('expires')}<select value={expiryDays} onChange={event => setExpiryDays(Number(event.target.value))} className={`app-select ${control}`}><option value={0}>{text('never')}</option>{[7, 14, 30, 90].map(days => <option key={days} value={days}>{text('days', { count: days })}</option>)}</select></label>
       <p className="text-xs text-telegram-subtext">{text('expiry_note')}</p>
       <button disabled={busy !== null || !files.length || !name.trim()} className={`${control} flex items-center gap-2 text-telegram-primary`}><Download className="h-4 w-4" />{text(busy === 'create' ? 'creating' : 'download')}</button>
     </form>

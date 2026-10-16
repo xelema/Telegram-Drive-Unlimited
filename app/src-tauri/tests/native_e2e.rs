@@ -8996,9 +8996,9 @@ fn video_upload_media_includes_a_real_thumbnail_for_small_and_large_mp4_containe
             "Unexpected video duration: {}",
             video.duration
         );
-        assert_eq!(
-            video.supports_streaming, !late,
-            "Streaming requires an early moov; video bytes are not remuxed"
+        assert!(
+            video.supports_streaming,
+            "Validated MP4 layouts accepted by Telegram Desktop must remain streamable"
         );
         assert!(wire.attributes.iter().any(|attribute| matches!(attribute,
             grammers_tl_types::enums::DocumentAttribute::Filename(filename) if filename.file_name == name)));

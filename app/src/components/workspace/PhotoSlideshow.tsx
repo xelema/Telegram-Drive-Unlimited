@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { ArrowLeft, ArrowRight, Maximize, Minimize, Pause, Play, Shuffle, Star, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, ChevronDown, Maximize, Minimize, Pause, Play, Shuffle, Star, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { WorkspaceFile } from '../../services/workspace';
 import { useModalFocus } from '../../hooks/useModalFocus';
 import { shouldHandleMediaShortcut } from '../../services/mediaKeyboard';
+import { Select } from '../ui/FormControls';
 
 interface PhotoSlideshowProps {
     ownerId: string;
@@ -148,7 +149,9 @@ export function PhotoSlideshow({ ownerId, files, initialKey, autoPlay = false, o
             <button type="button" aria-label={t(playing ? 'workspace.pause' : 'common.play')} aria-pressed={playing} onClick={() => setPlaying(value => !value)} className="min-h-11 min-w-11 rounded-xl bg-white/15">{playing ? <Pause className="mx-auto h-5 w-5" /> : <Play className="mx-auto h-5 w-5" />}</button>
             <button type="button" aria-label={t('workspace.next')} onClick={() => move(1)} className="min-h-11 min-w-11 rounded-xl hover:bg-white/10"><ArrowRight className="mx-auto h-5 w-5" /></button>
             <button type="button" aria-label={t('workspace.shuffle')} aria-pressed={shuffle} onClick={() => setShuffle(value => !value)} className={`min-h-11 min-w-11 rounded-xl ${shuffle ? 'bg-white/20' : ''}`}><Shuffle className="mx-auto h-5 w-5" /></button>
-            <label className="flex items-center gap-2 px-3 text-xs">{t('workspace.interval')}<select className="min-h-11 rounded-xl bg-white/15 px-3" value={seconds} onChange={event => setSeconds(Number(event.target.value))}>{[3, 5, 10, 20].map(value => <option key={value} value={value} className="text-black">{t('workspace.seconds', { count: value })}</option>)}</select></label>
+            <label className="playback-field px-3 text-xs">{t('workspace.interval')}
+                <span className="playback-select-wrap"><Select aria-label={t('workspace.interval')} className="playback-select min-h-11" value={seconds} onChange={event => setSeconds(Number(event.target.value))}>{[3, 5, 10, 20].map(value => <option key={value} value={value}>{t('workspace.seconds', { count: value })}</option>)}</Select><ChevronDown aria-hidden="true" className="playback-select-chevron" /></span>
+            </label>
         </footer>
     </div>;
 }
