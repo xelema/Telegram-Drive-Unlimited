@@ -126,7 +126,7 @@ export function MediaTimeline({ ownerId, files, selected, onSelect, onOpen, onFo
     const monthLabel = (month: string) => month === 'unknown' ? t('workspace.unknown_date') : new Intl.DateTimeFormat(i18n.language, { month: 'long', year: 'numeric' }).format(new Date(`${month}-15T12:00:00`));
     const activate = (action: (file: WorkspaceFile) => void) => { if (context) action(context.file); closeContext(); };
     return <section className="min-w-0 space-y-3">
-        {gallery && <div className="flex flex-wrap items-center justify-between gap-3"><p className="text-xs text-telegram-subtext">{t('workspace.upload_dates')}</p><label className="flex items-center gap-2 text-xs">{t('workspace.jump_month')}<select aria-label={t('workspace.jump_month')} className="min-h-11 rounded-xl border border-telegram-border bg-telegram-surface px-3" defaultValue="" onChange={event => {
+        {gallery && <div className="flex flex-wrap items-center justify-between gap-3"><p className="text-xs text-telegram-subtext">{t('workspace.upload_dates')}</p><label className="flex items-center gap-2 text-xs">{t('workspace.jump_month')}<select aria-label={t('workspace.jump_month')} className="app-select min-h-11 rounded-xl border border-telegram-border bg-telegram-surface px-3" defaultValue="" onChange={event => {
             const index = rows.findIndex(row => row.month === event.target.value);
             if (index >= 0) virtual.scrollToIndex(index, { align: 'start' });
         }}><option value="" disabled>{t('common.date')}</option>{months.map(group => <option key={group.month} value={group.month}>{monthLabel(group.month)}</option>)}</select></label></div>}

@@ -167,7 +167,7 @@ export function SyncSettingsPanel() {
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
         <button type="button" disabled={busy || editingId !== null} onClick={() => void chooseFolder().catch(error => toast.error(userFacingError(error, t)))} className="quiet-control min-w-0 border border-app-border px-3 py-2 text-start text-xs text-app-text disabled:opacity-60" aria-label={t('settings.sync.select_folder')} title={selectedPath ?? undefined}><span className="block truncate">{selectedPath ?? t('settings.sync.add_folder')}</span></button>
-        <select value={channelId} disabled={busy || editingId !== null} onChange={event => setChannelId(event.target.value ? Number(event.target.value) : '')} aria-label={t('settings.sync.select_channel')} className="quiet-control border border-app-border bg-app-surface px-3 py-2 text-xs text-app-text disabled:opacity-60">
+        <select value={channelId} disabled={busy || editingId !== null} onChange={event => setChannelId(event.target.value ? Number(event.target.value) : '')} aria-label={t('settings.sync.select_channel')} className="app-select quiet-control border border-app-border bg-app-surface px-3 py-2 text-xs text-app-text disabled:opacity-60">
           <option value="">{t('settings.sync.select_channel')}</option>{folders.map(folder => <option key={folder.id} value={folder.id}>{folder.name}</option>)}
           {editingPair && !folders.some(folder => folder.id === editingPair.channelId) && <option value={editingPair.channelId}>{editingPair.label ?? editingPair.channelId}</option>}
         </select>
@@ -175,7 +175,7 @@ export function SyncSettingsPanel() {
       {folders.length === 0 && editingId === null && <p className="flex items-center gap-1.5 text-xs text-app-warning"><AlertTriangle className="h-3.5 w-3.5" />{t('settings.sync.no_channels')}</p>}
       <div>
         <label htmlFor="sync-direction" className="mb-1 block text-xs font-medium text-app-text">{t('syncPreview.mode')}</label>
-        <select id="sync-direction" value={direction} disabled={busy} onChange={event => { setDirection(event.target.value as SyncDirection); setPropagateDeletions(false); }} className="quiet-control w-full border border-app-border bg-app-surface px-3 py-2 text-xs text-app-text"><option value="upload_only">{t('syncPreview.backup_mode')}</option><option value="download_only">{t('syncPreview.download_mode')}</option><option value="bidirectional">{t('syncPreview.two_way_mode')}</option></select>
+        <select id="sync-direction" value={direction} disabled={busy} onChange={event => { setDirection(event.target.value as SyncDirection); setPropagateDeletions(false); }} className="app-select quiet-control w-full border border-app-border bg-app-surface px-3 py-2 text-xs text-app-text"><option value="upload_only">{t('syncPreview.backup_mode')}</option><option value="download_only">{t('syncPreview.download_mode')}</option><option value="bidirectional">{t('syncPreview.two_way_mode')}</option></select>
         <p className="mt-2 text-xs leading-5 text-app-text-secondary">{direction === 'upload_only' ? t('syncPreview.backup_description') : direction === 'download_only' ? t('syncPreview.download_description') : t('syncPreview.two_way_description')}</p>
       </div>
       <div className="space-y-2">

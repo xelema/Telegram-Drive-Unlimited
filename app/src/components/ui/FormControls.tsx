@@ -32,7 +32,7 @@ export const Select = forwardRef<HTMLSelectElement, SelectHTMLAttributes<HTMLSel
     <select
       ref={ref}
       className={cx(
-        'quiet-control h-8 border border-app-border bg-app-surface-sunken/45 px-2.5 text-ui text-app-text outline-none focus:border-app-accent/60 disabled:opacity-45',
+        'app-select quiet-control h-8 border border-app-border bg-app-surface-sunken/45 px-2.5 text-ui text-app-text outline-none focus:border-app-accent/60 disabled:opacity-45',
         className,
       )}
       {...props}

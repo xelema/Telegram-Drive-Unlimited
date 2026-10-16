@@ -39,6 +39,11 @@ if (mode === 'descendant') {
     if (mode === 'ready-exit') {
       const child = spawn(process.execPath, [__filename, 'descendant', `${evidence}.child`], { stdio: 'ignore' }); child.unref();
       const wait = setInterval(() => { if (descendantReady()) { clearInterval(wait); publish(); } }, 10);
+    } else if (mode === 'ready-lock') {
+      // The external test-owned locker must deny deletion before readiness.
+      const wait = setInterval(() => {
+        if (fs.existsSync(`${evidence}.acquired`)) { clearInterval(wait); publish(); }
+      }, 10);
     } else publish();
   }
 }

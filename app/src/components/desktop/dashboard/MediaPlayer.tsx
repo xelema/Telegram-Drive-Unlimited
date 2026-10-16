@@ -177,8 +177,8 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
 
     return (
         <div className={`viewer-overlay fixed inset-0 z-[200] animate-in fade-in duration-150 ${isFullscreen ? 'p-0' : 'flex items-center justify-center p-4'}`} onClick={onClose}>
-            <div ref={containerRef} className={`relative ${isFullscreen ? 'w-full h-full' : 'w-full max-w-6xl flex flex-col items-center'}`} onClick={e => e.stopPropagation()}>
-                <div className={`viewer-toolbar absolute z-30 ${isFullscreen ? 'end-4 top-4' : '-top-10 end-0'}`}>
+            <div ref={containerRef} className={`relative ${isFullscreen ? 'w-full h-full' : 'media-viewer-shell w-full max-w-6xl flex flex-col items-center'}`} onClick={e => e.stopPropagation()}>
+                <div className={`viewer-toolbar z-30 ${isFullscreen ? 'absolute end-4 top-4' : 'relative mb-2 self-end shrink-0'}`}>
                     <button
                         onClick={toggleFullscreen}
                         className="viewer-control"
@@ -214,7 +214,7 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
                     <ChevronRight className="h-5 w-5 rtl:rotate-180" />
                 </button>
 
-                <div className={`flex items-center justify-center overflow-hidden bg-black ${isFullscreen ? 'h-full w-full rounded-none shadow-none' : 'viewer-panel aspect-video w-full'}`}>
+                <div className={`flex items-center justify-center overflow-hidden bg-black ${isFullscreen ? 'h-full w-full rounded-none shadow-none' : 'viewer-panel media-viewer-stage aspect-video w-full'}`}>
                     {!streamUrl ? (
                         <div className="flex flex-col items-center gap-4 text-white">
                             <div className="w-10 h-10 border-4 border-telegram-primary border-t-transparent rounded-full animate-spin"></div>
@@ -231,8 +231,8 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
                         />
                     ) : isAudio ? (
                         <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-telegram-primary/20 to-black">
-                            <div className="w-32 h-32 rounded-full bg-telegram-surface flex items-center justify-center mb-8 shadow-xl animate-pulse-slow">
-                                <svg xmlns="http://www.w3.org/2000/svg" className="w-12 h-12 text-telegram-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></svg>
+                            <div className={`${isFullscreen ? 'w-32 h-32 mb-8' : 'media-viewer-audio-art'} rounded-full bg-telegram-surface flex items-center justify-center shadow-xl animate-pulse-slow`}>
+                                <svg xmlns="http://www.w3.org/2000/svg" className="w-1/2 h-1/2 text-telegram-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></svg>
                             </div>
                             <audio ref={playback.attachMedia} src={streamUrl} controls autoPlay className="w-full max-w-md" />
                         </div>
@@ -241,8 +241,8 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
                     )}
                 </div>
 
-                {!isFullscreen && <div className="mt-3 max-w-full text-center">
-                    <h3 className="max-w-2xl truncate text-ui font-medium text-white" title={file.name}>{file.name}</h3>
+                {!isFullscreen && <div className="media-viewer-file-info w-full text-start">
+                    <h3 className="truncate text-ui font-medium text-white" title={file.name}>{file.name}</h3>
                     <p className="text-metadata text-white/45">
                         {i18n.t(localPath ? 'playback.offline_source' : 'playback.remote_source')}
                         {typeof currentIndex === 'number' && typeof totalItems === 'number' && totalItems > 0 && (
@@ -254,7 +254,7 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
                 {!isFullscreen && <PlaybackControls playback={playback} />}
 
                 {/* Keyboard shortcut hints */}
-                {!isFullscreen && <div className="mt-2 flex items-center gap-4 text-[10px] text-white/25 select-none">
+                {!isFullscreen && <div className="media-viewer-shortcuts flex flex-wrap items-center justify-center text-[10px] text-white/40 select-none">
                     <span className="flex items-center gap-1">
                         <kbd className="px-1 py-0.5 rounded bg-white/10 text-white/40 text-[9px] font-mono">← →</kbd> {i18n.t('viewer.navigate')}
                     </span>
