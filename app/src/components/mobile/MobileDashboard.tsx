@@ -362,12 +362,6 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
     updateSetting,
   ]);
 
-  // The in-app sponsor placement is TV-safe and remains available to free users.
-  // Keep it suppressed during media, previews, dialogs, and active transfers so it
-  // never covers playback controls or interrupts a bandwidth-sensitive operation.
-    && !showHelp && !supporterOfferTrigger && settings.driveTourSeen
-    && !uploadQueue.some(item => ['pending', 'uploading', 'downloading', 'encrypting', 'verifying'].includes(item.status))
-    && !downloadQueue.some(item => ['pending', 'cooldown', 'downloading', 'decrypting', 'verifying'].includes(item.status));
 
   const activeUploadCount = uploadQueue.filter(item => ['pending', 'uploading', 'downloading', 'encrypting', 'verifying'].includes(item.status)).length;
   const activeDownloadCount = downloadQueue.filter(item => ['pending', 'cooldown', 'downloading', 'decrypting', 'verifying'].includes(item.status)).length;
