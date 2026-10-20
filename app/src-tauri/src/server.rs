@@ -949,7 +949,6 @@ pub(crate) fn start_server_with_listener(
     let transcode_data = web::Data::new(transcode_manager);
     let crypto_data = web::Data::new(crypto_state);
     let share_root = web::Data::new(crate::share_routes::ShareAccountRoot(account_root));
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let local_addr = listener.local_addr()?;
     log::info!("Starting Streaming Server on {}", local_addr);
 
