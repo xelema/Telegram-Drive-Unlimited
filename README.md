@@ -1,7 +1,7 @@
 # Telegram Drive Unlimited
 
 This repository is a fork of [caamer20/Telegram-Drive](https://github.com/caamer20/Telegram-Drive),
-kept in sync with upstream **v3.9.8**. It does two things differently.
+kept in sync with the latest upstream release. It does two things differently.
 
 ### 1. Unlimited uploads - files bigger than Telegram's 2 GB cap
 
