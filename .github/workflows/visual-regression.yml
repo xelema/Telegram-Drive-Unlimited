@@ -36,3 +36,4 @@ jobs:
           name: visual-regression-report
           path: app/test-results
           if-no-files-found: ignore
+          retention-days: 3
