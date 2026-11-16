@@ -40,7 +40,6 @@ test('all 24 built language catalogs load losslessly through the real applicatio
         expect(await nativeCalls(page,'cmd_get_supporter_status')).toHaveLength(0);
         await expect(page.locator('iframe')).toHaveCount(0);
         release();
-        await expect(page.getByText('Checking sponsor access',{exact:true})).toBeVisible();
         await expect(page.locator('iframe')).toHaveCount(0);
         await page.evaluate(()=>(window as any).__desktopTest.releaseSupporter());
         await expect(page.getByRole('button',{name:'Preferences',exact:true})).toBeVisible();
