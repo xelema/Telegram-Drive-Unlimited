@@ -322,6 +322,12 @@
     "encryption_disclaimer_body": "Telegram Drive tidak dapat memulihkan atau mengatur ulang frasa sandi, kunci enkripsi, atau materi pemulihan yang terlupa. Jika Anda kehilangan semua kredensial yang dapat membuka file, file itu mungkin tidak dapat diakses secara permanen. Simpan materi pemulihan dengan aman, pertahankan cadangan yang telah diverifikasi, dan jangan bagikan kredensial kepada orang yang tidak Anda percayai.",
     "encryption_disclaimer_acknowledgement": "Saya memahami bahwa saya bertanggung jawab melindungi kredensial enkripsi dan kehilangan semua kredensial yang valid dapat menghalangi akses ke file terenkripsi saya secara permanen.",
     "encryption_ack_required": "Konfirmasikan peringatan kehilangan kunci sebelum membuat brankas.",
+    "default_upload_mode": "Mode unggahan bawaan",
+    "default_upload_mode_desc": "Pilih apakah akan bertanya sebelum setiap unggahan di perangkat ini. Unggahan terenkripsi mungkin tetap memerlukan penyiapan atau pembukaan brankas, atau frasa sandi file.",
+    "upload_mode_ask": "Selalu tanya",
+    "upload_mode_standard": "Selalu standar",
+    "upload_mode_encrypted": "Selalu terenkripsi",
+    "protection_method_desc": "Unggahan terlindungi menggunakan metode ini. Jika Standar dipilih di sini, unggahan tersebut menggunakan enkripsi brankas.",
     "default_upload_protection": "Perlindungan unggahan bawaan",
     "default_upload_protection_desc": "Pilih cara file baru dilindungi secara bawaan",
     "encryption_mode_standard": "Tanpa enkripsi",
@@ -431,7 +437,12 @@
     "hide_passphrase": "Sembunyikan frasa sandi",
     "current_vault_passphrase": "Frasa sandi brankas saat ini",
     "videoFilenameCaption": "Nama berkas sebagai keterangan",
-    "videoFilenameCaptionDesc": "Tambahkan nama berkas asli ke pesan video. Unggahan terenkripsi menjaga nama tetap pribadi."
+    "videoFilenameCaptionDesc": "Tambahkan nama berkas asli ke pesan video. Unggahan terenkripsi menjaga nama tetap pribadi.",
+    "find_category": "Cari kategori",
+    "no_categories": "Tidak ada kategori yang cocok",
+    "saved": "Pengaturan disimpan",
+    "color_border": "Batas",
+    "color_hover": "Sorot kursor"
   },
   "files": {
     "download": "Unduh",
@@ -838,6 +849,7 @@
     "scanning": "Memeriksa file",
     "syncing": "Mentransfer file",
     "waiting": "Menunggu pemeriksaan berikutnya",
+    "waiting_telegram": "Menunggu Telegram",
     "pause": "Jeda pemetaan",
     "resume": "Lanjutkan pemetaan",
     "checked_at": "Terakhir diperiksa {{time}}",
@@ -990,6 +1002,9 @@
     "failed": "Perlu perhatian"
   },
   "activity": {
+    "sort_transfers": "Urutkan transfer",
+    "oldest_first": "Terlama ke terbaru",
+    "newest_first": "Terbaru ke terlama",
     "title": "Aktivitas transfer",
     "description": "Hasil terbaru, pekerjaan yang dijeda, dan file yang perlu dicoba lagi untuk akun ini.",
     "loading": "Memuat aktivitas…",
@@ -1051,7 +1066,11 @@
     "copy_report": "Salin laporan diagnostik",
     "report_copied": "Laporan diagnostik disalin",
     "report_label": "Pratinjau laporan diagnostik",
-    "desktop_only": "Riwayat transfer desktop tersedia di aplikasi desktop. Progres cadangan dan offline Android ditampilkan di panel masing-masing."
+    "desktop_only": "Riwayat transfer desktop tersedia di aplikasi desktop. Progres cadangan dan offline Android ditampilkan di panel masing-masing.",
+    "progress_unknown": "Progres tidak diketahui",
+    "retry_all_failed": "Coba ulang semua yang gagal",
+    "retry_failed_summary": "Dalam antrean: {{queued}} · Dilewati: {{skipped}} · Gagal: {{failed}} · Belum dicoba: {{remaining}}",
+    "in_progress": "Sedang berlangsung"
   },
   "androidActivity": {
     "description": "Hasil pencadangan kamera dan progres transfer untuk akun ini.",
@@ -1452,6 +1471,8 @@
     "rest_open": "Pahami izin REST"
   },
   "upload_choice_copy": {
+    "prepare_title": "Siapkan unggahan terenkripsi",
+    "unavailable": "Unggahan terenkripsi tidak tersedia. Ulangi pemeriksaan enkripsi atau batalkan.",
     "question": "Bagaimana pilihan Anda disimpan? File: {{count}}",
     "description": "Anda dapat menyimpan file asli atau melindunginya dengan enkripsi Telegram Drive sebelum diunggah.",
     "store": "Simpan",

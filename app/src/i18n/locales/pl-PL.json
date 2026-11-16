@@ -88,7 +88,7 @@
     "action_count": "{{action}} ({{count}})",
     "sign_out": "Wyloguj się",
     "browser_picker": "Wybór w przeglądarce",
-    "system": "Systemowy",
+    "system": "System",
     "download_destination": "Wybierz miejsce pobierania",
     "download_folder_to": "Pobierz folder do…",
     "upload_folder_picker": "Wybierz folder do wysłania",
@@ -355,6 +355,12 @@
     "encryption_disclaimer_body": "Telegram Drive nie może odzyskać ani zresetować zapomnianych haseł, kluczy szyfrujących ani materiałów do odzyskiwania. Jeśli utracisz wszystkie dane umożliwiające odblokowanie pliku, plik ten może stać się trwale niedostępny. Bezpiecznie przechowuj materiały do ​​odzyskiwania, prowadź zweryfikowaną kopię zapasową i nigdy nie udostępniaj danych uwierzytelniających osobom, którym nie ufasz.",
     "encryption_disclaimer_acknowledgement": "Rozumiem, że jestem odpowiedzialny za ochronę moich danych uwierzytelniających oraz że utrata wszystkich ważnych danych uwierzytelniających może trwale uniemożliwić dostęp do moich zaszyfrowanych plików.",
     "encryption_ack_required": "Przed utworzeniem skarbca potwierdź ostrzeżenie o utracie klucza szyfrowania.",
+    "default_upload_mode": "Domyślny tryb przesyłania",
+    "default_upload_mode_desc": "Wybierz, czy pytać przed każdym przesłaniem na tym urządzeniu. Szyfrowane przesyłanie może nadal wymagać skonfigurowania lub odblokowania sejfu albo hasła do pliku.",
+    "upload_mode_ask": "Pytaj za każdym razem",
+    "upload_mode_standard": "Zawsze standardowy",
+    "upload_mode_encrypted": "Zawsze szyfrowany",
+    "protection_method_desc": "Chronione przesyłanie używa tej metody. Jeśli wybrano tutaj tryb standardowy, używane jest szyfrowanie sejfu.",
     "default_upload_protection": "Domyślna ochrona przesyłania",
     "default_upload_protection_desc": "Wybierz domyślny sposób ochrony nowych plików",
     "encryption_mode_standard": "Standard",
@@ -433,7 +439,12 @@
     "hide_passphrase": "Ukryj frazę hasła",
     "current_vault_passphrase": "Aktualne hasło sejfu",
     "videoFilenameCaption": "Nazwy plików w podpisach",
-    "videoFilenameCaptionDesc": "Dodaj oryginalną nazwę pliku do wiadomości wideo. Przy szyfrowanym przesyłaniu pozostaje ona prywatna."
+    "videoFilenameCaptionDesc": "Dodaj oryginalną nazwę pliku do wiadomości wideo. Przy szyfrowanym przesyłaniu pozostaje ona prywatna.",
+    "find_category": "Znajdź kategorię",
+    "no_categories": "Brak pasujących kategorii",
+    "saved": "Ustawienia zapisane",
+    "color_border": "Obramowanie",
+    "color_hover": "Najechanie kursorem"
   },
   "files": {
     "download": "Pobierać",
@@ -852,6 +863,7 @@
     "scanning": "Sprawdzanie plików",
     "syncing": "Przesyłanie plików",
     "waiting": "Oczekiwanie na następne sprawdzenie",
+    "waiting_telegram": "Oczekiwanie na Telegram",
     "pause": "Wstrzymaj mapowanie",
     "resume": "Wznów mapowanie",
     "checked_at": "Ostatnio sprawdzono {{time}}",
@@ -1004,6 +1016,9 @@
     "failed": "Wymaga uwagi"
   },
   "activity": {
+    "sort_transfers": "Sortuj transfery",
+    "oldest_first": "Od najstarszych do najnowszych",
+    "newest_first": "Od najnowszych do najstarszych",
     "title": "Aktywność transferów",
     "description": "Ostatnie wyniki, wstrzymane zadania i pliki wymagające ponownej próby dla tego konta.",
     "loading": "Wczytywanie aktywności…",
@@ -1065,7 +1080,11 @@
     "copy_report": "Kopiuj raport diagnostyczny",
     "report_copied": "Skopiowano raport diagnostyczny",
     "report_label": "Podgląd raportu diagnostycznego",
-    "desktop_only": "Historia transferów z komputera jest dostępna w aplikacji komputerowej. Postęp kopii zapasowych i plików offline Androida jest widoczny w osobnych panelach."
+    "desktop_only": "Historia transferów z komputera jest dostępna w aplikacji komputerowej. Postęp kopii zapasowych i plików offline Androida jest widoczny w osobnych panelach.",
+    "progress_unknown": "Postęp nieznany",
+    "retry_all_failed": "Ponów wszystkie nieudane",
+    "retry_failed_summary": "W kolejce: {{queued}} · Pominięto: {{skipped}} · Nieudane: {{failed}} · Nie podjęto próby: {{remaining}}",
+    "in_progress": "W toku"
   },
   "androidActivity": {
     "description": "Wyniki kopii zapasowych aparatu i postęp transferów dla tego konta.",
@@ -1466,6 +1485,8 @@
     "rest_open": "Poznaj uprawnienia REST"
   },
   "upload_choice_copy": {
+    "prepare_title": "Przygotuj szyfrowane przesyłanie",
+    "unavailable": "Szyfrowane przesyłanie jest niedostępne. Sprawdź szyfrowanie ponownie lub anuluj.",
     "question": "Jak zapisać wybrane pliki? Liczba plików: {{count}}",
     "description": "Możesz zachować oryginalny plik lub zabezpieczyć go szyfrowaniem Telegram Drive przed wysłaniem.",
     "store": "Zapisz",

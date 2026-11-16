@@ -355,6 +355,12 @@
     "encryption_disclaimer_body": "Telegram Drive 無法復原或重設忘記的密碼、加密金鑰或復原資料。如果您遺失了所有可以解鎖文件的憑證，則該文件可能會永久無法存取。安全地儲存恢復材料，保留經過驗證的備份，並且切勿與您不信任的任何人共享憑證。",
     "encryption_disclaimer_acknowledgement": "我了解我有責任保護我的加密憑證，並且遺失所有有效憑證可能會永久阻止對我的加密檔案的存取。",
     "encryption_ack_required": "在建立保管庫之前，請確認加密金鑰遺失警告。",
+    "default_upload_mode": "預設上傳模式",
+    "default_upload_mode_desc": "選擇是否在此裝置上每次上傳前詢問。加密上傳仍可能需要設定或解鎖保險庫，或輸入檔案通關密語。",
+    "upload_mode_ask": "每次詢問",
+    "upload_mode_standard": "一律標準上傳",
+    "upload_mode_encrypted": "一律加密上傳",
+    "protection_method_desc": "受保護的上傳使用此方式。如果此處選擇標準，則使用保險庫加密。",
     "default_upload_protection": "預設上傳保護",
     "default_upload_protection_desc": "選擇預設如何保護新文件",
     "encryption_mode_standard": "標準",
@@ -431,7 +437,12 @@
     "hide_passphrase": "隱藏密碼片語",
     "current_vault_passphrase": "目前保險庫通行片語",
     "videoFilenameCaption": "檔案名稱說明",
-    "videoFilenameCaptionDesc": "將原始檔案名稱加入影片訊息說明中。加密上傳會保護檔案名稱隱私。"
+    "videoFilenameCaptionDesc": "將原始檔案名稱加入影片訊息說明中。加密上傳會保護檔案名稱隱私。",
+    "find_category": "尋找分類",
+    "no_categories": "沒有相符的分類",
+    "saved": "設定已儲存",
+    "color_border": "邊框",
+    "color_hover": "懸停"
   },
   "files": {
     "download": "下載",
@@ -838,6 +849,7 @@
     "scanning": "正在檢查檔案",
     "syncing": "正在傳輸檔案",
     "waiting": "等待下次檢查",
+    "waiting_telegram": "正在等待 Telegram",
     "pause": "暫停映射",
     "resume": "恢復映射",
     "checked_at": "上次檢查：{{time}}",
@@ -990,6 +1002,9 @@
     "failed": "需要處理"
   },
   "activity": {
+    "sort_transfers": "排序傳輸項目",
+    "oldest_first": "從最舊到最新",
+    "newest_first": "從最新到最舊",
     "title": "傳輸活動",
     "description": "此帳號最近的傳輸結果、已暫停任務和需要重試的檔案。",
     "loading": "正在加載活動…",
@@ -1051,7 +1066,11 @@
     "copy_report": "複製診斷報告",
     "report_copied": "診斷報告已複製",
     "report_label": "診斷報告預覽",
-    "desktop_only": "桌面傳輸歷史可在桌面應用程式中查看。Android 備份和離線進度顯示在各自的面板中。"
+    "desktop_only": "桌面傳輸歷史可在桌面應用程式中查看。Android 備份和離線進度顯示在各自的面板中。",
+    "progress_unknown": "進度未知",
+    "retry_all_failed": "重試所有失敗項目",
+    "retry_failed_summary": "已排入佇列：{{queued}} · 已略過：{{skipped}} · 失敗：{{failed}} · 尚未嘗試：{{remaining}}",
+    "in_progress": "進行中"
   },
   "androidActivity": {
     "description": "此帳號的相機備份結果和檔案傳輸進度。",
@@ -1452,6 +1471,8 @@
     "rest_open": "瞭解 REST 權限"
   },
   "upload_choice_copy": {
+    "prepare_title": "準備加密上傳",
+    "unavailable": "無法使用加密上傳。請重試加密檢查或取消。",
     "question": "如何儲存所選內容？檔案數：{{count}}",
     "description": "你可以保留原始檔案，也可以在上傳前使用 Telegram Drive 加密來保護它。",
     "store": "儲存",

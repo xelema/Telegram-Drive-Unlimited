@@ -322,6 +322,12 @@
     "encryption_disclaimer_body": "O Telegram Drive não pode recuperar nem redefinir frases secretas, chaves de criptografia ou materiais de recuperação esquecidos. Se você perder todas as credenciais que desbloqueiam um arquivo, ele poderá ficar permanentemente inacessível. Guarde o material de recuperação com segurança, mantenha um backup verificado e nunca compartilhe credenciais com pessoas em quem não confia.",
     "encryption_disclaimer_acknowledgement": "Entendo que sou responsável por proteger minhas credenciais de criptografia e que perder todas as credenciais válidas pode impedir permanentemente o acesso aos meus arquivos criptografados.",
     "encryption_ack_required": "Confirme o aviso sobre perda de chaves antes de criar um cofre.",
+    "default_upload_mode": "Modo de envio padrão",
+    "default_upload_mode_desc": "Escolha se deseja perguntar antes de cada envio neste dispositivo. Envios criptografados ainda podem precisar de configuração ou desbloqueio do cofre, ou de uma frase secreta do arquivo.",
+    "upload_mode_ask": "Perguntar sempre",
+    "upload_mode_standard": "Sempre padrão",
+    "upload_mode_encrypted": "Sempre criptografado",
+    "protection_method_desc": "Os envios protegidos usam este método. Se Padrão estiver selecionado aqui, eles usarão a criptografia do cofre.",
     "default_upload_protection": "Proteção padrão de uploads",
     "default_upload_protection_desc": "Escolha como novos arquivos serão protegidos por padrão",
     "encryption_mode_standard": "Sem criptografia",
@@ -432,7 +438,12 @@
     "encryption_experimental_inventory_many": "{{count}} arquivos criptografados experimentais estão indexados localmente. Seus textos cifrados foram preservados.",
     "current_vault_passphrase": "Frase-senha atual do cofre",
     "videoFilenameCaption": "Nomes de arquivo nas legendas",
-    "videoFilenameCaptionDesc": "Adicione o nome original às mensagens de vídeo. Envios criptografados mantêm o nome privado."
+    "videoFilenameCaptionDesc": "Adicione o nome original às mensagens de vídeo. Envios criptografados mantêm o nome privado.",
+    "find_category": "Encontrar categoria",
+    "no_categories": "Nenhuma categoria correspondente",
+    "saved": "Configurações salvas",
+    "color_border": "Borda",
+    "color_hover": "Ao passar o cursor"
   },
   "files": {
     "download": "Baixar",
@@ -666,6 +677,7 @@
     "scanning": "Verificando arquivos",
     "syncing": "Transferindo arquivos",
     "waiting": "Aguardando a próxima verificação",
+    "waiting_telegram": "Aguardando o Telegram",
     "pause": "Pausar vínculo",
     "resume": "Retomar vínculo",
     "checked_at": "Última verificação: {{time}}",
@@ -997,6 +1009,9 @@
     }
   },
   "activity": {
+    "sort_transfers": "Ordenar transferências",
+    "oldest_first": "Das mais antigas às mais recentes",
+    "newest_first": "Das mais recentes às mais antigas",
     "uploads": "Envios",
     "downloads": "Arquivos baixados",
     "attention": "Precisam de atenção",
@@ -1058,7 +1073,11 @@
     "copy_report": "Copiar relatório de diagnóstico",
     "report_copied": "Relatório de diagnóstico copiado",
     "report_label": "Prévia do diagnóstico",
-    "desktop_only": "O histórico de transferências do desktop fica no aplicativo para computador. No Android, o progresso de backups e arquivos offline aparece nos respectivos painéis."
+    "desktop_only": "O histórico de transferências do desktop fica no aplicativo para computador. No Android, o progresso de backups e arquivos offline aparece nos respectivos painéis.",
+    "progress_unknown": "Progresso desconhecido",
+    "retry_all_failed": "Tentar novamente todos os que falharam",
+    "retry_failed_summary": "Na fila: {{queued}} · Ignorados: {{skipped}} · Falharam: {{failed}} · Não tentados: {{remaining}}",
+    "in_progress": "Em andamento"
   },
   "androidActivity": {
     "description": "Resultados do backup da câmera e progresso das transferências desta conta.",
@@ -1459,6 +1478,8 @@
     "rest_open": "Entenda as permissões do REST"
   },
   "upload_choice_copy": {
+    "prepare_title": "Preparar envio criptografado",
+    "unavailable": "Os envios criptografados não estão disponíveis. Verifique a criptografia novamente ou cancele.",
     "question": "Como deseja armazenar a seleção? Arquivos: {{count}}",
     "description": "Você pode manter o arquivo original ou protegê-lo com a criptografia do Telegram Drive antes do envio.",
     "store": "Armazenar",

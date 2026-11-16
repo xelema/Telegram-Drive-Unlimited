@@ -355,6 +355,12 @@
     "encryption_disclaimer_body": "Telegram Drive cannot recover or reset forgotten passphrases, encryption keys, or recovery material. If you lose every credential that can unlock a file, that file may become permanently inaccessible. Store recovery material securely, keep a verified backup, and never share credentials with anyone you do not trust.",
     "encryption_disclaimer_acknowledgement": "I understand that I am responsible for safeguarding my encryption credentials, and that losing every valid credential may permanently prevent access to my encrypted files.",
     "encryption_ack_required": "Please acknowledge the encryption key-loss warning before creating a vault.",
+    "default_upload_mode": "Default upload mode",
+    "default_upload_mode_desc": "Choose whether to ask before each upload on this device. Encrypted uploads may still need vault setup, unlock, or a file passphrase.",
+    "upload_mode_ask": "Ask every time",
+    "upload_mode_standard": "Always Standard",
+    "upload_mode_encrypted": "Always Encrypted",
+    "protection_method_desc": "Protected uploads use this method. If Standard is selected here, they use Vault encryption.",
     "default_upload_protection": "Default Upload Protection",
     "default_upload_protection_desc": "Choose how new files are protected by default",
     "encryption_mode_standard": "Standard",
@@ -431,7 +437,12 @@
     "hide_passphrase": "Hide passphrase",
     "current_vault_passphrase": "Current vault passphrase",
     "videoFilenameCaption": "Filename captions",
-    "videoFilenameCaptionDesc": "Add the original filename to video media messages. Encrypted uploads keep it private."
+    "videoFilenameCaptionDesc": "Add the original filename to video media messages. Encrypted uploads keep it private.",
+    "find_category": "Find a category",
+    "no_categories": "No matching categories",
+    "saved": "Settings saved",
+    "color_border": "Border",
+    "color_hover": "Hover"
   },
   "files": {
     "download": "Download",
@@ -556,6 +567,9 @@
     "use_qr_instead": "Use QR Code Instead"
   },
   "activity": {
+    "sort_transfers": "Sort transfers",
+    "oldest_first": "Oldest to newest",
+    "newest_first": "Newest to oldest",
     "title": "Transfer activity",
     "description": "Recent outcomes, paused work and files that need another attempt for this account.",
     "loading": "Loading activity…",
@@ -617,7 +631,11 @@
     "copy_report": "Copy diagnostic report",
     "report_copied": "Diagnostic report copied",
     "report_label": "Diagnostic report preview",
-    "desktop_only": "Desktop transfer history is available in the desktop app. Android backup and offline progress are shown in their own panels."
+    "desktop_only": "Desktop transfer history is available in the desktop app. Android backup and offline progress are shown in their own panels.",
+    "progress_unknown": "Progress unknown",
+    "retry_all_failed": "Retry all failed",
+    "retry_failed_summary": "Queued: {{queued}} · Skipped: {{skipped}} · Failed: {{failed}} · Not attempted: {{remaining}}",
+    "in_progress": "In progress"
   },
   "syncPreview": {
     "setup_title": "Review a folder mapping",
@@ -659,6 +677,7 @@
     "scanning": "Checking files",
     "syncing": "Transferring files",
     "waiting": "Waiting for the next check",
+    "waiting_telegram": "Waiting for Telegram",
     "pause": "Pause mapping",
     "resume": "Resume mapping",
     "checked_at": "Last checked {{time}}",
@@ -1452,6 +1471,8 @@
     "rest_open": "Understand REST permissions"
   },
   "upload_choice_copy": {
+    "prepare_title": "Prepare encrypted upload",
+    "unavailable": "Encrypted uploads are unavailable. Retry the encryption check or cancel.",
     "question": "How should we store your selection? Files: {{count}}",
     "description": "You can keep the original file, or protect it with Telegram Drive encryption before upload.",
     "store": "Store",

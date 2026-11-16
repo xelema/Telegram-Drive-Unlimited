@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "4.1.2"
+version = "4.1.6"
 description = "A local-first file workspace for files stored in Telegram, built with Tauri, Rust, and React."
 authors = ["Cameron Amer"]
 edition = "2021"
@@ -36,6 +36,7 @@ libc = "0.2"
 grammers-client = { git = "https://github.com/xelema/grammers", branch = "multi-connection", features = ["proxy"] }
 grammers-session = { git = "https://github.com/xelema/grammers", branch = "multi-connection" }
 grammers-mtsender = { git = "https://github.com/xelema/grammers", branch = "multi-connection", features = ["proxy"] }
+grammers-mtproto = { git = "https://github.com/xelema/grammers", branch = "multi-connection", optional = true }
 grammers-tl-types = { git = "https://github.com/xelema/grammers", branch = "multi-connection" }
 tokio = { version = "1", features = ["full"] }
 
@@ -49,10 +50,10 @@ base64 = "0.22"
 image = { version = "0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 log = "0.4"
 env_logger = "0.11"
-tauri-plugin-updater = "2"
-actix-web = "4"
+tauri-plugin-updater = "2.14.1"
+actix-web = "4.18.2"
 actix-cors = "0.7"
-actix-files = "0.6"
+actix-files = "0.7.4"
 actix-multipart = "0.7"
 futures = "0.3"
 bytes = "1"
@@ -77,7 +78,7 @@ hkdf = "0.12"
 hmac = "0.12"
 zeroize = { version = "1", features = ["derive"] }
 getrandom = "0.2"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9.0", default-features = false, features = ["deflate"] }
 sevenz-rust2 = "0.7"
 path-clean = "1"
 walkdir = "2"
@@ -121,7 +122,20 @@ webview-install-mode = "embeddir"
 
 # This backend driver is opt-in and excluded from normal builds.
 [features]
-native-e2e = []
+native-e2e = ["dep:grammers-mtproto"]
+
+# Keep the established Telegram protocol/session revision while backporting the
+# patched proxy resolver. See vendor/grammers-mtsender/PROVENANCE.md.
+# The fork's grammers sources point here too, so every grammers crate resolves to
+# a single source and the vendored sender replaces the fork's copy.
+[patch."https://github.com/xelema/grammers"]
+grammers-mtsender = { path = "vendor/grammers-mtsender" }
+
+[patch."https://github.com/Lonami/grammers"]
+grammers-crypto = { git = "https://github.com/xelema/grammers", branch = "multi-connection" }
+grammers-mtproto = { git = "https://github.com/xelema/grammers", branch = "multi-connection" }
+grammers-session = { git = "https://github.com/xelema/grammers", branch = "multi-connection" }
+grammers-tl-types = { git = "https://github.com/xelema/grammers", branch = "multi-connection" }
 
 [[bin]]
 name = "native-e2e-driver"

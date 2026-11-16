@@ -933,9 +933,13 @@ fn cmd_get_system_diagnostics(app: tauri::AppHandle) -> Result<String, String> {
     }
 }
 
+pub(crate) fn application_context() -> tauri::Context<tauri::Wry> {
+    tauri::generate_context!()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let mut context = tauri::generate_context!();
+    let mut context = application_context();
     if let Err(error) = startup_smoke::configure(&mut context) {
         eprintln!("Packaged startup smoke refused: {error}");
         return;
@@ -1113,6 +1117,7 @@ pub fn run() {
 
             app.manage(TelegramState {
                 client: Arc::new(Mutex::new(None)),
+                sync_readiness: Default::default(),
                 session: Arc::new(Mutex::new(None)),
                 phone_login: Arc::new(Mutex::new(None)),
                 password_token: Arc::new(Mutex::new(None)),
@@ -1472,6 +1477,8 @@ pub fn run() {
             transfer_engine::cmd_transfer_cancel,
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             transfer_engine::cmd_transfer_retry,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            transfer_engine::cmd_transfer_retry_failed_upload,
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             transfer_engine::cmd_transfer_supply_prompt_token,
             #[cfg(not(any(target_os = "android", target_os = "ios")))]

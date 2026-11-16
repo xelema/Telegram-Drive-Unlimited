@@ -322,6 +322,12 @@
     "encryption_disclaimer_body": "Telegram Driveは、忘れたパスフレーズ、暗号化キー、復旧情報を復元またはリセットできません。ファイルを解除できるすべての認証情報を失うと、そのファイルには永久にアクセスできなくなる場合があります。復旧情報を安全に保管し、検証済みのバックアップを用意し、信頼できない相手とは認証情報を共有しないでください。",
     "encryption_disclaimer_acknowledgement": "暗号化認証情報の保護は自分の責任であり、有効な認証情報をすべて失うと暗号化ファイルへ永久にアクセスできなくなる可能性があることを理解しました。",
     "encryption_ack_required": "保管庫を作成する前に、キー紛失に関する警告を確認してください。",
+    "default_upload_mode": "アップロードの既定モード",
+    "default_upload_mode_desc": "このデバイスでアップロードのたびに確認するかを選択します。暗号化アップロードでは、保管庫の設定やロック解除、ファイルのパスフレーズが引き続き必要になる場合があります。",
+    "upload_mode_ask": "毎回確認する",
+    "upload_mode_standard": "常に標準",
+    "upload_mode_encrypted": "常に暗号化",
+    "protection_method_desc": "保護されたアップロードにはこの方式を使用します。ここで標準を選択した場合は、保管庫で暗号化します。",
     "default_upload_protection": "既定のアップロード保護",
     "default_upload_protection_desc": "新しいファイルの既定の保護方法を選択します",
     "encryption_mode_standard": "暗号化なし",
@@ -431,7 +437,12 @@
     "hide_passphrase": "パスフレーズを隠す",
     "current_vault_passphrase": "現在の保管庫パスフレーズ",
     "videoFilenameCaption": "ファイル名のキャプション",
-    "videoFilenameCaptionDesc": "動画メッセージに元のファイル名を追加します。暗号化されたアップロードでは名前を公開しません。"
+    "videoFilenameCaptionDesc": "動画メッセージに元のファイル名を追加します。暗号化されたアップロードでは名前を公開しません。",
+    "find_category": "カテゴリを検索",
+    "no_categories": "一致するカテゴリはありません",
+    "saved": "設定を保存しました",
+    "color_border": "枠線",
+    "color_hover": "ホバー"
   },
   "files": {
     "download": "ダウンロード",
@@ -662,6 +673,7 @@
     "scanning": "ファイルを確認中",
     "syncing": "ファイルを転送中",
     "waiting": "次の確認を待機中",
+    "waiting_telegram": "Telegramへの接続を待機中",
     "pause": "対応を一時停止",
     "resume": "対応を再開",
     "checked_at": "最終確認: {{time}}",
@@ -990,6 +1002,9 @@
     }
   },
   "activity": {
+    "sort_transfers": "転送を並べ替え",
+    "oldest_first": "古い順",
+    "newest_first": "新しい順",
     "uploads": "アップロード",
     "downloads": "ダウンロード",
     "attention": "確認が必要",
@@ -1051,7 +1066,11 @@
     "copy_report": "診断レポートをコピー",
     "report_copied": "診断レポートをコピーしました",
     "report_label": "診断のプレビュー",
-    "desktop_only": "デスクトップの転送履歴はデスクトップアプリで確認できます。Androidのバックアップとオフライン処理の進行状況は、それぞれのパネルに表示されます。"
+    "desktop_only": "デスクトップの転送履歴はデスクトップアプリで確認できます。Androidのバックアップとオフライン処理の進行状況は、それぞれのパネルに表示されます。",
+    "progress_unknown": "進行状況は不明",
+    "retry_all_failed": "失敗したすべての項目を再試行",
+    "retry_failed_summary": "待機中: {{queued}} · スキップ: {{skipped}} · 失敗: {{failed}} · 未試行: {{remaining}}",
+    "in_progress": "進行中"
   },
   "androidActivity": {
     "description": "このアカウントのカメラバックアップの結果と転送状況。",
@@ -1452,6 +1471,8 @@
     "rest_open": "REST の権限を確認"
   },
   "upload_choice_copy": {
+    "prepare_title": "暗号化アップロードの準備",
+    "unavailable": "暗号化アップロードは利用できません。暗号化の確認を再試行するか、キャンセルしてください。",
     "question": "選択したファイルの保存方法を選んでください。ファイル数：{{count}}",
     "description": "元のファイルをそのまま保存するか、アップロード前に Telegram Drive の暗号化で保護できます。",
     "store": "保存",

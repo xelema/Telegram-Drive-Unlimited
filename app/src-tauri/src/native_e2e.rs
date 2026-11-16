@@ -11,11 +11,15 @@ use crate::crypto::{
     state::CryptoState,
     vault::FileVault,
 };
-use crate::sync_engine::{self, config as sync_config, policy::StoredPairPolicy};
+use crate::sync_engine::{
+    self, config as sync_config, native_fixture::NativeSyncFixture, policy::StoredPairPolicy,
+    SyncEngine,
+};
+use crate::transfer_engine::{TransferJob, TransferStore};
 use crate::workspace::{store::Store, AccountGuard};
 use grammers_session::{storages::SqliteSession, types::PeerInfo, Session};
 use serde_json::{json, Value};
-use sha2::Digest;
+use sha2::{Digest, Sha256};
 use std::time::Duration;
 use std::{
     collections::{HashMap, HashSet},
@@ -26,6 +30,7 @@ use std::{
         Arc,
     },
 };
+use tauri::{Emitter, Manager};
 use tokio::sync::{Mutex, RwLock};
 
 // Allow bounded source work while lifecycle journeys exercise notifications and retention.
@@ -132,6 +137,7 @@ fn disconnected() -> Arc<TelegramState> {
         password_token: Arc::new(Mutex::new(None)),
         api_id: Arc::new(Mutex::new(None)),
         auth_attempt_counter: Arc::new(AtomicU64::new(0)),
+        sync_readiness: Default::default(),
         runner_shutdown: Arc::new(std::sync::Mutex::new(None)),
         runner_count: Arc::new(AtomicU32::new(0)),
         peer_cache: Arc::new(RwLock::new(HashMap::new())),
@@ -1068,7 +1074,16 @@ struct FixtureVideoUploadJourney {
     task: tokio::task::JoinHandle<Result<Value, String>>,
 }
 
+struct TransferRetryDriver {
+    store: TransferStore,
+    jobs: HashMap<String, TransferJob>,
+    pending: HashMap<String, TransferJob>,
+    prompt_tokens: HashMap<String, u64>,
+}
+
 struct Driver {
+    sync_app: Option<tauri::App>,
+    transfer_retry: Option<TransferRetryDriver>,
     video_upload: Option<FixtureVideoUploadJourney>,
     notifications: Option<FixtureNotifications>,
     proxy_update_task: Option<tokio::task::JoinHandle<Result<(), String>>>,
@@ -1114,9 +1129,192 @@ struct Driver {
 }
 
 impl Driver {
+    fn sync_app(&mut self) -> Result<&tauri::App, String> {
+        if self.sync_app.is_none() {
+            let mut context = crate::application_context();
+            context.config_mut().app.windows.clear();
+            context.config_mut().app.tray_icon = None;
+            let app = tauri::Builder::default()
+                .enable_macos_default_menu(false)
+                .build(context)
+                .map_err(error)?;
+            let db = crate::db::init_db_at(&self.root)?;
+            app.manage(disconnected().as_ref().clone());
+            app.manage(db.clone());
+            app.manage(self.crypto.clone());
+            app.manage(Arc::new(NativeSyncFixture::new(self.root.clone())));
+            app.manage(SyncEngine::new(db, app.handle().clone()));
+            NativeSyncFixture::install_listener(app.handle());
+            self.sync_app = Some(app);
+        }
+        Ok(self.sync_app.as_ref().unwrap())
+    }
+
+    async fn dispatch_sync_lifecycle(&mut self, request: Value) -> Result<Value, String> {
+        match text(&request, "command")? {
+            "sync_seed" => {
+                let owner = text(&request, "owner")?.to_string();
+                let scanner = request["scanner"].as_str().unwrap_or("full").to_string();
+                if !matches!(scanner.as_str(), "full" | "incremental") {
+                    return Err("Unknown fixture scanner".into());
+                }
+                let db = crate::db::init_db_at(&self.root)?;
+                let root = self.root.clone();
+                crate::db::with_connection(db.clone(), move |connection| {
+                    connection.execute(concat!(
+                        "INSERT OR REPLACE INTO sync_settings(key,value) VALUES",
+                        "('sync_enabled','true'),('sync_debounce_ms','250')"
+                    )).map_err(error)?;
+                    let mut scanner_setting = connection.prepare(
+                        "INSERT OR REPLACE INTO sync_settings(key,value) VALUES('sync_scanner',?)"
+                    ).map_err(error)?;
+                    scanner_setting.bind((1,scanner.as_str())).map_err(error)?;
+                    scanner_setting.next().map_err(error)?;
+                    for id in 1..=3 {
+                        let path = root.join(format!("mapping-{id}"));
+                        std::fs::create_dir_all(&path).map_err(error)?;
+                        let mut insert = connection.prepare(concat!(
+                            "INSERT OR IGNORE INTO sync_pairs(",
+                            "id,local_path,channel_id,folder_key,label,sync_direction,is_active,created_at)",
+                            " VALUES(?,?,?,?,?,'bidirectional',?,1)"
+                        )).map_err(error)?;
+                        insert.bind((1,id)).map_err(error)?;
+                        insert.bind((2,path.to_str().ok_or("Invalid fixture path")?)).map_err(error)?;
+                        insert.bind((3,100+id)).map_err(error)?;
+                        insert.bind((4,format!("folder-{id}").as_str())).map_err(error)?;
+                        insert.bind((5,format!("Mapping {id}").as_str())).map_err(error)?;
+                        insert.bind((6,i64::from(id != 3))).map_err(error)?;
+                        insert.next().map_err(error)?;
+                        let policy = StoredPairPolicy {
+                            account_owner:Some(owner.clone()),
+                            ..Default::default()
+                        };
+                        sync_config::write_pair_policy(connection,id,&policy)?;
+                    }
+                    let data = b"Keep the existing synced file across startup and reconnect.\n";
+                    std::fs::write(root.join("mapping-1/keep.txt"),data).map_err(error)?;
+                    let hash = format!("{:x}",Sha256::digest(data));
+                    let mut insert = connection.prepare(concat!(
+                        "INSERT OR REPLACE INTO sync_state(",
+                        "pair_id,relative_path,local_hash,remote_hash,file_size,",
+                        "local_mtime,remote_date,message_id,sync_status)",
+                        " VALUES(1,'keep.txt',?,?,?,1,1,42,'synced')"
+                    )).map_err(error)?;
+                    insert.bind((1,hash.as_str())).map_err(error)?;
+                    insert.bind((2,hash.as_str())).map_err(error)?;
+                    insert.bind((3,data.len() as i64)).map_err(error)?;
+                    insert.next().map_err(error)?;
+                    let remote = json!({"1":{"keep.txt":{
+                        "relativePath":"keep.txt","hash":hash,"fileSize":data.len(),
+                        "modifiedAt":1,"messageId":42
+                    }}});
+                    std::fs::write(
+                        root.join("sync-fixture-remote.json"),
+                        serde_json::to_vec(&remote).map_err(error)?
+                    ).map_err(error)?;
+                    Ok(())
+                }).await?;
+                Ok(json!(true))
+            }
+            "sync_start" => {
+                let app = self.sync_app()?;
+                if let Some(owner) = request["readyOwner"].as_i64() {
+                    app.state::<Arc<NativeSyncFixture>>().set_owner(Some(owner));
+                    let readiness = &app.state::<TelegramState>().sync_readiness;
+                    readiness.mark_ready(readiness.generation(), owner);
+                }
+                app.state::<SyncEngine>().start().await?;
+                let settings =
+                    sync_config::load_settings(app.state::<SyncEngine>().db.clone()).await?;
+                Ok(json!({"scanner":settings.scanner}))
+            }
+            "sync_status" => {
+                let app = self.sync_app()?;
+                app.state::<Arc<NativeSyncFixture>>()
+                    .snapshot(app.handle(), request["waitFor"].as_str())
+                    .await
+            }
+            "sync_telegram" => {
+                let app = self.sync_app()?;
+                let fixture = app.state::<Arc<NativeSyncFixture>>();
+                let readiness = &app.state::<TelegramState>().sync_readiness;
+                let owner = request["owner"].as_i64();
+                fixture.set_owner(owner);
+                let Some(owner) = owner else {
+                    return Ok(json!({"generation":readiness.invalidate()}));
+                };
+                let accepted = request["silent"] != true
+                    && readiness.mark_ready(readiness.generation(), owner);
+                Ok(json!({"accepted":accepted,"generation":readiness.generation()}))
+            }
+            "sync_ready_reply" => {
+                let app = self.sync_app()?;
+                let readiness = &app.state::<TelegramState>().sync_readiness;
+                let generation = request["generation"]
+                    .as_u64()
+                    .ok_or("Missing reply generation")?;
+                let owner = request["owner"].as_i64().ok_or("Missing reply owner")?;
+                Ok(json!({"accepted":readiness.mark_ready(generation,owner)}))
+            }
+            "sync_wake" => {
+                self.sync_app()?.emit("vault-unlocked", ()).map_err(error)?;
+                Ok(json!(true))
+            }
+            "sync_seed_cleanup" => {
+                let db = crate::db::init_db_at(&self.root)?;
+                sync_config::save_pending_cleanup(
+                    db,
+                    2,
+                    &[sync_config::PendingCleanup {
+                        relative_path: "replacement.txt".into(),
+                        old_message_id: 41,
+                        new_message_id: 42,
+                        old_remote_hash: Some("preserve-the-existing-remote-version".into()),
+                    }],
+                )
+                .await?;
+                Ok(json!(true))
+            }
+            "sync_pending_cleanup" => {
+                let db = crate::db::init_db_at(&self.root)?;
+                serde_json::to_value(sync_config::load_pending_cleanup(db, 2).await?).map_err(error)
+            }
+            "sync_stop" => {
+                self.sync_app()?
+                    .state::<SyncEngine>()
+                    .shutdown_and_wait()
+                    .await?;
+                Ok(json!(true))
+            }
+            _ => Err("Unknown sync lifecycle fixture command".into()),
+        }
+    }
+
+    fn transfer_retry(&mut self) -> Result<&mut TransferRetryDriver, String> {
+        if self.transfer_retry.is_none() {
+            let (store, jobs) = TransferStore::open(&self.root.join("transfers.db"))?;
+            self.transfer_retry = Some(TransferRetryDriver {
+                store,
+                jobs: jobs.into_iter().map(|job| (job.id.clone(), job)).collect(),
+                pending: HashMap::new(),
+                prompt_tokens: HashMap::new(),
+            });
+        }
+        Ok(self.transfer_retry.as_mut().unwrap())
+    }
+
     async fn dispatch(&mut self, request: Value) -> Result<Value, String> {
         let command = text(&request, "command")?.to_owned();
         match command.as_str() {
+            "sync_seed"
+            | "sync_start"
+            | "sync_status"
+            | "sync_telegram"
+            | "sync_ready_reply"
+            | "sync_wake"
+            | "sync_seed_cleanup"
+            | "sync_pending_cleanup"
+            | "sync_stop" => self.dispatch_sync_lifecycle(request).await,
             "notifications_start"
             | "notification_language"
             | "notification_tray"
@@ -1158,6 +1356,7 @@ impl Driver {
             | "external_file_status"
             | "external_file_open"
             | "proxy_transport_fixture"
+            | "grammers_proxy_connect"
             | "inventory_refresh_overlap"
             | "inventory_detection_bound"
             | "inventory_audit_rounds"
@@ -1293,6 +1492,9 @@ impl Driver {
             | "publish_download"
             | "save_transfer"
             | "transfers"
+            | "retry_failed_upload"
+            | "transfer_retry_snapshot"
+            | "record_transfer_result"
             | "fail_transfer"
             | "remove_transfer" => self.dispatch_transfers(request).await,
             _ => Err("Unknown native E2E command".into()),
@@ -1538,7 +1740,9 @@ impl Driver {
                     let session = SqliteSession::open(&staged).map_err(error)?;
                     session.cache_peer(&PeerInfo::User {id:owner,auth:None,bot:Some(false),is_self:Some(true)});
                     drop(session);
-                    crate::desktop_preferences::atomic_replace(&staged,&path).map_err(error)?;
+                    crate::workspace::with_fixture_session_file_replacement(|| {
+                        crate::desktop_preferences::atomic_replace(&staged,&path)
+                    }).map_err(error)?;
                     // Fence any registered old session before reporting the new owner.
                     let session=crate::workspace::open_session(&root).map_err(error)?;
                     crate::workspace::register_session(&root,&session)?;
@@ -1880,6 +2084,52 @@ impl Driver {
                 )
                 .map_err(error)?;
                 Ok(json!(true))
+            }
+            "grammers_proxy_connect" => {
+                let address: std::net::SocketAddr = text(&request, "address")?
+                    .parse()
+                    .map_err(|_| "Invalid proxy fixture target address")?;
+                if !address.ip().is_loopback() {
+                    return Err("Proxy fixture targets must be loopback addresses".into());
+                }
+                let proxy = text(&request, "proxy")?.to_string();
+                let parsed =
+                    reqwest::Url::parse(&proxy).map_err(|_| "Invalid proxy fixture URL")?;
+                let local_proxy = parsed.host_str().is_some_and(|host| {
+                    host == "localhost"
+                        || host.ends_with(".localhost")
+                        || host
+                            .trim_start_matches('[')
+                            .trim_end_matches(']')
+                            .parse::<std::net::IpAddr>()
+                            .is_ok_and(|address| address.is_loopback())
+                });
+                if !local_proxy {
+                    return Err("Proxy fixture endpoints must be loopback addresses".into());
+                }
+                // Exercise the same Grammers transport as production without
+                // contacting Telegram or starting an authorization handshake.
+                let connected = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    grammers_mtsender::Sender::connect(
+                        grammers_mtproto::transport::Full::new(),
+                        grammers_mtproto::mtp::Plain::new(),
+                        grammers_mtsender::ServerAddr::Proxied { address, proxy },
+                    ),
+                )
+                .await;
+                Ok(match connected {
+                    Ok(Ok(sender)) => {
+                        drop(sender);
+                        json!({"connected":true})
+                    }
+                    Ok(Err(error)) => json!({
+                        "connected":false,
+                        "error":error.to_string(),
+                        "kind":format!("{:?}", error.kind()),
+                    }),
+                    Err(_) => json!({"connected":false,"error":"Proxy connection timed out"}),
+                })
             }
             "proxy_transport_fixture" => {
                 let url = text(&request, "url")?.to_string();
@@ -2414,23 +2664,44 @@ impl Driver {
                 tokio::fs::copy(child(&self.root, text(&request, "changed")?)?, &live)
                     .await
                     .map_err(error)?;
+                // File I/O or a stalled host must not turn this active-consumer
+                // phase into a cold cache before its notification is observed.
+                if !cache.touch(&account, None)? {
+                    return Err("Active inventory disappeared before the consumer read".into());
+                }
                 if request["consumerBeforePoll"].as_bool().unwrap_or(false) {
                     cache
                         .read(&account, None, &source(live.clone()), false, false)
                         .await?;
                 }
+                if !cache.touch(&account, None)? {
+                    return Err("Active inventory disappeared before the desktop poll".into());
+                }
+                let last_consumer_touch = cache
+                    .test_last_consumer_touch(&account, None)
+                    .ok_or("Active inventory has no consumer touch")?;
                 let changed = cache
                     .poll_recent(|_, _| {
                         let source = source(live.clone());
                         async move { Ok(source) }
                     })
                     .await;
-                tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                let background_touch_unchanged =
+                    cache.test_last_consumer_touch(&account, None) == Some(last_consumer_touch);
+                // Observe real idle expiry from the last consumer boundary,
+                // separately from the completed desktop notification poll.
+                tokio::time::sleep_until(tokio::time::Instant::from_std(
+                    last_consumer_touch + timing.retention + Duration::from_millis(20),
+                ))
+                .await;
                 tokio::fs::copy(child(&self.root, text(&request, "cold")?)?, &live)
                     .await
                     .map_err(error)?;
                 let before = self
                     .inventory_lookups
+                    .load(std::sync::atomic::Ordering::SeqCst);
+                let history_before = self
+                    .inventory_history
                     .load(std::sync::atomic::Ordering::SeqCst);
                 let cold = cache
                     .read(&account, None, &source(live), false, false)
@@ -2443,6 +2714,8 @@ impl Driver {
                         _,
                         listing)|listing.rows.first()).map(|row|row.name.clone()),
                         "coldName":cold.first().map(|row|row.name.clone()),
+                        "backgroundTouchUnchanged":background_touch_unchanged,
+                        "coldHistoryWalks":self.inventory_history.load(std::sync::atomic::Ordering::SeqCst)-history_before,
                         "coldLookupBatches":self.inventory_lookups.load(std::sync::atomic::Ordering::SeqCst)-before
                     }
                 ))
@@ -4748,6 +5021,48 @@ impl Driver {
                     .await?;
                 Ok(json!(true))
             }
+            "retry_failed_upload" => {
+                let account = if request["capturedAccount"].as_bool().unwrap_or(false) {
+                    self.guard.clone().ok_or("No captured account")?
+                } else {
+                    AccountGuard::open(&self.root, Some(text(&request, "owner")?))?
+                };
+                let id = text(&request, "id")?;
+                let state = self.transfer_retry()?;
+                let result = crate::transfer_engine::retry_failed_upload(
+                    &state.store,
+                    &mut state.jobs,
+                    &mut state.pending,
+                    &mut state.prompt_tokens,
+                    &account,
+                    id,
+                    request["promptToken"].as_u64(),
+                )
+                .await?;
+                Ok(
+                    json!({"job":result.job,"retried":result.retried,"hasPromptToken":state.prompt_tokens.contains_key(id)}),
+                )
+            }
+            "transfer_retry_snapshot" => {
+                let id = text(&request, "id")?;
+                let state = self.transfer_retry()?;
+                let job = state.jobs.get(id).ok_or("Transfer was not found")?;
+                Ok(json!({"job":job,"hasPromptToken":state.prompt_tokens.contains_key(id)}))
+            }
+            "record_transfer_result" => {
+                // The controlled Telegram boundary supplies a finished result;
+                // production SQLite checkpoint/recovery behavior remains real.
+                let job = serde_json::from_value(request["job"].clone()).map_err(error)?;
+                let state = self.transfer_retry()?;
+                let result = crate::transfer_engine::commit_result(
+                    &state.store,
+                    &mut state.jobs,
+                    &mut state.pending,
+                    job,
+                )
+                .await;
+                serde_json::to_value(result).map_err(error)
+            }
             _ => Err("Unknown transfers E2E command".into()),
         }
     }
@@ -5009,6 +5324,8 @@ pub async fn run() -> Result<(), String> {
     initial_network.proxy.password =
         std::fs::read_to_string(root.join("proxy-credential")).unwrap_or_default();
     let mut driver = Driver {
+        sync_app: None,
+        transfer_retry: None,
         video_upload: None,
         notifications: None,
         proxy_update_task: None,
@@ -5061,6 +5378,9 @@ pub async fn run() -> Result<(), String> {
         };
         println!("{response}");
         std::io::stdout().flush().map_err(error)?;
+    }
+    if let Some(app) = &driver.sync_app {
+        app.state::<SyncEngine>().shutdown_and_wait().await?;
     }
     for (handle, task) in driver.servers {
         handle.stop(true).await;
