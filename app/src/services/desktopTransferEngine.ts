@@ -92,6 +92,7 @@ const downloadStatus = (status: TransferStatus): DownloadItem['status'] => {
 
 export const transferJobToUploadItem = (job: DesktopTransferJob): QueueItem => ({
     id: job.id,
+    createdAt: job.createdAt,
     ownerId: job.ownerId ?? undefined,
     path: job.path || job.filename,
     url: job.url,
@@ -113,6 +114,7 @@ export const transferJobToUploadItem = (job: DesktopTransferJob): QueueItem => (
 
 export const transferJobToDownloadItem = (job: DesktopTransferJob): DownloadItem => ({
     id: job.id,
+    createdAt: job.createdAt,
     ownerId: job.ownerId ?? undefined,
     messageId: job.messageId || 0,
     filename: job.filename,
@@ -196,6 +198,11 @@ export async function transferItemAction(
     ownerId?: string,
 ): Promise<DesktopTransferJob> {
     return invoke<DesktopTransferJob>(`cmd_transfer_${action}`, { id, ownerId });
+}
+
+/** Recheck strict failed-upload eligibility in the native mutation lock. */
+export async function retryFailedUpload(id: string, ownerId: string, promptToken?: number): Promise<{ job: DesktopTransferJob; retried: boolean }> {
+    return invoke<{ job: DesktopTransferJob; retried: boolean }>('cmd_transfer_retry_failed_upload', { id, ownerId, promptToken });
 }
 
 export async function transferBulkAction(

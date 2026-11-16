@@ -1,3 +1,91 @@
+## [4.1.6] - 2026-11-14
+
+### Transfer sorting
+
+- Add a Sort transfers control with Oldest to newest and Newest to oldest options. Oldest to newest is the default, and the selection stays active when the Transfers panel is collapsed and reopened.
+- Order uploads and downloads within their existing sections by the time each transfer was originally queued. Progress updates, retries, and completion do not change that date; ties remain stable and entries without a valid recorded date stay last.
+- Keep sorting separate from scheduling and queue priority. Pause, resume, retry, cancel, and clear continue acting on the same transfer IDs.
+- Translate the new control in all 24 supported languages and retain keyboard access, theme styling, and compact layout support.
+
+### Build dependency security
+
+- Update Vite to 7.3.7 and source-map-js to 1.2.2 for their published development-server and source-map processing security fixes, while retaining the existing dependency ranges.
+
+### Compatibility and verification
+
+- Preserve existing Telegram sessions, vaults, settings, and lifetime supporter activations. The optional $5.00 USD one-time lifetime ad-free license and recovery rights remain unchanged.
+- Retain the desktop platform builds, packaged startup, dependency, E2E, signing, checksum, SBOM, and provenance gates. Automated Telegram boundaries use controlled fixtures; live-service and manual installed-platform acceptance remain separate.
+- This release updates desktop only. Android remains on its separate release line.
+
+## [4.1.5] - 2026-11-13
+
+### Default upload mode
+
+- Add Ask every time, Always Standard, and Always Encrypted under Preferences → Encryption (#247). The selected preference persists on this installation; existing installations keep Ask every time.
+- Apply the default to file selection, drag-and-drop, zipped folders, and URL uploads. Protected uploads retain their encryption checks, vault setup/unlock, recovery guidance, and masked per-file passphrase prompts.
+- Keep the selected encryption method and metadata protection consistent through preparation, cancel pending choices when accounts change, and preserve the original protection on queued uploads and retries.
+- Translate the new preference and preparation messages in all supported languages.
+
+### Dependency security
+
+- Update the proxy DNS resolver and filesystem dependencies to address newly published security advisories.
+- Backport resolver compatibility within the existing Telegram transport package, preserving the current protocol/session versions, IPv4-first proxy selection, system DNS settings, and SOCKS authentication behavior.
+
+### Compatibility and verification
+
+- Preserve existing Telegram sessions, vaults, settings, transfer behavior, and lifetime supporter activations. The optional $5.00 USD one-time lifetime ad-free license and recovery rights remain unchanged.
+- Keep desktop platform builds, packaged startup, dependency, E2E, signing, checksum, SBOM, and provenance gates. Automated Telegram boundaries use controlled fixtures; live-service and manual installed-platform acceptance are separate.
+- This release updates desktop only. Android remains on its separate release line.
+
+## [4.1.4] - 2026-11-07
+
+### Folder Sync recovery
+
+- Fix active folder mappings incorrectly reporting Telegram as offline after restarting the desktop app (#241).
+- Show Waiting for Telegram during connection startup and resume automatically when the authenticated session is ready, including with the incremental scanner. Retained readiness and bounded retries recover without toggling a mapping.
+- Reject stale connection replies and preserve manually paused mappings, account isolation, encryption restrictions and remote cleanup safeguards.
+
+### Files header sizing
+
+- Fit the folder heading and filter controls to their visible contents, removing the unused space reserved for selection actions.
+- Expand the header only when bulk actions are visible, while preserving filter shortcuts, layout switching and keyboard controls.
+
+### Dependency security
+
+- Update the HTTP server and file-response dependencies to address newly published request parsing, decompression and Windows file-disclosure advisories.
+- Preserve authenticated byte-range video streaming and account-revocation checks while adapting to the patched file-response API.
+
+### Compatibility and verification
+
+- Preserve existing Telegram sessions, vaults, settings, transfer behavior and lifetime supporter activations. The optional $5.00 USD one-time lifetime ad-free license and recovery rights remain unchanged.
+- Keep the existing desktop platform builds, packaged startup, dependency, E2E, signing, checksum, SBOM and provenance gates. Automated Telegram boundaries use controlled fixtures; live-service and manual installed-platform acceptance are separate.
+- This release updates desktop only. Android remains on its separate release line.
+
+## [4.1.3] - 2026-11-06
+
+### Files, transfers and settings
+
+- Refine the desktop Files view with a clearer folder heading, filter shortcuts, compact list columns and a stable selection toolbar.
+- Show measured transfer progress, distinguish failed, skipped and completed work, and display an honest waiting state when progress cannot yet be measured.
+- Add searchable settings categories, consistent theme controls and motion that respects the system preference and the saved Performance Mode choice. Closing dialogs releases controls immediately and restores focus.
+
+### Retry failed uploads
+
+- Retry the current account's failed uploads with one action while preserving each file's destination, protection, video settings and queue position.
+- Prevent duplicate retry batches, stop remaining retries when the queue is paused or cancelled, and report queued, skipped, failed and unattempted counts. Queue acceptance does not mean upload completion.
+- Protected uploads retain their per-file credential confirmations. Account changes cancel the old batch; newly failing uploads wait for the next explicit action.
+
+### Dependency security
+
+- Update TLS, Tokio, Zstd and ZIP dependencies to patched versions. Align the native and JavaScript Tauri updater packages while preserving the existing signing configuration and application identity.
+- Update the local supporter-service HTTP tooling dependency without changing payment or entitlement behavior.
+
+### Compatibility and verification
+
+- Preserve the upload and streaming fixes shipped in 4.1.2, existing sessions, vaults, settings and lifetime supporter activations. The optional $5.00 USD one-time lifetime ad-free license and recovery rights are unchanged.
+- Browser, native process/storage, service, dependency, security, localization, packaged startup and provenance checks remain release gates. Automated Telegram and PayPal boundaries use controlled fixtures; live-service and manual installed-platform acceptance are separate.
+- Android remains a separate binary release. Android source and project changes are excluded.
+
 ## [4.1.2] - 2026-10-14
 
 ### Desktop video streaming metadata

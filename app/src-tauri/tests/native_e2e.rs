@@ -3084,7 +3084,11 @@ fn zip_preview_and_extraction_use_private_files_verify_crc_limits_and_cleanup_ca
         let mut zip =
             zip::ZipArchive::new(std::fs::File::open(fixture.path("document.zip")).unwrap())
                 .unwrap();
-        let offset = zip.by_index(0).unwrap().data_start() as usize;
+        let offset = zip
+            .by_index(0)
+            .unwrap()
+            .data_start()
+            .expect("stored ZIP fixture has a data offset") as usize;
         offset
     };
     damaged[data_offset + 100] ^= 1;
@@ -3440,7 +3444,9 @@ fn inventory_background_polling_detects_external_renames_emits_only_changes_and_
     assert_eq!(result["unchangedEvents"], 0);
     assert_eq!(result["changedEvents"], 1);
     assert_eq!(result["changedName"], "Outside rename");
+    assert_eq!(result["backgroundTouchUnchanged"], true);
     assert_eq!(result["coldName"], "After idle");
+    assert_eq!(result["coldHistoryWalks"], 1);
     assert_eq!(
         result["coldLookupBatches"], 0,
         "idle slot uses one cold history walk without redundant identifier hydration"
@@ -3586,6 +3592,10 @@ fn an_api_consumer_cannot_consume_the_desktop_inventory_change_notification() {
         "API read consumed the broadcast serial"
     );
     assert_eq!(result["changedName"], "Renamed elsewhere");
+    assert_eq!(result["backgroundTouchUnchanged"], true);
+    assert_eq!(result["coldName"], "Idle");
+    assert_eq!(result["coldHistoryWalks"], 1);
+    assert_eq!(result["coldLookupBatches"], 0);
     app.stop();
 }
 
@@ -3620,7 +3630,9 @@ fn slow_api_inventory_reconciliation_preserves_desktop_change_notifications() {
     assert_eq!(result["unchangedEvents"], 0);
     assert_eq!(result["changedEvents"], 1);
     assert_eq!(result["changedName"], "Renamed elsewhere");
+    assert_eq!(result["backgroundTouchUnchanged"], true);
     assert_eq!(result["coldName"], "Idle");
+    assert_eq!(result["coldHistoryWalks"], 1);
     assert_eq!(result["coldLookupBatches"], 0);
     app.stop();
 }
@@ -7585,6 +7597,213 @@ fn release_small_external_open_requires_an_app_produced_file_and_survives_restar
     }
 }
 
+// A real SOCKS peer observes the native child's production Grammers connection.
+// "localhost" exercises system/hosts resolution; it does not claim DNS-wire coverage.
+fn grammers_socks_peer(
+    host: &str,
+    authenticated: bool,
+) -> (String, Receiver<Value>, std::thread::JoinHandle<()>) {
+    use std::net::TcpListener;
+    let listener = TcpListener::bind(if host == "::1" {
+        "[::1]:0"
+    } else {
+        "127.0.0.1:0"
+    })
+    .expect("Native proxy acceptance requires IPv4 and IPv6 loopback");
+    let port = listener.local_addr().unwrap().port();
+    let mut listeners = vec![listener];
+    // Accept either system-configured localhost address without assuming the
+    // machine's hosts-file order or changing its resolver configuration.
+    if host == "localhost" {
+        listeners.push(TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, port)).unwrap());
+    }
+    for listener in &listeners {
+        listener.set_nonblocking(true).unwrap();
+    }
+    let (send, receive) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        use std::io::Read;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut connection = loop {
+            let accepted = listeners
+                .iter()
+                .find_map(|listener| match listener.accept() {
+                    Ok((stream, _)) => Some(stream),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => None,
+                    Err(error) => panic!("SOCKS fixture accept failed: {error}"),
+                });
+            if let Some(stream) = accepted {
+                break stream;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "SOCKS fixture received no connection"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        // macOS accepted sockets inherit O_NONBLOCK from the listener.
+        connection.set_nonblocking(false).unwrap();
+        connection
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        connection
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut greeting = [0; 2];
+        connection.read_exact(&mut greeting).unwrap();
+        assert_eq!(greeting[0], 5);
+        let mut methods = vec![0; greeting[1] as usize];
+        connection.read_exact(&mut methods).unwrap();
+        let method = if authenticated { 2 } else { 0 };
+        assert!(methods.contains(&method));
+        connection.write_all(&[5, method]).unwrap();
+        if authenticated {
+            let mut header = [0; 2];
+            connection.read_exact(&mut header).unwrap();
+            assert_eq!(header[0], 1);
+            let mut username = vec![0; header[1] as usize];
+            connection.read_exact(&mut username).unwrap();
+            let mut length = [0];
+            connection.read_exact(&mut length).unwrap();
+            let mut password = vec![0; length[0] as usize];
+            connection.read_exact(&mut password).unwrap();
+            let accepted = username == b"proxy-user" && password == b"proxy-secret";
+            connection
+                .write_all(&[1, if accepted { 0 } else { 1 }])
+                .unwrap();
+            if !accepted {
+                send.send(json!({"authenticated":false})).unwrap();
+                return;
+            }
+        }
+        let mut header = [0; 4];
+        connection.read_exact(&mut header).unwrap();
+        assert_eq!(&header[..3], &[5, 1, 0]);
+        let target_ip = match header[3] {
+            1 => {
+                let mut bytes = [0; 4];
+                connection.read_exact(&mut bytes).unwrap();
+                std::net::IpAddr::V4(std::net::Ipv4Addr::from(bytes))
+            }
+            4 => {
+                let mut bytes = [0; 16];
+                connection.read_exact(&mut bytes).unwrap();
+                std::net::IpAddr::V6(std::net::Ipv6Addr::from(bytes))
+            }
+            other => panic!("Expected a pinned literal target, got SOCKS address type {other}"),
+        };
+        let mut target_port = [0; 2];
+        connection.read_exact(&mut target_port).unwrap();
+        let target = std::net::SocketAddr::new(target_ip, u16::from_be_bytes(target_port));
+        assert!(target.ip().is_loopback());
+        let upstream =
+            std::net::TcpStream::connect_timeout(&target, Duration::from_secs(5)).unwrap();
+        connection
+            .write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 0])
+            .unwrap();
+        // Sender::connect returns without creating a Telegram authorization key;
+        // dropping it must close the SOCKS stream without sending API data.
+        let mut byte = [0];
+        assert_eq!(connection.read(&mut byte).unwrap(), 0);
+        drop(upstream);
+        send.send(json!({"authenticated":authenticated,"target":target.to_string()}))
+            .unwrap();
+    });
+    let host = if host == "::1" { "[::1]" } else { host };
+    let credentials = if authenticated {
+        "proxy-user:proxy-secret@"
+    } else {
+        ""
+    };
+    (
+        format!("socks5://{credentials}{host}:{port}"),
+        receive,
+        worker,
+    )
+}
+
+fn grammers_proxy_success(app: &mut Backend, host: &str, authenticated: bool, ipv6_target: bool) {
+    use std::io::Read;
+    let target = std::net::TcpListener::bind(if ipv6_target {
+        "[::1]:0"
+    } else {
+        "127.0.0.1:0"
+    })
+    .unwrap();
+    let address = target.local_addr().unwrap();
+    let (proxy, observed, worker) = grammers_socks_peer(host, authenticated);
+    let reply = app.ok(
+        json!({"command":"grammers_proxy_connect","address":address.to_string(),"proxy":proxy}),
+    );
+    assert_eq!(reply, json!({"connected":true}));
+    assert_eq!(
+        observed.recv_timeout(Duration::from_secs(10)).unwrap(),
+        json!({"authenticated":authenticated,"target":address.to_string()})
+    );
+    worker.join().unwrap();
+    let (mut socket, _) = target.accept().unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    assert_eq!(socket.read(&mut [0]).unwrap(), 0);
+}
+
+#[test]
+fn release_grammers_proxy_resolves_named_hosts_and_preserves_ipv4_ipv6_auth_and_restart() {
+    let fixture = Fixture::new();
+    let mut app = Backend::start(&fixture.0);
+    grammers_proxy_success(&mut app, "localhost", false, false);
+    grammers_proxy_success(&mut app, "127.0.0.1", true, false);
+    grammers_proxy_success(&mut app, "::1", false, true);
+    drop(app);
+    let mut app = Backend::start(&fixture.0);
+    grammers_proxy_success(&mut app, "localhost", true, false);
+}
+
+#[test]
+fn release_grammers_proxy_failures_are_bounded_private_and_leave_native_transport_usable() {
+    let fixture = Fixture::new();
+    let mut app = Backend::start(&fixture.0);
+    let address = "127.0.0.1:443";
+    let (proxy, observed, worker) = grammers_socks_peer("localhost", true);
+    let rejected = proxy.replace("proxy-secret", "wrong-proxy-secret");
+    let reply =
+        app.ok(json!({"command":"grammers_proxy_connect","address":address,"proxy":rejected}));
+    assert_eq!(reply["connected"], false);
+    let error = reply["error"].as_str().unwrap();
+    assert!(!error.contains("proxy-user") && !error.contains("proxy-secret"));
+    assert_ne!(error, "Proxy connection timed out");
+    assert_eq!(
+        observed.recv_timeout(Duration::from_secs(10)).unwrap(),
+        json!({"authenticated":false})
+    );
+    worker.join().unwrap();
+
+    let reserved = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let refused = reserved.local_addr().unwrap();
+    drop(reserved);
+    let proxy = format!("socks5://proxy-user:proxy-secret@{refused}");
+    let reply = app.ok(json!({"command":"grammers_proxy_connect","address":address,"proxy":proxy}));
+    assert_eq!(reply["connected"], false);
+    let error = reply["error"].as_str().unwrap();
+    assert!(!error.contains("proxy-user") && !error.contains("proxy-secret"));
+    assert_ne!(error, "Proxy connection timed out");
+
+    // URL permits this hostname, but its 64-byte label is invalid DNS syntax.
+    // Hickory rejects it locally, with no external DNS or machine config change.
+    let proxy = format!(
+        "socks5://proxy-user:proxy-secret@{}.localhost:443",
+        "x".repeat(64)
+    );
+    let reply = app.ok(json!({"command":"grammers_proxy_connect","address":address,"proxy":proxy}));
+    assert_eq!(reply["connected"], false);
+    let error = reply["error"].as_str().unwrap();
+    assert!(!error.contains("proxy-user") && !error.contains("proxy-secret"));
+    assert_ne!(error, "Proxy connection timed out");
+
+    grammers_proxy_success(&mut app, "localhost", false, false);
+}
+
 #[test]
 fn release_small_proxy_rpc_response_proves_transport_but_disconnect_does_not() {
     let fixture = Fixture::new();
@@ -9477,4 +9696,429 @@ fn video_upload_unused_prepared_preview_admission_is_released_when_main_upload_i
         assert_video_upload_scratch_empty(&fixture);
         app.stop();
     }
+}
+
+fn retry_upload_fixture(id: &str, owner: &str, status: &str) -> Value {
+    json!({
+        "id":id,"ownerId":owner,"direction":"upload","kind":"local_upload",
+        "status":status,"path":format!("/synthetic/{id}.mp4"),"filename":format!("{id}.mp4"),
+        "folderId":91,"protectionMode":"vault_and_passphrase","protectMetadata":true,
+        "videoUploadMode":"file","videoFilenameCaption":true,"tempZipPath":"/synthetic/retained.zip",
+        "progress":81,"transferredBytes":810,"totalBytes":1000,"speedBytesPerSec":24,
+        "error":"synthetic network failure","retryAt":1000,"networkRetries":5,"queuePosition":3,
+        "revision":7,"createdAt":1,"updatedAt":2
+    })
+}
+
+#[test]
+fn retry_failed_uploads_preserves_other_states_account_scope_and_durable_inputs() {
+    let fixture = Fixture::new();
+    let mut app = Backend::start(&fixture.0);
+    app.ok(json!({"command":"seed_account","owner":101}));
+    for status in [
+        "failed",
+        "cancelled",
+        "paused",
+        "waiting_for_unlock",
+        "waiting_for_network",
+        "cooldown",
+        "pending",
+        "completed",
+    ] {
+        app.ok(json!({"command":"save_transfer","job":retry_upload_fixture(status,"101",status)}));
+    }
+    let mut download = retry_upload_fixture("download", "101", "failed");
+    download["direction"] = json!("download");
+    download["kind"] = json!("download");
+    app.ok(json!({"command":"save_transfer","job":download}));
+    app.ok(json!({"command":"save_transfer","job":retry_upload_fixture("foreign","202","failed")}));
+    app.ok(json!({"command":"capture_account","owner":"101"}));
+    let accepted = app
+        .ok(json!({"command":"retry_failed_upload","id":"failed","owner":"101","promptToken":53}));
+    assert_eq!(accepted["retried"], true);
+    assert_eq!(accepted["job"]["status"], "pending");
+    assert_eq!(accepted["job"]["revision"], 8);
+    assert_eq!(accepted["job"]["progress"], 0);
+    assert_eq!(accepted["job"]["transferredBytes"], 0);
+    assert_eq!(accepted["job"]["speedBytesPerSec"], 0);
+    assert_eq!(accepted["job"]["networkRetries"], 0);
+    assert_eq!(accepted["hasPromptToken"], true);
+    let original = retry_upload_fixture("failed", "101", "failed");
+    for key in [
+        "id",
+        "ownerId",
+        "path",
+        "folderId",
+        "filename",
+        "protectionMode",
+        "protectMetadata",
+        "videoUploadMode",
+        "videoFilenameCaption",
+        "tempZipPath",
+        "queuePosition",
+        "totalBytes",
+        "createdAt",
+    ] {
+        assert_eq!(accepted["job"][key], original[key], "retry changed {key}");
+    }
+    let repeated = app
+        .ok(json!({"command":"retry_failed_upload","id":"failed","owner":"101","promptToken":99}));
+    assert_eq!(repeated["retried"], false);
+    assert_eq!(
+        repeated["job"]["revision"], 8,
+        "a repeated click requeued an accepted item"
+    );
+    for status in [
+        "cancelled",
+        "paused",
+        "waiting_for_unlock",
+        "waiting_for_network",
+        "cooldown",
+        "pending",
+        "completed",
+    ] {
+        let result = app.ok(
+            json!({"command":"retry_failed_upload","id":status,"owner":"101","promptToken":99}),
+        );
+        assert_eq!(result["retried"], false);
+        assert_eq!(result["job"]["status"], status);
+        assert_eq!(result["job"]["revision"], 7);
+        assert_eq!(result["hasPromptToken"], false);
+    }
+    let result = app.ok(
+        json!({"command":"retry_failed_upload","id":"download","owner":"101","promptToken":99}),
+    );
+    assert_eq!(result["retried"], false);
+    assert_eq!(result["job"]["status"], "failed");
+    assert_eq!(result["hasPromptToken"], false);
+    assert!(app
+        .failure(json!({"command":"retry_failed_upload","id":"foreign","owner":"101"}))
+        .contains("ACCOUNT_CHANGED"));
+    app.ok(json!({"command":"seed_account","owner":202}));
+    assert!(app
+        .failure(json!({"command":"retry_failed_upload","id":"foreign","owner":"101"}))
+        .contains("ACCOUNT_CHANGED"));
+    assert!(app.failure(json!({"command":"retry_failed_upload","id":"foreign","owner":"202","capturedAccount":true})).contains("ACCOUNT_CHANGED"));
+    app.stop();
+    let raw = sqlite::open(fixture.path("transfers.db")).unwrap();
+    let mut query = raw
+        .prepare("SELECT payload_json FROM transfer_jobs WHERE id='failed'")
+        .unwrap();
+    assert_eq!(query.next().unwrap(), sqlite::State::Row);
+    let payload = query.read::<String, _>(0).unwrap();
+    assert!(
+        !payload.contains("promptToken"),
+        "a credential handle was persisted"
+    );
+    drop(query);
+    drop(raw);
+    let mut app = Backend::start(&fixture.0);
+    let persisted = app.ok(json!({"command":"transfers"}));
+    let failed = persisted
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|job| job["id"] == "failed")
+        .unwrap();
+    assert_eq!(failed["status"], "pending");
+    assert_eq!(failed["path"], original["path"]);
+    app.ok(json!({"command":"seed_account","owner":101}));
+    let unchanged = app.ok(json!({"command":"retry_failed_upload","id":"failed","owner":"101"}));
+    assert_eq!(unchanged["hasPromptToken"], false);
+    app.stop();
+}
+
+#[test]
+fn retry_failed_uploads_rolls_back_storage_failure_and_recovers_only_pending_metadata() {
+    let fixture = Fixture::new();
+    let mut app = Backend::start(&fixture.0);
+    app.ok(json!({"command":"seed_account","owner":101}));
+    app.ok(
+        json!({"command":"save_transfer","job":retry_upload_fixture("rollback","101","failed")}),
+    );
+    app.ok(json!({"command":"save_transfer","job":retry_upload_fixture("receipt","101","failed")}));
+    let connection = sqlite::open(fixture.path("transfers.db")).unwrap();
+    connection.execute("CREATE TRIGGER deny_retry BEFORE UPDATE ON transfer_jobs WHEN NEW.id='rollback' AND NEW.status='pending' BEGIN SELECT RAISE(ABORT,'fixture disk failure'); END;").unwrap();
+    assert!(app
+        .failure(
+            json!({"command":"retry_failed_upload","id":"rollback","owner":"101","promptToken":55})
+        )
+        .contains("PERSISTENCE_ERROR"));
+    let snapshot = app.ok(json!({"command":"transfer_retry_snapshot","id":"rollback"}));
+    assert_eq!(snapshot["job"]["status"], "failed");
+    assert_eq!(snapshot["job"]["revision"], 7);
+    assert_eq!(snapshot["hasPromptToken"], false);
+    connection
+        .execute(concat!(
+            "DROP TRIGGER deny_retry; ",
+            "CREATE TRIGGER deny_receipt BEFORE UPDATE ON transfer_jobs ",
+            "WHEN NEW.id='receipt' AND NEW.status='completed' ",
+            "BEGIN SELECT RAISE(ABORT,'fixture checkpoint failure'); END;"
+        ))
+        .unwrap();
+    let mut completed = retry_upload_fixture("receipt", "101", "completed");
+    completed["progress"] = json!(100);
+    completed["revision"] = json!(8);
+    let pending = app.ok(json!({"command":"record_transfer_result","job":completed}));
+    assert_eq!(pending["persistencePending"], true);
+    connection.execute("DROP TRIGGER deny_receipt").unwrap();
+    drop(connection);
+    let recovered = app
+        .ok(json!({"command":"retry_failed_upload","id":"receipt","owner":"101","promptToken":56}));
+    assert_eq!(
+        recovered["job"]["status"], "completed",
+        "published data must not be enqueued again"
+    );
+    assert_eq!(recovered["retried"], false);
+    assert_eq!(recovered["job"]["persistencePending"], false);
+    assert_eq!(recovered["hasPromptToken"], false);
+    app.stop();
+    let mut app = Backend::start(&fixture.0);
+    let persisted = app.ok(json!({"command":"transfers"}));
+    let jobs = persisted.as_array().unwrap();
+    assert_eq!(
+        jobs.iter().find(|job| job["id"] == "receipt").unwrap()["status"],
+        "completed"
+    );
+    assert_eq!(
+        jobs.iter().find(|job| job["id"] == "rollback").unwrap()["status"],
+        "failed"
+    );
+    app.stop();
+}
+
+#[test]
+fn retry_failed_uploads_keeps_a_hundred_item_batch_durable_across_process_restart() {
+    let fixture = Fixture::new();
+    let mut app = Backend::start(&fixture.0);
+    app.ok(json!({"command":"seed_account","owner":101}));
+    for index in 0..100 {
+        app.ok(json!({"command":"save_transfer","job":retry_upload_fixture(&format!("batch-{index}"),"101","failed")}));
+    }
+    let started = Instant::now();
+    for index in 0..50 {
+        let result = app.ok(json!({"command":"retry_failed_upload","id":format!("batch-{index}"),"owner":"101","promptToken":1000+index}));
+        assert_eq!(result["job"]["status"], "pending");
+        assert_eq!(result["job"]["revision"], 8);
+    }
+    app.stop();
+    let mut app = Backend::start(&fixture.0);
+    // Replaying the accepted half must not create a second queue attempt.
+    for index in 0..100 {
+        let result = app.ok(json!({"command":"retry_failed_upload","id":format!("batch-{index}"),"owner":"101","promptToken":2000+index}));
+        assert_eq!(result["job"]["status"], "pending");
+        assert_eq!(result["job"]["revision"], 8);
+        assert_eq!(result["retried"], index >= 50);
+        assert_eq!(result["hasPromptToken"], index >= 50);
+    }
+    println!(
+        "100 failed-upload queue acceptances plus restart/replay took {:?}",
+        started.elapsed()
+    );
+    app.stop();
+    let mut app = Backend::start(&fixture.0);
+    let jobs = app.ok(json!({"command":"transfers"}));
+    assert_eq!(jobs.as_array().unwrap().len(), 100);
+    assert!(jobs
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|job| job["status"] == "pending" && job["revision"] == 8));
+    app.stop();
+}
+
+fn folder_sync_restart_waits_for_telegram_without_pausing_active_mappings_journey(scanner: &str) {
+    let fixture = Fixture::new();
+    let mut app = Backend::start(&fixture.0);
+    app.ok(json!({"command":"seed_account","owner":101}));
+    app.ok(json!({"command":"sync_seed","owner":"101","scanner":scanner}));
+    app.stop();
+
+    // A new native process restores actual persisted mappings before the
+    // controlled Telegram boundary becomes usable. No user toggles a mapping.
+    let mut app = Backend::start(&fixture.0);
+    assert_eq!(app.ok(json!({"command":"sync_start"}))["scanner"], scanner);
+    let state = app.ok(json!({"command":"sync_status","waitFor":"waiting"}));
+    for pair in state["status"]["pairs"].as_array().unwrap() {
+        if pair["pairId"] == 3 {
+            assert_eq!(pair["phase"], "paused", "{state}");
+            assert_eq!(pair["lastError"], "Paused by you", "{state}");
+        } else {
+            assert_eq!(pair["phase"], "waiting", "{state}");
+            assert_eq!(pair["waitReason"], "telegram", "{state}");
+            assert!(pair["lastError"].is_null(), "{state}");
+        }
+    }
+    assert_eq!(state["scans"], 0, "Waiting must not read remote trees");
+    assert!(app.ok(json!({"command":"sync_telegram","owner":101}))["accepted"] == true);
+    let ready = app.ok(json!({"command":"sync_status","waitFor":"ready"}));
+    assert_eq!(ready["status"]["activePairs"], 2, "{ready}");
+    assert!(
+        ready["scans"].as_u64().unwrap() >= 2,
+        "Both active mappings reconcile after readiness: {ready}"
+    );
+    assert_eq!(ready["status"]["pairs"][2]["phase"], "paused", "{ready}");
+    assert_eq!(
+        fixture.read("mapping-1/keep.txt"),
+        b"Keep the existing synced file across startup and reconnect.\n"
+    );
+
+    let disconnected = app.ok(json!({"command":"sync_telegram"}));
+    let waiting = app.ok(json!({"command":"sync_status","waitFor":"waiting"}));
+    assert_eq!(
+        waiting["scans"], ready["scans"],
+        "Disconnect must not scan remote trees"
+    );
+    let old_generation = disconnected["generation"].as_u64().unwrap() - 1;
+    assert_eq!(
+        app.ok(json!({"command":"sync_ready_reply","generation":old_generation,"owner":101}))
+            ["accepted"],
+        false
+    );
+    let stale = app.ok(json!({"command":"sync_status","waitFor":"waiting"}));
+    assert_eq!(
+        stale["scans"], ready["scans"],
+        "A stale login reply must not resume sync"
+    );
+    app.ok(json!({"command":"sync_telegram","owner":101}));
+    let reconnected = app.ok(json!({"command":"sync_status","waitFor":"ready"}));
+    assert_eq!(
+        reconnected["status"]["pairs"][2]["phase"], "paused",
+        "{reconnected}"
+    );
+    for status in reconnected["history"].as_array().unwrap() {
+        for pair in status["pairs"].as_array().unwrap() {
+            if pair["pairId"] != 3 {
+                assert_ne!(
+                    pair["phase"], "paused",
+                    "Startup and reconnect must never mislabel active mappings: {status}"
+                );
+            }
+        }
+    }
+    app.ok(json!({"command":"sync_stop"}));
+    app.stop();
+}
+
+fn folder_sync_accepts_ready_before_start_and_rejects_account_replacement_journey(scanner: &str) {
+    let fixture = Fixture::new();
+    let mut app = Backend::start(&fixture.0);
+    app.ok(json!({"command":"seed_account","owner":101}));
+    app.ok(json!({"command":"sync_seed","owner":"101","scanner":scanner}));
+    assert_eq!(
+        app.ok(json!({"command":"sync_start","readyOwner":101}))["scanner"],
+        scanner
+    );
+    let ready = app.ok(json!({"command":"sync_status","waitFor":"ready"}));
+    assert_eq!(ready["status"]["pairs"][0]["phase"], "ready", "{ready}");
+    app.ok(json!({"command":"seed_account","owner":202}));
+    app.ok(json!({"command":"sync_wake"}));
+    let switched = app.ok(json!({"command":"sync_status","waitFor":"error"}));
+    assert!(
+        switched["status"]["lastError"]
+            .as_str()
+            .unwrap()
+            .starts_with("ACCOUNT_CHANGED:"),
+        "{switched}"
+    );
+    assert_eq!(
+        switched["scans"], ready["scans"],
+        "Old mappings must not read the new account"
+    );
+    assert_eq!(
+        fixture.read("mapping-1/keep.txt"),
+        b"Keep the existing synced file across startup and reconnect.\n"
+    );
+    app.stop();
+}
+
+fn folder_sync_recovers_via_readiness_probe_and_stops_while_waiting_journey(scanner: &str) {
+    let fixture = Fixture::new();
+    let mut app = Backend::start(&fixture.0);
+    app.ok(json!({"command":"seed_account","owner":101}));
+    app.ok(json!({"command":"sync_seed","owner":"101","scanner":scanner}));
+    assert_eq!(app.ok(json!({"command":"sync_start"}))["scanner"], scanner);
+    let waiting = app.ok(json!({"command":"sync_status","waitFor":"waiting"}));
+    assert_eq!(waiting["scans"], 0, "{waiting}");
+    // The fixture becomes available without publishing a ready notification.
+    // Only the production readiness retry can recover before the 30s poll.
+    app.ok(json!({"command":"sync_telegram","owner":101,"silent":true}));
+    let ready = app.ok(json!({"command":"sync_status","waitFor":"ready"}));
+    assert!(ready["probes"].as_u64().unwrap() > 0, "{ready}");
+    app.ok(json!({"command":"sync_telegram"}));
+    app.ok(json!({"command":"sync_status","waitFor":"waiting"}));
+    // A successful incremental pass already set its five-minute idle deadline.
+    // A missed reconnect notification must still recover on the short retry.
+    app.ok(json!({"command":"sync_telegram","owner":101,"silent":true}));
+    let recovered = app.ok(json!({"command":"sync_status","waitFor":"ready"}));
+    assert!(
+        recovered["scans"].as_u64().unwrap() > ready["scans"].as_u64().unwrap(),
+        "{recovered}"
+    );
+    app.ok(json!({"command":"sync_telegram"}));
+    app.ok(json!({"command":"sync_status","waitFor":"waiting"}));
+    app.ok(json!({"command":"sync_stop"}));
+    app.stop();
+}
+
+fn folder_sync_waiting_preserves_pending_remote_cleanup_journal_journey(scanner: &str) {
+    let fixture = Fixture::new();
+    let mut app = Backend::start(&fixture.0);
+    app.ok(json!({"command":"seed_account","owner":101}));
+    app.ok(json!({"command":"sync_seed","owner":"101","scanner":scanner}));
+    app.ok(json!({"command":"sync_seed_cleanup"}));
+    let before = app.ok(json!({"command":"sync_pending_cleanup"}));
+    assert_eq!(app.ok(json!({"command":"sync_start"}))["scanner"], scanner);
+    let waiting = app.ok(json!({"command":"sync_status","waitFor":"waiting"}));
+    assert_eq!(
+        waiting["status"]["pairs"][1]["phase"], "waiting",
+        "{waiting}"
+    );
+    assert!(
+        waiting["status"]["pairs"][1]["lastError"].is_null(),
+        "{waiting}"
+    );
+    assert_eq!(app.ok(json!({"command":"sync_pending_cleanup"})), before);
+    assert_eq!(waiting["scans"], 0, "{waiting}");
+    app.stop();
+}
+
+#[test]
+fn folder_sync_full_restart_waits_for_telegram_without_pausing_active_mappings() {
+    folder_sync_restart_waits_for_telegram_without_pausing_active_mappings_journey("full");
+}
+
+#[test]
+fn folder_sync_incremental_restart_waits_for_telegram_without_pausing_active_mappings() {
+    folder_sync_restart_waits_for_telegram_without_pausing_active_mappings_journey("incremental");
+}
+
+#[test]
+fn folder_sync_full_accepts_ready_before_start_and_rejects_account_replacement() {
+    folder_sync_accepts_ready_before_start_and_rejects_account_replacement_journey("full");
+}
+
+#[test]
+fn folder_sync_incremental_accepts_ready_before_start_and_rejects_account_replacement() {
+    folder_sync_accepts_ready_before_start_and_rejects_account_replacement_journey("incremental");
+}
+
+#[test]
+fn folder_sync_full_recovers_via_readiness_probe_and_stops_while_waiting() {
+    folder_sync_recovers_via_readiness_probe_and_stops_while_waiting_journey("full");
+}
+
+#[test]
+fn folder_sync_incremental_recovers_via_readiness_probe_and_stops_while_waiting() {
+    folder_sync_recovers_via_readiness_probe_and_stops_while_waiting_journey("incremental");
+}
+
+#[test]
+fn folder_sync_full_waiting_preserves_pending_remote_cleanup_journal() {
+    folder_sync_waiting_preserves_pending_remote_cleanup_journal_journey("full");
+}
+
+#[test]
+fn folder_sync_incremental_waiting_preserves_pending_remote_cleanup_journal() {
+    folder_sync_waiting_preserves_pending_remote_cleanup_journal_journey("incremental");
 }
