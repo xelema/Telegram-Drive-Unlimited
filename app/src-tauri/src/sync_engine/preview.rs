@@ -290,7 +290,7 @@ pub async fn preview_pair(
     );
     Ok(SyncPreview {
         request,
-        generated_at: chrono::Utc::now().timestamp(),
+        generated_at: jiff::Timestamp::now().as_second(),
         review_token,
         account_owner: account.owner.to_string(),
         local_files: local.len(),

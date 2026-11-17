@@ -357,7 +357,7 @@ fn registry_record_from_header(
         header_sha256: Some(header_sha256),
         record_state: EncryptedFileState::Active,
         reconciliation_state: reconciliation_state.to_string(),
-        created_at: chrono::Utc::now().timestamp(),
+        created_at: jiff::Timestamp::now().as_second(),
         last_verified_at: None,
     })
 }
@@ -3546,7 +3546,7 @@ async fn cmd_upload_file_encrypted(
                         header_sha256: Some(header_sha256),
                         record_state: EncryptedFileState::Active,
                         reconciliation_state: "ok".to_string(),
-                        created_at: chrono::Utc::now().timestamp(),
+                        created_at: jiff::Timestamp::now().as_second(),
                         last_verified_at: None,
                     };
                     let registry_result =
@@ -5454,7 +5454,7 @@ pub async fn cmd_get_files(
         Some(_) => return Err("A valid file-load request identifier is required".to_string()),
         None => format!(
             "legacy-{}",
-            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+            i64::try_from(jiff::Timestamp::now().as_nanosecond()).unwrap_or(0)
         ),
     };
     let inventory_key = crate::commands::file_inventory::folder_key(folder_id);

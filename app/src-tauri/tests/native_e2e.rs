@@ -4526,7 +4526,7 @@ fn local_search_runtime_filters_before_paging_and_reuses_saved_rules() {
                 "size":size,
                 "mime_type":"application/octet-stream",
                 "file_ext":ext,
-                "created_at":chrono::Utc::now().to_rfc3339(),
+                "created_at":jiff::Timestamp::now().to_string(),
                 "is_favorite":false,
                 "is_pinned":false,
                 "encryption_state":"plain",
@@ -4873,8 +4873,9 @@ fn local_search_date_window_is_frozen_across_pages_of_one_generation() {
     let fixture = Fixture::new();
     let mut app = Backend::start(&fixture.0);
     app.ok(json!({"command":"seed_account","owner":101}));
-    let boundary = (chrono::Utc::now() - chrono::Duration::days(7) + chrono::Duration::seconds(3))
-        .to_rfc3339();
+    let boundary = (jiff::Timestamp::now() - jiff::SignedDuration::from_hours(7 * 24)
+        + jiff::SignedDuration::from_secs(3))
+    .to_string();
     let files: Vec<_> = (1..=2)
         .map(|id| {
             json!(
@@ -4905,10 +4906,9 @@ fn local_search_date_window_is_frozen_across_pages_of_one_generation() {
 
 #[test]
 fn configurable_weekly_quota_uses_the_saved_limit_and_releases_failed_transfer_holds() {
-    use chrono::Datelike;
     let fixture = Fixture::new();
-    let today = chrono::Local::now().date_naive();
-    let monday = today - chrono::Duration::days(i64::from(today.weekday().num_days_from_monday()));
+    let today = jiff::Zoned::now().date();
+    let monday = today - jiff::Span::new().days(i64::from(today.weekday().to_monday_zero_offset()));
     fixture.write("bandwidth.json",json!({"date":monday.to_string(),"up_bytes":0,"down_bytes":0,"limit_bytes":131072,"period":"weekly"}).to_string());
     let mut app = Backend::start(&fixture.0);
     // Fork policy (CHANGELOG 3.9.9, "Unlimited uploads"): the saved weekly
@@ -5096,9 +5096,8 @@ fn quota_corrupt_existing_file_is_preserved_and_cannot_reset_the_limit_or_usage(
     let mut app = Backend::start(&fixture.0);
     app.failure(json!({"command":"bandwidth_hold","bytes":1}));
     assert_eq!(fixture.read("bandwidth.json"), corrupt.as_bytes());
-    use chrono::Datelike;
-    let today = chrono::Local::now().date_naive();
-    let monday = today - chrono::Duration::days(i64::from(today.weekday().num_days_from_monday()));
+    let today = jiff::Zoned::now().date();
+    let monday = today - jiff::Span::new().days(i64::from(today.weekday().to_monday_zero_offset()));
     fixture.write("bandwidth.json",json!({"date":monday.to_string(),"up_bytes":32768,"down_bytes":0,"limit_bytes":65536,"period":"weekly"}).to_string());
     // Fork policy (CHANGELOG 3.9.9): once repaired, the preserved usage is
     // reloaded and a transfer past the weekly figure is admitted on top of it.

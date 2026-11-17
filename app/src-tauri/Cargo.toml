@@ -41,7 +41,7 @@ tauri-plugin-window-state = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
-chrono = "0.4"
+jiff = "0.2"
 base64 = "0.22"
 image = { version = "0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 log = "0.4"

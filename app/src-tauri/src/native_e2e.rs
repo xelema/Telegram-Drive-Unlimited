@@ -895,7 +895,7 @@ impl crate::local_search::Source for InventorySearchSource {
                             size: 1000,
                             mime_type: Some("application/pdf".into()),
                             file_ext: Some("pdf".into()),
-                            created_at: chrono::Utc::now().to_rfc3339(),
+                            created_at: jiff::Timestamp::now().to_string(),
                             icon_type: "file".into(),
                             encryption_state: "plain".into(),
                             is_favorite: overlay.favorite,
@@ -1601,7 +1601,7 @@ impl Driver {
                     crate::transfer_engine::apply_failure(
                         &mut job,
                         reason.to_owned(),
-                        chrono::Utc::now().timestamp_millis(),
+                        jiff::Timestamp::now().as_millisecond(),
                     );
                 } else {
                     job.status =
@@ -3487,11 +3487,8 @@ impl Driver {
         match text(&request, "command")? {
             "traffic_clock" => {
                 self.network.pacer.set_clock(
-                    chrono::NaiveDateTime::parse_from_str(
-                        text(&request, "time")?,
-                        "%Y-%m-%d %H:%M",
-                    )
-                    .map_err(error)?,
+                    jiff::civil::DateTime::strptime("%Y-%m-%d %H:%M", text(&request, "time")?)
+                        .map_err(error)?,
                 );
                 Ok(json!(true))
             }
@@ -3598,7 +3595,7 @@ impl Driver {
                 .set_limit(request["bytes"].as_u64().ok_or("Missing limit")?)?)),
             "bandwidth_set_date" => {
                 self.bandwidth.set_date(
-                    chrono::NaiveDate::parse_from_str(text(&request, "date")?, "%Y-%m-%d")
+                    jiff::civil::Date::strptime("%Y-%m-%d", text(&request, "date")?)
                         .map_err(error)?,
                 );
                 Ok(json!(self.bandwidth.get_stats()))
@@ -3976,11 +3973,12 @@ impl Driver {
                     .ok_or("Missing files")?
                     .iter()
                     .map(|file| {
-                        let created = chrono::DateTime::parse_from_rfc3339(
-                            file["created"].as_str().ok_or("Missing created")?,
-                        )
-                        .map_err(error)?
-                        .with_timezone(&chrono::Utc);
+                        let created = file["created"]
+                            .as_str()
+                            .ok_or("Missing created")?
+                            .parse::<jiff::Timestamp>()
+                            .map_err(error)?
+                            .as_second();
                         let name = file["name"].as_str().ok_or("Missing name")?.to_string();
                         Ok(crate::api_catalog::ApiFile {
                             id: file["id"].as_i64().ok_or("Missing id")?,
@@ -3991,7 +3989,7 @@ impl Driver {
                             mime_type: file["mime"].as_str().map(str::to_string),
                             created_at: crate::api_catalog::rfc3339(created),
                             encrypted: file["encrypted"].as_bool().unwrap_or(false),
-                            timestamp: created.timestamp(),
+                            timestamp: created,
                             is_document: true,
                         })
                     })
