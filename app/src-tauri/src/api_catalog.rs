@@ -6,7 +6,6 @@ use crate::commands::utils::media_size;
 use crate::commands::TelegramState;
 use crate::models::FolderMetadata;
 use crate::workspace::AccountGuard;
-use chrono::{DateTime, NaiveDate, NaiveDateTime, SecondsFormat, Utc};
 use grammers_client::types::{Media, Message, Peer};
 use serde::Serialize;
 use std::{
@@ -44,26 +43,34 @@ pub struct ApiFile {
     pub is_document: bool,
 }
 
-pub fn rfc3339(date: DateTime<Utc>) -> String {
-    date.to_rfc3339_opts(SecondsFormat::Secs, true)
+/// Unix seconds as RFC 3339 in UTC, without fractional seconds.
+pub fn rfc3339(seconds: i64) -> String {
+    jiff::Timestamp::from_second(seconds)
+        .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
+        .strftime("%Y-%m-%dT%H:%M:%SZ")
+        .to_string()
 }
 
 /// Accepts RFC 3339, a plain date, Unix seconds, and the
 /// `2026-06-05 10:00:00 UTC` form returned by releases before 4.0.
 pub fn parse_time(value: &str) -> Option<i64> {
     let value = value.trim();
-    if let Ok(parsed) = DateTime::parse_from_rfc3339(value) {
-        return Some(parsed.timestamp());
+    if let Ok(parsed) = value.parse::<jiff::Timestamp>() {
+        return Some(parsed.as_second());
     }
     if let Ok(parsed) =
-        NaiveDateTime::parse_from_str(value.trim_end_matches(" UTC"), "%Y-%m-%d %H:%M:%S")
+        jiff::civil::DateTime::strptime("%Y-%m-%d %H:%M:%S", value.trim_end_matches(" UTC"))
     {
-        return Some(parsed.and_utc().timestamp());
-    }
-    if let Ok(parsed) = NaiveDate::parse_from_str(value, "%Y-%m-%d") {
         return parsed
-            .and_hms_opt(0, 0, 0)
-            .map(|start| start.and_utc().timestamp());
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .ok()
+            .map(|start| start.timestamp().as_second());
+    }
+    if let Ok(parsed) = jiff::civil::Date::strptime("%Y-%m-%d", value) {
+        return parsed
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .ok()
+            .map(|start| start.timestamp().as_second());
     }
     value.parse::<i64>().ok().filter(|seconds| *seconds >= 0)
 }
@@ -104,7 +111,7 @@ pub fn file_from_message(message: &Message, folder_id: Option<i64>) -> Option<Ap
         name,
         size,
         mime_type,
-        created_at: rfc3339(message.date()),
+        created_at: rfc3339(message.date().timestamp()),
         timestamp: message.date().timestamp(),
         document_name,
         is_document,

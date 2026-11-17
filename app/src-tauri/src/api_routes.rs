@@ -1771,9 +1771,13 @@ async fn api_upload_file(
             direction: crate::traffic::Direction::Upload,
         },
     );
-    let upload_res = client
-        .upload_stream(&mut open_file, file_size as usize, filename.clone())
-        .await;
+    let upload_res = crate::sequential_upload::upload_stream(
+        &client,
+        &mut open_file,
+        file_size as usize,
+        filename.clone(),
+    )
+    .await;
     let uploaded_file = match upload_res {
         Ok(uf) => uf,
         Err(e) => {
@@ -1849,7 +1853,7 @@ async fn api_upload_file(
         name: filename,
         size: file_size,
         mime_type: field_mime,
-        created_at: api_catalog::rfc3339(msg.date()),
+        created_at: api_catalog::rfc3339(msg.date().timestamp()),
         encrypted: false,
         timestamp: msg.date().timestamp(),
         is_document: true,

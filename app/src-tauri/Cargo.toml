@@ -28,16 +28,12 @@ tauri-plugin-opener = "2"
 tauri-plugin-os = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-
 libc = "0.2"
-# Fork of grammers (base d07f96f) with WORKER_COUNT=1 so upload chunks go
-# sequentially: concurrent chunks trip FLOOD_PREMIUM_WAIT on free accounts.
-# connections_per_dc still defaults to 1 (auth.rs leaves it unset).
-grammers-client = { git = "https://github.com/xelema/grammers", branch = "multi-connection", features = ["proxy"] }
-grammers-session = { git = "https://github.com/xelema/grammers", branch = "multi-connection" }
-grammers-mtsender = { git = "https://github.com/xelema/grammers", branch = "multi-connection", features = ["proxy"] }
-grammers-mtproto = { git = "https://github.com/xelema/grammers", branch = "multi-connection", optional = true }
-grammers-tl-types = { git = "https://github.com/xelema/grammers", branch = "multi-connection" }
+grammers-client = { git = "https://github.com/Lonami/grammers", rev = "d07f96f", features = ["proxy"] }
+grammers-session = { git = "https://github.com/Lonami/grammers", rev = "d07f96f" }
+grammers-mtsender = { git = "https://github.com/Lonami/grammers", rev = "d07f96f", features = ["proxy"] }
+grammers-mtproto = { git = "https://github.com/Lonami/grammers", rev = "d07f96f", optional = true }
+grammers-tl-types = { git = "https://github.com/Lonami/grammers", rev = "d07f96f" }
 tokio = { version = "1", features = ["full"] }
 
 tauri-plugin-store = "2"
@@ -45,7 +41,7 @@ tauri-plugin-window-state = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
-chrono = "0.4"
+jiff = "0.2"
 base64 = "0.22"
 image = { version = "0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 log = "0.4"
@@ -85,7 +81,6 @@ walkdir = "2"
 sqlite = { version = "0.37.0", features = ["bundled"] }
 mp4parse = "0.17"
 urlencoding = "2"
-
 reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls", "socks", "json", "http2", "charset"] }
 sysinfo = "0.30"
 tokio-rustls = "0.26"
@@ -112,7 +107,6 @@ windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"
 ndk-context = "0.1.1"
-
 ed25519-dalek = "2.2"
 
 [package.metadata.tauri.bundle.windows]
@@ -126,16 +120,8 @@ native-e2e = ["dep:grammers-mtproto"]
 
 # Keep the established Telegram protocol/session revision while backporting the
 # patched proxy resolver. See vendor/grammers-mtsender/PROVENANCE.md.
-# The fork's grammers sources point here too, so every grammers crate resolves to
-# a single source and the vendored sender replaces the fork's copy.
-[patch."https://github.com/xelema/grammers"]
-grammers-mtsender = { path = "vendor/grammers-mtsender" }
-
 [patch."https://github.com/Lonami/grammers"]
-grammers-crypto = { git = "https://github.com/xelema/grammers", branch = "multi-connection" }
-grammers-mtproto = { git = "https://github.com/xelema/grammers", branch = "multi-connection" }
-grammers-session = { git = "https://github.com/xelema/grammers", branch = "multi-connection" }
-grammers-tl-types = { git = "https://github.com/xelema/grammers", branch = "multi-connection" }
+grammers-mtsender = { path = "vendor/grammers-mtsender" }
 
 [[bin]]
 name = "native-e2e-driver"

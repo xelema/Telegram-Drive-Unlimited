@@ -49,7 +49,7 @@ fn change_activity(
                     .unwrap_or_default();
                 opened.folder_id = file.folder_id;
                 opened.message_id = file.id;
-                opened.last_opened_at = chrono::Utc::now().timestamp();
+                opened.last_opened_at = jiff::Timestamp::now().as_second();
                 opened.open_count = opened.open_count.saturating_add(1);
                 store.put_record("opened", &key, &opened)
             }

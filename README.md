@@ -33,9 +33,10 @@ integration, not an ad - but the app no longer shows advertisements to anyone.
 
 - **No transfer quota.** Bandwidth usage is still counted and displayed, but the weekly cap
   is not enforced: a transfer is never refused for exceeding it.
-- **Forked Telegram client.** Builds use the [`xelema/grammers`](https://github.com/xelema/grammers)
-  fork (branch `multi-connection`, based on upstream's pinned `d07f96f`). It sends upload
-  chunks sequentially, which avoids Telegram's `FLOOD_PREMIUM_WAIT` on free accounts.
+- **Large uploads sent one part at a time.** WebDAV, REST API, split-file and
+  non-resumable desktop uploads send a large file's parts sequentially
+  (`app/src-tauri/src/sequential_upload.rs`), which avoids Telegram's `FLOOD_PREMIUM_WAIT`
+  on free accounts. Builds use upstream's pinned Telegram client (`Lonami/grammers` `d07f96f`).
 - The fork's Android content-URI streaming uploader was dropped in favour of upstream's own
   Android implementation, so split files are desktop-only for now.
 

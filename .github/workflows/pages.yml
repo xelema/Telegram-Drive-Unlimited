@@ -17,7 +17,9 @@ permissions:
 jobs:
   deploy:
     # Match the protected environment and never deploy an older release tag.
-    if: github.ref == 'refs/heads/main'
+    # The product page belongs to the upstream project: the Unlimited fork has
+    # no Pages site and its updater reads its own GitHub releases instead.
+    if: github.ref == 'refs/heads/main' && github.repository == 'caamer20/Telegram-Drive'
     concurrency:
       group: pages
       cancel-in-progress: true

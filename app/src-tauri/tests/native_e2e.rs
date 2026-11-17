@@ -1956,6 +1956,58 @@ async fn webdav_serves_only_its_token_and_only_the_signed_in_account() {
 // and Telegram discarding old parts are not exercised.
 // ---------------------------------------------------------------------------
 
+#[test]
+fn large_uploads_send_one_part_at_a_time_and_stop_at_the_first_failure() {
+    // Fork policy (CHANGELOG 3.9.9): parallel parts trip FLOOD_PREMIUM_WAIT on
+    // free accounts, so WebDAV, API, split-file and non-resumable uploads
+    // confirm each part before sending the next.
+    const PART: usize = 512 * 1024;
+    let fixture = Fixture::new();
+    let source = synthetic_bytes(3 * PART + 4096, 11);
+    fixture.write("big.bin", &source);
+    let mut app = Backend::start(&fixture.0);
+    let upload = |extra: Value| {
+        let mut request = json!({"command":"upload_sequential","source":"big.bin","sink":"parts","name":"big.bin"});
+        for (key, value) in extra.as_object().unwrap() {
+            request[key] = value.clone();
+        }
+        request
+    };
+
+    let sent = app.ok(upload(json!({})));
+    assert_eq!(sent["peakInFlight"], 1, "parts must never overlap: {sent}");
+    assert_eq!(sent["saved"], json!([0, 1, 2, 3]));
+    assert_eq!(sent["totalParts"], 4);
+    assert_eq!(sent["name"], "big.bin");
+    let assembled = app.ok(json!({"command":"upload_assemble","sink":"parts",
+        "fileId":sent["fileId"],"totalParts":4,"destination":"assembled.bin"}));
+    assert_eq!(assembled["bytes"], source.len());
+    assert_eq!(fixture.read("assembled.bin"), source);
+
+    let failed = app.ok(upload(json!({"sink":"failed-parts","failAtPart":1})));
+    assert!(
+        failed["error"]
+            .as_str()
+            .unwrap()
+            .contains("connection reset"),
+        "{failed}"
+    );
+    assert_eq!(
+        failed["saved"],
+        json!([0]),
+        "no part may be sent after a refused one"
+    );
+
+    let short = app.ok(upload(
+        json!({"sink":"short-parts","bytes":source.len() + 1}),
+    ));
+    assert!(
+        short["error"].as_str().unwrap().contains("ended before"),
+        "{short}"
+    );
+    app.stop();
+}
+
 fn synthetic_bytes(length: usize, seed: u64) -> Vec<u8> {
     let mut state = seed;
     (0..length)
@@ -4474,7 +4526,7 @@ fn local_search_runtime_filters_before_paging_and_reuses_saved_rules() {
                 "size":size,
                 "mime_type":"application/octet-stream",
                 "file_ext":ext,
-                "created_at":chrono::Utc::now().to_rfc3339(),
+                "created_at":jiff::Timestamp::now().to_string(),
                 "is_favorite":false,
                 "is_pinned":false,
                 "encryption_state":"plain",
@@ -4821,8 +4873,9 @@ fn local_search_date_window_is_frozen_across_pages_of_one_generation() {
     let fixture = Fixture::new();
     let mut app = Backend::start(&fixture.0);
     app.ok(json!({"command":"seed_account","owner":101}));
-    let boundary = (chrono::Utc::now() - chrono::Duration::days(7) + chrono::Duration::seconds(3))
-        .to_rfc3339();
+    let boundary = (jiff::Timestamp::now() - jiff::SignedDuration::from_hours(7 * 24)
+        + jiff::SignedDuration::from_secs(3))
+    .to_string();
     let files: Vec<_> = (1..=2)
         .map(|id| {
             json!(
@@ -4853,17 +4906,23 @@ fn local_search_date_window_is_frozen_across_pages_of_one_generation() {
 
 #[test]
 fn configurable_weekly_quota_uses_the_saved_limit_and_releases_failed_transfer_holds() {
-    use chrono::Datelike;
     let fixture = Fixture::new();
-    let today = chrono::Local::now().date_naive();
-    let monday = today - chrono::Duration::days(i64::from(today.weekday().num_days_from_monday()));
+    let today = jiff::Zoned::now().date();
+    let monday = today - jiff::Span::new().days(i64::from(today.weekday().to_monday_zero_offset()));
     fixture.write("bandwidth.json",json!({"date":monday.to_string(),"up_bytes":0,"down_bytes":0,"limit_bytes":131072,"period":"weekly"}).to_string());
     let mut app = Backend::start(&fixture.0);
-    assert!(
-        app.failure(json!({"command":"bandwidth_hold","bytes":262144,"upload":true}))
-            .contains("limit"),
-        "saved weekly quota must be authoritative"
+    // Fork policy (CHANGELOG 3.9.9, "Unlimited uploads"): the saved weekly
+    // figure is reported, but a transfer past it is admitted and accounted.
+    let over = app.ok(json!({"command":"bandwidth_hold","bytes":262144,"upload":true}));
+    assert_eq!(
+        over["limit_bytes"], 131072,
+        "saved weekly figure must stay authoritative for display"
     );
+    assert_eq!(
+        over["up_bytes"], 262144,
+        "a hold past the weekly figure must be admitted, not refused"
+    );
+    assert_eq!(app.ok(json!({"command":"bandwidth_cancel"}))["up_bytes"], 0);
     let held = app.ok(json!({"command":"bandwidth_hold","bytes":65536,"upload":true}));
     assert_eq!(held["limit_bytes"], 131072);
     assert_eq!(app.ok(json!({"command":"bandwidth_cancel"}))["up_bytes"], 0);
@@ -4871,13 +4930,16 @@ fn configurable_weekly_quota_uses_the_saved_limit_and_releases_failed_transfer_h
     app.ok(json!({"command":"bandwidth_commit"}));
     app.stop();
     let mut restarted = Backend::start(&fixture.0);
+    let stats = restarted.ok(json!({"command":"bandwidth_read"}));
+    assert_eq!(stats["up_bytes"], 65536);
+    assert_eq!(stats["limit_bytes"], 131072);
+    restarted.ok(json!({"command":"bandwidth_hold","bytes":131072}));
+    let charged = restarted.ok(json!({"command":"bandwidth_commit"}));
     assert_eq!(
-        restarted.ok(json!({"command":"bandwidth_read"}))["up_bytes"],
-        65536
+        (charged["up_bytes"].clone(), charged["down_bytes"].clone()),
+        (json!(65536), json!(131072)),
+        "usage past the weekly figure must still be charged exactly"
     );
-    assert!(restarted
-        .failure(json!({"command":"bandwidth_hold","bytes":131072}))
-        .contains("limit"));
     restarted.stop();
 }
 
@@ -4922,13 +4984,22 @@ fn quota_rollover_keeps_admission_holds_and_late_cancellation_cannot_refund_new_
     app.ok(json!({"command":"bandwidth_set_limit","bytes":131072}));
     app.ok(json!({"command":"bandwidth_hold","bytes":65536,"upload":true}));
     app.ok(json!({"command":"bandwidth_set_date","date":"2026-10-05"}));
-    assert!(app
-        .failure(json!({"command":"bandwidth_commit_other","bytes":98304}))
-        .contains("limit"));
+    // Fork policy (CHANGELOG 3.9.9): the admission hold survives the rollover,
+    // and usage crossing the weekly figure is recorded instead of refused.
+    let crossed = app.ok(json!({"command":"bandwidth_commit_other","bytes":98304}));
+    assert_eq!(crossed["date"], "2026-10-05");
+    assert_eq!(
+        crossed["up_bytes"], 65536,
+        "the previous-week admission hold must survive the rollover"
+    );
+    assert_eq!(crossed["down_bytes"], 98304);
     app.ok(json!({"command":"bandwidth_commit_other","bytes":32768}));
     let after = app.ok(json!({"command":"bandwidth_cancel"}));
     assert_eq!(after["up_bytes"], 0);
-    assert_eq!(after["down_bytes"], 32768);
+    assert_eq!(
+        after["down_bytes"], 131072,
+        "a late cancellation must not refund new-week usage"
+    );
     assert_eq!(after["date"], "2026-10-05");
     app.ok(json!({"command":"bandwidth_hold","bytes":32768,"upload":true}));
     app.ok(json!({"command":"bandwidth_resize","bytes":65536}));
@@ -4973,9 +5044,11 @@ fn quota_can_shrink_an_admitted_hold_after_the_user_lowers_the_limit() {
     app.ok(json!({"command":"bandwidth_set_limit","bytes":131072}));
     app.ok(json!({"command":"bandwidth_hold","bytes":98304,"upload":true}));
     app.ok(json!({"command":"bandwidth_set_limit","bytes":32768}));
-    assert!(app
-        .failure(json!({"command":"bandwidth_resize","bytes":114688}))
-        .contains("limit"));
+    // Fork policy (CHANGELOG 3.9.9): growing a hold past a lowered figure is
+    // recorded, never refused. shrinking it still releases the difference.
+    let grown = app.ok(json!({"command":"bandwidth_resize","bytes":114688}));
+    assert_eq!(grown["limit_bytes"], 32768);
+    assert_eq!(grown["up_bytes"], 114688);
     app.ok(json!({"command":"bandwidth_resize","bytes":65536}));
     app.ok(json!({"command":"bandwidth_commit"}));
     assert_eq!(
@@ -5023,13 +5096,25 @@ fn quota_corrupt_existing_file_is_preserved_and_cannot_reset_the_limit_or_usage(
     let mut app = Backend::start(&fixture.0);
     app.failure(json!({"command":"bandwidth_hold","bytes":1}));
     assert_eq!(fixture.read("bandwidth.json"), corrupt.as_bytes());
-    use chrono::Datelike;
-    let today = chrono::Local::now().date_naive();
-    let monday = today - chrono::Duration::days(i64::from(today.weekday().num_days_from_monday()));
+    let today = jiff::Zoned::now().date();
+    let monday = today - jiff::Span::new().days(i64::from(today.weekday().to_monday_zero_offset()));
     fixture.write("bandwidth.json",json!({"date":monday.to_string(),"up_bytes":32768,"down_bytes":0,"limit_bytes":65536,"period":"weekly"}).to_string());
-    assert!(app
-        .failure(json!({"command":"bandwidth_hold","bytes":65536}))
-        .contains("limit"));
+    // Fork policy (CHANGELOG 3.9.9): once repaired, the preserved usage is
+    // reloaded and a transfer past the weekly figure is admitted on top of it.
+    let repaired = app.ok(json!({"command":"bandwidth_hold","bytes":65536}));
+    assert_eq!(
+        (repaired["up_bytes"].clone(), repaired["down_bytes"].clone()),
+        (json!(32768), json!(65536)),
+        "repair must not reset the preserved usage"
+    );
+    assert_eq!(
+        repaired["limit_bytes"], 65536,
+        "repair must not reset the saved weekly figure"
+    );
+    assert_eq!(
+        app.ok(json!({"command":"bandwidth_cancel"}))["down_bytes"],
+        0
+    );
     assert_eq!(
         app.ok(json!({"command":"bandwidth_read"}))["up_bytes"],
         32768
@@ -5260,12 +5345,20 @@ async fn quota_http_ranges_charge_successful_response_bytes_and_failed_bodies_re
         app.ok(json!({"command":"bandwidth_read"}))["down_bytes"],
         32768
     );
-    assert_eq!(client.get(url).send().await.unwrap().status(), 429);
+    // Fork policy (CHANGELOG 3.9.9): a body past the weekly figure is served
+    // instead of answered with 429, and its bytes are still charged exactly.
+    let full = client.get(url).send().await.unwrap();
+    assert_eq!(full.status(), 200);
+    assert_eq!(full.bytes().await.unwrap().len(), 131072);
+    assert_eq!(
+        app.ok(json!({"command":"bandwidth_read"}))["down_bytes"],
+        163840
+    );
     app.stop();
     let mut restarted = Backend::start(&fixture.0);
     assert_eq!(
         restarted.ok(json!({"command":"bandwidth_read"}))["down_bytes"],
-        32768
+        163840
     );
     restarted.stop();
 }
@@ -9617,7 +9710,7 @@ fn video_upload_decoder_deadline_kills_the_owned_process_without_publication_or_
 }
 
 #[test]
-fn video_upload_near_quota_limit_refuses_preview_admission_before_main_file_upload() {
+fn video_upload_near_quota_limit_admits_and_charges_the_preview_instead_of_refusing_it() {
     let fixture = Fixture::new();
     video_upload_fixture(&fixture, "quota.mp4", false, false);
     let mut app = start_video_upload_backend(&fixture);
@@ -9626,24 +9719,33 @@ fn video_upload_near_quota_limit_refuses_preview_admission_before_main_file_uplo
     let result = app.ok(
         json!({"command":"video_upload_prepare","owner":"101","source":"quota.mp4","mode":"media"}),
     );
-    assert!(
-        result["result"]["error"]
-            .as_str()
-            .unwrap()
-            .contains("bandwidth limit"),
+    // Fork policy (CHANGELOG 3.9.9, "Unlimited uploads"): the preview is
+    // admitted past the weekly figure instead of failing the upload.
+    assert_eq!(
+        result["result"]["receipt"], "controlled-telegram-message-303",
         "{result}"
     );
-    assert_eq!(result["preparationCompleted"],false,"Preview quota must be admitted during preparation, before handing back a main-file upload plan");
-    assert_eq!(result["thumbnailRequests"], 0);
-    assert_eq!(result["sendAttempts"], 0);
+    assert_eq!(result["preparationCompleted"], true);
+    assert_eq!(result["thumbnailRequests"], 1);
+    assert_eq!(result["sendAttempts"], 1);
+    let thumbnail = fixture.read(
+        result["thumbnail"]
+            .as_str()
+            .expect("No generated thumbnail file"),
+    );
     assert_eq!(
-        result["upBytes"], 900,
-        "Failed preview admission must release its own hold while preserving other operations"
+        result["upBytes"],
+        900 + thumbnail.len() as u64,
+        "The preview must be charged exactly on top of the other operation's hold"
     );
     assert_eq!(result["pacerPending"], 0);
     assert_video_upload_scratch_empty(&fixture);
     let stats = app.ok(json!({"command":"bandwidth_cancel"}));
-    assert_eq!(stats["up_bytes"], 0);
+    assert_eq!(
+        stats["up_bytes"],
+        thumbnail.len() as u64,
+        "Cancelling the other operation must release only its own hold"
+    );
     app.stop();
 }
 

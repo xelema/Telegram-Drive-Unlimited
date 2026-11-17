@@ -178,7 +178,7 @@ fn record(store: &Store, file: &PlaybackFile) -> Result<PlaybackRecord, String> 
             bookmarks: Vec::new(),
         });
     value.file = file.clone();
-    value.updated_at = chrono::Utc::now().timestamp_millis();
+    value.updated_at = jiff::Timestamp::now().as_millisecond();
     Ok(value)
 }
 

@@ -625,7 +625,7 @@ fn entitlement_access_at(claims: &EntitlementClaims, now: i64) -> EntitlementAcc
 }
 
 fn unix_time() -> i64 {
-    chrono::Utc::now().timestamp()
+    jiff::Timestamp::now().as_second()
 }
 
 fn checkout_is_pending(state: &SupporterLocalState) -> bool {
