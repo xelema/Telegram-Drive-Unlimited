@@ -713,13 +713,17 @@ impl TelegramDavFs {
                         direction: crate::traffic::Direction::Upload,
                     },
                 );
-                client
-                    .upload_stream(&mut file, size as usize, filename.clone())
-                    .await
-                    .map_err(|error| match io_error(error) {
-                        FsError::GeneralFailure => FsError::IsRemote,
-                        error => error,
-                    })
+                crate::sequential_upload::upload_stream(
+                    &client,
+                    &mut file,
+                    size as usize,
+                    filename.clone(),
+                )
+                .await
+                .map_err(|error| match io_error(error) {
+                    FsError::GeneralFailure => FsError::IsRemote,
+                    error => error,
+                })
             },
             || self.account().map(|_| ()),
             self.network.retry_base_backoff_ms(),

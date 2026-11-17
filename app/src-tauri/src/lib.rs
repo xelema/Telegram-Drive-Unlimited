@@ -74,6 +74,7 @@ mod process_budget;
 pub mod process_util;
 pub mod proxy_secret;
 pub mod resumable_upload;
+pub mod sequential_upload;
 pub mod socks5_bridge;
 pub mod startup_failure;
 mod startup_smoke;

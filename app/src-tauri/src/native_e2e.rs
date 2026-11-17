@@ -82,6 +82,36 @@ impl crate::resumable_upload::PartSink for FixtureSink {
     }
 }
 
+/// Fork: counts the parts handed to Telegram at the same time, so the
+/// sequential uploader (sequential_upload.rs) can be held to one in flight.
+struct SequentialProbeSink {
+    inner: FixtureSink,
+    in_flight: std::sync::atomic::AtomicUsize,
+    peak: std::sync::atomic::AtomicUsize,
+}
+
+impl crate::resumable_upload::PartSink for SequentialProbeSink {
+    async fn save_part(
+        &self,
+        file_id: i64,
+        part: i32,
+        total_parts: i32,
+        bytes: Vec<u8>,
+    ) -> Result<(), String> {
+        use std::sync::atomic::Ordering::SeqCst;
+        let now = self.in_flight.fetch_add(1, SeqCst) + 1;
+        self.peak.fetch_max(now, SeqCst);
+        // Keep each part in flight long enough for a concurrent sender to overlap.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let result = self
+            .inner
+            .save_part(file_id, part, total_parts, bytes)
+            .await;
+        self.in_flight.fetch_sub(1, SeqCst);
+        result
+    }
+}
+
 struct FixtureProxySecret(PathBuf);
 impl crate::vpn_optimizer::ProxySecretStore for FixtureProxySecret {
     fn read(&self) -> Result<Option<String>, String> {
@@ -1487,6 +1517,7 @@ impl Driver {
             | "video_upload_cancel"
             | "video_upload_finish"
             | "upload_resumable"
+            | "upload_sequential"
             | "upload_session"
             | "upload_assemble"
             | "publish_download"
@@ -4923,6 +4954,51 @@ impl Driver {
             }
             "video_upload_finish" => self.finish_video_upload().await,
             "upload_resumable" => self.upload_resumable(&request).await,
+            "upload_sequential" => {
+                let source = child(&self.root, text(&request, "source")?)?;
+                let directory = child(&self.root, text(&request, "sink")?)?;
+                tokio::fs::create_dir_all(&directory).await.map_err(error)?;
+                let sink = SequentialProbeSink {
+                    inner: FixtureSink {
+                        directory,
+                        fail_at: request["failAtPart"]
+                            .as_i64()
+                            .and_then(|part| i32::try_from(part).ok()),
+                        saved: std::sync::Mutex::new(Vec::new()),
+                    },
+                    in_flight: Default::default(),
+                    peak: Default::default(),
+                };
+                let bytes = match request["bytes"].as_u64() {
+                    Some(bytes) => bytes,
+                    None => tokio::fs::metadata(&source).await.map_err(error)?.len(),
+                };
+                let mut file = tokio::fs::File::open(&source).await.map_err(error)?;
+                let result = crate::sequential_upload::upload_parts(
+                    &sink,
+                    &mut file,
+                    bytes,
+                    text(&request, "name")?.to_string(),
+                )
+                .await;
+                let saved = sink
+                    .inner
+                    .saved
+                    .lock()
+                    .map_err(|_| "Fixture sink lock poisoned".to_string())?
+                    .clone();
+                let peak = sink.peak.load(std::sync::atomic::Ordering::SeqCst);
+                Ok(match result {
+                    Ok(parts) => json!({
+                        "fileId": parts.file_id,
+                        "totalParts": parts.total_parts,
+                        "name": parts.name,
+                        "saved": saved,
+                        "peakInFlight": peak,
+                    }),
+                    Err(error) => json!({"error": error, "saved": saved, "peakInFlight": peak}),
+                })
+            }
             "upload_session" => {
                 let resumable = self.resumable(&request).await?;
                 Ok(match resumable.session().await? {

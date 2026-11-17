@@ -1782,14 +1782,18 @@ async fn send_upload_stream<R: tokio::io::AsyncRead + Unpin + Send>(
             }
             None => {
                 let mut reader = crate::traffic::Reader::new(reader, traffic.clone());
-                client
-                    .upload_stream(&mut reader, total_bytes as usize, remote_name)
-                    .await
-                    .map(|file| SentParts::Done {
-                        file,
-                        resumed: false,
-                    })
-                    .map_err(map_error)
+                crate::sequential_upload::upload_stream(
+                    client,
+                    &mut reader,
+                    total_bytes as usize,
+                    remote_name,
+                )
+                .await
+                .map(|file| SentParts::Done {
+                    file,
+                    resumed: false,
+                })
+                .map_err(map_error)
             }
         }
     };
@@ -3005,7 +3009,7 @@ async fn upload_one_part<R: PartReader>(
     }
 
     let upload_result = tokio::select! {
-        res = client.upload_stream(&mut *reader, part_len as usize, doc_name) => res,
+        res = crate::sequential_upload::upload_stream(client, &mut *reader, part_len as usize, doc_name) => res,
         _ = cancel_rx.changed() => {
             return Err("Transfer cancelled".to_string());
         }
@@ -7284,9 +7288,13 @@ async fn cmd_upload_from_url_owned(
         },
     );
     let mut upload_task = tokio::spawn(async move {
-        client_clone
-            .upload_stream(&mut reader, file_size as usize, file_name)
-            .await
+        crate::sequential_upload::upload_stream(
+            &client_clone,
+            &mut reader,
+            file_size as usize,
+            file_name,
+        )
+        .await
     });
 
     let uploaded_file = {

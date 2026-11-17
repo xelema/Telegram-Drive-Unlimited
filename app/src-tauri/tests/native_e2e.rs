@@ -1956,6 +1956,58 @@ async fn webdav_serves_only_its_token_and_only_the_signed_in_account() {
 // and Telegram discarding old parts are not exercised.
 // ---------------------------------------------------------------------------
 
+#[test]
+fn large_uploads_send_one_part_at_a_time_and_stop_at_the_first_failure() {
+    // Fork policy (CHANGELOG 3.9.9): parallel parts trip FLOOD_PREMIUM_WAIT on
+    // free accounts, so WebDAV, API, split-file and non-resumable uploads
+    // confirm each part before sending the next.
+    const PART: usize = 512 * 1024;
+    let fixture = Fixture::new();
+    let source = synthetic_bytes(3 * PART + 4096, 11);
+    fixture.write("big.bin", &source);
+    let mut app = Backend::start(&fixture.0);
+    let upload = |extra: Value| {
+        let mut request = json!({"command":"upload_sequential","source":"big.bin","sink":"parts","name":"big.bin"});
+        for (key, value) in extra.as_object().unwrap() {
+            request[key] = value.clone();
+        }
+        request
+    };
+
+    let sent = app.ok(upload(json!({})));
+    assert_eq!(sent["peakInFlight"], 1, "parts must never overlap: {sent}");
+    assert_eq!(sent["saved"], json!([0, 1, 2, 3]));
+    assert_eq!(sent["totalParts"], 4);
+    assert_eq!(sent["name"], "big.bin");
+    let assembled = app.ok(json!({"command":"upload_assemble","sink":"parts",
+        "fileId":sent["fileId"],"totalParts":4,"destination":"assembled.bin"}));
+    assert_eq!(assembled["bytes"], source.len());
+    assert_eq!(fixture.read("assembled.bin"), source);
+
+    let failed = app.ok(upload(json!({"sink":"failed-parts","failAtPart":1})));
+    assert!(
+        failed["error"]
+            .as_str()
+            .unwrap()
+            .contains("connection reset"),
+        "{failed}"
+    );
+    assert_eq!(
+        failed["saved"],
+        json!([0]),
+        "no part may be sent after a refused one"
+    );
+
+    let short = app.ok(upload(
+        json!({"sink":"short-parts","bytes":source.len() + 1}),
+    ));
+    assert!(
+        short["error"].as_str().unwrap().contains("ended before"),
+        "{short}"
+    );
+    app.stop();
+}
+
 fn synthetic_bytes(length: usize, seed: u64) -> Vec<u8> {
     let mut state = seed;
     (0..length)
