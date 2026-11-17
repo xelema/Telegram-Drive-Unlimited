@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { useModalFocus } from '../../../hooks/useModalFocus';
 import { Upload } from 'lucide-react';
 import { isTauri } from '@tauri-apps/api/core';
@@ -99,8 +100,12 @@ export function ExternalDropBlocker({
                 case 'over':
                     break;
                 case 'leave':
-                    setIsDragging(false);
-                    setDetectedCount(0);
+                    // Native events arrive outside React, so a plain update waits
+                    // for a scheduler task and can outlive the next frame.
+                    flushSync(() => {
+                        setIsDragging(false);
+                        setDetectedCount(0);
+                    });
                     break;
                 case 'drop': {
                     setIsDragging(false);
