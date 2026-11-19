@@ -1,4 +1,4 @@
-use jiff::civil::Date;
+use jiff::{civil::Date, Span};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -29,18 +29,14 @@ fn weekly_period_name() -> String {
 }
 
 fn week_start_for(date: Date) -> Date {
-    date.saturating_sub(jiff::Span::new().days(i64::from(date.weekday().to_monday_zero_offset())))
-}
-
-fn parse_date(value: &str) -> Result<Date, jiff::Error> {
-    Date::strptime("%Y-%m-%d", value)
+    date - Span::new().days(i64::from(date.weekday().to_monday_zero_offset()))
 }
 
 impl Default for BandwidthStats {
     fn default() -> Self {
-        let week_start = week_start_for(jiff::Zoned::now().date());
+        let week_start = week_start_for(crate::app_time::local_datetime().date());
         Self {
-            date: week_start.strftime("%Y-%m-%d").to_string(),
+            date: week_start.to_string(),
             up_bytes: 0,
             down_bytes: 0,
             limit_bytes: WEEKLY_LIMIT_BYTES,
@@ -159,7 +155,7 @@ impl BandwidthManager {
         };
         let stats: BandwidthStats = serde_json::from_str(&value)
             .map_err(|error| format!("Invalid bandwidth accounting: {error}"))?;
-        parse_date(&stats.date)
+        crate::app_time::parse_date(&stats.date)
             .map_err(|error| format!("Invalid bandwidth accounting date: {error}"))?;
         if stats.limit_bytes == 0 || stats.up_bytes.checked_add(stats.down_bytes).is_none() {
             return Err("Invalid bandwidth accounting quota or usage".into());
@@ -185,9 +181,9 @@ impl BandwidthManager {
         }
         let today = self.today();
         let monday = week_start_for(today);
-        let canonical = monday.strftime("%Y-%m-%d").to_string();
+        let canonical = monday.to_string();
         let previous = state.stats.clone();
-        let date = parse_date(&state.stats.date)
+        let date = crate::app_time::parse_date(&state.stats.date)
             .map_err(|error| format!("Invalid bandwidth accounting date: {error}"))?;
         if week_start_for(date) > monday {
             return Err("Bandwidth clock moved backward; retaining the later quota window".into());
@@ -318,7 +314,7 @@ impl BandwidthManager {
         if let Some(date) = *self.date.lock().unwrap_or_else(|e| e.into_inner()) {
             return date;
         }
-        jiff::Zoned::now().date()
+        crate::app_time::local_datetime().date()
     }
     #[cfg(feature = "native-e2e")]
     pub(crate) fn set_date(&self, date: Date) {

@@ -1,4 +1,5 @@
 //! Aggregate content pacing and local civil-time bandwidth windows.
+use jiff::civil::DateTime;
 use serde::{Deserialize, Serialize};
 use std::{
     future::Future,
@@ -35,7 +36,7 @@ impl Window {
         }
         Ok(())
     }
-    fn active(&self, now: jiff::civil::DateTime) -> bool {
+    fn active(&self, now: DateTime) -> bool {
         let day = now.weekday().to_monday_zero_offset() as u8;
         let minute = now.hour() as u16 * 60 + now.minute() as u16;
         if self.start_minute < self.end_minute {
@@ -117,7 +118,7 @@ pub struct Pacer {
     changed: tokio::sync::Notify,
     revision: std::sync::atomic::AtomicU64,
     #[cfg(feature = "native-e2e")]
-    clock: std::sync::RwLock<Option<jiff::civil::DateTime>>,
+    clock: std::sync::RwLock<Option<DateTime>>,
 }
 impl Default for Pacer {
     fn default() -> Self {
@@ -146,16 +147,16 @@ impl Pacer {
         self.changed.notify_waiters();
     }
     #[cfg(feature = "native-e2e")]
-    pub fn set_clock(&self, now: jiff::civil::DateTime) {
+    pub fn set_clock(&self, now: DateTime) {
         *self.clock.write().unwrap_or_else(|e| e.into_inner()) = Some(now);
         self.changed();
     }
-    fn now(&self) -> jiff::civil::DateTime {
+    fn now(&self) -> DateTime {
         #[cfg(feature = "native-e2e")]
         if let Some(now) = *self.clock.read().unwrap_or_else(|e| e.into_inner()) {
             return now;
         }
-        jiff::Zoned::now().datetime()
+        crate::app_time::local_datetime()
     }
     fn policy(&self, config: &crate::vpn_optimizer::NetworkConfig, direction: Direction) -> Policy {
         let vpn = config.vpn.read().unwrap_or_else(|e| e.into_inner());

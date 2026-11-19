@@ -221,7 +221,7 @@ impl Index {
             connection,
             rows,
             credential,
-            date_anchor: jiff::Timestamp::now().as_second(),
+            date_anchor: crate::app_time::unix_seconds(),
             truncated,
         })
     }

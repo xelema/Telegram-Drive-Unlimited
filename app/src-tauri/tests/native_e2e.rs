@@ -55,6 +55,14 @@ const NATIVE_FIXTURE_STARTUP: Duration = Duration::from_secs(120);
 impl Backend {
     fn start(root: &Path) -> Self {
         let mut command = Command::new(env!("CARGO_BIN_EXE_native-e2e-driver"));
+        if root.join(".native-e2e-timezone").exists() {
+            command.env(
+                "TZ",
+                std::fs::read_to_string(root.join(".native-e2e-timezone"))
+                    .unwrap()
+                    .trim(),
+            );
+        }
         if root.join(".video-upload-fixture").exists() {
             let scratch = root.join("video-upload-scratch");
             command
@@ -65,8 +73,14 @@ impl Backend {
         if root.join(".video-upload-empty-path").exists() {
             command.env("PATH", root.join("video-upload-scratch"));
         }
+        if root.join(".video-upload-unset-path").exists() {
+            command.env_remove("PATH");
+        }
         if root.join(".video-upload-helper-path").exists() {
             command.env("PATH", root.join("video-upload-codec"));
+        }
+        if root.join(".video-upload-helper-root-path").exists() {
+            command.env("PATH", root);
         }
         let mut child = command
             .arg(root)
@@ -1677,6 +1691,193 @@ async fn rest_api_routes_authenticate_and_reach_their_own_handlers() {
         }
     }
     assert_eq!(operations, 20, "the contract covers every route");
+    app.stop();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rest_api_date_filters_preserve_legacy_and_fractional_instant_compatibility() {
+    let fixture = Fixture::new();
+    let mut app = Backend::start(&fixture.0);
+    app.ok(json!({"command":"seed_account","owner":101}));
+    let dates = [
+        "1969-12-31T23:59:59Z",
+        "1970-01-01T00:00:00Z",
+        "1970-01-01T00:00:01Z",
+        "2024-02-29T00:00:00Z",
+        "2024-02-29T12:34:56Z",
+    ];
+    app.ok(json!({"command":"api_seed_catalog","folders":[{"id":null,"name":"Saved Messages"}],
+        "files":dates.iter().enumerate().map(|(i,date)|json!({"id":i+1,"folder":null,"name":format!("Date {}.pdf",i+1),"size":1,"created":date,"mime":"application/pdf"})).collect::<Vec<_>>() }));
+    let key = "date-compatibility-key";
+    let api = app.ok(json!({"command":"start_api","key":key}));
+    let url = format!("{}/api/v1/files", api["url"].as_str().unwrap());
+    let client = reqwest::Client::new();
+    for (bound, expected) in [
+        ("1970-01-01T01:00:00.999+01:00", 2),
+        ("1970-01-01t00:00:00z", 2),
+        ("1970-01-01 00:00:00Z", 2),
+        ("1970-01-01T00:00:00−00:00", 2),
+        ("1969-12-31T23:59:60Z", 1),
+        ("1969-12-31T23:59:59.999Z", 1),
+        ("1970-01-01T00:59:59.999999999999+01:00", 1),
+        ("2024-02-28T19:00:00-05:00", 4),
+        ("2024-02-29", 4),
+        ("2024-02-29 12:34:56 UTC", 5),
+        ("2024-02-29 12:34:56", 5),
+        ("2024-\u{00a0}02-29", 4),
+        ("2024-02-29\u{00a0}12:34:56 UTC", 5),
+        ("+02024-02-29", 4),
+        ("+02024-02-29 12:34:56 UTC", 5),
+        ("0", 2),
+        ("1", 3),
+        ("1709164800", 4),
+    ] {
+        let response = client
+            .get(&url)
+            .header("X-API-Key", key)
+            .query(&[("created_after", bound), ("created_before", bound)])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200, "{bound}");
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(body["total"], 1, "{bound}: {body}");
+        assert_eq!(body["data"][0]["id"], expected, "{bound}: {body}");
+        assert_eq!(
+            body["data"][0]["created_at"],
+            dates[expected as usize - 1],
+            "{bound}"
+        );
+    }
+    for bound in [
+        "-1",
+        "2023-02-29",
+        "2024-02-30",
+        "2024-13-01",
+        "2024-02-29T25:00:00Z",
+        "2024-02-29T12:00:00+25:00",
+        "9223372036854775808",
+        "not a date",
+        "1970-01-01T00:00:00Z[UTC]",
+        "1970-01-01T00:00:00+00:00:00",
+        "1970-01-01T00:00:00+00",
+        "+ 2024-02-29",
+        "+ 2024-02-29 12:34:56 UTC",
+    ] {
+        let response = client
+            .get(&url)
+            .header("X-API-Key", key)
+            .query(&[("created_after", bound)])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 400, "{bound}");
+        let body: Value = response.json().await.unwrap();
+        assert!(
+            body.to_string().contains("INVALID_TIMESTAMP"),
+            "{bound}: {body}"
+        );
+    }
+    app.stop();
+}
+
+fn raw_api_chunked_pipeline(address: &str, chunked_body: &[u8]) -> String {
+    use std::io::Read;
+    let mut socket = std::net::TcpStream::connect(address).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    socket
+        .set_write_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    socket.write_all(b"POST /api/v1/files/1/copy HTTP/1.1\r\nHost: localhost\r\nX-API-Key: parser-key\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n").unwrap();
+    socket.write_all(chunked_body).unwrap();
+    socket.write_all(b"GET /api/v1/files HTTP/1.1\r\nHost: localhost\r\nX-API-Key: parser-key\r\nConnection: close\r\n\r\n").unwrap();
+    let mut response = Vec::new();
+    match socket.read_to_end(&mut response) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+        Err(error) => panic!(
+            "HTTP response did not finish: {error}; {}",
+            String::from_utf8_lossy(&response)
+        ),
+    }
+    String::from_utf8(response).unwrap()
+}
+
+fn parser_api_fixture() -> (Fixture, Backend, String) {
+    let fixture = Fixture::new();
+    let mut app = Backend::start(&fixture.0);
+    app.ok(json!({"command":"seed_account","owner":101}));
+    app.ok(json!({
+        "command":"api_seed_catalog", "folders":[{"id":null,"name":"Saved Messages"}],
+        "files":[{"id":1,"folder":null,"name":"pipeline-marker.pdf","size":1,
+            "created":"2026-01-01T00:00:00Z","mime":"application/pdf"}]
+    }));
+    let api = app.ok(json!({"command":"start_api","key":"parser-key"}));
+    let address = api["url"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches("http://")
+        .to_owned();
+    (fixture, app, address)
+}
+
+#[test]
+fn rest_api_accepts_valid_chunk_extensions_trailers_and_pipelined_requests() {
+    let (_fixture, app, address) = parser_api_fixture();
+    for body in [
+        b"2\r\n{}\r\n0\r\n\r\n".as_slice(),
+        b"2;note=\"a b\\\"c\";token=yes\r\n{}\r\n0\r\nX-Checksum: synthetic\r\n\r\n".as_slice(),
+    ] {
+        let response = raw_api_chunked_pipeline(&address, body);
+        assert!(response.starts_with("HTTP/1.1 503"), "{response}");
+        assert_eq!(response.matches("HTTP/1.1 ").count(), 2, "{response}");
+        assert!(
+            response.contains("HTTP/1.1 200") && response.contains("pipeline-marker.pdf"),
+            "{response}"
+        );
+    }
+    app.stop();
+}
+
+#[test]
+fn rest_api_rejects_malformed_chunk_trailers_without_processing_a_following_request() {
+    let (_fixture, app, address) = parser_api_fixture();
+    for body in [
+        b"2\r\n{}\r\n0\r\nX\n\r\n\r\n".as_slice(),
+        b"2\r\n{}\r\n0\r\nX-Trailer: value\nOther: value\r\n\r\n".as_slice(),
+    ] {
+        let response = raw_api_chunked_pipeline(&address, body);
+        assert!(
+            response.starts_with("HTTP/1.1 400"),
+            "malformed trailer accepted: {response}"
+        );
+        assert!(
+            !response.contains("pipeline-marker.pdf") && !response.contains("HTTP/1.1 200"),
+            "following request executed: {response}"
+        );
+    }
+    app.stop();
+}
+
+#[test]
+fn rest_api_rejects_unterminated_quoted_chunk_extensions_without_processing_a_following_request() {
+    let (_fixture, app, address) = parser_api_fixture();
+    for body in [
+        b"2;note=\"unterminated\r\n{}\r\n0\r\n\r\n".as_slice(),
+        b"2;note=\"dangling\\\r\n{}\r\n0\r\n\r\n".as_slice(),
+    ] {
+        let response = raw_api_chunked_pipeline(&address, body);
+        assert!(
+            response.starts_with("HTTP/1.1 400"),
+            "malformed quoted extension accepted: {response}"
+        );
+        assert!(
+            !response.contains("pipeline-marker.pdf") && !response.contains("HTTP/1.1 200"),
+            "following request executed: {response}"
+        );
+    }
     app.stop();
 }
 
@@ -4873,9 +5074,8 @@ fn local_search_date_window_is_frozen_across_pages_of_one_generation() {
     let fixture = Fixture::new();
     let mut app = Backend::start(&fixture.0);
     app.ok(json!({"command":"seed_account","owner":101}));
-    let boundary = (jiff::Timestamp::now() - jiff::SignedDuration::from_hours(7 * 24)
-        + jiff::SignedDuration::from_secs(3))
-    .to_string();
+    let boundary =
+        (jiff::Timestamp::now() + jiff::SignedDuration::from_secs(-7 * 86_400 + 3)).to_string();
     let files: Vec<_> = (1..=2)
         .map(|id| {
             json!(
@@ -4908,7 +5108,9 @@ fn local_search_date_window_is_frozen_across_pages_of_one_generation() {
 fn configurable_weekly_quota_uses_the_saved_limit_and_releases_failed_transfer_holds() {
     let fixture = Fixture::new();
     let today = jiff::Zoned::now().date();
-    let monday = today - jiff::Span::new().days(i64::from(today.weekday().to_monday_zero_offset()));
+    let monday = today
+        .checked_sub(jiff::Span::new().days(i64::from(today.weekday().to_monday_zero_offset())))
+        .unwrap();
     fixture.write("bandwidth.json",json!({"date":monday.to_string(),"up_bytes":0,"down_bytes":0,"limit_bytes":131072,"period":"weekly"}).to_string());
     let mut app = Backend::start(&fixture.0);
     // Fork policy (CHANGELOG 3.9.9, "Unlimited uploads"): the saved weekly
@@ -5097,7 +5299,9 @@ fn quota_corrupt_existing_file_is_preserved_and_cannot_reset_the_limit_or_usage(
     app.failure(json!({"command":"bandwidth_hold","bytes":1}));
     assert_eq!(fixture.read("bandwidth.json"), corrupt.as_bytes());
     let today = jiff::Zoned::now().date();
-    let monday = today - jiff::Span::new().days(i64::from(today.weekday().to_monday_zero_offset()));
+    let monday = today
+        .checked_sub(jiff::Span::new().days(i64::from(today.weekday().to_monday_zero_offset())))
+        .unwrap();
     fixture.write("bandwidth.json",json!({"date":monday.to_string(),"up_bytes":32768,"down_bytes":0,"limit_bytes":65536,"period":"weekly"}).to_string());
     // Fork policy (CHANGELOG 3.9.9): once repaired, the preserved usage is
     // reloaded and a transfer past the weekly figure is admitted on top of it.
@@ -5181,6 +5385,204 @@ fn traffic_upload_throttle_is_flagged_and_paces_only_unconfirmed_parts() {
     assert_eq!(snapshot["vpn"]["bandwidth_limit_up_kbs"], 512);
     assert_eq!(fixture.read("network_settings.json"), before);
     restarted.stop();
+}
+
+async fn wait_for_http_pacer(app: &mut Backend) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while app.ok(json!({"command":"traffic_pending"})) != 1 {
+        assert!(
+            Instant::now() < deadline,
+            "the HTTP body did not reach the application pacer"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn traffic_local_zone_dst_transitions_control_real_http_pause_and_quota() {
+    // OS date provides an independent timezone oracle; the application observes
+    // the same zone only inside its synthetic child process.
+    for (seconds, expected) in [
+        (1772953140_i64, "2026-03-08 01:59 -0500"),
+        (1772953200, "2026-03-08 03:00 -0400"),
+        (1793511000, "2026-11-01 01:30 -0400"),
+        (1793514600, "2026-11-01 01:30 -0500"),
+        (1793516400, "2026-11-01 02:00 -0500"),
+    ] {
+        let mut date = Command::new("date");
+        date.env("TZ", "America/New_York");
+        #[cfg(target_os = "macos")]
+        date.args(["-r", &seconds.to_string()]);
+        #[cfg(not(target_os = "macos"))]
+        date.args(["-d", &format!("@{seconds}")]);
+        let output = date.arg("+%Y-%m-%d %H:%M %z").output().unwrap();
+        assert!(output.status.success(), "OS date failed: {output:?}");
+        assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), expected);
+    }
+    let fixture = Fixture::new();
+    fixture.write(".native-e2e-timezone", "America/New_York");
+    fixture.write("media.bin", vec![4; 4096]);
+    let mut app = Backend::start(&fixture.0);
+    app.ok(json!({"command":"seed_account","owner":101}));
+    app.ok(json!({"command":"traffic_clock_instant","time":"2026-03-08T06:59:00Z"}));
+    app.ok(
+        json!({"command":"traffic_configure","bandwidth_schedule":true,"windows":[
+        {"days":[6],"start_minute":60,"end_minute":180,"up_kbs":0,"down_kbs":0,"pause":true}]}),
+    );
+    let media = app
+        .ok(json!({"command":"start_media_fixture","source":"media.bin","filename":"media.bin"}));
+    let url = media["url"].as_str().unwrap().to_owned();
+    let spring_url = url.clone();
+    let spring = tokio::spawn(async move {
+        reqwest::get(spring_url)
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap()
+    });
+    wait_for_http_pacer(&mut app).await;
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    assert!(
+        !spring.is_finished(),
+        "01:59 local must still pause the actual HTTP transfer"
+    );
+    app.ok(json!({"command":"traffic_clock_instant","time":"2026-03-08T07:00:00Z"}));
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), spring)
+            .await
+            .unwrap()
+            .unwrap()
+            .len(),
+        4096,
+        "spring DST jumps to the exclusive 03:00 pause boundary"
+    );
+    app.ok(json!({"command":"traffic_clock_instant","time":"2026-11-01T05:30:00Z"}));
+    app.ok(
+        json!({"command":"traffic_configure","bandwidth_schedule":true,"windows":[
+        {"days":[6],"start_minute":60,"end_minute":120,"up_kbs":0,"down_kbs":0,"pause":true}]}),
+    );
+    let fall = tokio::spawn(async move { reqwest::get(url).await.unwrap().bytes().await.unwrap() });
+    wait_for_http_pacer(&mut app).await;
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    assert!(!fall.is_finished(), "the first 01:30 occurrence must pause");
+    app.ok(json!({"command":"traffic_clock_instant","time":"2026-11-01T06:30:00Z"}));
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    assert!(
+        !fall.is_finished(),
+        "the repeated 01:30 occurrence must also pause"
+    );
+    app.ok(json!({"command":"traffic_clock_instant","time":"2026-11-01T07:00:00Z"}));
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), fall)
+            .await
+            .unwrap()
+            .unwrap()
+            .len(),
+        4096
+    );
+    assert_eq!(
+        app.ok(json!({"command":"bandwidth_read"}))["down_bytes"],
+        8192,
+        "only both successful HTTP bodies commit quota across DST schedule changes"
+    );
+    app.stop();
+}
+
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn traffic_windows_os_rules_control_http_pause_and_weekly_quota_without_changing_system_zone()
+{
+    // The real OS path must ignore a Unix-style process TZ override. PowerShell
+    // independently asks Windows for the local conversion, without changing it.
+    let oracle = Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "[TimeZoneInfo]::ConvertTimeFromUtc([DateTime]::Parse('2026-07-06T04:30:00Z').ToUniversalTime(), [TimeZoneInfo]::Local).ToString('yyyy-MM-ddTHH:mm:ss')",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        oracle.status.success(),
+        "Windows timezone oracle failed: {oracle:?}"
+    );
+    let os_fixture = Fixture::new();
+    os_fixture.write(".native-e2e-timezone", "Antarctica/Troll");
+    let mut os_app = Backend::start(&os_fixture.0);
+    let os_local = os_app.ok(json!({"command":"traffic_windows_clock",
+        "rule":"os","time":"2026-07-06T04:30:00Z"}));
+    assert_eq!(os_local["processTz"], "Antarctica/Troll");
+    assert_eq!(
+        os_local["local"],
+        String::from_utf8(oracle.stdout).unwrap().trim(),
+        "the normal Windows path must use the OS rules and ignore process TZ"
+    );
+    os_app.stop();
+
+    let fixture = Fixture::new();
+    fixture.write(".native-e2e-timezone", "Antarctica/Troll");
+    fixture.write("media.bin", vec![7; 4096]);
+    fixture.write(
+        "bandwidth.json",
+        json!({"date":"2026-06-29","up_bytes":0,"down_bytes":1024,
+            "limit_bytes":8192,"period":"weekly"})
+        .to_string(),
+    );
+    let mut app = Backend::start(&fixture.0);
+    app.ok(json!({"command":"seed_account","owner":101}));
+    let disabled = app.ok(json!({"command":"traffic_windows_clock",
+        "rule":"disabled","time":"2026-07-06T04:30:00Z"}));
+    assert_eq!(disabled["local"], "2026-07-05T23:30:00");
+    assert_eq!(disabled["stats"]["date"], "2026-06-29");
+    assert_eq!(disabled["stats"]["down_bytes"], 1024);
+    app.ok(
+        json!({"command":"traffic_configure","bandwidth_schedule":true,
+        "windows":[{"days":[6],"start_minute":1380,"end_minute":30,
+            "up_kbs":0,"down_kbs":0,"pause":true}]}),
+    );
+    let media = app.ok(json!({"command":"start_media_fixture",
+        "source":"media.bin","filename":"media.bin"}));
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    let url = media["url"].as_str().unwrap().to_string();
+    let body =
+        tokio::spawn(async move { client.get(url).send().await.unwrap().bytes().await.unwrap() });
+    wait_for_http_pacer(&mut app).await;
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    assert!(
+        !body.is_finished(),
+        "disabled DST leaves Sunday 23:30 inside the overnight HTTP pause"
+    );
+
+    // A nonstandard 90-minute DST bias and April/October transitions deliberately
+    // differ from IANA's named US zone. The same UTC instant becomes Monday.
+    let custom = app.ok(json!({"command":"traffic_windows_clock",
+        "rule":"custom","time":"2026-07-06T04:30:00Z"}));
+    assert_eq!(custom["local"], "2026-07-06T01:00:00");
+    assert_eq!(custom["stats"]["date"], "2026-07-06");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), body)
+            .await
+            .unwrap()
+            .unwrap()
+            .as_ref(),
+        vec![7; 4096],
+        "custom Windows rules must release the actual HTTP body"
+    );
+    let stats = app.ok(json!({"command":"bandwidth_read"}));
+    assert_eq!(stats["date"], "2026-07-06");
+    assert_eq!(stats["down_bytes"], 4096);
+    assert_eq!(stats["limit_bytes"], 8192);
+    let persisted: Value = serde_json::from_slice(&fixture.read("bandwidth.json")).unwrap();
+    assert_eq!(persisted["date"], "2026-07-06");
+    assert_eq!(persisted["down_bytes"], 4096);
+    assert_eq!(persisted["limit_bytes"], 8192);
+    app.stop();
 }
 
 #[tokio::test]
@@ -6476,6 +6878,261 @@ async fn retained_session_release_keeps_http_alive_and_fences_account_replacemen
     assert!(body.contains("After.pdf"));
     assert!(!body.contains("Before.pdf"));
     drop(client);
+    app.stop();
+}
+
+async fn dav_propfind(client: &reqwest::Client, url: &str) -> (u16, String) {
+    let response = client
+        .request(reqwest::Method::from_bytes(b"PROPFIND").unwrap(), url)
+        .header("depth", "1")
+        .send()
+        .await
+        .unwrap();
+    let status = response.status().as_u16();
+    (status, response.text().await.unwrap())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn webdav_root_ttl_retains_partial_history_until_a_complete_listing() {
+    let fixture = Fixture::new();
+    let mut app = Backend::start(&fixture.0);
+    app.ok(json!({"command":"seed_account","owner":101}));
+    let seed = |ids: &[i64], complete| {
+        json!({
+            "command":"api_seed_catalog",
+            "folders":[{"id":null,"name":"Saved Messages"}],
+            "complete":complete,
+            "files":ids.iter().map(|id| json!({"id":id,"folder":null,
+                "name":format!("File {id}.pdf"),"size":100,
+                "created":"2026-10-01T00:00:00Z","mime":"application/pdf"})).collect::<Vec<_>>()
+        })
+    };
+    app.ok(seed(&[1, 2], true));
+    let token = "f".repeat(64);
+    let dav = app.ok(json!({"command":"start_webdav","token":token,"catalogFixture":true}));
+    let url = format!(
+        "{}/dav/{token}/Saved%20Messages/",
+        dav["url"].as_str().unwrap()
+    );
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    let (status, body) = dav_propfind(&client, &url).await;
+    assert_eq!(status, 207);
+    assert!(
+        body.contains("File%201.pdf") && body.contains("File%202.pdf"),
+        "{body}"
+    );
+    app.ok(seed(&[2, 3], false));
+    let (status, body) = dav_propfind(&client, &url).await;
+    assert_eq!(status, 207);
+    for id in 1..=3 {
+        assert!(body.contains(&format!("File%20{id}.pdf")), "{body}");
+    }
+    // Exercise the real production root clock, rather than a fixture-only refresh.
+    tokio::time::sleep(Duration::from_secs(31)).await;
+    app.ok(seed(&[3, 4], false));
+    let (status, body) = dav_propfind(&client, &url).await;
+    assert_eq!(status, 207);
+    for id in 1..=4 {
+        assert!(
+            body.contains(&format!("File%20{id}.pdf")),
+            "root TTL must preserve known entries until a complete folder listing: {body}"
+        );
+    }
+    app.ok(seed(&[4], true));
+    let (status, body) = dav_propfind(&client, &url).await;
+    assert_eq!(status, 207);
+    assert!(body.contains("File%204.pdf"), "{body}");
+    for id in 1..=3 {
+        assert!(
+            !body.contains(&format!("File%20{id}.pdf")),
+            "complete listings must remove absent rows: {body}"
+        );
+    }
+    app.stop();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn webdav_root_refresh_fences_replaced_renamed_removed_and_other_account_folders() {
+    let fixture = Fixture::new();
+    let mut app = Backend::start(&fixture.0);
+    app.ok(json!({"command":"seed_account","owner":101}));
+    let seed = |folder: i64, name: &str, id: i64| {
+        json!({
+            "command":"api_seed_catalog", "folders":[{"id":folder,"name":name}],
+            "complete":false,"files":[{"id":id,"folder":folder,
+                "name":format!("File {id}.pdf"),"size":100,
+                "created":"2026-10-01T00:00:00Z","mime":"application/pdf"}]
+        })
+    };
+    app.ok(seed(10, "Shared", 1));
+    let token = "a".repeat(64);
+    let dav = app.ok(json!({"command":"start_webdav","token":token,"catalogFixture":true}));
+    let base = format!("{}/dav/{token}", dav["url"].as_str().unwrap());
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    let shared = format!("{base}/Shared/");
+    let (status, body) = dav_propfind(&client, &shared).await;
+    assert_eq!(status, 207);
+    assert!(body.contains("File%201.pdf"), "{body}");
+
+    // A reused visible path is a different collection when Telegram's folder ID changes.
+    app.ok(seed(20, "Shared", 2));
+    assert_eq!(app.ok(json!({"command":"webdav_expire_root_index"})), true);
+    let (status, body) = dav_propfind(&client, &shared).await;
+    assert_eq!(status, 207);
+    assert!(
+        body.contains("File%202.pdf") && !body.contains("File%201.pdf"),
+        "{body}"
+    );
+    assert_eq!(
+        client
+            .head(format!("{shared}File%201.pdf"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404,
+        "a replaced folder must not expose an orphaned file through direct metadata"
+    );
+
+    // Renaming the same collection removes its old path, including direct child lookups.
+    app.ok(seed(20, "Renamed", 3));
+    assert_eq!(app.ok(json!({"command":"webdav_expire_root_index"})), true);
+    let renamed = format!("{base}/Renamed/");
+    let (status, body) = dav_propfind(&client, &renamed).await;
+    assert_eq!(status, 207);
+    assert!(body.contains("File%203.pdf"), "{body}");
+    assert_eq!(dav_propfind(&client, &shared).await.0, 404);
+    assert_eq!(
+        client
+            .head(format!("{shared}File%202.pdf"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+
+    // A complete root with no collections must retire every old descendant.
+    app.ok(json!({"command":"api_seed_catalog","folders":[],"complete":true,"files":[]}));
+    assert_eq!(app.ok(json!({"command":"webdav_expire_root_index"})), true);
+    assert_eq!(dav_propfind(&client, &format!("{base}/")).await.0, 207);
+    assert_eq!(dav_propfind(&client, &renamed).await.0, 404);
+    assert_eq!(
+        client
+            .head(format!("{renamed}File%203.pdf"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+
+    // Reintroduce a collection before switching accounts so isolation checks a live cache.
+    app.ok(seed(20, "Renamed", 4));
+    assert_eq!(app.ok(json!({"command":"webdav_expire_root_index"})), true);
+    assert!(dav_propfind(&client, &renamed)
+        .await
+        .1
+        .contains("File%204.pdf"));
+    app.ok(json!({"command":"seed_account","owner":202}));
+    app.ok(seed(20, "Renamed", 5));
+    let (status, body) = dav_propfind(&client, &renamed).await;
+    assert_eq!(status, 207);
+    assert!(
+        body.contains("File%205.pdf") && !body.contains("File%204.pdf"),
+        "{body}"
+    );
+    assert_eq!(
+        client
+            .head(format!("{renamed}File%204.pdf"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+    app.stop();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn webdav_inflight_folder_listing_cannot_publish_into_a_replacement_collection() {
+    let fixture = Fixture::new();
+    let mut app = Backend::start(&fixture.0);
+    app.ok(json!({"command":"seed_account","owner":101}));
+    let seed = |folder: i64, id: i64| {
+        json!({
+            "command":"api_seed_catalog","folders":[{"id":folder,"name":"Shared"}],
+            "complete":false,"files":[{"id":id,"folder":folder,
+                "name":format!("File {id}.pdf"),"size":100,
+                "created":"2026-10-01T00:00:00Z","mime":"application/pdf"}]
+        })
+    };
+    app.ok(seed(10, 1));
+    let token = "b".repeat(64);
+    let dav = app.ok(json!({"command":"start_webdav","token":token,"catalogFixture":true}));
+    let url = format!("{}/dav/{token}/Shared/", dav["url"].as_str().unwrap());
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .unwrap();
+    assert!(dav_propfind(&client, &url).await.1.contains("File%201.pdf"));
+    fixture.write("webdav-publish-hold", "10");
+    app.ok(seed(10, 2));
+    let old_client = client.clone();
+    let old_url = url.clone();
+    let pending = tokio::spawn(async move { dav_propfind(&old_client, &old_url).await });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !fixture.path("webdav-publish-entered").exists() {
+        assert!(
+            Instant::now() < deadline,
+            "the original folder listing never reached publication"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(fixture.read("webdav-publish-entered"), b"10");
+    app.ok(seed(20, 3));
+    assert_eq!(app.ok(json!({"command":"webdav_expire_root_index"})), true);
+    let (status, body) = dav_propfind(&client, &url).await;
+    assert_eq!(status, 207);
+    assert!(
+        body.contains("File%203.pdf")
+            && !body.contains("File%201.pdf")
+            && !body.contains("File%202.pdf"),
+        "{body}"
+    );
+    std::fs::remove_file(fixture.path("webdav-publish-hold")).unwrap();
+    let (status, body) = pending.await.unwrap();
+    assert!(
+        matches!(status, 207 | 404),
+        "stale listing status={status}; {body}"
+    );
+    assert!(
+        !body.contains("File%201.pdf") && !body.contains("File%202.pdf"),
+        "an old in-flight listing must not expose the replaced folder: {body}"
+    );
+    let (status, body) = dav_propfind(&client, &url).await;
+    assert_eq!(status, 207);
+    assert!(
+        body.contains("File%203.pdf") && !body.contains("File%202.pdf"),
+        "{body}"
+    );
+    for id in [1, 2] {
+        assert_eq!(
+            client
+                .head(format!("{url}File%20{id}.pdf"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            404
+        );
+    }
     app.stop();
 }
 
@@ -8537,6 +9194,7 @@ fn heic_fixture_completed_exit_keeps_real_status_and_refuses_unmonitored_work() 
             assert_eq!(process["completed_exit_wait"], true, "{process}");
             if mode == "completed" {
                 assert_eq!(reply["ok"], true, "{reply}; {status}");
+                assert_eq!(process["outcome"], "success", "{process}");
             } else {
                 assert!(
                     reply["error"]
@@ -8546,6 +9204,7 @@ fn heic_fixture_completed_exit_keeps_real_status_and_refuses_unmonitored_work() 
                     "{reply}; {status}"
                 );
                 assert!(status["decodes"].as_array().unwrap().is_empty());
+                assert_eq!(process["outcome"], "decoder_failed", "{process}");
             }
         }
     }
@@ -9349,6 +10008,544 @@ fn start_video_upload_backend(fixture: &Fixture) -> Backend {
     app.ok(json!({"command":"seed_account","owner":101}));
     app
 }
+
+fn start_video_upload_ffmpeg_backend(fixture: &Fixture) -> Backend {
+    fixture.write(".video-upload-fixture", b"synthetic\n");
+    std::fs::create_dir(fixture.path("video-upload-scratch")).unwrap();
+    // This journey retains the real PATH so Windows also exercises external FFmpeg.
+    let mut app = Backend::start(&fixture.0);
+    app.ok(json!({"command":"seed_account","owner":101}));
+    app
+}
+
+fn video_upload_external_decoder_fixture(fixture: &Fixture, mode: &str) {
+    fixture.write("ffmpeg-mode", mode);
+    image::RgbImage::from_pixel(320, 180, image::Rgb([30, 100, 160]))
+        .save(fixture.path("ffmpeg-frame.jpg"))
+        .unwrap();
+    std::fs::copy(
+        env!("CARGO_BIN_EXE_native-e2e-heic-helper"),
+        fixture.path(if cfg!(windows) {
+            "ffmpeg.exe"
+        } else {
+            "ffmpeg"
+        }),
+    )
+    .unwrap();
+}
+
+fn force_video_upload_external_decoder(fixture: &Fixture) {
+    #[cfg(windows)]
+    fixture.write(".video-upload-native-mode", b"fail");
+    #[cfg(not(windows))]
+    let _ = fixture;
+}
+
+fn assert_short_video_upload(fixture: &Fixture, result: &Value, name: &str) {
+    assert_eq!(
+        result["result"]["receipt"], "controlled-telegram-message-303",
+        "{result}"
+    );
+    assert_eq!(result["thumbnailRequests"], 1);
+    assert_eq!(result["sendAttempts"], 1);
+    assert_eq!(result["pacerPending"], 0);
+    let wire = uploaded_video_wire(result);
+    assert!(!wire.force_file);
+    assert_eq!(wire.mime_type, "video/mp4");
+    assert!(wire.thumb.is_some());
+    let video = wire
+        .attributes
+        .iter()
+        .find_map(|attribute| match attribute {
+            grammers_tl_types::enums::DocumentAttribute::Video(video) => Some(video),
+            _ => None,
+        })
+        .expect("Missing actual Telegram video attributes");
+    assert_eq!((video.w, video.h), (320, 180));
+    assert!((video.duration - 1.0).abs() < 0.1);
+    assert!(video.supports_streaming);
+    assert!(wire.attributes.iter().any(|attribute| matches!(attribute,
+        grammers_tl_types::enums::DocumentAttribute::Filename(filename) if filename.file_name == name)));
+    assert_eq!(result["caption"], name);
+    let thumbnail = fixture.read(result["thumbnail"].as_str().expect("No uploaded thumbnail"));
+    assert!(thumbnail.len() > 100 && thumbnail.len() < 200 * 1024);
+    assert_eq!(
+        image::guess_format(&thumbnail).unwrap(),
+        image::ImageFormat::Jpeg
+    );
+    let decoded = image::load_from_memory(&thumbnail).unwrap();
+    assert!(decoded.width() > 0 && decoded.width() <= 320);
+    assert!(decoded.height() > 0 && decoded.height() <= 320);
+    assert_eq!(result["upBytes"], thumbnail.len() as u64);
+    assert_video_upload_scratch_empty(fixture);
+}
+
+#[test]
+fn video_upload_vp9_mp4_uses_a_real_decoder_and_preserves_source_bytes() {
+    use sha2::{Digest, Sha256};
+    // Independent child processes repeat discovery and version probing; a prior
+    // successful decoder must not mask a fast-exit observation race on Windows.
+    for _ in 0..3 {
+        let fixture = Fixture::new();
+        let name = "VP9 sample with spaces.mp4";
+        let original = include_bytes!("fixtures/video-upload/synthetic-vp9.mp4");
+        fixture.write(name, original);
+        let expected = Sha256::digest(original);
+        force_video_upload_external_decoder(&fixture);
+        let mut app = start_video_upload_ffmpeg_backend(&fixture);
+        let result = app.ok(
+            json!({"command":"video_upload_prepare","owner":"101","source":name,
+        "mode":"media","filenameCaption":true,"fixtureResource":true}),
+        );
+        assert_short_video_upload(&fixture, &result, name);
+        assert_eq!(Sha256::digest(fixture.read(name)), expected);
+        let processes = result["processes"]
+            .as_array()
+            .expect("No decoder observations");
+        assert!(processes.iter().any(|process| process["version_probe"] == false && process["outcome"] == "success"), "{result}");
+        #[cfg(windows)]
+        assert!(
+            processes
+                .iter()
+                .any(|process| process["version_probe"] == true && process["outcome"] == "success"),
+            "{result}"
+        );
+        app.stop();
+    }
+}
+
+#[test]
+fn video_upload_vp9_falls_back_to_path_when_the_bundled_decoder_stalls() {
+    let fixture = Fixture::new();
+    let name = "VP9 sidecar fallback.mp4";
+    fixture.write(
+        name,
+        include_bytes!("fixtures/video-upload/synthetic-vp9.mp4"),
+    );
+    video_upload_external_decoder_fixture(&fixture, "wait");
+    force_video_upload_external_decoder(&fixture);
+    let mut app = start_video_upload_ffmpeg_backend(&fixture);
+    let started = Instant::now();
+    app.ok(
+        json!({"command":"video_upload_start","owner":"101","source":name,
+        "mode":"media","filenameCaption":true,"fixtureResource":true}),
+    );
+    let ready = Instant::now() + Duration::from_secs(10);
+    let pid = loop {
+        if let Ok(pid) = std::fs::read_to_string(fixture.path("ffmpeg-pid")) {
+            break pid.parse().unwrap();
+        }
+        assert!(Instant::now() < ready, "Bundled decoder did not start");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let process = HeicProcess::capture(pid);
+    let result = app.ok(json!({"command":"video_upload_finish"}));
+    assert_short_video_upload(&fixture, &result, name);
+    assert!(started.elapsed() < Duration::from_secs(30));
+    assert!(
+        !process.alive().unwrap(),
+        "Stalled bundled decoder survived fallback"
+    );
+    app.stop();
+}
+
+#[test]
+fn video_upload_hevc_and_av1_mp4_preserve_media_metadata_and_source_bytes() {
+    use sha2::{Digest, Sha256};
+    for (name, original) in [
+        (
+            "HEVC sample.mp4",
+            &include_bytes!("fixtures/video-upload/synthetic-hevc.mp4")[..],
+        ),
+        (
+            "AV1 sample.mp4",
+            &include_bytes!("fixtures/video-upload/synthetic-av1.mp4")[..],
+        ),
+    ] {
+        let fixture = Fixture::new();
+        fixture.write(name, original);
+        force_video_upload_external_decoder(&fixture);
+        let mut app = start_video_upload_ffmpeg_backend(&fixture);
+        let result = app.ok(
+            json!({"command":"video_upload_prepare","owner":"101","source":name,
+            "mode":"media","filenameCaption":true,"fixtureResource":true}),
+        );
+        assert_short_video_upload(&fixture, &result, name);
+        assert_eq!(Sha256::digest(fixture.read(name)), Sha256::digest(original));
+        app.stop();
+    }
+}
+
+#[test]
+fn video_upload_ffmpeg_discovery_handles_spaces_and_unicode_directory() {
+    let mut fixture = Fixture::new();
+    let renamed = fixture.0.with_file_name(format!(
+        "{} codec tools 解码",
+        fixture.0.file_name().unwrap().to_string_lossy()
+    ));
+    std::fs::rename(&fixture.0, &renamed).unwrap();
+    fixture.0 = renamed;
+    let name = "VP9 résumé 测试.mp4";
+    fixture.write(
+        name,
+        include_bytes!("fixtures/video-upload/synthetic-vp9.mp4"),
+    );
+    video_upload_external_decoder_fixture(&fixture, "ok");
+    fixture.write(
+        ".video-upload-helper-root-path",
+        b"Only the owned decoder directory is on PATH",
+    );
+    std::fs::create_dir(fixture.path("native-resource")).unwrap();
+    #[cfg(windows)]
+    fixture.write("native-resource/.video-upload-native-mode", b"fail");
+    let mut app = start_video_upload_ffmpeg_backend(&fixture);
+    for outside in ["/", "..", "../outside"] {
+        assert!(app
+            .failure(
+                json!({"command":"video_upload_prepare","owner":"101","source":name,
+            "mode":"media","fixtureResourceName":outside})
+            )
+            .contains("fixture"));
+    }
+    #[cfg(windows)]
+    for outside in [r"C:\", "C:"] {
+        assert!(app
+            .failure(
+                json!({"command":"video_upload_prepare","owner":"101","source":name,
+            "mode":"media","fixtureResourceName":outside})
+            )
+            .contains("fixture"));
+    }
+    let result = app.ok(
+        json!({"command":"video_upload_prepare","owner":"101","source":name,
+        "mode":"media","filenameCaption":true,"fixtureResourceName":"native-resource"}),
+    );
+    assert_short_video_upload(&fixture, &result, name);
+    assert!(fixture.path("ffmpeg-pid").exists());
+    app.stop();
+}
+
+#[test]
+fn video_upload_failed_decoder_reports_failure_without_missing_install_advice() {
+    let fixture = Fixture::new();
+    let name = "failed-decoder.mp4";
+    fixture.write(
+        name,
+        include_bytes!("fixtures/video-upload/synthetic-vp9.mp4"),
+    );
+    video_upload_external_decoder_fixture(&fixture, "fail");
+    fixture.write(
+        ".video-upload-helper-root-path",
+        b"Only the owned decoder is available",
+    );
+    force_video_upload_external_decoder(&fixture);
+    let mut app = start_video_upload_ffmpeg_backend(&fixture);
+    let result = app.ok(
+        json!({"command":"video_upload_prepare","owner":"101","source":name,
+        "mode":"media","fixtureResource":true}),
+    );
+    let message = result["result"]["error"].as_str().unwrap();
+    assert!(message.contains("VIDEO_THUMBNAIL_UNAVAILABLE"), "{result}");
+    assert!(message.contains("could not decode"), "{message}");
+    assert!(!message.contains("Install FFmpeg"), "{message}");
+    assert!(fixture.path("ffmpeg-pid").exists());
+    assert_eq!(result["mainUploadRequests"], 0);
+    assert_eq!(result["sendAttempts"], 0);
+    assert_eq!(result["upBytes"], 0);
+    assert_video_upload_scratch_empty(&fixture);
+    fixture.write("ffmpeg-mode", b"ok");
+    fixture.write(
+        "ffmpeg-frame.jpg",
+        b"A successful process did not produce an image",
+    );
+    let invalid = app.ok(
+        json!({"command":"video_upload_prepare","owner":"101","source":name,
+        "mode":"media","fixtureResource":true}),
+    );
+    let message = invalid["result"]["error"].as_str().unwrap();
+    assert!(message.contains("VIDEO_THUMBNAIL_UNAVAILABLE"), "{invalid}");
+    assert!(message.contains("invalid preview"), "{message}");
+    assert!(!message.contains("Install FFmpeg"), "{message}");
+    assert!(
+        !message.contains(name),
+        "Decoder diagnostics exposed the source filename"
+    );
+    assert_eq!(invalid["mainUploadRequests"], 0);
+    assert_eq!(invalid["thumbnailRequests"], 0);
+    assert_eq!(invalid["sendAttempts"], 0);
+    assert_eq!(invalid["upBytes"], 0);
+    assert_video_upload_scratch_empty(&fixture);
+    app.stop();
+}
+
+#[test]
+fn video_upload_missing_decoder_reports_install_advice_and_file_mode_still_works() {
+    let fixture = Fixture::new();
+    let name = "missing-decoder.mp4";
+    fixture.write(
+        name,
+        include_bytes!("fixtures/video-upload/synthetic-vp9.mp4"),
+    );
+    fixture.write(".video-upload-empty-path", b"No decoder is available");
+    force_video_upload_external_decoder(&fixture);
+    let mut app = start_video_upload_ffmpeg_backend(&fixture);
+    let result = app.ok(
+        json!({"command":"video_upload_prepare","owner":"101","source":name,
+        "mode":"media","fixtureResource":true}),
+    );
+    let message = result["result"]["error"].as_str().unwrap();
+    assert!(message.contains("VIDEO_THUMBNAIL_UNAVAILABLE"), "{message}");
+    assert!(message.contains("Install FFmpeg"), "{message}");
+    assert_eq!(result["mainUploadRequests"], 0);
+    assert_eq!(result["sendAttempts"], 0);
+    assert_eq!(result["upBytes"], 0);
+    assert_video_upload_scratch_empty(&fixture);
+    let fallback = app.ok(
+        json!({"command":"video_upload_prepare","owner":"101","source":name,
+        "mode":"file","fixtureResource":true}),
+    );
+    assert_eq!(fallback["result"]["video"], false);
+    assert_eq!(fallback["thumbnailRequests"], 0);
+    assert_eq!(fallback["upBytes"], 0);
+    app.stop();
+}
+
+#[test]
+fn video_upload_vp9_falls_back_to_path_when_the_bundled_decoder_fails() {
+    let fixture = Fixture::new();
+    let name = "VP9 failed sidecar.mp4";
+    fixture.write(
+        name,
+        include_bytes!("fixtures/video-upload/synthetic-vp9.mp4"),
+    );
+    video_upload_external_decoder_fixture(&fixture, "fail");
+    force_video_upload_external_decoder(&fixture);
+    let mut app = start_video_upload_ffmpeg_backend(&fixture);
+    let result = app.ok(
+        json!({"command":"video_upload_prepare","owner":"101","source":name,
+        "mode":"media","filenameCaption":true,"fixtureResource":true}),
+    );
+    assert_short_video_upload(&fixture, &result, name);
+    assert!(fixture.path("ffmpeg-pid").exists());
+    app.stop();
+}
+
+#[test]
+fn video_upload_cancellation_during_ffmpeg_fallback_stops_the_owned_process() {
+    let fixture = Fixture::new();
+    let name = "VP9 cancel fallback.mp4";
+    fixture.write(
+        name,
+        include_bytes!("fixtures/video-upload/synthetic-vp9.mp4"),
+    );
+    video_upload_external_decoder_fixture(&fixture, "wait");
+    fixture.write(
+        ".video-upload-helper-root-path",
+        b"Only the owned fallback decoder is on PATH",
+    );
+    let resources = fixture.path("broken-sidecar");
+    std::fs::create_dir(&resources).unwrap();
+    fixture.write(
+        "broken-sidecar/.native-e2e-fixture",
+        b"telegram-drive-synthetic-e2e\n",
+    );
+    fixture.write("broken-sidecar/ffmpeg-mode", b"fail");
+    #[cfg(windows)]
+    fixture.write("broken-sidecar/.video-upload-native-mode", b"fail");
+    std::fs::copy(
+        env!("CARGO_BIN_EXE_native-e2e-heic-helper"),
+        resources.join(if cfg!(windows) {
+            "ffmpeg.exe"
+        } else {
+            "ffmpeg"
+        }),
+    )
+    .unwrap();
+    let mut app = start_video_upload_ffmpeg_backend(&fixture);
+    app.ok(
+        json!({"command":"video_upload_start","owner":"101","source":name,
+        "mode":"media","filenameCaption":true,"fixtureResourceName":"broken-sidecar"}),
+    );
+    let ready = Instant::now() + Duration::from_secs(10);
+    let pid = loop {
+        if let Ok(pid) = std::fs::read_to_string(fixture.path("ffmpeg-pid")) {
+            break pid.parse().unwrap();
+        }
+        assert!(Instant::now() < ready, "Fallback decoder did not start");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let process = HeicProcess::capture(pid);
+    app.ok(json!({"command":"video_upload_cancel"}));
+    let result = app.ok(json!({"command":"video_upload_finish"}));
+    assert!(
+        result["result"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("cancelled"),
+        "{result}"
+    );
+    assert_eq!(result["mainUploadRequests"], 0);
+    assert_eq!(result["thumbnailRequests"], 0);
+    assert_eq!(result["sendAttempts"], 0);
+    assert_eq!(result["upBytes"], 0);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let scratch_empty = std::fs::read_dir(fixture.path("video-upload-scratch"))
+            .unwrap()
+            .all(|entry| {
+                std::fs::read_dir(entry.unwrap().path())
+                    .unwrap()
+                    .next()
+                    .is_none()
+            });
+        if !process.alive().unwrap() && scratch_empty {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Fallback process or scratch survived cancellation"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        !process.alive().unwrap(),
+        "Fallback decoder survived cancellation"
+    );
+    assert_video_upload_scratch_empty(&fixture);
+    app.stop();
+}
+
+#[cfg(windows)]
+#[test]
+fn video_upload_vp9_falls_back_to_ffmpeg_when_windows_native_decoder_stalls() {
+    let fixture = Fixture::new();
+    let name = "VP9 native timeout.mp4";
+    fixture.write(
+        name,
+        include_bytes!("fixtures/video-upload/synthetic-vp9.mp4"),
+    );
+    fixture.write(".video-upload-native-mode", b"wait");
+    let mut app = start_video_upload_ffmpeg_backend(&fixture);
+    let started = Instant::now();
+    let result = app.ok(
+        json!({"command":"video_upload_prepare","owner":"101","source":name,
+        "mode":"media","filenameCaption":true,"fixtureResource":true}),
+    );
+    assert_short_video_upload(&fixture, &result, name);
+    assert!(started.elapsed() < Duration::from_secs(30));
+    app.stop();
+}
+
+#[cfg(windows)]
+#[test]
+fn video_upload_corrupt_ffmpeg_preserves_slow_native_h264_success() {
+    let fixture = Fixture::new();
+    let name = "native H264 after corrupt FFmpeg.mp4";
+    video_upload_fixture(&fixture, name, false, false);
+    let original = fixture.read(name);
+    fixture.write("ffmpeg.exe", b"Not a Windows executable");
+    fixture.write(
+        ".video-upload-empty-path",
+        b"Only the corrupt resource candidate exists",
+    );
+    fixture.write(".video-upload-native-mode", b"delay");
+    let mut app = start_video_upload_ffmpeg_backend(&fixture);
+    let started = Instant::now();
+    let result = app.ok(
+        json!({"command":"video_upload_prepare","owner":"101","source":name,
+        "mode":"media","filenameCaption":true,"fixtureResource":true}),
+    );
+    assert_eq!(
+        result["result"]["receipt"], "controlled-telegram-message-303",
+        "{result}"
+    );
+    assert_eq!(result["thumbnailRequests"], 1);
+    assert_eq!(result["sendAttempts"], 1);
+    let wire = uploaded_video_wire(&result);
+    assert!(!wire.force_file && wire.thumb.is_some());
+    let video = wire
+        .attributes
+        .iter()
+        .find_map(|attribute| match attribute {
+            grammers_tl_types::enums::DocumentAttribute::Video(video) => Some(video),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!((video.w, video.h), (640, 360));
+    assert_eq!(fixture.read(name), original);
+    assert!(
+        started.elapsed() >= Duration::from_secs(16),
+        "Native decoder delay was not exercised"
+    );
+    assert!(started.elapsed() < Duration::from_secs(30));
+    assert_video_upload_scratch_empty(&fixture);
+    app.stop();
+}
+
+#[cfg(windows)]
+#[test]
+fn video_upload_corrupt_ffmpeg_reports_launch_failure_without_install_advice() {
+    let fixture = Fixture::new();
+    let name = "corrupt-decoder.mp4";
+    fixture.write(
+        name,
+        include_bytes!("fixtures/video-upload/synthetic-vp9.mp4"),
+    );
+    fixture.write("ffmpeg.exe", b"Not a Windows executable");
+    fixture.write(
+        ".video-upload-empty-path",
+        b"Only the corrupt resource candidate exists",
+    );
+    force_video_upload_external_decoder(&fixture);
+    let mut app = start_video_upload_ffmpeg_backend(&fixture);
+    let result = app.ok(
+        json!({"command":"video_upload_prepare","owner":"101","source":name,
+        "mode":"media","fixtureResource":true}),
+    );
+    let message = result["result"]["error"].as_str().unwrap();
+    assert!(message.contains("VIDEO_THUMBNAIL_UNAVAILABLE"), "{message}");
+    assert!(message.contains("could not be started"), "{message}");
+    assert!(!message.contains("Install FFmpeg"), "{message}");
+    assert_eq!(result["mainUploadRequests"], 0);
+    assert_eq!(result["sendAttempts"], 0);
+    assert_eq!(result["upBytes"], 0);
+    assert_video_upload_scratch_empty(&fixture);
+    app.stop();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn video_upload_vp9_uses_the_system_executable_search_path_when_path_is_unset() {
+    let fixture = Fixture::new();
+    let name = "VP9 default executable path.mp4";
+    fixture.write(
+        name,
+        include_bytes!("fixtures/video-upload/synthetic-vp9.mp4"),
+    );
+    fixture.write(
+        ".video-upload-unset-path",
+        b"Use the operating system default executable path",
+    );
+    // Linux CI provisions /usr/bin/ffmpeg. An absent PATH must preserve the OS
+    // default search behavior; an explicitly empty PATH remains a different case.
+    let version = Command::new("ffmpeg")
+        .arg("-version")
+        .env_remove("PATH")
+        .output()
+        .unwrap();
+    assert!(
+        version.status.success(),
+        "Default-path FFmpeg must be provisioned for this journey"
+    );
+    let mut app = start_video_upload_ffmpeg_backend(&fixture);
+    let result = app.ok(
+        json!({"command":"video_upload_prepare","owner":"101","source":name,
+        "mode":"media","filenameCaption":true}),
+    );
+    assert_short_video_upload(&fixture, &result, name);
+    app.stop();
+}
+
 fn assert_video_upload_scratch_empty(fixture: &Fixture) {
     for entry in std::fs::read_dir(fixture.path("video-upload-scratch")).unwrap() {
         let entry = entry.unwrap();
@@ -9698,6 +10895,9 @@ fn video_upload_decoder_deadline_kills_the_owned_process_without_publication_or_
             .contains("VIDEO_THUMBNAIL_UNAVAILABLE"),
         "{result}"
     );
+    let message = result["result"]["error"].as_str().unwrap();
+    assert!(message.contains("timed out"), "{message}");
+    assert!(!message.contains("Install FFmpeg"), "{message}");
     assert!(
         started.elapsed() < Duration::from_secs(70),
         "Decoder exceeded its complete operation bound"

@@ -98,7 +98,7 @@ fn job_key(root: &Path, owner: i64, id: &str) -> String {
     format!("{}:{owner}:{id}", root.display())
 }
 fn now() -> i64 {
-    jiff::Timestamp::now().as_millisecond()
+    crate::app_time::unix_millis()
 }
 
 pub fn offline_root(data: &Path, owner: i64) -> PathBuf {

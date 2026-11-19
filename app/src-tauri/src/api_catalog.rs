@@ -7,6 +7,7 @@ use crate::commands::TelegramState;
 use crate::models::FolderMetadata;
 use crate::workspace::AccountGuard;
 use grammers_client::types::{Media, Message, Peer};
+use jiff::{fmt::temporal::DateTimePrinter, Timestamp};
 use serde::Serialize;
 use std::{
     collections::HashMap,
@@ -43,34 +44,26 @@ pub struct ApiFile {
     pub is_document: bool,
 }
 
-/// Unix seconds as RFC 3339 in UTC, without fractional seconds.
 pub fn rfc3339(seconds: i64) -> String {
-    jiff::Timestamp::from_second(seconds)
-        .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
-        .strftime("%Y-%m-%dT%H:%M:%SZ")
-        .to_string()
+    let timestamp = Timestamp::from_second(seconds)
+        .expect("Telegram message timestamps fit the supported calendar");
+    DateTimePrinter::new()
+        .precision(Some(0))
+        .timestamp_to_string(&timestamp)
 }
 
 /// Accepts RFC 3339, a plain date, Unix seconds, and the
 /// `2026-06-05 10:00:00 UTC` form returned by releases before 4.0.
 pub fn parse_time(value: &str) -> Option<i64> {
     let value = value.trim();
-    if let Ok(parsed) = value.parse::<jiff::Timestamp>() {
-        return Some(parsed.as_second());
+    if let Some(seconds) = crate::app_time::parse_rfc3339_seconds(value) {
+        return Some(seconds);
     }
-    if let Ok(parsed) =
-        jiff::civil::DateTime::strptime("%Y-%m-%d %H:%M:%S", value.trim_end_matches(" UTC"))
-    {
-        return parsed
-            .to_zoned(jiff::tz::TimeZone::UTC)
-            .ok()
-            .map(|start| start.timestamp().as_second());
+    if let Ok(parsed) = crate::app_time::parse_civil_datetime(value.trim_end_matches(" UTC")) {
+        return Some(crate::app_time::civil_utc_seconds(parsed));
     }
-    if let Ok(parsed) = jiff::civil::Date::strptime("%Y-%m-%d", value) {
-        return parsed
-            .to_zoned(jiff::tz::TimeZone::UTC)
-            .ok()
-            .map(|start| start.timestamp().as_second());
+    if let Ok(parsed) = crate::app_time::parse_date(value) {
+        return Some(crate::app_time::civil_utc_seconds(parsed.at(0, 0, 0, 0)));
     }
     value.parse::<i64>().ok().filter(|seconds| *seconds >= 0)
 }
