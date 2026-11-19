@@ -428,6 +428,35 @@ jobs:
           gh release view "$RELEASE_TAG" --json url,isDraft,isPrerelease,tagName,assets \
             --jq '{url, isDraft, isPrerelease, tagName, assets: [.assets[].name]}'
 
+      # Editing the repository description needs the Administration permission,
+      # which GITHUB_TOKEN never has, so this step uses the REPO_ADMIN_TOKEN secret
+      # (fine-grained token limited to this repository).
+      - name: Update the "up to date with" version in the repository description
+        if: needs.prepare.outputs.publish == 'true'
+        env:
+          ADMIN_TOKEN: ${{ secrets.REPO_ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ADMIN_TOKEN" ]; then
+            echo "::warning::REPO_ADMIN_TOKEN is not set, the repository description was not updated."
+            exit 0
+          fi
+          export GH_TOKEN="$ADMIN_TOKEN"
+          current="$(gh repo view "$GH_REPO" --json description -q .description)"
+          shown="$(printf '%s' "$current" | grep -oE 'up to date with v[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 | sed 's/.* v//' || true)"
+          if [ -z "$shown" ]; then
+            echo "::warning::The description has no 'up to date with v<version>' text, left unchanged: $current"
+            exit 0
+          fi
+          if [ "$(printf '%s\n%s\n' "$shown" "$RELEASE_VERSION" | sort -V | tail -n 1)" != "$RELEASE_VERSION" ] \
+            || [ "$shown" = "$RELEASE_VERSION" ]; then
+            echo "The description already shows v$shown, nothing to change for v$RELEASE_VERSION."
+            exit 0
+          fi
+          updated="$(printf '%s' "$current" | sed -E "s/up to date with v[0-9]+\.[0-9]+\.[0-9]+/up to date with v${RELEASE_VERSION}/")"
+          gh repo edit "$GH_REPO" --description "$updated"
+          echo "Description updated: $updated"
+
   restore:
     name: Restore the release state after a failure
     needs: [prepare, build, finalize]
