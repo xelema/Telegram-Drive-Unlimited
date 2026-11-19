@@ -224,7 +224,7 @@ impl AppLogger {
         };
         let line = format!(
             "{} {:<5} {}: {}\n",
-            jiff::Timestamp::now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            crate::app_time::utc_log_stamp(),
             record.level(),
             record.target(),
             redact(&record.args().to_string())

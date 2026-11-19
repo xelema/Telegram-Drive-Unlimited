@@ -895,7 +895,7 @@ impl crate::local_search::Source for InventorySearchSource {
                             size: 1000,
                             mime_type: Some("application/pdf".into()),
                             file_ext: Some("pdf".into()),
-                            created_at: jiff::Timestamp::now().to_string(),
+                            created_at: crate::app_time::now_rfc3339(),
                             icon_type: "file".into(),
                             encryption_state: "plain".into(),
                             is_favorite: overlay.favorite,
@@ -1156,6 +1156,7 @@ struct Driver {
         tokio::task::JoinHandle<std::io::Result<()>>,
     )>,
     retained_sessions: Vec<Arc<TelegramState>>,
+    webdav_filesystems: Vec<crate::webdav::TelegramDavFs>,
 }
 
 impl Driver {
@@ -1441,6 +1442,8 @@ impl Driver {
             | "asset_clear"
             | "thumbnail_batch" => self.dispatch_assets(request).await,
             "traffic_clock"
+            | "traffic_clock_instant"
+            | "traffic_windows_clock"
             | "traffic_proxy_start_slow"
             | "traffic_proxy_finish_slow"
             | "traffic_proxy_patch"
@@ -1475,6 +1478,7 @@ impl Driver {
             | "api_seed_catalog"
             | "supporter_verify"
             | "start_webdav"
+            | "webdav_expire_root_index"
             | "release_retained_sessions"
             | "start_api"
             | "start_http" => self.dispatch_servers(request).await,
@@ -1601,7 +1605,7 @@ impl Driver {
                     crate::transfer_engine::apply_failure(
                         &mut job,
                         reason.to_owned(),
-                        jiff::Timestamp::now().as_millisecond(),
+                        crate::app_time::unix_millis(),
                     );
                 } else {
                     job.status =
@@ -3485,10 +3489,66 @@ impl Driver {
 
     async fn dispatch_traffic(&mut self, request: Value) -> Result<Value, String> {
         match text(&request, "command")? {
+            "traffic_windows_clock" => {
+                #[cfg(windows)]
+                {
+                    use windows_sys::Win32::{
+                        Foundation::SYSTEMTIME, System::Time::TIME_ZONE_INFORMATION,
+                    };
+                    let instant = crate::app_time::parse_rfc3339_seconds(text(&request, "time")?)
+                        .ok_or("Invalid time")?;
+                    // Substitute only the OS rule lookup in this native fixture.
+                    // Both paths still use the real Windows UTC-to-local conversion;
+                    // no machine timezone or registry setting is changed.
+                    let zone = match text(&request, "rule")? {
+                        "os" => None,
+                        "disabled" => Some(TIME_ZONE_INFORMATION {
+                            Bias: 300,
+                            DaylightBias: -90,
+                            ..Default::default()
+                        }),
+                        "custom" => Some(TIME_ZONE_INFORMATION {
+                            Bias: 300,
+                            DaylightBias: -90,
+                            DaylightDate: SYSTEMTIME {
+                                wMonth: 4,
+                                wDay: 1,
+                                wHour: 2,
+                                ..Default::default()
+                            },
+                            StandardDate: SYSTEMTIME {
+                                wMonth: 10,
+                                wDay: 1,
+                                wHour: 2,
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        }),
+                        _ => return Err("Unknown Windows timezone fixture rule".into()),
+                    };
+                    crate::app_time::set_windows_timezone_for_e2e(zone);
+                    let local = crate::app_time::local_datetime_at(instant).map_err(error)?;
+                    self.bandwidth.set_date(local.date());
+                    self.network.pacer.set_clock(local);
+                    Ok(
+                        json!({"local":local.to_string(),"stats":self.bandwidth.get_stats(),
+                        "processTz":std::env::var("TZ").ok()}),
+                    )
+                }
+                #[cfg(not(windows))]
+                Err("Windows timezone fixture requires Windows".into())
+            }
+            "traffic_clock_instant" => {
+                let instant = crate::app_time::parse_rfc3339_seconds(text(&request, "time")?)
+                    .ok_or("Invalid time")?;
+                self.network
+                    .pacer
+                    .set_clock(crate::app_time::local_datetime_at(instant).map_err(error)?);
+                Ok(json!(true))
+            }
             "traffic_clock" => {
                 self.network.pacer.set_clock(
-                    jiff::civil::DateTime::strptime("%Y-%m-%d %H:%M", text(&request, "time")?)
-                        .map_err(error)?,
+                    crate::app_time::parse_civil_minute(text(&request, "time")?).map_err(error)?,
                 );
                 Ok(json!(true))
             }
@@ -3594,10 +3654,8 @@ impl Driver {
                 .bandwidth
                 .set_limit(request["bytes"].as_u64().ok_or("Missing limit")?)?)),
             "bandwidth_set_date" => {
-                self.bandwidth.set_date(
-                    jiff::civil::Date::strptime("%Y-%m-%d", text(&request, "date")?)
-                        .map_err(error)?,
-                );
+                self.bandwidth
+                    .set_date(crate::app_time::parse_date(text(&request, "date")?).map_err(error)?);
                 Ok(json!(self.bandwidth.get_stats()))
             }
             "bandwidth_resize" => {
@@ -3973,12 +4031,10 @@ impl Driver {
                     .ok_or("Missing files")?
                     .iter()
                     .map(|file| {
-                        let created = file["created"]
-                            .as_str()
-                            .ok_or("Missing created")?
-                            .parse::<jiff::Timestamp>()
-                            .map_err(error)?
-                            .as_second();
+                        let created = crate::app_time::parse_rfc3339_seconds(
+                            file["created"].as_str().ok_or("Missing created")?,
+                        )
+                        .ok_or("Invalid created")?;
                         let name = file["name"].as_str().ok_or("Missing name")?.to_string();
                         Ok(crate::api_catalog::ApiFile {
                             id: file["id"].as_i64().ok_or("Missing id")?,
@@ -4033,6 +4089,7 @@ impl Driver {
                 )
                 .with_remote_error(request["remoteError"].as_str().map(str::to_string))
                 .with_catalog_fixture(request["catalogFixture"] == true);
+                self.webdav_filesystems.push(filesystem.clone());
                 let server = crate::webdav::serve(
                     listener,
                     filesystem,
@@ -4041,6 +4098,13 @@ impl Driver {
                 .map_err(error)?;
                 self.servers.push((server.handle(), tokio::spawn(server)));
                 Ok(json!({"url":format!("http://{address}")}))
+            }
+            "webdav_expire_root_index" => {
+                let filesystem = self
+                    .webdav_filesystems
+                    .last()
+                    .ok_or("No WebDAV fixture is running")?;
+                Ok(json!(filesystem.fixture_expire_root_index().await))
             }
             "release_retained_sessions" => {
                 let mut released = 0;
@@ -4790,6 +4854,19 @@ impl Driver {
                 let name = text(&request, "source")?.to_string();
                 let mode = text(&request, "mode")? == "media";
                 let filename_caption = request["filenameCaption"].as_bool();
+                // Only the fixture root or a single child directory can be exposed as resources.
+                let resource = match request["fixtureResourceName"].as_str() {
+                    Some(name) => {
+                        if !matches!(
+                            Path::new(name).components().next(),
+                            Some(std::path::Component::Normal(_))
+                        ) {
+                            return Err("Expected a fixture resource directory name".into());
+                        }
+                        Some(child(&self.root, name)?)
+                    }
+                    None => (request["fixtureResource"] == true).then(|| self.root.clone()),
+                };
                 let transport = Arc::new(FixtureVideoUploadTransport {
                     root: self.root.clone(),
                     block_thumbnail: request["blockThumbnail"] == true,
@@ -4814,7 +4891,7 @@ impl Driver {
                             &name,
                             mode,
                             "video/mp4",
-                            None,
+                            resource,
                             bandwidth.clone(),
                             &account,
                             &mut cancel,
@@ -4903,6 +4980,9 @@ impl Driver {
                         };
                     capture["upBytes"] = json!(bandwidth.checked_stats()?.up_bytes);
                     capture["pacerPending"] = json!(network.pacer.pending());
+                    // Fixture-only diagnostics retain the production child-process
+                    // outcome and timing when preparation fails before publication.
+                    capture["processes"] = json!(crate::process_budget::observations());
                     Ok(capture)
                 });
                 self.video_upload = Some(FixtureVideoUploadJourney {
@@ -4926,7 +5006,8 @@ impl Driver {
                     "mainUploadRequests":journey.transport.main_upload_requests.load(std::sync::atomic::Ordering::SeqCst),
                     "preparationCompleted":journey.transport.preparation_completed.load(std::sync::atomic::Ordering::SeqCst),
                     "sendAttempts":journey.transport.send_attempts.load(std::sync::atomic::Ordering::SeqCst),
-                    "finished":journey.task.is_finished(),"upBytes":self.bandwidth.checked_stats()?.up_bytes}),
+                    "finished":journey.task.is_finished(),"upBytes":self.bandwidth.checked_stats()?.up_bytes,
+                    "processes":crate::process_budget::observations()}),
                 )
             }
             "video_upload_release" => {
@@ -5416,6 +5497,7 @@ pub async fn run() -> Result<(), String> {
         planned_sync: None,
         servers: Vec::new(),
         retained_sessions: Vec::new(),
+        webdav_filesystems: Vec::new(),
         archive_task: None,
         archive_continue: None,
         asset_downloads: Arc::new(AtomicU64::new(0)),
