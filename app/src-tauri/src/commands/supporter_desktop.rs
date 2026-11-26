@@ -709,6 +709,10 @@ fn recovery_presence_for_status(
 // HTTP routes read RAM only; they never initiate verification or show an ad.
 static SPONSOR_OFFLINE_UNTIL: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
+// The fork ships no sponsor routes, so nothing calls this today. It stays with
+// the offline-grace cache it reads because the $5 supporter contract is a
+// protected compatibility surface (see SUPPORTER_LICENSE_INVARIANTS.md).
+#[allow(dead_code)]
 pub(crate) fn sponsor_requests_suppressed() -> bool {
     let until = SPONSOR_OFFLINE_UNTIL.load(std::sync::atomic::Ordering::Acquire);
     until > 0 && unix_time() <= until
