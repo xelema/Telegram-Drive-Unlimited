@@ -1,8 +1,51 @@
 //! Tauri commands for applying proxy and VPN optimizer settings.
 //! These are called from the frontend when the user changes network configuration.
 
-use crate::vpn_optimizer::{NetworkConfig, ProxyConfig, VpnConfig};
+use crate::vpn_optimizer::{NetworkConfig, ProxyConfig, ProxyCredentialUpdate, VpnConfig};
 use tauri::State;
+
+// Serialize fallback reads and disposal of failed resources. Healthy settings
+// continue using the SDK's shared store and its regular write path.
+static SETTINGS_RELOAD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+const SETTINGS_READ_ERROR: &str = "Saved settings could not be read.";
+
+pub(crate) fn reload_missing_settings_at(
+    app: &tauri::AppHandle,
+    path: &std::path::Path,
+) -> Result<Option<serde_json::Value>, String> {
+    use tauri_plugin_store::{Error, StoreExt};
+
+    let _reload = SETTINGS_RELOAD.lock().map_err(|_| SETTINGS_READ_ERROR)?;
+    let store = app.store(path).map_err(|_| SETTINGS_READ_ERROR)?;
+    let cached = || store.get("settings").filter(|value| !value.is_null());
+    if let Some(settings) = cached() {
+        return Ok(Some(settings));
+    }
+    match store.reload() {
+        Ok(()) => Ok(cached()),
+        Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(cached()),
+        Err(_) => {
+            if let Some(settings) = cached() {
+                return Ok(Some(settings));
+            }
+            // The plugin saves every registered store on exit. Leaving this
+            // failed, empty settings resource registered could overwrite the file.
+            store.close_resource();
+            Err(SETTINGS_READ_ERROR.into())
+        }
+    }
+}
+
+/// Distinguish first launch from an SDK load that suppressed a disk error.
+/// The webview receives only readiness for the fixed AppData store.
+#[tauri::command]
+pub async fn cmd_reload_missing_settings(app: tauri::AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        reload_missing_settings_at(&app, std::path::Path::new("settings.json")).map(|_| ())
+    })
+    .await
+    .map_err(|_| SETTINGS_READ_ERROR)?
+}
 
 #[derive(Debug, serde::Deserialize)]
 pub struct ProxySettingsRequest {
@@ -22,7 +65,11 @@ pub async fn cmd_apply_proxy_settings(
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
-    let change = (!req.password.is_empty()).then_some(Some(req.password));
+    let change = if req.password.is_empty() {
+        ProxyCredentialUpdate::Keep
+    } else {
+        ProxyCredentialUpdate::Set(req.password)
+    };
     net_config.update_credentials(
         &app,
         move |snapshot| {
@@ -38,18 +85,6 @@ pub async fn cmd_apply_proxy_settings(
         },
         change,
     )?;
-    let config = net_config.snapshot().proxy;
-
-    // Start or stop local SOCKS5 bridge as needed
-    if config.enabled && (config.proxy_type == "http" || config.proxy_type == "https") {
-        if let Err(e) = net_config.start_http_bridge().await {
-            log::error!("Failed to start SOCKS5 bridge for HTTP/HTTPS proxy: {}", e);
-            return Err(format!("Failed to start SOCKS5 bridge: {}", e));
-        }
-    } else {
-        net_config.stop_http_bridge();
-    }
-
     Ok("Proxy settings applied".into())
 }
 
@@ -64,7 +99,7 @@ pub async fn cmd_migrate_proxy_secret(
     if password.is_empty() {
         return Ok(());
     }
-    net_config.update_credentials(&app, |_| Ok(()), Some(Some(password)))
+    net_config.update_credentials(&app, |_| Ok(()), ProxyCredentialUpdate::Import(password))
 }
 
 #[tauri::command]
@@ -72,7 +107,7 @@ pub async fn cmd_clear_proxy_secret(
     net_config: State<'_, std::sync::Arc<NetworkConfig>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    net_config.update_credentials(&app, |_| Ok(()), Some(None))
+    net_config.update_credentials(&app, |_| Ok(()), ProxyCredentialUpdate::Clear)
 }
 
 #[derive(Debug, serde::Deserialize)]

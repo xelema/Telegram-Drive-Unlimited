@@ -95,7 +95,15 @@
     "show_in_folder": "Tunjuk dalam folder",
     "webdav_settings": "Tetapan WebDAV"
   },
+  "existing_channel_help": {
+    "title": "Gunakan saluran Telegram yang sedia ada",
+    "edit": "Dalam aplikasi Telegram, buka saluran yang anda dibenarkan untuk menamakan semula. Buka maklumat saluran dan sunting namanya.",
+    "rename": "Tambahkan ruang diikuti <tag>{{tag}}</tag> pada hujung nama, kemudian simpan. Contohnya, tukar nama <before>{{before}}</before> kepada <after>{{after}}</after>.",
+    "sync": "Dalam Telegram Drive, gunakan akaun yang sama dan pilih {{sync}} pada bar sisi. Saluran akan dipaparkan dengan nama asalnya.",
+    "example": "Foto"
+  },
   "settings": {
+    "legacy_proxy_clear": "Pilih {{clear}} di sebelah medan kata laluan untuk memadamkan kata laluan proksi lama dan menggunakan tetapan ini.",
     "tab_sync": "Folder Sync",
     "sync": {
       "title": "Folder Sync",
@@ -173,6 +181,8 @@
     "desktop_notification_filenames": "Tunjukkan nama fail",
     "desktop_notification_filenames_desc": "Nama fail mungkin kelihatan pada skrin kunci. Dimatikan lebih peribadi.",
     "desktop_save_failed": "Keutamaan desktop tidak dapat disimpan",
+    "strict_upload_order": "Ikut tertib muat naik",
+    "strict_upload_order_desc": "Muat naik satu demi satu mengikut turutan baris gilir. Muat naik seterusnya menunggu semasa percubaan semula. Untuk meneruskan, sambung, cuba semula, batalkan atau keluarkan muat naik yang tersekat.",
     "concurrent_uploads": "Muat Naik Serentak",
     "max_uploads_desc": "Muat naik selari maksimum",
     "concurrent_downloads": "Muat Turun Serentak",
@@ -1611,5 +1621,18 @@
     "this_device": "dimuat naik oleh peranti ini",
     "other_device": "dimuat naik oleh peranti lain",
     "none": "Tiada sandaran tetapan disulitkan dalam 1,000 Mesej Tersimpan terkini."
+  },
+  "action_errors": {
+    "credentials": "Semak API ID dan API Hash.",
+    "disabled": "Telegram telah menyahaktifkan API ID ini. Cipta kelayakan API baharu.",
+    "phone": "Semak nombor telefon dan kod negara.",
+    "banned": "Telegram telah menyekat nombor telefon ini.",
+    "register": "Daftarkan nombor ini dalam aplikasi rasmi Telegram terlebih dahulu.",
+    "code": "Semak kod log masuk dan cuba lagi.",
+    "expired": "Kod telah tamat tempoh. Minta kod baharu.",
+    "password": "Kata laluan tidak dapat disahkan.",
+    "verify_bundle": "Semak frasa laluan dan salinan berkas pemulihan anda.",
+    "replace_keys": "Berkas ini tidak mengandungi semua kunci. Menggantikan peti besi boleh menyebabkan fail yang menggunakan kunci tersebut tidak dapat dibaca. Teruskan?",
+    "file_limit": "Fail melebihi had saiz Telegram. Bahagikannya sebelum dimuat naik."
   }
 }

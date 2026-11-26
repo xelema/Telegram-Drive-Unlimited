@@ -95,7 +95,15 @@
     "show_in_folder": "Mostra nella cartella",
     "webdav_settings": "Impostazioni WebDAV"
   },
+  "existing_channel_help": {
+    "title": "Usa un canale Telegram esistente",
+    "edit": "Nell’app Telegram, apri un canale che hai il permesso di rinominare. Apri le informazioni del canale e modificane il nome.",
+    "rename": "Aggiungi uno spazio seguito da <tag>{{tag}}</tag> alla fine del nome, poi salva. Ad esempio, cambia «<before>{{before}}</before>» in «<after>{{after}}</after>».",
+    "sync": "In Telegram Drive usa lo stesso account e scegli «{{sync}}» nella barra laterale. Il canale apparirà con il nome originale.",
+    "example": "Foto"
+  },
   "settings": {
+    "legacy_proxy_clear": "Seleziona «{{clear}}» accanto al campo della password per eliminare la vecchia password del proxy e applicare queste impostazioni.",
     "tab_sync": "Folder Sync",
     "sync": {
       "title": "Folder Sync",
@@ -173,6 +181,8 @@
     "desktop_notification_filenames": "Mostra i nomi dei file",
     "desktop_notification_filenames_desc": "I nomi possono apparire nella schermata di blocco. Disattivato è più riservato.",
     "desktop_save_failed": "Impossibile salvare le preferenze desktop",
+    "strict_upload_order": "Ordine rigoroso di caricamento",
+    "strict_upload_order_desc": "Carica un file alla volta in ordine di coda. I successivi attendono durante i tentativi. Per continuare, riprendi, riprova, annulla o rimuovi il caricamento bloccato.",
     "concurrent_uploads": "Caricamenti simultanei",
     "max_uploads_desc": "Numero massimo di caricamenti paralleli",
     "concurrent_downloads": "Download simultanei",
@@ -1618,5 +1628,18 @@
     "this_device": "caricato da questo dispositivo",
     "other_device": "caricato da un altro dispositivo",
     "none": "Nessun backup cifrato delle impostazioni negli ultimi 1,000 Messaggi salvati."
+  },
+  "action_errors": {
+    "credentials": "Verifica API ID e API Hash.",
+    "disabled": "Telegram ha disattivato questo API ID. Crea nuove credenziali API.",
+    "phone": "Verifica il numero e il prefisso internazionale.",
+    "banned": "Telegram ha bloccato questo numero di telefono.",
+    "register": "Registra prima il numero nell’app ufficiale di Telegram.",
+    "code": "Controlla il codice di accesso e riprova.",
+    "expired": "Il codice è scaduto. Richiedine un altro.",
+    "password": "Verifica della password non riuscita.",
+    "verify_bundle": "Controlla la passphrase e la tua copia del pacchetto.",
+    "replace_keys": "Nel pacchetto mancano delle chiavi. Sostituendo la cassaforte potresti rendere illeggibili i file che le usano. Continuare?",
+    "file_limit": "Il file supera il limite di dimensione di Telegram. Dividilo prima del caricamento."
   }
 }

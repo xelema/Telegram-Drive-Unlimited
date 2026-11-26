@@ -15,7 +15,7 @@ use crate::sync_engine::{
     self, config as sync_config, native_fixture::NativeSyncFixture, policy::StoredPairPolicy,
     SyncEngine,
 };
-use crate::transfer_engine::{TransferJob, TransferStore};
+use crate::transfer_engine::{TransferDirection, TransferJob, TransferLimits, TransferStore};
 use crate::workspace::{store::Store, AccountGuard};
 use grammers_session::{storages::SqliteSession, types::PeerInfo, Session};
 use serde_json::{json, Value};
@@ -159,6 +159,27 @@ impl crate::vpn_optimizer::ProxySecretStore for SlowFixtureProxySecret {
 /// The folder every upload journey targets.
 const UPLOAD_FOLDER: i64 = 4242;
 
+// Only the Telegram challenge exchange is synthetic. The command consumes the
+// real native token, checks the session generation and persists the verified peer.
+fn fixture_password_challenge(marker: &str) -> grammers_client::types::PasswordToken {
+    use grammers_tl_types::{enums, types};
+    grammers_client::types::PasswordToken::new(types::account::Password {
+        has_recovery: false,
+        has_secure_values: false,
+        has_password: true,
+        current_algo: None,
+        srp_b: None,
+        srp_id: None,
+        hint: Some(marker.to_owned()),
+        email_unconfirmed_pattern: None,
+        new_algo: enums::PasswordKdfAlgo::Unknown,
+        new_secure_algo: enums::SecurePasswordKdfAlgo::Unknown,
+        secure_random: Vec::new(),
+        pending_reset_date: None,
+        login_email_pattern: None,
+    })
+}
+
 fn disconnected() -> Arc<TelegramState> {
     Arc::new(TelegramState {
         client: Arc::new(Mutex::new(None)),
@@ -186,6 +207,7 @@ struct MediaFixture {
     resolutions: Arc<AtomicU64>,
     cache: Arc<crate::server::MediaResolutionCache<PathBuf>>,
     resolution_gate: Arc<tokio::sync::Notify>,
+    body_checkpoint: Arc<tokio::sync::Barrier>,
 }
 
 fn fixture_download(
@@ -193,6 +215,7 @@ fn fixture_download(
     start: u64,
     fail_after: Option<u64>,
     delay_ms: u64,
+    mut after_first_chunk: Option<Arc<tokio::sync::Barrier>>,
 ) -> impl futures::Stream<Item = Result<actix_web::web::Bytes, actix_web::Error>> {
     async_stream::stream! {
         use tokio::io::{AsyncReadExt, AsyncSeekExt};
@@ -218,6 +241,10 @@ fn fixture_download(
             if delay_ms > 0 { tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await; }
             delivered += count as u64;
             yield Ok(actix_web::web::Bytes::from(bytes));
+            if let Some(checkpoint) = after_first_chunk.take() {
+                checkpoint.wait().await; // Acknowledge that the first block was sent.
+                checkpoint.wait().await; // Wait for the test to release the next block.
+            }
         }
     }
 }
@@ -239,6 +266,8 @@ struct MediaFixtureQuery {
     message_id: i32,
     #[serde(default)]
     wait_for_resolution: bool,
+    #[serde(default)]
+    hold_after_first_chunk: bool,
 }
 
 async fn fixture_media(
@@ -310,10 +339,13 @@ async fn fixture_media(
                 state: crypto.get_ref().clone(),
                 credential,
             },
-            move |start| fixture_download(source, start, query.fail_after, query.delay_ms),
+            move |start| fixture_download(source, start, query.fail_after, query.delay_ms, None),
         )
         .await;
     }
+    let checkpoint = query
+        .hold_after_first_chunk
+        .then(|| fixture.body_checkpoint.clone());
     crate::server::build_media_response_from_source(
         size,
         &request,
@@ -326,7 +358,7 @@ async fn fixture_media(
             network: fixture.network.clone(),
         },
         Some(account),
-        move |start| fixture_download(source, start, query.fail_after, query.delay_ms),
+        move |start| fixture_download(source, start, query.fail_after, query.delay_ms, checkpoint),
     )
 }
 
@@ -1105,6 +1137,8 @@ struct FixtureVideoUploadJourney {
 }
 
 struct TransferRetryDriver {
+    active: HashMap<String, TransferDirection>,
+    limits: TransferLimits,
     store: TransferStore,
     jobs: HashMap<String, TransferJob>,
     pending: HashMap<String, TransferJob>,
@@ -1143,6 +1177,9 @@ struct Driver {
     guard: Option<AccountGuard>,
     /// The cycle planned by `sync_cycle`, kept for the following `sync_record`.
     planned_sync: Option<(i64, sync_engine::PreparedReconciliation)>,
+    archive_resources: tauri::ResourceTable,
+    archive_batch: Option<u32>,
+    pending_archive: Option<(u32, crate::commands::archive::ArchiveBatch)>,
     archive_task:
         Option<tokio::task::JoinHandle<Result<crate::commands::archive::ArchiveStaging, String>>>,
     archive_continue: Option<tokio::sync::oneshot::Sender<()>>,
@@ -1167,6 +1204,7 @@ impl Driver {
             context.config_mut().app.tray_icon = None;
             let app = tauri::Builder::default()
                 .enable_macos_default_menu(false)
+                .plugin(tauri_plugin_store::Builder::default().build())
                 .build(context)
                 .map_err(error)?;
             let db = crate::db::init_db_at(&self.root)?;
@@ -1325,6 +1363,8 @@ impl Driver {
         if self.transfer_retry.is_none() {
             let (store, jobs) = TransferStore::open(&self.root.join("transfers.db"))?;
             self.transfer_retry = Some(TransferRetryDriver {
+                limits: TransferLimits::load(&self.root),
+                active: HashMap::new(),
                 store,
                 jobs: jobs.into_iter().map(|job| (job.id.clone(), job)).collect(),
                 pending: HashMap::new(),
@@ -1337,6 +1377,53 @@ impl Driver {
     async fn dispatch(&mut self, request: Value) -> Result<Value, String> {
         let command = text(&request, "command")?.to_owned();
         match command.as_str() {
+            "fixture_settings_store" => {
+                use tauri_plugin_store::StoreExt;
+                let path = self.root.join("settings.json");
+                let app = self.sync_app()?.handle();
+                let operation = text(&request, "operation")?;
+                if operation == "registered" {
+                    return Ok(json!(app.get_store(&path).is_some()));
+                }
+                let store = app
+                    .store_builder(&path)
+                    .disable_auto_save()
+                    .build()
+                    .map_err(error)?;
+                match operation {
+                    "get" => Ok(store.get(text(&request, "key")?).unwrap_or(Value::Null)),
+                    "set" => {
+                        store.set(text(&request, "key")?, request["value"].clone());
+                        Ok(Value::Null)
+                    }
+                    "reload" => Ok(crate::commands::settings::reload_missing_settings_at(
+                        app, &path,
+                    )?
+                    .unwrap_or(Value::Null)),
+                    _ => Err("Unknown settings fixture operation".into()),
+                }
+            }
+            "crash_attempt" => {
+                use tauri_plugin_store::StoreExt;
+                let path = self.root.join("crash-preferences.json");
+                let app = self.sync_app()?.handle();
+                let store = app.store(&path).map_err(error)?;
+                if let Some(settings) = request.get("settings") {
+                    store.set("settings", settings.clone());
+                    store.save().map_err(error)?;
+                }
+                // An invalid event distinguishes a current grant from consent denial.
+                // Both outcomes terminate before any DNS or HTTP in all build configurations.
+                let probe = json!({"event":"fixture","appVersion":"1","source":"window","errorType":"Error","frames":[],"platform":"fixture","occurredAt":""});
+                crate::commands::crash_reporting::submit_crash_report(
+                    app,
+                    &path,
+                    serde_json::from_value(probe).map_err(error)?,
+                    request["grant"].as_str(),
+                )
+                .await?;
+                Ok(Value::Null)
+            }
             "sync_seed"
             | "sync_start"
             | "sync_status"
@@ -1362,13 +1449,20 @@ impl Driver {
             | "workspace_tx_finish"
             | "database_mode"
             | "database"
+            | "password_challenge_start"
+            | "password_challenge_submit"
             | "seed_account"
             | "account_validation_status"
             | "capture_account"
             | "validate_account"
             | "save_collection"
             | "workspace" => self.dispatch_workspace(request).await,
-            "archive_zip_fixture"
+            "archive_document_reload"
+            | "archive_resume_open"
+            | "archive_batch_open"
+            | "archive_batch_entry"
+            | "archive_batch_close"
+            | "archive_zip_fixture"
             | "archive_stage_start"
             | "archive_stage_cancel"
             | "archive_stage_finish"
@@ -1446,7 +1540,9 @@ impl Driver {
             | "traffic_windows_clock"
             | "traffic_proxy_start_slow"
             | "traffic_proxy_finish_slow"
+            | "traffic_proxy_migrate"
             | "traffic_proxy_patch"
+            | "traffic_http_bridge_port"
             | "traffic_proxy_matches"
             | "traffic_pending"
             | "traffic_snapshot"
@@ -1476,6 +1572,7 @@ impl Driver {
             | "sponsor_load_verified"
             | "start_stream_server"
             | "api_seed_catalog"
+            | "supporter_local_receipt"
             | "supporter_verify"
             | "start_webdav"
             | "webdav_expire_root_index"
@@ -1529,6 +1626,8 @@ impl Driver {
             | "transfers"
             | "retry_failed_upload"
             | "transfer_retry_snapshot"
+            | "claim_transfer_jobs"
+            | "fixture_transfer_limits"
             | "record_transfer_result"
             | "fail_transfer"
             | "remove_transfer" => self.dispatch_transfers(request).await,
@@ -1758,6 +1857,42 @@ impl Driver {
                 let counts = crate::workspace::test_account_validation_counts();
                 Ok(json!({"fallbackReads":counts.0,"validations":counts.1}))
             },
+            "password_challenge_start" => {
+                let session = crate::workspace::open_session(&self.root).map_err(error)?;
+                crate::workspace::register_session(&self.root, &session)?;
+                // The fixture never starts a network runner.
+                let pool = grammers_mtsender::SenderPool::new(session.clone(), 1);
+                let state = self.sync_app()?.state::<TelegramState>();
+                *state.client.lock().await = Some(grammers_client::Client::new(&pool));
+                *state.session.lock().await = Some(session);
+                *state.password_token.lock().await = Some(fixture_password_challenge("first"));
+                Ok(Value::Null)
+            }
+            "password_challenge_submit" => {
+                let outcome = text(&request, "outcome")?;
+                let app = self.sync_app()?;
+                let state = app.state::<TelegramState>();
+                let result = crate::commands::auth::submit_two_step_password(
+                    &state,
+                    async |_, token| {
+                        if outcome == "accept_renewed" && token.hint() == Some("renewed") {
+                            Ok(grammers_client::types::User::from_raw(
+                                grammers_tl_types::types::UserEmpty { id: 101 }.into(),
+                            ))
+                        } else {
+                            Err(grammers_client::SignInError::InvalidPassword)
+                        }
+                    },
+                    async |_| {
+                        if outcome == "cancel_during_renewal" {
+                            crate::commands::cmd_auth_cancel_code(app.state()).await?;
+                        }
+                        Ok(fixture_password_challenge("renewed"))
+                    },
+                )
+                .await?;
+                serde_json::to_value(result).map_err(error)
+            }
             "seed_account" => {
                 let owner = request["owner"]
                     .as_i64()
@@ -1819,7 +1954,35 @@ impl Driver {
 
     async fn dispatch_archives(&mut self, request: Value) -> Result<Value, String> {
         match text(&request, "command")? {
-            "archive_zip_fixture" => {
+            "archive_document_reload" => {
+                crate::commands::archive::release_document_archives(&mut self.archive_resources);
+                Ok(Value::Null)
+            }
+            "archive_resume_open" => {
+                let (id, batch) = self.pending_archive.take().ok_or("No pending archive")?;
+                self.archive_batch = Some(crate::commands::archive::finish_archive_batch(
+                    &mut self.archive_resources,
+                    id,
+                    Ok(batch),
+                )?);
+                Ok(Value::Null)
+            }
+            "archive_batch_entry" => {
+                let id = self.archive_batch.ok_or("Open archive batch first")?;
+                let batch = self
+                    .archive_resources
+                    .get::<crate::commands::archive::ArchiveBatch>(id)
+                    .map_err(error)?;
+                let index = request["entry"].as_u64().ok_or("Expected entry index")? as usize;
+                serde_json::to_value(batch.extract(index).await?).map_err(error)
+            }
+            "archive_batch_close" => {
+                if let Some(id) = self.archive_batch.take() {
+                    self.archive_resources.close(id).map_err(error)?;
+                }
+                Ok(Value::Null)
+            }
+            "archive_batch_open" | "archive_zip_fixture" => {
                 let source = child(&self.root, text(&request, "source")?)?;
                 let account = AccountGuard::open(&self.root, Some(text(&request, "owner")?))?;
                 let setup = crate::commands::archive::ArchiveDownload {
@@ -1828,16 +1991,38 @@ impl Driver {
                     expected_bytes: Some(std::fs::metadata(&source).map_err(error)?.len()),
                     account: Some(account),
                 };
-                serde_json::to_value(
-                    crate::commands::archive::zip_from_chunks(
-                        archive_fixture_chunks(source),
-                        setup,
-                        request["entry"].as_u64().map(|index| index as usize),
-                        "fixture.zip".into(),
-                    )
-                    .await?,
+                let filename = text(&request, "source")?;
+                let batch = crate::commands::archive::ArchiveBatch::stage(
+                    archive_fixture_chunks(source),
+                    setup,
+                    filename.to_owned(),
+                    crate::commands::archive::detect_archive_type(filename),
                 )
-                .map_err(error)
+                .await?;
+                if request["command"] == "archive_batch_open" {
+                    let id = self
+                        .archive_resources
+                        .add(crate::commands::archive::OpeningArchive);
+                    if request["holdPublication"] == true {
+                        self.pending_archive = Some((id, batch));
+                    } else {
+                        self.archive_batch = Some(crate::commands::archive::finish_archive_batch(
+                            &mut self.archive_resources,
+                            id,
+                            Ok(batch),
+                        )?);
+                    }
+                    Ok(Value::Null)
+                } else {
+                    serde_json::to_value(
+                        crate::commands::archive::archive_operation(
+                            Arc::new(batch),
+                            request["entry"].as_u64().map(|index| index as usize),
+                        )
+                        .await?,
+                    )
+                    .map_err(error)
+                }
             }
             "archive_stage_start" => {
                 if self.archive_task.is_some() {
@@ -3565,7 +3750,9 @@ impl Driver {
                             snapshot.proxy.host = "new.fixture".into();
                             Ok(())
                         },
-                        Some(Some("synthetic proxy credential".into())),
+                        crate::vpn_optimizer::ProxyCredentialUpdate::Set(
+                            "synthetic proxy credential".into(),
+                        ),
                         &SlowFixtureProxySecret { root },
                     )
                 }));
@@ -3586,19 +3773,35 @@ impl Driver {
                     .map_err(error)??;
                 Ok(json!(true))
             }
+            "traffic_proxy_migrate" => {
+                self.network.update_credentials_at(
+                    &self.root.join("network_settings.json"),
+                    |_| Ok(()),
+                    crate::vpn_optimizer::ProxyCredentialUpdate::Import(
+                        text(&request, "password")?.to_owned(),
+                    ),
+                    &FixtureProxySecret(self.root.join("proxy-credential")),
+                )?;
+                Ok(json!(true))
+            }
             "traffic_proxy_patch" => {
+                use crate::vpn_optimizer::ProxyCredentialUpdate;
                 let change = if request["clear"].as_bool().unwrap_or(false) {
-                    Some(None)
+                    ProxyCredentialUpdate::Clear
+                } else if let Some(password) = request["password"].as_str() {
+                    ProxyCredentialUpdate::Set(password.to_owned())
                 } else {
-                    request["password"]
-                        .as_str()
-                        .map(|password| Some(password.to_string()))
+                    ProxyCredentialUpdate::Keep
                 };
                 self.network.update_credentials_at(
                     &self.root.join("network_settings.json"),
                     |snapshot| {
                         snapshot.proxy.host =
                             request["host"].as_str().unwrap_or("localhost").to_string();
+                        if let Some(enabled) = request["http"].as_bool() {
+                            snapshot.proxy.enabled = enabled;
+                            snapshot.proxy.proxy_type = "http".into();
+                        }
                         if request["invalidWindow"].as_bool().unwrap_or(false) {
                             snapshot.vpn.bandwidth_windows = vec![crate::traffic::Window {
                                 days: vec![],
@@ -3615,6 +3818,13 @@ impl Driver {
                     &FixtureProxySecret(self.root.join("proxy-credential")),
                 )?;
                 Ok(json!(true))
+            }
+            "traffic_http_bridge_port" => {
+                let port = self
+                    .network
+                    .effective_proxy_url()
+                    .and_then(|url| url.strip_prefix("socks5://127.0.0.1:")?.parse::<u16>().ok());
+                Ok(json!(port))
             }
             "traffic_proxy_matches" => Ok(json!(
                 self.network.proxy.read().map_err(error)?.password == text(&request, "password")?
@@ -3919,6 +4129,7 @@ impl Driver {
                     filename: text(&request, "filename")?.to_string(),
                     resolutions: Arc::new(AtomicU64::new(0)),
                     resolution_gate: Arc::new(tokio::sync::Notify::new()),
+                    body_checkpoint: Arc::new(tokio::sync::Barrier::new(2)),
                     cache: Arc::new(crate::server::MediaResolutionCache::new(
                         request["cacheEntries"].as_u64().unwrap_or(64) as usize,
                         std::time::Duration::from_millis(
@@ -3942,6 +4153,15 @@ impl Driver {
                         .app_data(actix_web::web::Data::new(crypto.clone()))
                         .app_data(actix_web::web::Data::new(fixture.clone()))
                         .route("/media", actix_web::web::get().to(fixture_media))
+                        .route(
+                            "/body-checkpoint",
+                            actix_web::web::post().to(
+                                |fixture: actix_web::web::Data<MediaFixture>| async move {
+                                    fixture.body_checkpoint.wait().await;
+                                    actix_web::HttpResponse::NoContent().finish()
+                                },
+                            ),
+                        )
                         .route(
                             "/resolve-continue",
                             actix_web::web::post().to(
@@ -4057,6 +4277,10 @@ impl Driver {
                     request["complete"].as_bool().unwrap_or(true),
                 );
                 Ok(json!(true))
+            }
+            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+            "supporter_local_receipt" => {
+                crate::commands::supporter::fixture_local_receipt(&self.root, &request).await
             }
             "supporter_verify" => crate::commands::supporter::verify_issued_token(
                 text(&request, "token")?,
@@ -4480,16 +4704,18 @@ impl Driver {
                 // client; they must fail without touching the local database.
                 let state = disconnected();
                 let db = crate::db::init_db_at(&self.root)?;
+                let account = crate::workspace::AccountGuard::open(&self.root, None)?;
                 let id = request["id"].as_i64().unwrap_or(0);
                 match text(&request, "command")? {
                     "folder_create" => crate::commands::fs::create_folder(
                         text(&request, "name")?.to_string(),
                         &state,
                         db,
+                        account,
                     )
                     .await
                     .map(|folder| json!({"id": folder.id})),
-                    "folder_delete" => crate::commands::fs::delete_folder(id, &state, db)
+                    "folder_delete" => crate::commands::fs::delete_folder(id, &state, db, account)
                         .await
                         .map(|done| json!(done)),
                     _ => crate::commands::fs::rename_folder(
@@ -4497,6 +4723,7 @@ impl Driver {
                         text(&request, "name")?.to_string(),
                         &state,
                         db,
+                        account,
                     )
                     .await
                     .map(|done| json!(done)),
@@ -5198,6 +5425,33 @@ impl Driver {
                     json!({"job":result.job,"retried":result.retried,"hasPromptToken":state.prompt_tokens.contains_key(id)}),
                 )
             }
+            "claim_transfer_jobs" => {
+                let account = AccountGuard::open(&self.root, None)?;
+                let state = self.transfer_retry()?;
+                let jobs = crate::transfer_engine::claim_ready_jobs(
+                    &state.store,
+                    &mut state.jobs,
+                    &mut state.active,
+                    &account,
+                    state.limits,
+                    request["online"].as_bool().unwrap_or(true),
+                )
+                .await;
+                Ok(json!(jobs
+                    .into_iter()
+                    .filter(|job| state.active.contains_key(&job.id))
+                    .map(|job| job.id)
+                    .collect::<Vec<_>>()))
+            }
+            "fixture_transfer_limits" => {
+                let state = self.transfer_retry()?;
+                state.limits.update(
+                    request["uploads"].as_u64().ok_or("missing uploads")? as usize,
+                    request["downloads"].as_u64().ok_or("missing downloads")? as usize,
+                    request["strict"].as_bool(),
+                );
+                Ok(json!(true))
+            }
             "transfer_retry_snapshot" => {
                 let id = text(&request, "id")?;
                 let state = self.transfer_retry()?;
@@ -5207,8 +5461,13 @@ impl Driver {
             "record_transfer_result" => {
                 // The controlled Telegram boundary supplies a finished result;
                 // production SQLite checkpoint/recovery behavior remains real.
-                let job = serde_json::from_value(request["job"].clone()).map_err(error)?;
+                let mut job: TransferJob =
+                    serde_json::from_value(request["job"].clone()).map_err(error)?;
+                if let Some(receipt) = request["transportResponse"].as_str() {
+                    job.apply_success(receipt);
+                }
                 let state = self.transfer_retry()?;
+                state.active.remove(&job.id);
                 let result = crate::transfer_engine::commit_result(
                     &state.store,
                     &mut state.jobs,
@@ -5467,17 +5726,10 @@ pub async fn run() -> Result<(), String> {
     {
         return Err("Refusing to access a non-fixture directory".into());
     }
-    let mut initial_network = std::fs::read_to_string(root.join("network_settings.json"))
-        .ok()
-        .and_then(|bytes| {
-            serde_json::from_str::<crate::vpn_optimizer::NetworkConfigSnapshot>(&bytes).ok()
-        })
-        .unwrap_or(crate::vpn_optimizer::NetworkConfigSnapshot {
-            proxy: Default::default(),
-            vpn: Default::default(),
-        });
-    initial_network.proxy.password =
-        std::fs::read_to_string(root.join("proxy-credential")).unwrap_or_default();
+    let initial_network = crate::vpn_optimizer::load_network_config_at(
+        &root.join("network_settings.json"),
+        &FixtureProxySecret(root.join("proxy-credential")),
+    );
     let mut driver = Driver {
         sync_app: None,
         transfer_retry: None,
@@ -5498,6 +5750,9 @@ pub async fn run() -> Result<(), String> {
         servers: Vec::new(),
         retained_sessions: Vec::new(),
         webdav_filesystems: Vec::new(),
+        archive_resources: Default::default(),
+        archive_batch: None,
+        pending_archive: None,
         archive_task: None,
         archive_continue: None,
         asset_downloads: Arc::new(AtomicU64::new(0)),

@@ -9,10 +9,16 @@ import {desktopFixture,nativeCalls} from './desktop-fixture';
 
 // Serve the actual production artifacts, not Vite's development JSON transform.
 // The native application boundary remains controlled by desktopFixture.
-test('all 24 built language catalogs load losslessly through the real application',async ({browser})=>{
+test('all 24 built language catalogs load losslessly through the real application',async ({browser}, testInfo)=>{
   test.setTimeout(240_000);
-  execFileSync(process.execPath,[resolve(appRoot,'node_modules/vite/bin/vite.js'),'build'],{cwd:appRoot,timeout:120_000,stdio:'pipe'});
-  const dist=resolve(appRoot,'dist');
+  const verifiedDist = process.env.TELEGRAM_DRIVE_E2E_DIST;
+  const dist = verifiedDist ? resolve(appRoot, verifiedDist) : testInfo.outputPath('production');
+  if (!verifiedDist) {
+    execFileSync(process.execPath, [resolve(appRoot, 'node_modules/vite/bin/vite.js'), 'build', '--outDir', dist], {
+      cwd: appRoot, timeout: 120_000, stdio: 'pipe',
+    });
+  }
+  await readFile(resolve(dist, 'index.html'));
   const server=createServer(async(request,response)=>{
     try {
       const pathname=decodeURIComponent(new URL(request.url!,'http://localhost').pathname);
@@ -29,6 +35,22 @@ test('all 24 built language catalogs load losslessly through the real applicatio
   const origin=`http://127.0.0.1:${address.port}`;
   const languages=['en','ar','bn-BD','de','es','fa-IR','fil-PH','fr','hi','id','it','ja','ko','ms-MY','pl-PL','pt-BR','ru','th-TH','tr','uk-UA','ur-PK','vi','zh-CN','zh-TW'];
   try {
+    // A flat key table from an earlier release remains readable by the new loader.
+    const compatibility = await browser.newContext();
+    try {
+      const page = await compatibility.newPage();
+      await page.route(/\/assets\/translation-keys-[^/]+\.json$/, async route => {
+        const current = await (await route.fetch()).json();
+        const keys = current.groups.flatMap(([prefix, ...names]: string[]) => names.map(name => prefix ? `${prefix}.${name}` : name));
+        await route.fulfill({ json: { format: 'td-keys-v2', id: current.id, keys, shared: current.shared } });
+      });
+      await desktopFixture(page);
+      await page.goto(origin);
+      await expect(page.getByRole('button', { name: 'Preferences', exact: true })).toBeVisible();
+      await expect(page.locator('summary', { hasText: 'Use an existing Telegram channel' })).toBeVisible();
+    } finally {
+      await compatibility.close();
+    }
     for(const delayed of [/\/assets\/en-[^/]+\.json$/, /\/assets\/translation-keys-[^/]+\.json$/]) {
       const context=await browser.newContext();const page=await context.newPage();page.setDefaultTimeout(10_000);
       let release!:()=>void;const gate=new Promise<void>(done=>{release=done;});let requested=false;
@@ -89,13 +111,14 @@ test('all 24 built language catalogs load losslessly through the real applicatio
         await expect(page.getByRole('dialog')).toBeVisible();
         await expect(page.getByRole('dialog').getByRole('button',{name:catalog.settings.tab_encryption,exact:true})).toBeVisible();
         {
-          await expect.poll(()=>packets.filter(packet=>packet.format==='td-locale-v1').length).toBe(language==='en'?1:2);
-          const keys=packets.find(packet=>packet.format==='td-keys-v1');expect(keys).toBeTruthy();
-          const packed=packets.find(packet=>packet.format==='td-locale-v1'&&packet.language===language);expect(packed.id).toBe(keys.id);
+          await expect.poll(()=>packets.filter(packet=>packet.format==='td-locale-v2').length).toBe(language==='en'?1:2);
+          const keys=packets.find(packet=>packet.format==='td-keys-v3');expect(keys).toBeTruthy();
+          const packed=packets.find(packet=>packet.format==='td-locale-v2'&&packet.language===language);expect(packed.id).toBe(keys.id);
           const flat:Record<string,string>={};
           const flatten=(value:Record<string,unknown>,prefix='')=>{for(const [name,entry]of Object.entries(value)){const key=prefix?prefix+'.'+name:name;if(typeof entry==='string')flat[key]=entry;else flatten(entry as Record<string,unknown>,key);}};
           flatten(catalog);
-          const unpacked=Object.fromEntries(keys.keys.flatMap((key:string,index:number)=>packed.values[index]===null?[]:[[key,packed.values[index]]]));
+          const paths = keys.groups.flatMap(([prefix, ...names]: string[]) => names.map(name => prefix ? `${prefix}.${name}` : name));
+          const unpacked=Object.fromEntries(paths.flatMap((key:string,index:number)=>packed.values[index]===null?[]:[[key,typeof packed.values[index]==='number'?keys.shared[packed.values[index]]:packed.values[index]]]));
           expect(unpacked).toEqual(flat);
         }
       } finally {await context.close();}

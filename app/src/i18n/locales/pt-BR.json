@@ -95,7 +95,15 @@
     "show_in_folder": "Mostrar na pasta",
     "webdav_settings": "Configurações WebDAV"
   },
+  "existing_channel_help": {
+    "title": "Usar um canal do Telegram existente",
+    "edit": "No aplicativo Telegram, abra um canal que você tem permissão para renomear. Abra as informações do canal e edite o nome dele.",
+    "rename": "No fim do nome, adicione um espaço seguido de <tag>{{tag}}</tag> e salve. Por exemplo, mude “<before>{{before}}</before>” para “<after>{{after}}</after>”.",
+    "sync": "No Telegram Drive, use a mesma conta e selecione “{{sync}}” na barra lateral. O canal aparecerá com o nome original.",
+    "example": "Fotos"
+  },
   "settings": {
+    "legacy_proxy_clear": "Selecione “{{clear}}” ao lado do campo de senha para apagar a senha antiga do proxy e aplicar estas configurações.",
     "tab_sync": "Sincronização de pastas",
     "sync": {
       "title": "Sincronização de pastas",
@@ -106,6 +114,8 @@
       "select_channel": "Selecionar canal do Telegram",
       "no_channels": "Atualize suas pastas do Telegram antes de criar um mapeamento de sincronização."
     },
+    "strict_upload_order": "Ordem estrita de envio",
+    "strict_upload_order_desc": "Envie um arquivo por vez na ordem da fila. Os próximos aguardam durante as novas tentativas. Para continuar, retome, tente novamente, cancele ou remova o envio bloqueado.",
     "concurrent_uploads": "Envios simultâneos",
     "concurrent_downloads": "Downloads simultâneos",
     "zip_before_upload": "Compactar pastas antes do envio",
@@ -1618,5 +1628,18 @@
     "this_device": "enviado por este dispositivo",
     "other_device": "enviado por outro dispositivo",
     "none": "Nenhum backup criptografado de configurações nas últimas 1,000 Mensagens salvas."
+  },
+  "action_errors": {
+    "credentials": "Confira o API ID e o API Hash.",
+    "disabled": "O Telegram desativou este API ID. Crie novas credenciais de API.",
+    "phone": "Confira o número de telefone e o código do país.",
+    "banned": "O Telegram baniu este número de telefone.",
+    "register": "Primeiro cadastre este número no aplicativo oficial do Telegram.",
+    "code": "Confira o código de acesso e tente novamente.",
+    "expired": "O código expirou. Solicite outro.",
+    "password": "Não foi possível verificar a senha.",
+    "verify_bundle": "Confira a frase secreta e a sua cópia do pacote.",
+    "replace_keys": "Faltam chaves neste pacote. Substituir o cofre pode tornar ilegíveis os arquivos que usam essas chaves. Continuar?",
+    "file_limit": "O arquivo excede o limite de tamanho do Telegram. Divida-o antes de enviar."
   }
 }

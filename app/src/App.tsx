@@ -26,7 +26,6 @@ const AccessibilityFixtures = import.meta.env.DEV
 import { Toaster } from "sonner";
 import { useTheme } from "./context/ThemeContext";
 import { CrashReportingConsent } from "./components/shared/CrashReportingConsent";
-import { configureCrashTelemetry } from "./services/crashTelemetry";
 import { TelegramCooldownBanner } from "./components/shared/TelegramCooldownBanner";
 const WhatsNewDialog = React.lazy(() => import("./components/shared/WhatsNewDialog").then(m => ({ default: m.WhatsNewDialog })));
 import { useSettings } from "./context/SettingsContext";
@@ -62,11 +61,6 @@ function AppContent() {
   useTvSpatialNavigation(isTelevision);
   const { settings, isLoaded, persistenceStatus, retryPersistence } = useSettings();
   const { i18n, t } = useTranslation();
-
-  useEffect(() => {
-    if (!isLoaded) return;
-    configureCrashTelemetry(settings.crashReportingEnabled);
-  }, [isLoaded, settings.crashReportingEnabled]);
 
   // Handle active language and RTL direction changes
   useEffect(() => {

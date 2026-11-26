@@ -25,6 +25,66 @@ function success(result) {
   assert.equal(result.status, 0, result.stderr || result.stdout);
 }
 
+test('the release gate checks the exact supporter contract with one authenticated TLS connection to the configured origin', async t => {
+  const https = require('node:https');
+  const { execFile } = require('node:child_process');
+  const directory = fixture(t);
+  const cert = path.join(directory, 'loopback.pem');
+  const key = path.join(directory, 'loopback.key');
+  const certificateConfig = path.join(directory, 'openssl.cnf');
+  fs.writeFileSync(certificateConfig, [
+    '[req]', 'distinguished_name=subject', 'x509_extensions=server', 'prompt=no',
+    '[subject]', 'CN=localhost', '[server]', 'subjectAltName=IP:127.0.0.1',
+    'basicConstraints=critical,CA:TRUE', 'extendedKeyUsage=serverAuth',
+  ].join('\n'));
+  let openssl = 'openssl';
+  if (process.platform === 'win32' && spawnSync(openssl, ['version']).error?.code === 'ENOENT') {
+    const location = spawnSync('git', ['--exec-path'], { encoding: 'utf8' });
+    success(location);
+    openssl = path.resolve(location.stdout.trim(), '../../../usr/bin/openssl.exe');
+  }
+  const generated = spawnSync(openssl, ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
+    '-config', certificateConfig, '-keyout', key, '-out', cert], { encoding: 'utf8' });
+  assert.ifError(generated.error);
+  success(generated);
+  const publicKey = crypto.generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' }).x;
+  const good = { status: 'ok', price: '5.00', currency: 'USD', max_active_devices: 3, terms_version: '2026-08-11', entitlement_public_key: publicKey };
+  let health = good;
+  let responseCode = 200;
+  const requests = [];
+  const server = https.createServer({ key: fs.readFileSync(key), cert: fs.readFileSync(cert) }, (req, res) => {
+    requests.push([req.method, req.url]);
+    if (responseCode === 0) return;
+    res.writeHead(responseCode, { 'content-type': 'application/json', ...(responseCode === 302 ? { location: '/redirect' } : {}) });
+    res.end(JSON.stringify(health));
+  });
+  await new Promise((resolve, reject) => server.once('error', reject).listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)); });
+  const origin = 'https://127.0.0.1:' + server.address().port;
+  const check = (service = origin, expectedKey = publicKey) => new Promise(resolve => {
+    execFile(process.execPath, [path.join(scripts, 'check-supporter-release.cjs')], {
+      timeout: 16_000,
+      env: { ...process.env, NODE_EXTRA_CA_CERTS: cert, TELEGRAM_DRIVE_SUPPORTER_SERVICE_URL: service, TELEGRAM_DRIVE_SUPPORTER_PUBLIC_KEY: expectedKey },
+    }, (error, stdout, stderr) => resolve({ status: error ? error.code : 0, stdout, stderr }));
+  });
+  success(await check());
+  assert.deepEqual(requests, [['GET', '/health']]);
+  for (const [service, expectedKey] of [[origin.replace('https:', 'http:'), publicKey],
+    [origin + '\n', publicKey], [origin + '/', publicKey], [origin + '/health', publicKey], [origin + '?q=1', publicKey],
+    [origin.replace('https://', 'https://fixture@'), publicKey], [origin, ''], [origin, '_'.repeat(43)]]) {
+    assert.equal((await check(service, expectedKey)).status, 1);
+  }
+  assert.equal(requests.length, 1, 'invalid build inputs must fail before any request');
+  for (const mismatch of [{ status: 'degraded' }, { price: '5' }, { currency: 'EUR' }, { max_active_devices: 4 },
+    { terms_version: 'different' }, { terms_version: undefined }, { entitlement_public_key: crypto.randomBytes(32).toString('base64url') }]) {
+    health = { ...good, ...mismatch };
+    assert.equal((await check()).status, 1, Object.keys(mismatch).join());
+  }
+  health = good;
+  for (responseCode of [302, 503, 0]) assert.equal((await check()).status, 1);
+  assert.ok(requests.every(([method, url]) => method === 'GET' && url === '/health'));
+});
+
 test('release artifacts pass through SBOM generation and an independently verified checksum manifest', t => {
   const directory = fixture(t);
   const report = path.join(directory, 'gradle-dependencies.txt');
@@ -179,9 +239,9 @@ test('bundle CLI records route costs and refuses missing or exceeded required ro
   budget.featureChunkBudgets = { [settings]: 160000, [media]: 250000, [pdf]: 510000 };
   write('scripts/check-bundle-budget.cjs', fs.readFileSync(path.join(scripts, '../app/scripts/check-bundle-budget.cjs')));
   write('src/i18n/locales/en.json', '{}');
-  const emptyKeysId = crypto.createHash('sha256').update('[]').digest('hex');
-  write('dist/assets/translation-keys-fixture.json', JSON.stringify({format: 'td-keys-v1', id: emptyKeysId, keys: []}));
-  write('dist/assets/en-fixture.json', JSON.stringify({format: 'td-locale-v1', language: 'en', id: emptyKeysId, values: []}));
+  const emptyKeysId = crypto.createHash('sha256').update(JSON.stringify([[], []])).digest('hex');
+  write('dist/assets/translation-keys-fixture.json', JSON.stringify({format: 'td-keys-v2', id: emptyKeysId, keys: [], shared: []}));
+  write('dist/assets/en-fixture.json', JSON.stringify({format: 'td-locale-v2', language: 'en', id: emptyKeysId, values: []}));
   write('dist/assets/main.js', '/* entry */'.padEnd(30, ' '));
   const manifest = { 'src/main.tsx': { isEntry: true, file: 'assets/main.js' } };
   for (const [key, name, bytes] of [[dashboard, 'dashboard', 200], [settings, 'settings', 80], [media, 'media', 120], [pdf, 'pdf', 160]]) {
@@ -204,29 +264,30 @@ test('bundle CLI records route costs and refuses missing or exceeded required ro
   // dictionary bytes participate in the same locale ceilings.
   write('src/i18n/locales/es.json', JSON.stringify({common: {greeting: 'Hola'}}));
   const keys = ['common.greeting'];
-  const keyId = crypto.createHash('sha256').update(JSON.stringify(keys)).digest('hex');
-  write('dist/assets/translation-keys-fixture.json', JSON.stringify({format: 'td-keys-v1', id: keyId, keys}));
-  write('dist/assets/es-fixture.json', JSON.stringify({format: 'td-locale-v1', language: 'es', id: keyId, values: ['Hola']}));
-  write('dist/assets/en-fixture.json', JSON.stringify({format: 'td-locale-v1', language: 'en', id: keyId, values: [null]}));
+  const shared = ['Hola'];
+  const keyId = crypto.createHash('sha256').update(JSON.stringify([keys, shared])).digest('hex');
+  write('dist/assets/translation-keys-fixture.json', JSON.stringify({format: 'td-keys-v2', id: keyId, keys, shared}));
+  write('dist/assets/es-fixture.json', JSON.stringify({format: 'td-locale-v2', language: 'es', id: keyId, values: [0]}));
+  write('dist/assets/en-fixture.json', JSON.stringify({format: 'td-locale-v2', language: 'en', id: keyId, values: [null]}));
   success(runBudget());
   const packedReport = JSON.parse(fs.readFileSync(path.join(app, 'dist/bundle-report.json'), 'utf8'));
   assert.equal(packedReport.summary.totalLocaleDataBytes, ['translation-keys-fixture.json', 'en-fixture.json', 'es-fixture.json'].reduce((sum, name) => sum + fs.statSync(path.join(app, 'dist/assets', name)).size, 0));
-  write('dist/assets/es-fixture.json', JSON.stringify({format: 'td-locale-v1', language: 'es', id: keyId, values: ['WRONG']}));
+  write('dist/assets/es-fixture.json', JSON.stringify({format: 'td-locale-v2', language: 'es', id: keyId, values: ['WRONG']}));
   const corrupt = runBudget();
   assert.notEqual(corrupt.status, 0, 'changed translations must not pass a packed-artifact check');
   assert.match(corrupt.stderr, /canonical.*es|es.*canonical/);
-  write('dist/assets/es-fixture.json', JSON.stringify({format: 'td-locale-v1', language: 'es', id: keyId, values: ['Hola']}));
+  write('dist/assets/es-fixture.json', JSON.stringify({format: 'td-locale-v2', language: 'es', id: keyId, values: [0]}));
   fs.rmSync(path.join(app, 'dist/assets/translation-keys-fixture.json'));
   assert.notEqual(runBudget().status, 0, 'removing the counted key table must fail');
-  write('dist/assets/translation-keys-fixture.json', JSON.stringify({format: 'td-keys-v1', id: keyId, keys}));
+  write('dist/assets/translation-keys-fixture.json', JSON.stringify({format: 'td-keys-v2', id: keyId, keys, shared}));
   success(runBudget());
   write('dist/assets/es-fixture.json', JSON.stringify({common: {greeting: 'Hola'}}));
   fs.rmSync(path.join(app, 'dist/assets/translation-keys-fixture.json'));
   const unpacked = runBudget();
   assert.notEqual(unpacked.status, 0, 'unpacked production languages are incompatible with the production loader');
   assert.match(unpacked.stderr, /Packed language catalogs require/);
-  write('dist/assets/es-fixture.json', JSON.stringify({format: 'td-locale-v1', language: 'es', id: keyId, values: ['Hola']}));
-  write('dist/assets/translation-keys-fixture.json', JSON.stringify({format: 'td-keys-v1', id: keyId, keys}));
+  write('dist/assets/es-fixture.json', JSON.stringify({format: 'td-locale-v2', language: 'es', id: keyId, values: [0]}));
+  write('dist/assets/translation-keys-fixture.json', JSON.stringify({format: 'td-keys-v2', id: keyId, keys, shared}));
   success(runBudget());
   delete budget.featureChunkBudgets[media];
   const missing = runBudget();

@@ -36,9 +36,12 @@ export async function desktopFixture(page: Page, options: {
       'settings.json': { settings: { crashReportingEnabled: false, crashReportingConsentSeen: true, driveTourSeen: true, language: 'en', viewMode: 'list', ...options.settings }, supporter_activation: 'preserve-existing-license' },
     };
     const persist = () => localStorage.setItem('desktop-e2e-stores', JSON.stringify(stores));
+    let missingSettingsCache = options.settingsReadFails === true;
     const callbacks = new Map<number, (value: any) => void>();
     const listeners = new Map<number, { event: string; handler: number }>();
     let nextId = 1;
+    let releaseArchive: () => void = () => {};
+    const archiveGate = new Promise<void>(resolve => { releaseArchive = resolve; });
     let releaseRetry: (() => void) | undefined;
     const retryGate = new Promise<void>(resolve => { releaseRetry = resolve; });
     let releaseFiles: (() => void) | undefined;
@@ -53,6 +56,7 @@ export async function desktopFixture(page: Page, options: {
     const encryptionCapabilitiesGate = new Promise<void>(resolve => { releaseEncryptionCapabilities = resolve; });
     const state = {
       holdRetry: options.holdRetry ?? false, failRetryIds: options.failRetryIds ?? [], nextPromptToken: 700,
+      archiveFailIndex: -1, archiveHoldIndex: -1, releaseArchive: () => releaseArchive(),
       releaseRetry: () => { state.holdRetry = false; releaseRetry?.(); },
       owner: '101', accountFailures: options.accountFailures ?? 0, holdFiles: options.holdFiles ?? false,
       holdSupporter: options.holdSupporter ?? false, holdSettings: options.holdSettings ?? false,
@@ -123,10 +127,16 @@ export async function desktopFixture(page: Page, options: {
           if (command === 'plugin:event|listen') { if (options.failNativeDrop && args.event === 'tauri://drag-enter') throw new Error('Fixture drag registration unavailable'); const id = nextId++; listeners.set(id, { event: args.event, handler: args.handler }); return id; }
           if (command === 'plugin:event|unlisten') { listeners.delete(args.eventId); return; }
           if (command === 'plugin:store|load') { stores[args.path] ??= {}; return args.path; }
+          if (command === 'cmd_reload_missing_settings') {
+            if (state.settingsReadFails) throw new Error('Settings unavailable');
+            missingSettingsCache = false;
+            return null;
+          }
           const store = stores[args.rid];
           if (command === 'plugin:store|get') {
             if (state.holdSettings && args.key === 'settings' && args.rid === 'settings.json') await settingsGate;
-            if (state.settingsReadFails && args.key === 'settings' && args.rid === 'settings.json') throw new Error('Settings unavailable');
+            // The Store SDK initially reports an absent key when opening the file failed.
+            if (missingSettingsCache && args.key === 'settings' && args.rid === 'settings.json') return [null, false];
             return [store?.[args.key], args.key in (store ?? {})];
           }
           if (command === 'plugin:store|set') { store[args.key] = args.value; return; }
@@ -134,6 +144,14 @@ export async function desktopFixture(page: Page, options: {
           if (command === 'plugin:store|save') { if (state.saveFails) throw new Error('Storage unavailable'); persist(); return; }
           if (command === 'plugin:dialog|open') return args.options?.directory ? options.pickedUploadFolder ?? null : options.pickedUploadPaths ?? null;
           if (command === 'cmd_zip_folder') return '/fixtures/Archive.zip';
+          if (command === 'cmd_list_archive_contents') return ['one.txt', 'two.txt', 'three.txt'].map(filename => ({ filename, size: 3, compressed_size: 3, is_dir: false }));
+          if (command === 'cmd_open_archive_batch') return nextId++;
+          if (command === 'cmd_extract_archive_entry' || command === 'cmd_extract_archive_batch_entry') {
+            if (args.entryIndex === state.archiveHoldIndex) await archiveGate;
+            if (args.entryIndex === state.archiveFailIndex) throw new Error('Damaged archive entry');
+            const filename = ['one.txt', 'two.txt', 'three.txt'][args.entryIndex];
+            return { temp_path: '/fixtures/archive/' + crypto.randomUUID() + '/' + filename, filename, size: 3 };
+          }
           if (command === 'cmd_transfer_list') return state.transfers;
           if (command === 'cmd_validate_dropped_paths') return { accepted: args.paths, rejected: [] };
           if (command === 'cmd_transfer_enqueue_many') {

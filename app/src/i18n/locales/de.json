@@ -95,7 +95,15 @@
     "show_in_folder": "Im Ordner anzeigen",
     "webdav_settings": "WebDAV-Einstellungen"
   },
+  "existing_channel_help": {
+    "title": "Einen bestehenden Telegram-Kanal verwenden",
+    "edit": "Öffne in der Telegram-App einen Kanal, den du umbenennen darfst. Öffne die Kanalinfo und bearbeite dort den Namen.",
+    "rename": "Hänge ein Leerzeichen und <tag>{{tag}}</tag> an den Namen an und speichere ihn. Benenne zum Beispiel „<before>{{before}}</before>“ in „<after>{{after}}</after>“ um.",
+    "sync": "Verwende in Telegram Drive dasselbe Konto und wähle in der Seitenleiste „{{sync}}“. Der Kanal erscheint unter seinem ursprünglichen Namen.",
+    "example": "Fotos"
+  },
   "settings": {
+    "legacy_proxy_clear": "Wähle neben dem Passwortfeld „{{clear}}“, um das alte Proxy-Passwort zu entfernen und diese Einstellungen zu übernehmen.",
     "tab_sync": "Ordnersynchronisierung",
     "sync": {
       "title": "Ordnersynchronisierung",
@@ -106,6 +114,8 @@
       "select_channel": "Telegram-Kanal auswählen",
       "no_channels": "Telegram-Ordner vor dem Erstellen einer Synchronisierungszuordnung aktualisieren."
     },
+    "strict_upload_order": "Feste Upload-Reihenfolge",
+    "strict_upload_order_desc": "Dateien werden einzeln in der Reihenfolge der Warteschlange hochgeladen. Weitere Uploads warten auch bei Wiederholungsversuchen. Setze einen blockierten Upload fort, versuche ihn erneut, brich ihn ab oder entferne ihn.",
     "concurrent_uploads": "Gleichzeitige Uploads",
     "concurrent_downloads": "Gleichzeitige Downloads",
     "zip_before_upload": "Ordner vor dem Upload zippen",
@@ -1611,5 +1621,18 @@
     "this_device": "von diesem Gerät hochgeladen",
     "other_device": "von einem anderen Gerät hochgeladen",
     "none": "Keine verschlüsselte Einstellungssicherung in den neuesten 1,000 Gespeicherten Nachrichten gefunden."
+  },
+  "action_errors": {
+    "credentials": "API-ID und API-Hash prüfen.",
+    "disabled": "Telegram hat diese API-ID deaktiviert. Erstelle neue API-Zugangsdaten.",
+    "phone": "Telefonnummer und Landesvorwahl prüfen.",
+    "banned": "Telegram hat diese Telefonnummer gesperrt.",
+    "register": "Registriere diese Nummer zuerst in der offiziellen Telegram-App.",
+    "code": "Anmeldecode prüfen und erneut versuchen.",
+    "expired": "Der Code ist abgelaufen. Fordere einen neuen an.",
+    "password": "Das Passwort konnte nicht bestätigt werden.",
+    "verify_bundle": "Passphrase und Kopie des Pakets prüfen.",
+    "replace_keys": "Im Paket fehlen Schlüssel. Beim Ersetzen des Tresors können Dateien, die diese Schlüssel verwenden, unlesbar werden. Fortfahren?",
+    "file_limit": "Die Datei überschreitet das Größenlimit von Telegram. Teile sie vor dem Hochladen auf."
   }
 }
