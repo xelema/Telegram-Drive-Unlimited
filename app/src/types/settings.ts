@@ -20,6 +20,7 @@ export interface Settings {
   fileSortDirection: 'asc' | 'desc';
   autoUpdate: boolean;
   maxConcurrentUploads: number;
+  strictUploadOrder: boolean;
   maxConcurrentDownloads: number;
   zipFolders: boolean;
   videoUploadMode: VideoUploadMode;
@@ -27,6 +28,7 @@ export interface Settings {
   language: LanguagePreference;
   crashReportingEnabled: boolean;
   crashReportingConsentSeen: boolean;
+  crashReportingConsentId?: string;
   telegramSettingsSyncEnabled: boolean;
   supporterMode: boolean;
   supporterPromptLastShownAt: number;

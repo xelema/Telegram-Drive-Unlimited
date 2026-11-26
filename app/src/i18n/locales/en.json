@@ -95,7 +95,15 @@
     "show_in_folder": "Show in folder",
     "webdav_settings": "WebDAV settings"
   },
+  "existing_channel_help": {
+    "title": "Use an existing Telegram channel",
+    "edit": "In the Telegram app, open a channel you can rename. Open the channel info and edit its name.",
+    "rename": "Add a space followed by <tag>{{tag}}</tag> at the end, then save. For example, rename <before>{{before}}</before> to <after>{{after}}</after>.",
+    "sync": "In Telegram Drive, use the same account and choose {{sync}} in the sidebar. The channel appears under its original name.",
+    "example": "Photos"
+  },
   "settings": {
+    "legacy_proxy_clear": "Choose {{clear}} next to the password field to remove the old proxy password and apply these settings.",
     "tab_sync": "Folder Sync",
     "sync": {
       "title": "Folder Sync",
@@ -173,6 +181,8 @@
     "desktop_notification_filenames": "Show file names",
     "desktop_notification_filenames_desc": "File names may be visible on the lock screen. Off is more private.",
     "desktop_save_failed": "Desktop preferences could not be saved",
+    "strict_upload_order": "Strict upload order",
+    "strict_upload_order_desc": "Upload one at a time in queue order. Later uploads wait through retries. Resume, retry, cancel or clear a blocked upload to continue.",
     "concurrent_uploads": "Concurrent Uploads",
     "max_uploads_desc": "Max parallel uploads",
     "concurrent_downloads": "Concurrent Downloads",
@@ -1611,5 +1621,18 @@
     "this_device": "uploaded by this device",
     "other_device": "uploaded by another device",
     "none": "No encrypted settings backup was found in the latest 1,000 Saved Messages."
+  },
+  "action_errors": {
+    "credentials": "Check the API ID and API Hash.",
+    "disabled": "Telegram disabled this API ID. Create new API credentials.",
+    "phone": "Check the phone number and country code.",
+    "banned": "Telegram has banned this phone number.",
+    "register": "Register this number in the official Telegram app first.",
+    "code": "Check the login code and try again.",
+    "expired": "This code expired. Request another.",
+    "password": "That two-step verification password is incorrect. Check it and try again.",
+    "verify_bundle": "Check the passphrase and your copy of the bundle.",
+    "replace_keys": "This bundle lacks keys used by your vault. Replacing the vault can make files using those keys unreadable. Continue?",
+    "file_limit": "This file exceeds the Telegram size limit. Split it before uploading."
   }
 }

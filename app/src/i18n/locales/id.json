@@ -95,7 +95,15 @@
     "show_in_folder": "Tampilkan dalam folder",
     "webdav_settings": "Pengaturan WebDAV"
   },
+  "existing_channel_help": {
+    "title": "Gunakan kanal Telegram yang sudah ada",
+    "edit": "Di aplikasi Telegram, buka kanal yang namanya boleh Anda ubah. Buka info kanal, lalu edit namanya.",
+    "rename": "Tambahkan spasi diikuti <tag>{{tag}}</tag> di akhir nama, lalu simpan. Misalnya, ubah <before>{{before}}</before> menjadi <after>{{after}}</after>.",
+    "sync": "Di Telegram Drive, gunakan akun yang sama dan pilih {{sync}} di bilah samping. Kanal akan muncul dengan nama aslinya.",
+    "example": "Foto"
+  },
   "settings": {
+    "legacy_proxy_clear": "Pilih {{clear}} di samping kolom kata sandi untuk menghapus kata sandi proksi lama dan menerapkan pengaturan ini.",
     "tab_sync": "Sinkronisasi folder",
     "sync": {
       "title": "Sinkronisasi folder",
@@ -106,6 +114,8 @@
       "select_channel": "Pilih kanal Telegram",
       "no_channels": "Segarkan folder Telegram sebelum membuat pemetaan sinkronisasi."
     },
+    "strict_upload_order": "Urutan unggahan tetap",
+    "strict_upload_order_desc": "Unggah satu per satu sesuai urutan antrean. Unggahan berikutnya menunggu selama percobaan ulang. Lanjutkan, coba lagi, batalkan, atau hapus unggahan yang terhambat untuk meneruskan antrean.",
     "concurrent_uploads": "Unggahan Simultan",
     "concurrent_downloads": "Unduhan Simultan",
     "zip_before_upload": "Kompres Folder Sebelum Diunggah",
@@ -1611,5 +1621,18 @@
     "this_device": "diunggah oleh perangkat ini",
     "other_device": "diunggah oleh perangkat lain",
     "none": "Tidak ditemukan cadangan pengaturan terenkripsi dalam 1,000 Pesan Tersimpan terbaru."
+  },
+  "action_errors": {
+    "credentials": "Periksa API ID dan API Hash.",
+    "disabled": "Telegram menonaktifkan API ID ini. Buat kredensial API baru.",
+    "phone": "Periksa nomor telepon dan kode negara.",
+    "banned": "Telegram telah memblokir nomor telepon ini.",
+    "register": "Daftarkan nomor ini dahulu di aplikasi resmi Telegram.",
+    "code": "Periksa kode masuk dan coba lagi.",
+    "expired": "Kode sudah kedaluwarsa. Minta kode baru.",
+    "password": "Kata sandi tidak dapat diverifikasi.",
+    "verify_bundle": "Periksa frasa sandi dan salinan bundel Anda.",
+    "replace_keys": "Beberapa kunci tidak ada dalam bundel ini. Mengganti brankas dapat membuat berkas yang memakai kunci tersebut tidak bisa dibaca. Lanjutkan?",
+    "file_limit": "Berkas melebihi batas ukuran Telegram. Pecah berkas sebelum mengunggah."
   }
 }

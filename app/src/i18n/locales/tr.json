@@ -95,7 +95,15 @@
     "show_in_folder": "Klasörde göster",
     "webdav_settings": "WebDAV ayarları"
   },
+  "existing_channel_help": {
+    "title": "Mevcut bir Telegram kanalını kullanın",
+    "edit": "Telegram uygulamasında adını değiştirme yetkiniz olan bir kanalı açın. Kanal bilgilerini açıp kanalın adını düzenleyin.",
+    "rename": "Adın sonuna bir boşluk ve ardından <tag>{{tag}}</tag> ekleyip kaydedin. Örneğin “<before>{{before}}</before>” adını “<after>{{after}}</after>” olarak değiştirin.",
+    "sync": "Telegram Drive’da aynı hesabı kullanın ve kenar çubuğundan “{{sync}}” seçeneğini seçin. Kanal, önceki adıyla görünür.",
+    "example": "Fotoğraflar"
+  },
   "settings": {
+    "legacy_proxy_clear": "Eski proxy parolasını silmek ve bu ayarları uygulamak için parola alanının yanındaki {{clear}} düğmesini seçin.",
     "tab_sync": "Klasör eşitleme",
     "sync": {
       "title": "Klasör eşitleme",
@@ -106,6 +114,8 @@
       "select_channel": "Telegram kanalı seç",
       "no_channels": "Eşitleme eşlemesi oluşturmadan önce Telegram klasörlerinizi yenileyin."
     },
+    "strict_upload_order": "Yükleme sırasını koru",
+    "strict_upload_order_desc": "Dosyaları kuyruk sırasıyla tek tek yükler. Yeniden deneme sırasında sonraki dosyalar bekler. Devam etmek için takılan yüklemeyi sürdürün, yeniden deneyin, iptal edin veya kuyruktan kaldırın.",
     "concurrent_uploads": "Eşzamanlı Yüklemeler",
     "concurrent_downloads": "Eşzamanlı İndirmeler",
     "zip_before_upload": "Yüklemeden Önce Klasörleri Sıkıştır (Zip)",
@@ -1611,5 +1621,18 @@
     "this_device": "bu cihaz tarafından yüklendi",
     "other_device": "başka bir cihaz tarafından yüklendi",
     "none": "Son 1,000 Kayıtlı Mesaj içinde şifreli ayar yedeği bulunamadı."
+  },
+  "action_errors": {
+    "credentials": "API ID ve API Hash değerlerini kontrol edin.",
+    "disabled": "Telegram bu API ID değerini devre dışı bıraktı. Yeni API kimlik bilgileri oluşturun.",
+    "phone": "Telefon numarasını ve ülke kodunu kontrol edin.",
+    "banned": "Telegram bu telefon numarasını yasakladı.",
+    "register": "Önce bu numarayı resmî Telegram uygulamasında kaydedin.",
+    "code": "Giriş kodunu kontrol edip yeniden deneyin.",
+    "expired": "Kodun süresi doldu. Yeni bir kod isteyin.",
+    "password": "Parola doğrulanamadı.",
+    "verify_bundle": "Parola ifadesini ve paketin elinizdeki kopyasını kontrol edin.",
+    "replace_keys": "Pakette bazı anahtarlar eksik. Kasayı değiştirirseniz bu anahtarları kullanan dosyalar okunamayabilir. Devam edilsin mi?",
+    "file_limit": "Dosya Telegram boyut sınırını aşıyor. Yüklemeden önce bölün."
   }
 }

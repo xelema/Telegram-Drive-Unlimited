@@ -47,6 +47,7 @@ export interface DesktopTransferJob {
     totalBytes: number;
     speedBytesPerSec: number;
     error?: string;
+    errorCategory?: import('./transferActivity').TransferErrorCategory | null;
     retryAt?: number;
     queuePosition: number;
     revision: number;
@@ -99,6 +100,7 @@ export const transferJobToUploadItem = (job: DesktopTransferJob): QueueItem => (
     folderId: job.folderId,
     status: uploadStatus(job.status),
     error: job.error,
+    errorCategory: job.errorCategory,
     progress: job.progress,
     uploadedBytes: job.transferredBytes,
     totalBytes: job.totalBytes,
@@ -121,6 +123,7 @@ export const transferJobToDownloadItem = (job: DesktopTransferJob): DownloadItem
     folderId: job.folderId,
     status: downloadStatus(job.status),
     error: job.error,
+    errorCategory: job.errorCategory,
     progress: job.progress,
     downloadedBytes: job.transferredBytes,
     totalBytes: job.totalBytes,
@@ -185,10 +188,11 @@ export async function enqueueDesktopTransfers(
     return invoke<DesktopTransferJob[]>('cmd_transfer_enqueue_many', { requests });
 }
 
-export async function configureDesktopTransferLimits(maxUploads: number, maxDownloads: number) {
+export async function configureDesktopTransferLimits(maxUploads: number, maxDownloads: number, strictUploadOrder: boolean) {
     await invoke('cmd_transfer_set_limits', {
         maxUploads: Math.max(1, maxUploads),
         maxDownloads: Math.max(1, maxDownloads),
+        strictUploadOrder,
     });
 }
 

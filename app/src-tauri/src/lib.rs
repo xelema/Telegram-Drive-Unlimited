@@ -955,7 +955,11 @@ pub fn run() {
         Arc::new(std::sync::Mutex::new(None));
     let server_handle_for_setup = server_handle.clone();
 
-    let builder = tauri::Builder::default();
+    let builder = tauri::Builder::default().on_page_load(|view, page| {
+        if matches!(page.event(), tauri::webview::PageLoadEvent::Started) {
+            commands::archive::release_document_archives(&mut view.resources_table());
+        }
+    });
 
     // This must be the first desktop plugin so a secondary process cannot
     // initialize its own transfer engine before it is redirected here.
@@ -1214,7 +1218,7 @@ pub fn run() {
                         (proxy.enabled, proxy.proxy_type == "http" || proxy.proxy_type == "https")
                     };
                     if enabled && is_http_or_https {
-                        if let Err(e) = start_config.start_http_bridge().await {
+                        if let Err(e) = start_config.start_http_bridge() {
                             log::error!("Failed to auto-start SOCKS5 bridge on startup: {}", e);
                         }
                     }
@@ -1425,6 +1429,7 @@ pub fn run() {
             commands::cmd_get_startup_health,
             commands::cmd_get_storage_insight,
             commands::cmd_submit_crash_report,
+            commands::cmd_reload_missing_settings,
             commands::cmd_get_settings_sync_status,
             commands::cmd_upload_settings_sync,
             commands::cmd_download_settings_sync,
@@ -1440,6 +1445,10 @@ pub fn run() {
             commands::cmd_resolve_conflict,
             #[cfg(not(target_os = "ios"))]
             commands::cmd_get_supporter_status,
+            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+            commands::cmd_pending_supporter_receipt,
+            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+            commands::cmd_acknowledge_supporter_receipt,
             #[cfg(not(target_os = "ios"))]
             commands::cmd_begin_supporter_checkout,
             #[cfg(not(target_os = "ios"))]
@@ -1556,6 +1565,9 @@ pub fn run() {
             fmp4_remux::cmd_get_fmp4_status,
             commands::cmd_list_archive_contents,
             commands::cmd_extract_archive_entry,
+            commands::cmd_open_archive_batch,
+            commands::cmd_extract_archive_batch_entry,
+            commands::cmd_close_archive_batch,
             commands::cmd_get_enriched_folders,
             commands::cmd_update_folder_order,
             commands::cmd_create_group,

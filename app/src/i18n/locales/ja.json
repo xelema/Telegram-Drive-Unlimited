@@ -95,7 +95,15 @@
     "show_in_folder": "フォルダーで表示",
     "webdav_settings": "WebDAV設定"
   },
+  "existing_channel_help": {
+    "title": "既存のTelegramチャンネルを使う",
+    "edit": "Telegramアプリで、名前を変更する権限のあるチャンネルを開きます。チャンネルの情報画面を開き、名前を編集します。",
+    "rename": "名前の末尾に半角スペースと<tag>{{tag}}</tag>を追加して保存します。例えば「<before>{{before}}</before>」を「<after>{{after}}</after>」に変更します。",
+    "sync": "Telegram Driveで同じアカウントを使い、サイドバーの「{{sync}}」を選びます。チャンネルは元の名前で表示されます。",
+    "example": "写真"
+  },
   "settings": {
+    "legacy_proxy_clear": "パスワード欄の横の「{{clear}}」を選ぶと、以前のプロキシパスワードが削除され、この設定が適用されます。",
     "tab_sync": "Folder Sync",
     "sync": {
       "title": "Folder Sync",
@@ -106,6 +114,8 @@
       "select_channel": "Select Telegram channel",
       "no_channels": "Refresh your Telegram folders before creating a sync mapping."
     },
+    "strict_upload_order": "キューの順序を厳守",
+    "strict_upload_order_desc": "キューの順に1件ずつアップロードします。再試行中は次のファイルも待機します。続けるには、停止したアップロードを再開、再試行、キャンセル、またはキューから削除してください。",
     "concurrent_uploads": "同時アップロード数",
     "concurrent_downloads": "同時ダウンロード数",
     "zip_before_upload": "アップロード前にフォルダを ZIP 圧縮する",
@@ -1611,5 +1621,18 @@
     "this_device": "このデバイスからアップロード",
     "other_device": "別のデバイスからアップロード",
     "none": "最近の1,000件の保存したメッセージに暗号化設定バックアップはありません。"
+  },
+  "action_errors": {
+    "credentials": "API ID と API Hash を確認してください。",
+    "disabled": "この API ID は Telegram により無効化されました。新しい API 認証情報を作成してください。",
+    "phone": "電話番号と国番号を確認してください。",
+    "banned": "この電話番号は Telegram により利用停止されています。",
+    "register": "まず Telegram 公式アプリでこの番号を登録してください。",
+    "code": "ログインコードを確認して再試行してください。",
+    "expired": "コードの有効期限が切れました。新しいコードをリクエストしてください。",
+    "password": "パスワードを確認できませんでした。",
+    "verify_bundle": "パスフレーズと手元に保存したバンドルを確認してください。",
+    "replace_keys": "このバンドルには一部の鍵がありません。保管庫を置き換えると、その鍵を使うファイルを読めなくなる可能性があります。続けますか？",
+    "file_limit": "ファイルが Telegram のサイズ上限を超えています。アップロード前に分割してください。"
   }
 }

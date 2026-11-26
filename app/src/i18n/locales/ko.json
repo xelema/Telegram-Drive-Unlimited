@@ -95,7 +95,15 @@
     "show_in_folder": "폴더에서 표시",
     "webdav_settings": "WebDAV 설정"
   },
+  "existing_channel_help": {
+    "title": "기존 텔레그램 채널 사용하기",
+    "edit": "텔레그램 앱에서 이름을 바꿀 권한이 있는 채널을 여세요. 채널 정보 화면을 열고 이름을 편집하세요.",
+    "rename": "이름 끝에 한 칸을 띄우고 <tag>{{tag}}</tag>를 붙인 뒤 저장하세요. 예를 들어 이름을 ‘<before>{{before}}</before>’에서 ‘<after>{{after}}</after>’로 바꾸세요.",
+    "sync": "Telegram Drive에서 같은 계정을 사용하고 사이드바에서 ‘{{sync}}’를 선택하세요. 채널이 원래 이름으로 표시됩니다.",
+    "example": "사진"
+  },
   "settings": {
+    "legacy_proxy_clear": "비밀번호 입력란 옆의 {{clear}} 버튼을 선택하면 이전 프록시 비밀번호가 삭제되고 이 설정이 적용됩니다.",
     "tab_sync": "폴더 동기화",
     "sync": {
       "title": "폴더 동기화",
@@ -106,6 +114,8 @@
       "select_channel": "Telegram 채널 선택",
       "no_channels": "동기화 연결을 만들기 전에 Telegram 폴더를 새로 고치세요."
     },
+    "strict_upload_order": "업로드 대기열 순서 유지",
+    "strict_upload_order_desc": "대기열 순서대로 한 번에 하나씩 업로드합니다. 재시도하는 동안 다음 파일은 기다립니다. 계속하려면 막힌 업로드를 재개하거나 다시 시도하거나 취소하거나 대기열에서 제거하세요.",
     "concurrent_uploads": "동시 업로드 수",
     "concurrent_downloads": "동시 다운로드 수",
     "zip_before_upload": "업로드 전 폴더 ZIP 압축",
@@ -1611,5 +1621,18 @@
     "this_device": "이 기기에서 업로드됨",
     "other_device": "다른 기기에서 업로드됨",
     "none": "최근 1,000개의 저장한 메시지에서 암호화 설정 백업을 찾지 못했습니다."
+  },
+  "action_errors": {
+    "credentials": "API ID와 API Hash를 확인하세요.",
+    "disabled": "Telegram에서 이 API ID를 비활성화했습니다. 새 API 자격 증명을 만드세요.",
+    "phone": "전화번호와 국가 코드를 확인하세요.",
+    "banned": "Telegram에서 이 전화번호를 차단했습니다.",
+    "register": "먼저 공식 Telegram 앱에 이 번호를 등록하세요.",
+    "code": "로그인 코드를 확인하고 다시 시도하세요.",
+    "expired": "코드가 만료되었습니다. 새 코드를 요청하세요.",
+    "password": "비밀번호를 확인할 수 없습니다.",
+    "verify_bundle": "암호 문구와 보관한 번들 사본을 확인하세요.",
+    "replace_keys": "이 번들에는 일부 키가 없습니다. 보관함을 교체하면 해당 키를 사용하는 파일을 읽지 못할 수 있습니다. 계속할까요?",
+    "file_limit": "파일이 Telegram의 크기 제한을 초과합니다. 업로드하기 전에 분할하세요."
   }
 }

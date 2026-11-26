@@ -193,6 +193,180 @@ impl Drop for Backend {
     }
 }
 
+#[actix_web::test]
+async fn paid_receipt_survives_restart_until_acknowledged_without_changing_activation() {
+    use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer};
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD as b64, Engine};
+    use ed25519_dalek::{Signer, SigningKey};
+    use sha2::{Digest, Sha256};
+
+    let fixture = Fixture::new();
+    let signer = SigningKey::from_bytes(&[32; 32]);
+    let device = b64.encode(SigningKey::from_bytes(&[73; 32]).verifying_key().to_bytes());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let header = b64.encode(br#"{"alg":"EdDSA","typ":"TD-SUPPORTER","kid":"v1"}"#);
+    let payload = b64.encode(json!({"iss":"telegram-drive-supporter","aud":"telegram-drive-desktop",
+        "entitlement_id":"test-purchase","device_key_hash":b64.encode(Sha256::digest(device.as_bytes())),
+        "terms_version":"2026-08-11","issued_at":now,"expires_at":now+3600,"offline_until":now+7200}).to_string());
+    let encoded = format!("{header}.{payload}");
+    let token = format!(
+        "{encoded}.{}",
+        b64.encode(signer.sign(encoded.as_bytes()).to_bytes())
+    );
+    let receipt_code = "TEST-RECEIPT-FOR-DISPOSABLE-DEVICE";
+    let response =
+        json!({"status":"completed","entitlement_token":token,"recovery_code":receipt_code});
+    let file = "supporter-entitlement-v1.json";
+    fixture.write(
+        "fixture-verifier.pub",
+        b64.encode(signer.verifying_key().to_bytes()),
+    );
+    fixture.write(
+        file,
+        json!({"device_public_key":device, "checkout_claim_id":"fixture-claim"}).to_string(),
+    );
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = HttpServer::new(move || {
+        App::new().app_data(web::Data::new(response.clone())).route(
+            "/v1/checkout/fixture-claim/status",
+            web::get().to(|req: HttpRequest, body: web::Data<Value>| async move {
+                assert_eq!(
+                    req.headers().get("Authorization").unwrap(),
+                    "Bearer fixture-secret"
+                );
+                HttpResponse::Ok().json(body.get_ref())
+            }),
+        )
+    })
+    .workers(1)
+    .listen(listener)
+    .unwrap()
+    .run();
+    let handle = server.handle();
+    actix_web::rt::spawn(server);
+    actix_web::rt::task::spawn_blocking(move || {
+        let mut app = Backend::start(&fixture.0);
+        let read = json!({"command":"supporter_local_receipt", "action":"read"});
+        assert_eq!(
+            app.ok(read.clone()),
+            Value::Null,
+            "old records show no receipt"
+        );
+        let poll = json!({"command":"supporter_local_receipt", "action":"poll", "port":port});
+        std::fs::create_dir(fixture.path("fixture-recovery-code")).unwrap();
+        app.failure(poll.clone());
+        assert!(String::from_utf8(fixture.read(file))
+            .unwrap()
+            .contains("fixture-claim"));
+        std::fs::remove_dir(fixture.path("fixture-recovery-code")).unwrap();
+        std::fs::create_dir(fixture.path("fixture-pending-receipt")).unwrap();
+        assert_eq!(app.ok(poll.clone()), false);
+        let delayed: Value = serde_json::from_slice(&fixture.read(file)).unwrap();
+        assert_eq!(delayed["entitlement_token"], token);
+        assert_eq!(delayed["checkout_claim_id"], "fixture-claim");
+        std::fs::remove_dir(fixture.path("fixture-pending-receipt")).unwrap();
+        // Both credential writes can succeed before the final JSON commit.
+        // Preserve access to the code while the original claim remains retryable.
+        std::fs::create_dir(fixture.path("supporter-entitlement-v1.json.tmp")).unwrap();
+        app.failure(poll.clone());
+        app.stop();
+        let mut app = Backend::start(&fixture.0);
+        let interrupted = app.ok(read.clone());
+        assert_eq!(interrupted["code"], receipt_code);
+        app.failure(
+            json!({"command":"supporter_local_receipt", "action":"ack", "id":interrupted["id"]}),
+        );
+        assert_eq!(app.ok(read.clone()), interrupted);
+        std::fs::remove_dir(fixture.path("supporter-entitlement-v1.json.tmp")).unwrap();
+        assert_eq!(app.ok(poll), true);
+        app.stop();
+        let mut app = Backend::start(&fixture.0);
+        let receipt = app.ok(read.clone());
+        assert_eq!(receipt["code"], receipt_code);
+        let pending: Value = serde_json::from_slice(&fixture.read(file)).unwrap();
+        assert_eq!(pending["entitlement_token"], token);
+        assert!(pending["checkout_claim_id"].is_null());
+        assert!(!String::from_utf8(fixture.read(file))
+            .unwrap()
+            .contains(receipt_code));
+        app.failure(json!({"command":"supporter_local_receipt", "action":"ack", "id":"stale"}));
+        assert_eq!(app.ok(read.clone()), receipt);
+        let ack = json!({"command":"supporter_local_receipt", "action":"ack", "id":receipt["id"]});
+        std::fs::rename(
+            fixture.path("fixture-pending-receipt"),
+            fixture.path("held-receipt"),
+        )
+        .unwrap();
+        std::fs::create_dir(fixture.path("fixture-pending-receipt")).unwrap();
+        app.failure(ack.clone());
+        std::fs::remove_dir(fixture.path("fixture-pending-receipt")).unwrap();
+        std::fs::rename(
+            fixture.path("held-receipt"),
+            fixture.path("fixture-pending-receipt"),
+        )
+        .unwrap();
+        assert_eq!(app.ok(read.clone()), receipt);
+        // Restoring another valid code writes only the permanent credential.
+        fixture.write("fixture-recovery-code", b"separately-restored");
+        assert_eq!(app.ok(read.clone()), receipt);
+        app.ok(ack);
+        app.stop();
+        let mut app = Backend::start(&fixture.0);
+        assert_eq!(app.ok(read), Value::Null);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&fixture.read(file)).unwrap()["entitlement_token"],
+            token
+        );
+        assert_eq!(
+            fixture.read("fixture-recovery-code"),
+            b"separately-restored"
+        );
+        app.stop();
+    })
+    .await
+    .unwrap();
+    handle.stop(true).await;
+}
+
+#[test]
+fn native_crash_consent_honors_legacy_grants_withdrawal_and_restart() {
+    let fixture = Fixture::new();
+    let mut app = Backend::start(&fixture.0);
+    let probe = json!({"command":"crash_attempt"});
+    let denied = "Crash reporting consent is inactive";
+    let authorized = "Crash report did not match the privacy-safe schema";
+    assert_eq!(app.failure(probe.clone()), denied);
+    let mut grant = json!({"crashReportingEnabled":true,"crashReportingConsentSeen":true});
+    assert_eq!(
+        app.failure(json!({"command":"crash_attempt","settings":grant})),
+        authorized
+    );
+    grant["crashReportingEnabled"] = false.into();
+    assert_eq!(
+        app.failure(json!({"command":"crash_attempt","settings":grant})),
+        denied
+    );
+    app.stop();
+    let mut app = Backend::start(&fixture.0);
+    assert_eq!(app.failure(probe.clone()), denied);
+    grant["crashReportingEnabled"] = true.into();
+    grant["crashReportingConsentId"] = "fresh".into();
+    assert_eq!(
+        app.failure(json!({"command":"crash_attempt","settings":grant,"grant":"stale"})),
+        denied
+    );
+    assert_eq!(app.failure(probe), denied);
+    assert_eq!(
+        app.failure(json!({"command":"crash_attempt","grant":"fresh"})),
+        authorized
+    );
+    app.stop();
+}
+
 #[test]
 fn database_upgrade_preserves_legacy_rows_and_backup_across_process_restarts() {
     let fixture = Fixture::new();
@@ -246,6 +420,37 @@ fn database_upgrade_preserves_legacy_rows_and_backup_across_process_restarts() {
         .contains("supports up to"));
     app.stop();
     assert_eq!(fixture.read("shares.db"), before);
+}
+
+#[test]
+fn two_step_sign_in_retries_a_consumed_challenge_and_persists_only_the_verified_owner() {
+    let fixture = Fixture::new();
+    let mut app = Backend::start(&fixture.0);
+    app.ok(json!({"command":"password_challenge_start"}));
+    let rejected = app.failure(json!({"command":"password_challenge_submit","outcome":"reject"}));
+    assert!(rejected.contains("password"));
+    app.failure(json!({"command":"capture_account","owner":"101"}));
+    let admitted =
+        app.ok(json!({"command":"password_challenge_submit","outcome":"accept_renewed"}));
+    assert_eq!(admitted["next_step"], "dashboard");
+    app.stop();
+    let mut app = Backend::start(&fixture.0);
+    app.ok(json!({"command":"capture_account","owner":"101"}));
+    app.stop();
+
+    // A fresh profile cancels during the renewal's round trip. Its late
+    // response must not resurrect an authenticated or retryable session.
+    let fixture = Fixture::new();
+    let mut app = Backend::start(&fixture.0);
+    app.ok(json!({"command":"password_challenge_start"}));
+    let cancelled = app
+        .failure(json!({"command":"password_challenge_submit","outcome":"cancel_during_renewal"}));
+    assert!(cancelled.contains("replaced by a newer attempt"));
+    let stale =
+        app.failure(json!({"command":"password_challenge_submit","outcome":"accept_renewed"}));
+    assert_eq!(stale, "No password session found");
+    app.failure(json!({"command":"capture_account","owner":"101"}));
+    app.stop();
 }
 
 #[test]
@@ -472,6 +677,7 @@ fn disconnected_folder_changes_fail_without_touching_local_records() {
     let fixture = Fixture::new();
     let mut app = Backend::start(&fixture.0);
     app.ok(json!({"command":"database"}));
+    app.ok(json!({"command":"seed_account","owner":101}));
     app.ok(json!({"command":"seed_folder_row","id":77,"name":"Existing folder"}));
     let rows = json!([{"id":77,"name":"Existing folder"}]);
     assert_eq!(app.ok(json!({"command":"folder_rows"})), rows);
@@ -480,7 +686,7 @@ fn disconnected_folder_changes_fail_without_touching_local_records() {
         json!({"command":"folder_delete","id":77}),
         json!({"command":"folder_rename","id":77,"name":"Renamed offline"}),
     ] {
-        assert_eq!(app.failure(request), "Client not connected");
+        assert!(app.failure(request).starts_with("[FOLDER_OFFLINE]"));
         assert_eq!(app.ok(json!({"command":"folder_rows"})), rows);
     }
     app.stop();
@@ -578,6 +784,12 @@ async fn real_http_server_streams_owned_cache_and_revokes_it_after_account_switc
     password.bind((1, password_hash.as_str())).unwrap();
     password.next().unwrap();
     drop(password);
+    db.execute(concat!(
+        "INSERT INTO shared_links(id,owner_id,message_id,file_name,password_hash,created_at) ",
+        "SELECT 'second',owner_id,message_id,'Second-private.pdf',password_hash,created_at ",
+        "FROM shared_links WHERE id='private'",
+    ))
+    .unwrap();
     drop(db);
     let fmp4_root = fixture.path("transcode/fmp4/101_0_42");
     std::fs::create_dir_all(&fmp4_root).unwrap();
@@ -650,6 +862,39 @@ async fn real_http_server_streams_owned_cache_and_revokes_it_after_account_switc
     assert!(cookie.contains("HttpOnly"));
     assert!(cookie.contains("SameSite=Strict"));
     assert!(cookie.contains("Path=/d/private"));
+    assert!(cookie.contains("Max-Age=1800"));
+    let issued = cookie.split(';').next().unwrap();
+    let location = verified.headers()["location"].to_str().unwrap();
+    let granted = client
+        .get(format!("{url}{location}"))
+        .header("cookie", "unrelated=one; malformed")
+        .header("cookie", issued.replace("share_auth_", "share%5Fauth_"))
+        .send()
+        .await
+        .unwrap();
+    // The password gate must admit the request even though this fixture has no Telegram client.
+    assert_eq!(granted.status(), 503);
+    assert_eq!(
+        granted.text().await.unwrap(),
+        "Telegram client is not connected"
+    );
+    let duplicate = client
+        .get(format!("{url}{location}"))
+        .header("cookie", "share_auth_private=wrong")
+        .header("cookie", issued)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(duplicate.status(), 200);
+    assert!(duplicate.text().await.unwrap().contains("A-private.pdf"));
+    let second = client
+        .get(format!("{url}/d/second"))
+        .header("cookie", issued)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(second.status(), 200);
+    assert!(second.text().await.unwrap().contains("Second-private.pdf"));
     let missing = client.get(format!("{url}/d/missing")).send().await.unwrap();
     assert_eq!(missing.status(), 404);
     let token = "synthetic-e2e-stream-token";
@@ -1750,6 +1995,23 @@ async fn rest_api_date_filters_preserve_legacy_and_fractional_instant_compatibil
         );
     }
     for bound in [
+        "+10000-01-01",
+        "-262143-01-01 00:00:00 UTC",
+        "+262142-12-31",
+    ] {
+        let response = client
+            .get(&url)
+            .header("X-API-Key", key)
+            .query(&[("created_after", bound), ("created_before", bound)])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200, "{bound}");
+        assert_eq!(response.json::<Value>().await.unwrap()["total"], 0);
+    }
+    for bound in [
+        "+262143-01-01",
+        "-262144-12-31",
         "-1",
         "2023-02-29",
         "2024-02-30",
@@ -2031,6 +2293,39 @@ async fn rest_api_lists_search_and_reports_cover_the_whole_library_of_one_accoun
     let (_, empty) = get("/api/v1/folders/empty".into()).await;
     assert_eq!(empty.as_array().unwrap().len(), 1);
     assert_eq!(empty[0]["id"], 700);
+
+    // A bounded catalog may contain no indexed file even when older messages
+    // exist. Empty-folder reports must require affirmative evidence of emptiness.
+    app.ok(json!({"command":"api_seed_catalog","complete":false,
+        "folders":[{"id":null,"name":"Saved Messages"},{"id":900,"name":"Unverified"}],
+        "files":[]}));
+    let response = client
+        .get(format!("{url}/api/v1/folders/empty"))
+        .header("Origin", "tauri://localhost")
+        .header("X-API-Key", key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let headers = response.headers().clone();
+    assert_eq!(response.json::<Value>().await.unwrap(), json!([]));
+    assert_eq!(headers["x-inventory-complete"], "false");
+    assert!(headers["access-control-expose-headers"]
+        .to_str()
+        .unwrap()
+        .to_ascii_lowercase()
+        .contains("x-inventory-complete"));
+    for path in ["files/search?q=report", "storage/duplicates"] {
+        let response = client
+            .get(format!("{url}/api/v1/{path}"))
+            .header("X-API-Key", key)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.headers()["x-inventory-complete"], "false");
+        assert!(response.json::<Value>().await.unwrap().is_array());
+    }
 
     // Another account never receives this library.
     app.ok(json!({"command":"seed_account","owner":202}));
@@ -2699,14 +2994,34 @@ async fn media_http_ranges_filenames_failures_and_account_revocation() {
             assert!(response.bytes().await.is_err());
         }
     }
+    let checkpoint = reqwest::Url::parse(url)
+        .unwrap()
+        .join("/body-checkpoint")
+        .unwrap();
     let mut response = client
-        .get(format!("{url}&delayMs=20"))
+        .get(format!("{url}&holdAfterFirstChunk=true"))
         .send()
         .await
         .unwrap();
-    assert!(!response.chunk().await.unwrap().unwrap().is_empty());
+    assert_eq!(response.status(), 200);
+    let prefix = response.chunk().await.unwrap().unwrap();
+    assert!(!prefix.is_empty());
+    assert_eq!(prefix.as_ref(), &content[..prefix.len()]);
+    // First rendezvous confirms the source stopped after one block. The
+    // second permits the next block only after the new account is current.
+    let meet_source = || {
+        client
+            .post(checkpoint.clone())
+            .timeout(Duration::from_secs(10))
+            .send()
+    };
+    assert_eq!(meet_source().await.unwrap().status(), 204);
     app.ok(json!({"command":"seed_account", "owner":202}));
-    assert!(response.bytes().await.is_err());
+    assert_eq!(meet_source().await.unwrap().status(), 204);
+    tokio::time::timeout(Duration::from_secs(10), response.bytes())
+        .await
+        .expect("revoked response must terminate")
+        .expect_err("revoked response must end before its declared length");
     assert_eq!(client.get(url).send().await.unwrap().status(), 404);
     let fresh = app.ok(
         json!({"command":"start_media_fixture","source":"media.bin","filename":"owner-202.bin"}),
@@ -3284,6 +3599,10 @@ fn zip_preview_and_extraction_use_private_files_verify_crc_limits_and_cleanup_ca
             )
             .unwrap();
         archive.write_all(body).unwrap();
+        archive
+            .start_file("second.txt", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        archive.write_all(b"second payload").unwrap();
         archive.finish().unwrap();
     };
     write_zip("document.zip", zip::CompressionMethod::Stored, &payload);
@@ -3331,6 +3650,71 @@ fn zip_preview_and_extraction_use_private_files_verify_crc_limits_and_cleanup_ca
         );
     }
     app.ok(json!({"command":"archive_delete_fixture","path":extracted["temp_path"]}));
+    // The external source becomes unavailable after opening the batch. Both entries
+    // must still extract, and a failed selection must leave the source reusable.
+    fixture.write(
+        "solid.7z",
+        include_bytes!("../test-support/archives/solid-two-files.7z"),
+    );
+    app.ok(json!({"command":"archive_batch_open","owner":"101","source":"solid.7z"}));
+    std::fs::remove_file(fixture.path("solid.7z")).unwrap();
+    for (index, name, expected) in [
+        (0, "one.txt", b"first member".as_slice()),
+        (1, "two.txt", b"second member"),
+    ] {
+        let output = app.ok(json!({"command":"archive_batch_entry","entry":index}));
+        assert_eq!(output["filename"], name);
+        assert_eq!(
+            std::fs::read(output["temp_path"].as_str().unwrap()).unwrap(),
+            expected
+        );
+        app.ok(json!({"command":"archive_delete_fixture","path":output["temp_path"]}));
+    }
+    app.ok(json!({"command":"archive_batch_close"}));
+    // A deterministic ZIP written by the previously shipped zip 2.4.2 writer.
+    // Keep these bytes independent of the crate used to read them.
+    fixture.write(
+        "legacy.zip",
+        include_bytes!("../test-support/archives/legacy-folder-deflate.zip"),
+    );
+    app.ok(json!({"command":"archive_batch_open","owner":"101","source":"legacy.zip"}));
+    app.failure(json!({"command":"archive_batch_entry","entry":0}));
+    let legacy = app.ok(json!({"command":"archive_batch_entry","entry":1}));
+    assert_eq!(legacy["filename"], "Résumé.txt");
+    assert_eq!(
+        std::fs::read(legacy["temp_path"].as_str().unwrap()).unwrap(),
+        b"Legacy folder upload.\n"
+    );
+    app.ok(json!({"command":"archive_delete_fixture","path":legacy["temp_path"]}));
+    app.ok(json!({"command":"archive_batch_close"}));
+    // Reload the document while a completed download is awaiting publication.
+    // The replacement document cannot acquire its predecessor's source.
+    app.ok(json!({"command":"archive_batch_open","owner":"101","source":"document.zip","holdPublication":true}));
+    app.ok(json!({"command":"archive_document_reload"}));
+    assert!(app
+        .failure(json!({"command":"archive_resume_open"}))
+        .contains("viewer closed"));
+    assert_eq!(std::fs::read_dir(&staging).unwrap().count(), 0);
+    app.ok(json!({"command":"archive_batch_open","owner":"101","source":"document.zip"}));
+    std::fs::rename(fixture.path("document.zip"), fixture.path("offline.zip")).unwrap();
+    app.failure(json!({"command":"archive_batch_entry","entry":40}));
+    for (index, expected) in [(0, payload.as_slice()), (1, b"second payload".as_slice())] {
+        let entry = app.ok(json!({"command":"archive_batch_entry","entry":index}));
+        assert_eq!(
+            std::fs::read(entry["temp_path"].as_str().unwrap()).unwrap(),
+            expected
+        );
+        app.ok(json!({"command":"archive_delete_fixture","path":entry["temp_path"]}));
+    }
+    app.ok(json!({"command":"seed_account","owner":202}));
+    assert!(app
+        .failure(json!({"command":"archive_batch_entry","entry":1}))
+        .contains("ACCOUNT_"));
+    app.ok(json!({"command":"archive_batch_close"}));
+    assert_eq!(std::fs::read_dir(&staging).unwrap().count(), 0);
+    app.ok(json!({"command":"seed_account","owner":101}));
+    std::fs::rename(fixture.path("offline.zip"), fixture.path("document.zip")).unwrap();
+
     let original = fixture.read("document.zip");
     let mut damaged = original.clone();
     let data_offset = {
@@ -5942,7 +6326,138 @@ fn traffic_proxy_save_failure_restores_the_old_credential_and_runtime_configurat
             .ok(json!({"command":"traffic_proxy_matches","password":"old synthetic proxy secret"})),
         true
     );
+    let scrubbed = fixture.read("network_settings.json");
+    assert_eq!(
+        restarted.failure(
+            json!({"command":"traffic_proxy_migrate","password":"stale frontend credential"})
+        ),
+        "proxy_legacy_password_requires_clear"
+    );
+    assert_eq!(fixture.read("network_settings.json"), scrubbed);
+    assert_eq!(
+        fixture.read("proxy-credential"),
+        b"old synthetic proxy secret"
+    );
+    restarted
+        .ok(json!({"command":"traffic_proxy_migrate","password":"old synthetic proxy secret"}));
     restarted.stop();
+
+    // An older installation can still have the only recoverable credential in
+    // its settings. Unrelated saves must preserve the original identity.
+    let mut legacy: Value = serde_json::from_slice(&fixture.read("network_settings.json")).unwrap();
+    legacy["proxy"]["password"] = json!("older stored credential");
+    fixture.write(
+        "network_settings.json",
+        serde_json::to_vec(&legacy).unwrap(),
+    );
+    let mut app = Backend::start(&fixture.0);
+    app.ok(json!({"command":"traffic_configure","vpn":true}));
+    let stable = fixture.read("network_settings.json");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&stable).unwrap()["proxy"]["password"],
+        "older stored credential"
+    );
+    assert_eq!(
+        app.failure(json!({"command":"traffic_proxy_patch","host":"different.example"})),
+        "proxy_legacy_password_requires_clear"
+    );
+    assert_eq!(fixture.read("network_settings.json"), stable);
+    for candidate in [
+        "old synthetic proxy secret",
+        "older stored credential",
+        "conflicting frontend credential",
+    ] {
+        assert_eq!(
+            app.failure(json!({"command":"traffic_proxy_migrate","password":candidate})),
+            "proxy_legacy_password_requires_clear"
+        );
+        assert_eq!(
+            fixture.read("proxy-credential"),
+            b"old synthetic proxy secret"
+        );
+        assert_eq!(fixture.read("network_settings.json"), stable);
+    }
+    assert_eq!(
+        app.ok(json!({"command":"traffic_proxy_matches","password":"older stored credential"})),
+        true
+    );
+    app.ok(json!({"command":"traffic_proxy_patch","host":"old.example","password":"explicit selection"}));
+    assert_eq!(fixture.read("proxy-credential"), b"explicit selection");
+    assert!(
+        serde_json::from_slice::<Value>(&fixture.read("network_settings.json")).unwrap()["proxy"]
+            .get("password")
+            .is_none()
+    );
+    app.ok(json!({"command":"traffic_proxy_patch","host":"old.example","clear":true}));
+    assert!(!fixture.path("proxy-credential").exists());
+    app.ok(json!({"command":"traffic_proxy_migrate","password":"frontend-only credential"}));
+    assert_eq!(
+        fixture.read("proxy-credential"),
+        b"frontend-only credential"
+    );
+    app.ok(json!({"command":"traffic_proxy_patch","host":"old.example","clear":true}));
+    app.stop();
+
+    // Both empty-store and already-matching native migrations survive an upgrade.
+    for _ in 0..2 {
+        fixture.write(
+            "network_settings.json",
+            serde_json::to_vec(&legacy).unwrap(),
+        );
+        let mut boot = Backend::start(&fixture.0);
+        assert_eq!(
+            boot.ok(
+                json!({"command":"traffic_proxy_matches","password":"older stored credential"})
+            ),
+            true
+        );
+        assert_eq!(fixture.read("proxy-credential"), b"older stored credential");
+        assert!(
+            serde_json::from_slice::<Value>(&fixture.read("network_settings.json")).unwrap()
+                ["proxy"]
+                .get("password")
+                .is_none()
+        );
+        boot.stop();
+    }
+    let mut app = Backend::start(&fixture.0);
+
+    // Only the local SOCKS greeting is accepted; no external upstream opens.
+    app.ok(json!({"command":"traffic_proxy_patch","host":"127.0.0.1","http":true}));
+    let port = app
+        .ok(json!({"command":"traffic_http_bridge_port"}))
+        .as_u64()
+        .unwrap() as u16;
+    let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    std::fs::rename(
+        fixture.path("network_settings.json"),
+        fixture.path("saved-network"),
+    )
+    .unwrap();
+    std::fs::create_dir(fixture.path("network_settings.json")).unwrap();
+    app.failure(json!({"command":"traffic_proxy_patch","host":"127.0.0.1","http":false}));
+    let mut socket =
+        std::net::TcpStream::connect_timeout(&address, Duration::from_secs(5)).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    socket.write_all(&[5, 1, 0]).unwrap();
+    let mut response = [0; 2];
+    std::io::Read::read_exact(&mut socket, &mut response).unwrap();
+    assert_eq!(response, [5, 0]);
+    drop(socket);
+    std::fs::remove_dir(fixture.path("network_settings.json")).unwrap();
+    std::fs::rename(
+        fixture.path("saved-network"),
+        fixture.path("network_settings.json"),
+    )
+    .unwrap();
+    app.ok(json!({"command":"traffic_proxy_patch","host":"127.0.0.1","http":false}));
+    assert_eq!(
+        app.ok(json!({"command":"traffic_http_bridge_port"})),
+        Value::Null
+    );
+    app.stop();
 }
 
 #[test]
@@ -8417,7 +8932,8 @@ fn grammers_socks_peer(
             connection.read_exact(&mut length).unwrap();
             let mut password = vec![0; length[0] as usize];
             connection.read_exact(&mut password).unwrap();
-            let accepted = username == b"proxy-user" && password == b"proxy-secret";
+            let accepted =
+                username == b"proxy-user@+" && password == "proxy-secret %2F:雪".as_bytes();
             connection
                 .write_all(&[1, if accepted { 0 } else { 1 }])
                 .unwrap();
@@ -8461,7 +8977,7 @@ fn grammers_socks_peer(
     });
     let host = if host == "::1" { "[::1]" } else { host };
     let credentials = if authenticated {
-        "proxy-user:proxy-secret@"
+        "proxy-user%40%2B:proxy-secret%20%252F%3A%E9%9B%AA@"
     } else {
         ""
     };
@@ -11012,8 +11528,227 @@ fn retry_upload_fixture(id: &str, owner: &str, status: &str) -> Value {
     })
 }
 
+fn verify_missing_settings_store_recovery() {
+    let fixture = Fixture::new();
+    let malformed = br#"{"settings":{"privateFixtureMarker":"truncated"#;
+    fixture.write("settings.json", malformed);
+    let mut app = Backend::start(&fixture.0);
+    let reload = json!({"command":"fixture_settings_store","operation":"reload"});
+    let registered = json!({"command":"fixture_settings_store","operation":"registered"});
+    let cached =
+        |key: &str| json!({"command":"fixture_settings_store","operation":"get","key":key});
+    assert_eq!(
+        app.ok(cached("settings")),
+        Value::Null,
+        "initial plugin load hides the malformed file"
+    );
+    assert_eq!(
+        app.failure(reload.clone()),
+        "Saved settings could not be read."
+    );
+    assert_eq!(
+        app.ok(registered.clone()),
+        false,
+        "a failed store must not be registered for save-on-exit"
+    );
+    app.stop();
+    assert_eq!(fixture.read("settings.json"), malformed);
+    let mut app = Backend::start(&fixture.0);
+    assert_eq!(
+        app.failure(reload.clone()),
+        "Saved settings could not be read."
+    );
+    assert_eq!(app.ok(registered.clone()), false);
+    assert_eq!(fixture.read("settings.json"), malformed);
+    std::fs::remove_file(fixture.path("settings.json")).unwrap();
+
+    assert_eq!(app.ok(reload.clone()), Value::Null);
+    assert!(
+        !fixture.path("settings.json").exists(),
+        "reading absent settings created a file"
+    );
+    fixture.write("settings.json", br#"{"legacyKey":"preserved"}"#);
+    assert_eq!(app.ok(reload.clone()), Value::Null);
+    assert_eq!(app.ok(cached("legacyKey")), "preserved");
+    // Even when the JS-held resource is already cached, a repaired file and
+    // cache-only unrelated fields must survive the fallback.
+    app.ok(json!({"command":"fixture_settings_store","operation":"set","key":"volatileKey","value":"unsaved"}));
+    let repaired = br#"{"settings":{"strictUploadOrder":true},"legacyKey":"preserved"}"#;
+    fixture.write("settings.json", repaired);
+    assert_eq!(app.ok(reload.clone()), json!({"strictUploadOrder":true}));
+    assert_eq!(
+        app.ok(cached("settings")),
+        json!({"strictUploadOrder":true})
+    );
+    assert_eq!(app.ok(cached("volatileKey")), "unsaved");
+    assert_eq!(app.ok(cached("legacyKey")), "preserved");
+    assert_eq!(fixture.read("settings.json"), repaired);
+    app.ok(json!({"command":"fixture_settings_store","operation":"set","key":"settings","value":{"strictUploadOrder":false}}));
+    assert_eq!(
+        app.ok(reload),
+        json!({"strictUploadOrder":false}),
+        "newer cached settings were replaced"
+    );
+    app.stop();
+}
+
+fn verify_ordered_upload_dispatch() {
+    fn seed(
+        app: &mut Backend,
+        id: &str,
+        owner: &str,
+        direction: &str,
+        status: &str,
+        position: i64,
+    ) {
+        let mut job = retry_upload_fixture(id, owner, status);
+        job["direction"] = json!(direction);
+        job["queuePosition"] = json!(position);
+        if direction == "download" {
+            job["kind"] = json!("download");
+        }
+        app.ok(json!({"command":"save_transfer","job":job}));
+    }
+    fn claim(app: &mut Backend) -> Vec<String> {
+        let jobs = app.ok(json!({"command":"claim_transfer_jobs"}));
+        jobs.as_array()
+            .unwrap()
+            .iter()
+            .map(|id| id.as_str().unwrap().to_owned())
+            .collect()
+    }
+    fn result(app: &mut Backend, id: &str, status: &str, retry_at: Option<i64>) -> Value {
+        let mut job = app.ok(json!({"command":"transfer_retry_snapshot","id":id}))["job"].clone();
+        job["revision"] = json!(job["revision"].as_u64().unwrap() + 1);
+        job["status"] = json!(status);
+        job["retryAt"] = json!(retry_at);
+        let receipt = (status == "completed" && job["direction"] == "upload").then_some("888");
+        app.ok(json!({"command":"record_transfer_result","job":job,"transportResponse":receipt}))
+    }
+    let fixture = Fixture::new();
+    fixture.write("settings.json", br#"{"settings":{"strictUploadOrder":true,"maxConcurrentUploads":4,"maxConcurrentDownloads":1}}"#);
+    let mut app = Backend::start(&fixture.0);
+    app.ok(json!({"command":"seed_account","owner":101}));
+    seed(&mut app, "foreign", "202", "upload", "paused", 0);
+    seed(&mut app, "a", "101", "upload", "failed", 1);
+    seed(&mut app, "c", "101", "upload", "pending", 2);
+    seed(&mut app, "b", "101", "upload", "pending", 2);
+    seed(&mut app, "last", "101", "upload", "pending", 8);
+    seed(&mut app, "d1", "101", "download", "pending", 3);
+    seed(&mut app, "d2", "101", "download", "pending", 4);
+    assert_eq!(
+        app.ok(json!({"command":"claim_transfer_jobs","online":false})),
+        json!([])
+    );
+    assert_eq!(claim(&mut app), ["d1"]);
+    result(&mut app, "d1", "completed", None);
+    assert_eq!(claim(&mut app), ["d2"]);
+    result(&mut app, "d2", "completed", None);
+    for blocked in ["waiting_for_unlock", "paused", "cooldown", "failed"] {
+        result(&mut app, "a", blocked, Some(i64::MAX));
+        assert!(claim(&mut app).is_empty(), "{blocked} head was overtaken");
+    }
+    app.stop();
+    let mut app = Backend::start(&fixture.0);
+    assert!(
+        claim(&mut app).is_empty(),
+        "restart skipped an unresolved publication"
+    );
+    app.ok(json!({"command":"retry_failed_upload","owner":"101","id":"a"}));
+    assert_eq!(claim(&mut app), ["a"]);
+    assert!(claim(&mut app).is_empty());
+    app.stop();
+    let mut app = Backend::start(&fixture.0);
+    assert!(
+        claim(&mut app).is_empty(),
+        "an interrupted head has unknown publication status"
+    );
+    let interrupted = app.ok(json!({"command":"transfer_retry_snapshot","id":"a"}));
+    assert_eq!(interrupted["job"]["status"], "paused");
+    assert_eq!(interrupted["job"]["errorCategory"], "interrupted");
+    result(&mut app, "a", "waiting_for_network", None);
+    assert_eq!(claim(&mut app), ["a"], "reconnection must retry the head");
+    result(&mut app, "a", "cooldown", Some(0));
+    assert_eq!(
+        claim(&mut app),
+        ["a"],
+        "an elapsed FLOOD_WAIT must retry the head"
+    );
+
+    let db = sqlite::open(fixture.path("transfers.db")).unwrap();
+    db.execute("CREATE TRIGGER hold_order_receipt BEFORE UPDATE ON transfer_jobs WHEN NEW.id='a' AND NEW.status='completed' BEGIN SELECT RAISE(ABORT,'fixture checkpoint failure'); END;").unwrap();
+    assert_eq!(
+        result(&mut app, "a", "completed", None)["persistencePending"],
+        true
+    );
+    assert!(
+        claim(&mut app).is_empty(),
+        "uncommitted receipt released the next upload"
+    );
+    db.execute("DROP TRIGGER hold_order_receipt").unwrap();
+    let saved = app.ok(json!({"command":"retry_failed_upload","owner":"101","id":"a"}));
+    assert_eq!(saved["retried"], false);
+    assert_eq!(saved["job"]["persistencePending"], false);
+    assert_eq!(saved["job"]["messageId"], 888);
+    assert_eq!(
+        claim(&mut app),
+        ["b"],
+        "legacy equal positions need a stable tie break"
+    );
+    result(&mut app, "b", "cancelled", None);
+    assert_eq!(claim(&mut app), ["c"]);
+    result(&mut app, "c", "failed", None);
+    assert!(claim(&mut app).is_empty());
+    app.ok(json!({"command":"remove_transfer","id":"c"}));
+    app.stop();
+    let mut app = Backend::start(&fixture.0);
+    assert_eq!(
+        claim(&mut app),
+        ["last"],
+        "a removed head must stay removed"
+    );
+    app.stop();
+
+    let invalid = Fixture::new();
+    invalid.write("settings.json", b"[]");
+    let mut app = Backend::start(&invalid.0);
+    app.ok(json!({"command":"seed_account","owner":101}));
+    seed(&mut app, "head", "101", "upload", "paused", 0);
+    seed(&mut app, "tail", "101", "upload", "pending", 1);
+    assert!(
+        claim(&mut app).is_empty(),
+        "an unreadable store must preserve queue order"
+    );
+    app.stop();
+
+    let defaults = Fixture::new();
+    defaults.write(
+        "settings.json",
+        br#"{"settings":{"maxConcurrentUploads":2,"maxConcurrentDownloads":1}}"#,
+    );
+    let mut app = Backend::start(&defaults.0);
+    app.ok(json!({"command":"seed_account","owner":101}));
+    seed(&mut app, "first", "101", "upload", "paused", 0);
+    seed(&mut app, "second", "101", "upload", "pending", 1);
+    seed(&mut app, "third", "101", "upload", "pending", 2);
+    seed(&mut app, "fourth", "101", "upload", "pending", 3);
+    assert_eq!(claim(&mut app), ["second", "third"]);
+    app.ok(json!({"command":"fixture_transfer_limits","uploads":4,"downloads":1,"strict":true}));
+    result(&mut app, "first", "cancelled", None);
+    result(&mut app, "second", "completed", None);
+    assert!(
+        claim(&mut app).is_empty(),
+        "enabling strict order must drain running uploads"
+    );
+    result(&mut app, "third", "completed", None);
+    assert_eq!(claim(&mut app), ["fourth"]);
+    app.stop();
+}
+
 #[test]
 fn retry_failed_uploads_preserves_other_states_account_scope_and_durable_inputs() {
+    verify_missing_settings_store_recovery();
+    verify_ordered_upload_dispatch();
     let fixture = Fixture::new();
     let mut app = Backend::start(&fixture.0);
     app.ok(json!({"command":"seed_account","owner":101}));

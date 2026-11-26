@@ -95,7 +95,15 @@
     "show_in_folder": "在資料夾中顯示",
     "webdav_settings": "WebDAV 設定"
   },
+  "existing_channel_help": {
+    "title": "使用現有的 Telegram 頻道",
+    "edit": "在 Telegram 應用程式中開啟你有權重新命名的頻道。開啟頻道資訊頁面，然後編輯頻道名稱。",
+    "rename": "在名稱末尾加上一個空格，再加上 <tag>{{tag}}</tag> 並儲存。例如，把「<before>{{before}}</before>」改為「<after>{{after}}</after>」。",
+    "sync": "在 Telegram Drive 使用同一個帳號，選取側邊欄的「{{sync}}」。頻道會以原本的名稱顯示。",
+    "example": "相片"
+  },
   "settings": {
+    "legacy_proxy_clear": "選取密碼欄位旁的「{{clear}}」，即可移除原有的代理伺服器密碼並套用這些設定。",
     "tab_sync": "Folder Sync",
     "sync": {
       "title": "Folder Sync",
@@ -173,6 +181,8 @@
     "desktop_notification_filenames": "顯示檔案名稱",
     "desktop_notification_filenames_desc": "檔案名稱可能顯示在鎖定畫面。關閉此項更能保護隱私。",
     "desktop_save_failed": "無法儲存桌面偏好設定",
+    "strict_upload_order": "嚴格依佇列順序上傳",
+    "strict_upload_order_desc": "依佇列順序逐一上傳。重試期間，後續檔案會等待。若要繼續，請恢復、重試、取消或移除受阻的上傳工作。",
     "concurrent_uploads": "並發上傳",
     "max_uploads_desc": "最大平行上傳數",
     "concurrent_downloads": "並發下載",
@@ -1611,5 +1621,18 @@
     "this_device": "由此裝置上傳",
     "other_device": "由另一台裝置上傳",
     "none": "最近 1,000 則已儲存的訊息中未找到加密設定備份。"
+  },
+  "action_errors": {
+    "credentials": "請檢查 API ID 和 API Hash。",
+    "disabled": "Telegram 已停用這個 API ID。請建立新的 API 憑證。",
+    "phone": "請檢查電話號碼和國碼。",
+    "banned": "Telegram 已封鎖這個電話號碼。",
+    "register": "請先在 Telegram 官方應用程式註冊這個號碼。",
+    "code": "請檢查登入驗證碼並重試。",
+    "expired": "驗證碼已過期，請重新取得。",
+    "password": "密碼驗證失敗。",
+    "verify_bundle": "請檢查通關密語和已儲存的復原套件副本。",
+    "replace_keys": "此套件缺少部分金鑰。取代保險庫可能導致使用這些金鑰的檔案無法讀取。要繼續嗎？",
+    "file_limit": "檔案超過 Telegram 的大小限制，請分割後再上傳。"
   }
 }

@@ -95,7 +95,15 @@
     "show_in_folder": "Hiện trong thư mục",
     "webdav_settings": "Cài đặt WebDAV"
   },
+  "existing_channel_help": {
+    "title": "Dùng một kênh Telegram hiện có",
+    "edit": "Trong ứng dụng Telegram, mở một kênh mà bạn có quyền đổi tên. Mở phần thông tin của kênh và chỉnh sửa tên kênh.",
+    "rename": "Thêm một dấu cách rồi thêm <tag>{{tag}}</tag> vào cuối tên và lưu lại. Ví dụ, đổi tên từ “<before>{{before}}</before>” thành “<after>{{after}}</after>”.",
+    "sync": "Trong Telegram Drive, dùng cùng tài khoản và chọn {{sync}} trên thanh bên. Kênh sẽ xuất hiện với tên ban đầu.",
+    "example": "Ảnh"
+  },
   "settings": {
+    "legacy_proxy_clear": "Chọn {{clear}} bên cạnh ô mật khẩu để xóa mật khẩu proxy cũ và áp dụng các cài đặt này.",
     "tab_sync": "Folder Sync",
     "sync": {
       "title": "Folder Sync",
@@ -173,6 +181,8 @@
     "desktop_notification_filenames": "Hiển thị tên tệp",
     "desktop_notification_filenames_desc": "Tên tệp có thể xuất hiện trên màn hình khóa. Tắt sẽ riêng tư hơn.",
     "desktop_save_failed": "Không thể lưu tùy chọn máy tính",
+    "strict_upload_order": "Giữ đúng thứ tự tải lên",
+    "strict_upload_order_desc": "Tải từng tệp theo thứ tự hàng đợi. Các tệp sau sẽ chờ trong lúc thử lại. Để tiếp tục, hãy tiếp tục, thử lại, hủy hoặc xóa lượt tải lên đang bị chặn.",
     "concurrent_uploads": "Tải lên đồng thời",
     "max_uploads_desc": "Số lượt tải lên song song tối đa",
     "concurrent_downloads": "Tải xuống đồng thời",
@@ -1611,5 +1621,18 @@
     "this_device": "được tải lên bởi thiết bị này",
     "other_device": "được tải lên bởi thiết bị khác",
     "none": "Không tìm thấy bản sao lưu cài đặt mã hóa trong 1,000 Tin nhắn đã lưu gần nhất."
+  },
+  "action_errors": {
+    "credentials": "Kiểm tra API ID và API Hash.",
+    "disabled": "Telegram đã vô hiệu hóa API ID này. Hãy tạo thông tin xác thực API mới.",
+    "phone": "Kiểm tra số điện thoại và mã quốc gia.",
+    "banned": "Telegram đã cấm số điện thoại này.",
+    "register": "Trước tiên hãy đăng ký số này trong ứng dụng Telegram chính thức.",
+    "code": "Kiểm tra mã đăng nhập rồi thử lại.",
+    "expired": "Mã đã hết hạn. Hãy yêu cầu mã mới.",
+    "password": "Không thể xác minh mật khẩu.",
+    "verify_bundle": "Kiểm tra cụm mật khẩu và bản sao gói khôi phục của bạn.",
+    "replace_keys": "Gói này thiếu một số khóa. Việc thay thế kho có thể khiến các tệp dùng những khóa đó không đọc được. Tiếp tục?",
+    "file_limit": "Tệp vượt quá giới hạn kích thước của Telegram. Hãy chia nhỏ trước khi tải lên."
   }
 }

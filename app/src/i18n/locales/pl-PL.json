@@ -95,7 +95,15 @@
     "show_in_folder": "Pokaż w folderze",
     "webdav_settings": "Ustawienia WebDAV"
   },
+  "existing_channel_help": {
+    "title": "Użyj istniejącego kanału w Telegramie",
+    "edit": "W aplikacji Telegram otwórz kanał, którego nazwę możesz zmienić. Otwórz informacje o kanale i edytuj jego nazwę.",
+    "rename": "Na końcu nazwy dopisz spację, a po niej <tag>{{tag}}</tag>, i zapisz zmianę. Na przykład zmień „<before>{{before}}</before>” na „<after>{{after}}</after>”.",
+    "sync": "W Telegram Drive użyj tego samego konta i wybierz „{{sync}}” na pasku bocznym. Kanał pojawi się pod pierwotną nazwą.",
+    "example": "Zdjęcia"
+  },
   "settings": {
+    "legacy_proxy_clear": "Wybierz „{{clear}}” obok pola hasła, aby usunąć stare hasło serwera proxy i zastosować te ustawienia.",
     "tab_sync": "Folder Sync",
     "sync": {
       "title": "Folder Sync",
@@ -173,6 +181,8 @@
     "desktop_notification_filenames": "Pokazuj nazwy plików",
     "desktop_notification_filenames_desc": "Nazwy mogą być widoczne na ekranie blokady. Wyłączenie zwiększa prywatność.",
     "desktop_save_failed": "Nie udało się zapisać ustawień pulpitu",
+    "strict_upload_order": "Ścisła kolejność wysyłania",
+    "strict_upload_order_desc": "Pliki są wysyłane pojedynczo w kolejności z listy. Następne czekają podczas ponownych prób. Aby kontynuować, wznów, ponów, anuluj lub usuń zablokowane wysyłanie.",
     "concurrent_uploads": "Równoczesne przesyłanie",
     "max_uploads_desc": "Maksymalna liczba przesyłań równoległych",
     "concurrent_downloads": "Równoczesne pobieranie",
@@ -1625,5 +1635,18 @@
     "this_device": "wysłana przez to urządzenie",
     "other_device": "wysłana przez inne urządzenie",
     "none": "Nie znaleziono zaszyfrowanej kopii ustawień w ostatnich 1,000 Zapisanych wiadomościach."
+  },
+  "action_errors": {
+    "credentials": "Sprawdź API ID i API Hash.",
+    "disabled": "Telegram wyłączył ten API ID. Utwórz nowe dane dostępowe API.",
+    "phone": "Sprawdź numer telefonu i numer kierunkowy kraju.",
+    "banned": "Telegram zablokował ten numer telefonu.",
+    "register": "Najpierw zarejestruj ten numer w oficjalnej aplikacji Telegram.",
+    "code": "Sprawdź kod logowania i spróbuj ponownie.",
+    "expired": "Kod wygasł. Poproś o nowy.",
+    "password": "Nie udało się zweryfikować hasła.",
+    "verify_bundle": "Sprawdź hasło i swoją kopię pakietu.",
+    "replace_keys": "W pakiecie brakuje kluczy. Zastąpienie sejfu może uniemożliwić odczyt plików, które ich używają. Kontynuować?",
+    "file_limit": "Plik przekracza limit rozmiaru Telegrama. Podziel go przed wysłaniem."
   }
 }
